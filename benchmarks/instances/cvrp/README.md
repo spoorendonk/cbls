@@ -97,10 +97,20 @@ with no code shared with the C++ runner; and `benchmarks/cvrp/score.py` turns a
 results directory into gap-to-BKS tables, per-band summaries and paired A/B
 intervals (#199). Each module's docstring states its rules and refusals.
 
+The reference baseline is PyVRP (#200, `benchmarks/cvrp/reference_solve.py`,
+pinned in the `benchmarks` extra), run by the driver as the `pyvrp` arm on the
+same machine, budget and seeds, over the distance matrix the verifier scores
+with. It is single-threaded, so it runs at `--threads 1` and is paired only with
+`cbls_cvrp --threads 1`. Hexaly is quoted, not re-run: its published X-set
+figures (60 s, AMD Ryzen 7 7700, 8 cores; 0.7% average, 0.1 / 0.5 / 0.6 / 0.8 /
+0.9% per size band) are different hardware and threads, and `score.py` prints
+them labelled so beside its per-band table.
+
 ```sh
 .venv/bin/python benchmarks/cvrp/run_benchmark.py --roster smoke --budget 10 \
-    --arms guided --results /tmp/cvrp-smoke
-.venv/bin/python benchmarks/cvrp/score.py /tmp/cvrp-smoke --roster smoke
+    --arms guided pyvrp --results /tmp/cvrp-smoke
+.venv/bin/python benchmarks/cvrp/score.py /tmp/cvrp-smoke --roster smoke \
+    --ab cbls/guided pyvrp
 ```
 
 ## Dev and report rosters

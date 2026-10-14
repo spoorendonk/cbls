@@ -69,6 +69,11 @@ benchmarks = [
     # The committed results came from 6.2.1 / SCIP 10.0; every result row records
     # the pair it was produced by.
     "pyscipopt>=6.0",
+    # The CVRP reference baseline (#200, benchmarks/cvrp/reference_solve.py).
+    # 0.14 replaced the per-client coordinates with a separate `Location` list,
+    # which reference_solve.py builds; the API moves between minor releases, so
+    # the bound holds the line at the release it was written against.
+    "pyvrp>=0.14,<0.15",
 ]
 
 [tool.pytest.ini_options]

@@ -320,6 +320,34 @@ def test_a_job_killed_by_its_timeout_leaves_a_timeout_record_and_no_old_files(
     assert not stale.exists()
 
 
+def test_the_pyvrp_arm_runs_the_reference_script_with_the_same_flags(tmp_path: Path) -> None:
+    job = _job(arm=rb.ARMS["pyvrp"])
+    command = rb.build_command(job, Path("/bin/cbls_cvrp"), INST_DIR, tmp_path, "abc1234")
+    assert command[:2] == [sys.executable, str(rb.REFERENCE_SCRIPT)]
+    assert command[command.index("--threads") + 1] == "1"
+    assert rb.record_path(job, tmp_path).parts[-5:-3] == ("pyvrp", "pyvrp")
+
+
+def test_the_pyvrp_arm_is_single_threaded_only(tmp_path: Path) -> None:
+    complaint = rb.check_arguments(_args(tmp_path, arms=["pyvrp", "default"], threads=[1, 4]))
+    assert complaint is not None and "single-threaded" in complaint
+    assert rb.check_arguments(_args(tmp_path, arms=["pyvrp", "default"], threads=[1])) is None
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [{"seeds": [1, 1]}, {"arms": ["guided", "guided"]}, {"budget": [10.0, 10.0]}],
+)
+def test_a_repeated_value_is_refused(tmp_path: Path, overrides: dict[str, object]) -> None:
+    complaint = rb.check_arguments(_args(tmp_path, **overrides))
+    assert complaint is not None and "repeats" in complaint
+
+
+def test_a_budget_the_path_cannot_spell_is_refused(tmp_path: Path) -> None:
+    complaint = rb.check_arguments(_args(tmp_path, budget=[1234567.0]))
+    assert complaint is not None and "%g" in complaint
+
+
 def test_jobs_above_one_need_not_comparable(tmp_path: Path) -> None:
     complaint = rb.check_arguments(_args(tmp_path, jobs=4))
     assert complaint is not None and "--not-comparable" in complaint
@@ -504,6 +532,15 @@ def test_score_refuses_the_published_table_for_a_non_default_arm(tmp_path: Path)
     for instance in SMOKE:
         _write_run(results, instance)
     with pytest.raises(score.ScoreError, match="non-publishable"):
+        _score(results, "out", score.PUBLISHED_TABLE)
+
+
+def test_score_refuses_the_published_table_from_the_smoke_roster(tmp_path: Path) -> None:
+    """Complete, clean and default: still not a table to publish."""
+    results = _stamped(tmp_path / "r")
+    for instance in SMOKE:
+        _write_run(results, instance, arm=DEFAULT)
+    with pytest.raises(score.ScoreError, match="smoke roster"):
         _score(results, "out", score.PUBLISHED_TABLE)
 
 

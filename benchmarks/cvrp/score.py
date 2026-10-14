@@ -38,7 +38,8 @@ What is refused, rather than scored:
   multi-thread CBLS row set beside it would not be the same comparison;
 * writing `PUBLISHED_TABLE` from a directory stamped not comparable (`--jobs`
   above 1, or a modified tree), from rows of a modified tree, from a partial
-  roster, or with a group outside `PUBLISHABLE_GROUPS`.
+  roster, on a roster outside `PUBLISHABLE_ROSTERS`, or with a group outside
+  `PUBLISHABLE_GROUPS`.
 
     .venv/bin/python benchmarks/cvrp/score.py /tmp/cvrp-smoke --roster smoke
     .venv/bin/python benchmarks/cvrp/score.py /tmp/cvrp-ab --roster dev --ab guided default
@@ -99,7 +100,15 @@ PUBLISHED_TABLE = REPO_ROOT / "benchmarks" / "instances" / "cvrp" / "results.md"
 
 #: The (engine, arm) pairs a published table may carry. `cbls/default` is the
 #: engine's own configuration; #204 decides which arm it publishes and edits this.
-PUBLISHABLE_GROUPS: frozenset[tuple[str, str]] = frozenset({("cbls", "default")})
+#: `pyvrp/pyvrp` is the reference baseline of #200, published beside it.
+PUBLISHABLE_GROUPS: frozenset[tuple[str, str]] = frozenset(
+    {("cbls", "default"), ("pyvrp", "pyvrp")}
+)
+
+#: The rosters a published table may be scored on: results are reported on
+#: `report.csv` (README, "Dev and report rosters"), or on all 100 with the dev
+#: instances flagged; never on the smoke or dev subsets alone.
+PUBLISHABLE_ROSTERS: frozenset[str] = frozenset({"report", "full"})
 
 #: Hexaly's published X-set figures (60 s, AMD Ryzen 7 7700, 8 cores): average
 #: gap to BKS per size band, in `SIZE_BANDS` order. Quoted, not re-run.
@@ -392,6 +401,26 @@ def uneven_groups(runs: list[Run], instances: list[str]) -> dict[str, list[str]]
     return out
 
 
+def check_publishable(runs: list[Run], banners: list[str], roster: str) -> None:
+    """Refuse a table that may not become `PUBLISHED_TABLE`: one carrying a
+    group outside `PUBLISHABLE_GROUPS`, any banner, or the wrong roster."""
+    groups = sorted({r.group[:2] for r in runs} - PUBLISHABLE_GROUPS)
+    if groups or banners:
+        raise ScoreError(
+            f"refusing to write the published table {PUBLISHED_TABLE}: "
+            + (
+                f"non-publishable group(s) {['/'.join(g) for g in groups]}"
+                if groups
+                else "the table carries banners"
+            )
+        )
+    if roster not in PUBLISHABLE_ROSTERS:
+        raise ScoreError(
+            f"refusing to write the published table {PUBLISHED_TABLE} from the "
+            f"{roster} roster; publish on {sorted(PUBLISHABLE_ROSTERS)}"
+        )
+
+
 def score(args: argparse.Namespace) -> str:
     results: Path = args.results
     roster = read_roster(args.inst_dir / ROSTERS[args.roster])
@@ -419,8 +448,9 @@ def score(args: argparse.Namespace) -> str:
     banners: list[str] = []
     if not comparable:
         banners.append(
-            "**NOT COMPARABLE**: this directory was run with jobs sharing the machine, or "
-            "carries no stamp. Its numbers are a tooling check, not a measurement."
+            "**NOT COMPARABLE**: this directory was run with jobs sharing the machine, "
+            "from a modified tree, or carries no stamp. Its numbers are a tooling check, "
+            "not a measurement."
         )
     dirty = [c for c in commits if c.endswith("-dirty")]
     if dirty:
@@ -428,26 +458,20 @@ def score(args: argparse.Namespace) -> str:
     for group, problems in uneven.items():
         banners.append(f"**PARTIAL**: {group}: {'; '.join(problems)}")
     if args.out is not None and args.out.resolve() == PUBLISHED_TABLE.resolve():
-        groups = sorted({r.group[:2] for r in runs} - PUBLISHABLE_GROUPS)
-        if groups or banners:
-            raise ScoreError(
-                f"refusing to write the published table {PUBLISHED_TABLE}: "
-                + (
-                    f"non-publishable group(s) {['/'.join(g) for g in groups]}"
-                    if groups
-                    else "the table carries banners"
-                )
-            )
+        check_publishable(runs, banners, args.roster)
     machine = read_json_object(results / MACHINE_NAME) or {}
     host = machine.get("machine")
     cpu = host.get("cpu_model") if isinstance(host, dict) else None
+    versions = sorted({str(r.record["pyvrp_version"]) for r in runs if "pyvrp_version" in r.record})
     lines = [
         f"# CVRP results: {results.name}",
         "",
         *[f"> {b}" for b in banners],
         *([""] if banners else []),
         f"Budget {budget:g} s; roster `{args.roster}` ({len(instances)} instances); "
-        f"commit(s) {', '.join(commits)}; machine {cpu or 'unrecorded'}.",
+        f"commit(s) {', '.join(commits)}; machine {cpu or 'unrecorded'}"
+        + "".join(f"; PyVRP {v}" for v in versions)
+        + ".",
         "",
         "## Per instance",
         "",

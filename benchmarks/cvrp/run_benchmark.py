@@ -74,6 +74,8 @@ from benchmarks.instances.cvrp.download import read_roster  # noqa: E402
 DEFAULT_INST_DIR = REPO_ROOT / "benchmarks" / "instances" / "cvrp"
 DEFAULT_BUILD_DIR = REPO_ROOT / "build"
 BINARY_NAME = "cbls_cvrp"
+#: The PyVRP baseline (#200). Same CLI as `cbls_cvrp`, run by this interpreter.
+REFERENCE_SCRIPT = Path(__file__).resolve().parent / "reference_solve.py"
 
 #: `--roster` names and the table each reads.
 ROSTERS: dict[str, str] = {
@@ -115,11 +117,15 @@ class Arm:
 #: one a published table carries (`score.PUBLISHABLE_GROUPS`). `guided` is the arm
 #: the smoke check uses (benchmarks/instances/cvrp/README.md, "Search arm for
 #: the smoke check"); which arm a campaign runs is decided on `dev.csv` (#204).
+#: `pyvrp` is the reference baseline (#200, `reference_solve.py`): single-
+#: threaded, so it runs at `--threads 1` only and is compared only against
+#: `cbls_cvrp --threads 1`.
 ARMS: dict[str, Arm] = {
     arm.name: arm
     for arm in (
         Arm("default", ()),
         Arm("guided", ("--structural-selection", "violation_guided", "--neighbours", "20")),
+        Arm("pyvrp", (), engine="pyvrp"),
     )
 }
 
@@ -222,8 +228,13 @@ def needs_run(job: Job, results: Path, *, force: bool, retry_failed: bool) -> bo
 
 
 def build_command(job: Job, binary: Path, inst_dir: Path, results: Path, sha: str) -> list[str]:
+    """The job's argv: `cbls_cvrp`, or for the `pyvrp` engine the reference
+    script, which takes the same flags."""
+    program = [str(binary)]
+    if job.arm.engine == "pyvrp":
+        program = [sys.executable, str(REFERENCE_SCRIPT)]
     return [
-        str(binary),
+        *program,
         "--instance",
         job.instance,
         "--inst-dir",
@@ -341,11 +352,23 @@ def check_arguments(args: argparse.Namespace) -> str | None:
         )
     if any(b <= 0 for b in args.budget):
         return "--budget must be > 0"
+    # The path and the runner's --budget spell a budget with `:g`; one that does
+    # not survive it would run at a budget its record does not name.
+    if any(float(f"{b:g}") != b for b in args.budget):
+        return f"--budget {args.budget} must survive '%g' formatting (6 significant digits)"
     if any(t < 1 for t in args.threads):
         return "--threads must be >= 1"
+    for flag in ("budget", "seeds", "arms", "threads"):
+        values = getattr(args, flag)
+        if len(set(values)) != len(values):
+            # Two copies of one job would write the same files.
+            return f"--{flag} {values} repeats a value"
     unknown = [a for a in args.arms if a not in ARMS]
     if unknown:
         return f"unknown arm(s) {unknown}; known: {sorted(ARMS)}"
+    single = [a for a in args.arms if ARMS[a].engine == "pyvrp"]
+    if single and args.threads != [1]:
+        return f"arm(s) {single} are single-threaded; run them with --threads 1 alone"
     return None
 
 

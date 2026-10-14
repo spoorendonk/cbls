@@ -120,20 +120,20 @@ except ImportError:
         ) from None
 
 
-# The same hazard one layer out. `ortools` and `pyscipopt` live in the
+# The same hazard one layer out. `ortools`, `pyscipopt` and `pyvrp` live in the
 # `benchmarks` extra, not `dev`, so a checkout bootstrapped with the documented
-# `.venv/bin/pip install -e '.[dev]'` has neither -- and every test of the CP-SAT
-# baseline and of the independent solution verifier opens with
-# `pytest.importorskip`, so all of them vanish into a green summary. That is the
-# same failure shape as the 243 binding tests, and gets the same answer: the skip
-# is named in the summary, and CBLS_REQUIRE_BENCHMARKS=1 (set by the ```test
-# fence in CLAUDE.md) turns it into a hard error.
+# `.venv/bin/pip install -e '.[dev]'` has none of them -- and every test of the
+# CP-SAT baseline, of the independent solution verifier and of the PyVRP
+# baseline opens with `pytest.importorskip`, so all of them vanish into a green
+# summary. That is the same failure shape as the 243 binding tests, and gets the
+# same answer: the skip is named in the summary, and CBLS_REQUIRE_BENCHMARKS=1
+# (set by the ```test fence in CLAUDE.md) turns it into a hard error.
 #
 # The *files* are detected from the source rather than listed here, so a new test
 # guarded on one of these packages is covered without an edit. The package names
 # themselves are not: a guard on a third package needs this tuple extended, which
 # `test_every_importorskipped_dependency_is_one_this_gate_watches` enforces.
-BENCHMARK_IMPORTS = ("ortools", "pyscipopt")
+BENCHMARK_IMPORTS = ("ortools", "pyscipopt", "pyvrp")
 
 #: How a test file says it needs one of them. One pattern, shared with the audit
 #: test, because the gate matching a narrower shape than the audit is how a
