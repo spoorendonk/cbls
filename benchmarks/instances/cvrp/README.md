@@ -88,6 +88,21 @@ X-n1001-k43. With `--structural-selection violation_guided --neighbours 20`,
 the arm #197's smoke evidence used, both were feasible and verified. So check
 the runner with that arm; which arm a campaign runs is decided on `dev.csv`.
 
+## Running and scoring
+
+`benchmarks/cvrp/run_benchmark.py` runs `cbls_cvrp` over a roster x arms x
+budgets x seeds x threads, one process per job, resumably;
+`benchmarks/cvrp/verify_solution.py` re-checks every `.sol` against its `.vrp`
+with no code shared with the C++ runner; and `benchmarks/cvrp/score.py` turns a
+results directory into gap-to-BKS tables, per-band summaries and paired A/B
+intervals (#199). Each module's docstring states its rules and refusals.
+
+```sh
+.venv/bin/python benchmarks/cvrp/run_benchmark.py --roster smoke --budget 10 \
+    --arms guided --results /tmp/cvrp-smoke
+.venv/bin/python benchmarks/cvrp/score.py /tmp/cvrp-smoke --roster smoke
+```
+
 ## Dev and report rosters
 
 Arms, the fleet rule `R` and the neighbour count `k` are chosen on `dev.csv`, so
