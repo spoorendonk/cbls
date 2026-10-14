@@ -142,3 +142,15 @@ def test_cvrp_writes_no_solution_without_a_verified_one(tmp_path: Path) -> None:
     assert not record["feasible"]
     assert record["objective"] is None
     assert not sol_path.exists()
+
+
+def test_cvrp_clears_old_outputs_even_when_it_refuses_the_instance(tmp_path: Path) -> None:
+    """A refused job must not leave the previous run's files looking like its own."""
+    out = tmp_path / "r.json"
+    sol_path = tmp_path / "r.sol"
+    out.write_text('{"verified": true}')
+    sol_path.write_text("Route #1: 1\nCost 1\n")
+    result = _run("--instance", "X-nope", "--out", str(out), "--solution-out", str(sol_path))
+    assert result.returncode == 2, result.stdout
+    assert not out.exists()
+    assert not sol_path.exists()

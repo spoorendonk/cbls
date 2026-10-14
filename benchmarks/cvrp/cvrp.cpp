@@ -266,10 +266,29 @@ nlohmann::json nullable(double v) {
     return std::isfinite(v) ? nlohmann::json(v) : nlohmann::json(nullptr);
 }
 
+/// Removes the previous run's files at this run's output paths. A `.sol` or a
+/// `verified=true` record left over from an earlier run would be read as this
+/// run's after an early refusal, an infeasible run or a throw. False when an
+/// existing file cannot be removed.
+bool clear_old_outputs(const Args& args) {
+    for (const std::string& path : {args.solution_out, args.out_path}) {
+        std::error_code rm_ec;
+        if (!path.empty() && !std::filesystem::remove(path, rm_ec) && rm_ec) {
+            std::fprintf(stderr, "Cannot remove the old %s: %s\n", path.c_str(),
+                         rm_ec.message().c_str());
+            return false;
+        }
+    }
+    return true;
+}
+
 int run_benchmark(int argc, char** argv) {
     Args args = parse_args(argc, argv);
     if (const int rc = validate_args(args); rc != 0) {
         return rc;
+    }
+    if (!clear_old_outputs(args)) {
+        return 2;
     }
 
     const std::string vrp_path = args.inst_dir + "/X/" + args.instance + ".vrp";
@@ -293,19 +312,6 @@ int run_benchmark(int argc, char** argv) {
     }
     const int fleet = args.fleet > 0 ? args.fleet : cbls::cvrp::default_fleet(k);
     const Bks bks = read_bks(args.inst_dir, args.instance);
-
-    // A previous run's solution at this path must not survive a run that
-    // produces none: a `.sol` beside a record saying `verified=false` would be
-    // checked as if this run had written it.
-    if (!args.solution_out.empty()) {
-        std::error_code rm_ec;
-        std::filesystem::remove(args.solution_out, rm_ec);
-        if (rm_ec) {
-            std::fprintf(stderr, "Cannot remove the old %s: %s\n", args.solution_out.c_str(),
-                         rm_ec.message().c_str());
-            return 2;
-        }
-    }
 
     const auto t_build = std::chrono::steady_clock::now();
     cbls::cvrp::CvrpModel cm = cbls::cvrp::build_model(inst, fleet);
