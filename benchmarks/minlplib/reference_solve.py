@@ -315,6 +315,11 @@ def _record_solution(model: Model, result: ScipResult) -> None:
         result.notes.append(f"no-solution({result.status})")
         return
     best = model.getBestSol()
+    # PySCIPOpt 6.3 types this `Solution | None`; with a solution counted above
+    # it is never None, but the guard costs nothing and keeps mypy honest.
+    if best is None:
+        result.notes.append(f"no-solution({result.status})")
+        return
     # `original=True` checks against the pre-presolve problem, so a solution
     # that only satisfies a presolved relaxation cannot slip through.
     if not model.checkSol(best, printreason=False, completely=True, original=True):
