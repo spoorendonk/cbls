@@ -238,7 +238,7 @@ differences of its changed terms instead of re-summing it.
     it cost 0.67% of throughput against never re-summing
     (`docs/benchmarks/incremental-sum-drift.md`).
   - A walk that does not know the old values (Novelty Jump's legs, the inner
-    solver, the structural batch) re-sums plainly and leaves the Sum
+    solver's multi-variable pass, the structural batch) re-sums plainly and leaves the Sum
     untracked. So does `full_evaluate`. The next commit then re-sums it,
     checked.
   - A Probe applies the commit's own updates and stashes each Sum as it first
