@@ -71,6 +71,12 @@
 // weight to 1 -- so phase-1 weights now reach the hash directly. FJ's tolerance
 // moving from 1e-9 to the search's 1e-6 does not touch either: both fence
 // models are integral, so every residual is an integer.
+//
+// #208 re-recorded both on purpose: an Int column whose weighted rows are all
+// linear -- every fence variable, in run()'s linear phase and in every batch of
+// the linear model -- now jumps to the exact argmin of its weighted violation
+// (OR-Tools' ComputeLinearJump) instead of the best of its enumerated domain.
+// The two agree on the score; on a plateau they pick different points.
 
 #include <algorithm>
 #include <catch2/catch_test_macros.hpp>
@@ -193,12 +199,12 @@ TEST_CASE("FJ's batch-API trajectory matches its recorded fingerprint",
           "[fj][violated_set][trajectory]") {
     const uint64_t h = batch_api_trajectory();
     CAPTURE(h);
-    REQUIRE(h == 0xe63589f3625faca1ULL);
+    REQUIRE(h == 0xd7c53f794bc5be8dULL);
 }
 
 TEST_CASE("FJ's two-phase run() trajectory matches its recorded fingerprint",
           "[fj][violated_set][trajectory]") {
     const uint64_t h = two_phase_run_trajectory();
     CAPTURE(h);
-    REQUIRE(h == 0xfefd9a2f749d666bULL);
+    REQUIRE(h == 0x66a00c8acca288a6ULL);
 }

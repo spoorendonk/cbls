@@ -303,10 +303,10 @@ bool apply_random_structural_move(Model& model, int32_t var_id, RNG& rng) {
 // plus neighbours/endpoints. Each consider() costs O(|G_v|) when every weighted
 // row of G_v is linear (LinearJumpScorer: an affine comparison or bare body),
 // else one weighted_violation_delta (two delta_evaluate passes); the JumpTable cache
-// amortises either across the GLS loop. Scoring is still per candidate: a
-// closed-form ARGMIN over a linear column would pick from a different candidate
-// set, which is a different algorithm rather than a cheaper evaluation of this
-// one.
+// amortises either across the GLS loop. A column whose weighted rows are all
+// linear does not get here: it takes the exact argmin of
+// `LinearJumpScorer::int_argmin` (#208), and this enumeration is the path for
+// every other column (and for the cases the argmin declines).
 //
 // Bounds are read as doubles through `domain_window` (#114): no `long`, so
 // nothing overflows and an unbounded Int gets candidates instead of freezing in
@@ -1020,6 +1020,27 @@ void float_escape_candidates(const Variable& var, double x0, Consider&& consider
     }
 }
 
+// An Int whose weighted rows are all linear (`prepared`: `linear` holds its
+// snapshot): the
+// exact argmin of its weighted violation (#208), which replaces the enumeration
+// and the grid. It covers every value a jump could reach, so no breakpoint
+// candidate (#186) can add anything. False where it declines -- x0 outside the
+// window, a domain past 2^53, a residual the kInfPenalty clamp can reach -- and
+// the candidate path runs as before.
+bool exact_int_jump(const Variable& var, bool prepared, LinearJumpScorer* linear, JumpResult& out) {
+    if (!prepared || var.type != VarType::Int || !(var.lb < var.ub)) {
+        return false;
+    }
+    const DomainWindow w = domain_window(var);
+    double j = var.value;
+    double fv = 0.0;
+    if (!linear->int_argmin(std::ceil(w.lo), std::floor(w.hi), j, fv)) {
+        return false;
+    }
+    out = {j, -fv};
+    return true;
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -1039,6 +1060,9 @@ JumpResult compute_var_jump(Model& model, const std::vector<double>& weights, in
     // -- is one the closed form does not model, so that one candidate takes the
     // probe. The probe restores the assignment exactly, so the snapshot survives.
     const bool fast = linear != nullptr && linear->prepare(var_id, weights);
+    if (JumpResult exact{}; exact_int_jump(var, fast, linear, exact)) {
+        return exact;
+    }
     auto f = [&](double j) {
         if (fast && std::isfinite(j - x0)) {
             return linear->delta(j);

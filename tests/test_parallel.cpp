@@ -2043,10 +2043,11 @@ TEST_CASE("an own best that ties the shared bound still counts as an improvement
     // The peer's 65 is an objective this worker records exactly, at seed 5, in
     // a batch that starts with the bound already at the cap 65 earns. (It was
     // 68 until #206 moved the trajectory, then 69; #211 -- the integral
-    // objective's bound step of 1, and FJ's sample of 5 -- moved it again, and a
-    // scan of 40-140 at seed 5 now finds 65 alone.) Compound moves are off, as they were when #179
-    // was measured and the tie was found; the engine default turned them on afterwards.
-    constexpr double kTiePeer = 65.0;
+    // objective's bound step of 1, and FJ's sample of 5 -- moved it to 65, and
+    // #208's exact Int jump to 63, which a scan of 40-140 at seed 5 finds alone.) Compound moves
+    // are off, as they were when #179 was measured and the tie was found; the engine default turned
+    // them on afterwards.
+    constexpr double kTiePeer = 63.0;
     SolutionPool pool(1);
     SearchCoordination coord;
     coord.pool = &pool;

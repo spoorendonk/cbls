@@ -2,11 +2,13 @@
 
 #include "cbls/dag_ops.h"
 #include "cbls/model.h"
+#include "cbls/randomize.h"
 #include "cbls/violation.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <limits>
 #include <new>
@@ -352,6 +354,142 @@ double LinearJumpScorer::delta(double j) const {
         sum += t.weight * (clamped_node_violation(residual) - t.old_viol);
     }
     return sum;
+}
+
+namespace {
+
+// OR-Tools' `RangeConvexMinimum` (ortools/algorithms/binary_search.h), the
+// overload seeded with a current minimum outside [begin, end): the minimum of a
+// convex f over the indices [begin, end), in O(log(end - begin)) calls of f.
+// Ported line for line, ties included -- `before_v == v` returns `before_mid`,
+// and a final single point wins on `<=` -- since those are the tie rule
+// `int_argmin` documents.
+template <class F>
+std::pair<int64_t, double> range_convex_minimum(std::pair<int64_t, double> current_min,
+                                                int64_t begin, int64_t end, F&& f) {
+    while ((end - begin) > 1) {
+        bool current_is_after_end = current_min.first >= end;
+        const int64_t mid = begin + ((end - begin) / 2);
+        const double v = f(mid);
+        if (v >= current_min.second) {
+            // No better than the current minimum: the global one lies between
+            // the midpoint and it.
+            if (current_is_after_end) {
+                begin = mid + 1;
+            } else {
+                end = mid;
+            }
+        } else {
+            // Undecided: a second value next to v, as in the initial step.
+            const int64_t before_mid = mid - 1;
+            const double before_v = f(before_mid);
+            if (before_v == v) {
+                return {before_mid, before_v};
+            }
+            if (before_v < v) {
+                current_min = {before_mid, before_v};
+                current_is_after_end = true;
+                end = before_mid;
+            } else {
+                current_is_after_end = false;
+                current_min = {mid, v};
+                begin = mid + 1;
+            }
+        }
+    }
+    if (end - begin == 1) {
+        const double v = f(begin);
+        if (v <= current_min.second) {
+            return {begin, v};
+        }
+    }
+    return current_min;
+}
+
+}  // namespace
+
+bool LinearJumpScorer::argmin_applies(double lo, double hi) const {
+    const bool integral_box = lo < hi && std::abs(lo) < kExactIntMagnitude &&
+                              std::abs(hi) < kExactIntMagnitude && lo == std::floor(lo) &&
+                              hi == std::floor(hi);
+    if (!integral_box || x0_ < lo || x0_ > hi || x0_ != std::floor(x0_)) {
+        return false;
+    }
+    // Each finite term's residual is affine in d = j - x0, a + s d. Refuse if the
+    // clamp at kInfPenalty can bite anywhere in [lo, hi] -- checked at both
+    // ends, where an affine |residual| peaks.
+    const double d_lo = lo - x0_;
+    const double d_hi = hi - x0_;
+    return std::all_of(terms_.begin(), terms_.end(), [d_lo, d_hi](const Term& t) {
+        if (std::isinf(t.p) || std::isinf(t.q)) {
+            return true;  // constant in j: an infinite literal side absorbs any step
+        }
+        const double a = t.p - t.q + t.strict_margin;
+        return std::abs(a + (t.slope * d_lo)) < kInfPenalty &&
+               std::abs(a + (t.slope * d_hi)) < kInfPenalty;
+    });
+}
+
+void LinearJumpScorer::slope_breakpoints(double side_lo, double side_hi) {
+    // The side's ends, then floor and ceil of each kink -- where a term's
+    // residual crosses 0 -- that falls inside it. A kink rounded an ulp off an
+    // integer still brackets it.
+    points_.clear();
+    points_.push_back(side_lo);
+    points_.push_back(side_hi);
+    for (const Term& t : terms_) {
+        if (std::isinf(t.p) || std::isinf(t.q)) {
+            continue;
+        }
+        const double kink = x0_ - ((t.p - t.q + t.strict_margin) / t.slope);
+        for (const double bp : {std::floor(kink), std::ceil(kink)}) {
+            if (side_lo <= bp && bp <= side_hi) {
+                points_.push_back(bp);
+            }
+        }
+    }
+    std::sort(points_.begin(), points_.end());
+    points_.erase(std::unique(points_.begin(), points_.end()), points_.end());
+}
+
+bool LinearJumpScorer::int_argmin(double lo, double hi, double& best_j, double& best_f) {
+    if (!argmin_applies(lo, hi)) {
+        return false;
+    }
+    best_j = x0_;
+    best_f = 0.0;
+    // The improving side, from x0 -/+ 1: left first, as OR-Tools tries p1 first.
+    // `seed` is that neighbour; the side is every integer beyond it.
+    const double p1 = x0_ - 1.0;
+    const double p2 = x0_ + 1.0;
+    const double v1 = p1 >= lo ? delta(p1) : std::numeric_limits<double>::infinity();
+    std::pair<double, double> seed{p1, v1};
+    bool to_the_right = true;  // is the seed right of every point searched?
+    if (!(v1 < 0.0)) {
+        const double v2 = p2 <= hi ? delta(p2) : std::numeric_limits<double>::infinity();
+        if (!(v2 < 0.0)) {
+            return true;  // neither neighbour improves: x0 is the convex minimum
+        }
+        seed = {p2, v2};
+        to_the_right = false;
+    }
+    const double side_lo = to_the_right ? lo : p2 + 1.0;
+    const double side_hi = to_the_right ? p1 - 1.0 : hi;
+    best_j = seed.first;
+    best_f = seed.second;
+    if (side_lo > side_hi) {
+        return true;
+    }
+    slope_breakpoints(side_lo, side_hi);
+    const auto n = static_cast<int64_t>(points_.size());
+    const std::pair<int64_t, double> found =
+        range_convex_minimum({to_the_right ? n : -1, seed.second}, 0, n,
+                             [this](int64_t i) { return delta(points_[static_cast<size_t>(i)]); });
+    if (found.first >= 0 && found.first < n) {
+        best_j = points_[static_cast<size_t>(found.first)];
+        best_f = found.second;
+    }
+    return true;
 }
 
 double LinearJumpScorer::row_partial(const BuiltRow& row, double r) const {
