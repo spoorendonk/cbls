@@ -332,7 +332,7 @@ agree:
 1. this section,
 2. the comment above `catch_discover_tests` in `tests/CMakeLists.txt`,
 3. the build section of `README.md`,
-4. the `.venv/bin/pytest` line in `README.md` for the Python side (1185 tests, 243
+4. the `.venv/bin/pytest` line in `README.md` for the Python side (1207 tests, 243
    of them binding tests, echoed in prose by `pyproject.toml` and
    `tests/python/conftest.py`),
 5. the `-LE slow` guidance and the ~25s/~490s figures in `docs/profiling.md`.
@@ -970,7 +970,8 @@ runs one solver process (timeout, address-space cap, own session, log) and a
 plan (bounded workers, serial tail); `records.py` writes and reads the files a
 run leaves behind so that a kill leaves the old file or the new one, and lists
 where each benchmark's record schema is declared; `provenance.py` is the commit,
-the build-dir refusals and the machine record. What it deliberately does **not**
+the build-dir refusals and the machine record; `pins.py` hashes downloaded files
+against a committed pin table (the `mipfeas` and `cvrp` downloaders). What it deliberately does **not**
 hold is any benchmark's resume rule or record shape — `mipfeas`, the MINLPLib
 re-run and the ablation campaign resume on three different keys for reasons of
 measurement, and a single loop with per-benchmark hooks would only relocate

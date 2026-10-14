@@ -39,7 +39,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import hashlib
 import io
 import os
 import sys
@@ -48,6 +47,19 @@ import urllib.request
 import zipfile
 from pathlib import Path
 from typing import NamedTuple
+
+# Run as a script (`python download.py`, the documented form), only this file's
+# own directory is on sys.path; the repository root makes `benchmarks.common`
+# importable.
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+
+from benchmarks.common.pins import (  # noqa: E402
+    pin_mismatch,
+    read_pin_table,
+    sha256_of,
+    write_pin_table,
+)
 
 BENCHMARK_TEST_URL = "https://miplib.zib.de/downloads/benchmark-v2.test"
 SOLU_URL = "https://miplib.zib.de/downloads/miplib2017-v36.solu"
@@ -234,48 +246,6 @@ def reference_changes(old: list[RosterEntry], new: list[RosterEntry]) -> list[st
                 f"-> {now.reference_value!r} ({now.reference_kind})"
             )
     return lines
-
-
-def sha256_of(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
-
-
-def read_pin_table(path: Path, key_column: str) -> dict[str, tuple[str, int]]:
-    """`{key: (sha256, bytes)}` from a two-column pin table, empty when absent."""
-    if not path.exists():
-        return {}
-    with open(path, newline="") as fh:
-        return {row[key_column]: (row["sha256"], int(row["bytes"])) for row in csv.DictReader(fh)}
-
-
-def write_pin_table(path: Path, key_column: str, rows: dict[str, tuple[str, int]]) -> None:
-    # Temp-then-rename, like every other file this benchmark writes. This one is
-    # committed data the run driver gates on, and a truncated table does not merely
-    # lose rows: `write_manifest` reads an instance it cannot find as a first
-    # acquisition and re-pins whatever is on disk with no flag, which is exactly the
-    # overwrite the flag exists to require.
-    tmp = path.with_name(path.name + ".tmp")
-    with open(tmp, "w", newline="") as fh:
-        writer = csv.writer(fh)
-        writer.writerow([key_column, "sha256", "bytes"])
-        writer.writerows((key, sha, size) for key, (sha, size) in sorted(rows.items()))
-    tmp.replace(path)
-
-
-def pin_mismatch(label: str, data: bytes, pinned: tuple[str, int] | None) -> str | None:
-    """The complaint about `data` against its pin, or None when it matches.
-
-    A size-only comparison would pass a byte-for-byte substitution of the same
-    length, and a hash-only one loses the cheapest thing to say about a truncated
-    download, so both are reported.
-    """
-    if pinned is None:
-        return f"{label}: present but not pinned (no recorded hash)"
-    sha, size = pinned
-    actual = sha256_of(data)
-    if actual == sha and len(data) == size:
-        return None
-    return f"{label}: pinned sha256 {sha} ({size} bytes), found {actual} ({len(data)} bytes)"
 
 
 def verify_references(here: Path) -> list[str]:

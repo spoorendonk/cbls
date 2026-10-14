@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from benchmarks.common.pins import read_pin_table, sha256_of, write_pin_table
 from benchmarks.instances.mipfeas.download import (
     EXPECTED_ROSTER_SIZE,
     MANIFEST_FILENAME,
@@ -27,16 +28,13 @@ from benchmarks.instances.mipfeas.download import (
     parse_solu,
     parse_test_file,
     pin_fetched_instances,
-    read_pin_table,
     read_roster_csv,
     reference_changes,
-    sha256_of,
     update_references,
     verify_instances,
     verify_mode,
     verify_references,
     write_manifest,
-    write_pin_table,
     write_roster_csv,
 )
 

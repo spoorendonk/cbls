@@ -1,6 +1,6 @@
 """What every benchmark driver shares, whatever it measures (issue #160).
 
-Three modules, one per stage of a run's lifecycle that is not specific to a
+Four modules, one per stage of a run's lifecycle that is not specific to a
 benchmark:
 
 * `provenance` -- what produced a result beyond the code: the engine commit, the
@@ -10,6 +10,9 @@ benchmark:
 * `records` -- writing and reading the files a run leaves behind so that a kill
   at any moment leaves either the previous file or the new one, never half of
   one; and where each benchmark's record schema is declared.
+* `pins` -- hashing downloaded files and comparing them to a committed pin
+  table, so a library revision cannot silently redefine a benchmark's
+  reference values (lifted from the MIPfeas downloader for CVRP, #196).
 
 What is deliberately NOT here is each benchmark's resume rule and record shape.
 They differ for reasons of measurement, not of implementation -- `mipfeas` runs
