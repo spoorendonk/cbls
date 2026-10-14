@@ -9,14 +9,15 @@ it the way `benchmarks/instances/mipfeas/download.py` pins MIPLIB's `.solu`:
 
 * `manifest.csv` pins every `.vrp` by sha256 and byte count, beside the header
   fields a reader needs to sanity-check it (customers, capacity, minimum fleet).
-* `references.csv` pins every `.sol` and every roster table derived from them.
+* `references.csv` pins every `.sol`, every roster table derived from them, and
+  the manifest itself (its `k_min` column comes from the listing, not a file).
 * `--verify` re-checks all of it offline, and also re-derives each roster row
   from its `.sol` file, so a hand-edited roster or a swapped solution fails.
 * A download whose instance bytes moved fails unless `--update-manifest`; one
   whose BKS moved fails unless `--update-references`, which prints the
   per-instance changes first. Nothing is written on a refusal.
 
-The instance and solution files are committed (`X/`, about 1.8 MB), so a
+The instance and solution files are committed (`X/`, about 1.1 MB), so a
 checkout can verify, test and run without the network; this script is how they
 were obtained and how a later snapshot would be taken.
 
@@ -69,6 +70,10 @@ SMOKE_FILENAME = "smoke.csv"
 DEV_FILENAME = "dev.csv"
 REPORT_FILENAME = "report.csv"
 ROSTER_TABLES: tuple[str, ...] = (ROSTER_FILENAME, SMOKE_FILENAME, DEV_FILENAME, REPORT_FILENAME)
+#: Pinned in references.csv beside the `.sol` files. The manifest's hash and
+#: header columns are re-derived from each `.vrp`, but `k_min` comes from
+#: CVRPLIB's listing alone, so only a pin on the table itself protects it.
+PINNED_TABLES: tuple[str, ...] = (MANIFEST_FILENAME, *ROSTER_TABLES)
 
 EXPECTED_SET_SIZE = 100
 
@@ -373,7 +378,7 @@ def verify_pins(here: Path, manifest: dict[str, dict[str, str]]) -> list[str]:
             problems.append(complaint)
 
     refs = read_pin_table(here / REFERENCES_FILENAME, "file")
-    pinned_files = [f"{INSTANCE_SUBDIR}/{n}.sol" for n in manifest] + list(ROSTER_TABLES)
+    pinned_files = [f"{INSTANCE_SUBDIR}/{n}.sol" for n in manifest] + list(PINNED_TABLES)
     for rel in pinned_files:
         path = here / rel
         complaint = (
@@ -521,6 +526,7 @@ def write_snapshot(snap: Snapshot, here: Path) -> None:
     customers = {n: int(r["n"]) for n, r in snap.manifest.items()}
     for table, rows in roster_tables(snap.entries, customers).items():
         write_roster(here / table, rows)
+    for table in PINNED_TABLES:
         data = (here / table).read_bytes()
         refs[table] = (sha256_of(data), len(data))
     write_pin_table(here / REFERENCES_FILENAME, "file", refs)

@@ -27,14 +27,14 @@ the runner is `benchmarks/cvrp/` (#197).
 
 | File | What it is |
 |---|---|
-| `X/<name>.vrp` | The 100 instance files, committed (with the `.sol` files, 1.5 MB). |
+| `X/<name>.vrp` | The 100 instance files, committed (with the `.sol` files, 1.1 MB). |
 | `X/<name>.sol` | The BKS solution of each, as CVRPLIB served it on the snapshot date. |
 | `manifest.csv` | `instance,n,capacity,k_min,sha256,bytes` per `.vrp`. `n` is the customer count (the TSPLIB `DIMENSION` minus the depot). |
 | `roster.csv` | `instance,bks,bks_kind,bks_routes`, all 100. `bks_kind` is `opt` where CVRPLIB marks the BKS proven optimal (61 of 100), `ub` otherwise. `bks_routes` counts the non-empty routes of the pinned `.sol`. |
 | `smoke.csv` | Five instances across the size range, for checking that a runner works. Not for results. |
 | `dev.csv` | The 20 instances arms and parameters are chosen on (next section). |
 | `report.csv` | The other 80: the roster results are reported on. |
-| `references.csv` | sha256 and byte count of every `.sol` and of the four roster tables. |
+| `references.csv` | sha256 and byte count of every `.sol`, the four roster tables and `manifest.csv` (whose `k_min` comes from CVRPLIB's listing, not from a file). |
 | `download.py` | How all of the above was produced, and the offline check of it. |
 
 The files are committed rather than fetched on demand, the choice `minlplib`

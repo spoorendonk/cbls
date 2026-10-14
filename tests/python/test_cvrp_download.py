@@ -238,3 +238,12 @@ def test_moved_instance_bytes_are_refused_without_the_flag() -> None:
     assert reason is not None
     assert MANIFEST_FILENAME in reason
     assert refusal(snap, CVRP_DIR, _args(references=True, manifest=True)) is None
+
+
+def test_a_hand_edited_k_min_is_refused(snapshot_copy: Path) -> None:
+    """`k_min` is CVRPLIB's listed minimum fleet, which no `.vrp` carries, so the
+    manifest's own pin is the only thing protecting it."""
+    path = snapshot_copy / MANIFEST_FILENAME
+    path.write_text(path.read_text().replace("X-n101-k25,100,206,25,", "X-n101-k25,100,206,20,"))
+    problems = verify(snapshot_copy)
+    assert any(MANIFEST_FILENAME in p for p in problems), problems
