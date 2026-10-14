@@ -1314,9 +1314,10 @@ void Model::rebuild_back_references() {
 //    (reground_drifted_rows), and a throw out of a batch is followed by
 //    solve()'s full_evaluate. A raw reader inside a batch would break this.
 //    The inner solver is a batch of its own in this sense since #207: its
-//    coordinate commits are incremental, its probes score against the drifted
-//    values (a difference of two readings over the same drift, as FJ's
-//    probes do), and it re-grounds every drifted Sum before it returns.
+//    coordinate commits are incremental, its coordinate probes score against
+//    the drifted values (a difference of two readings over the same drift, as
+//    FJ's probes do), and it re-grounds every drifted Sum before its
+//    multi-variable pass (a raw reader) and before it returns.
 //
 // Terms may be anything else: every node term is flagged `kFeedsIncSum`, and a
 // dirty one pushes its change into the Sum. Whether an update is exact is a

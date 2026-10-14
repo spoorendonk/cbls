@@ -2805,8 +2805,9 @@ Each coordinate step on a Float variable v reads only what v can move:
 - **Probes and commits:** these go through `probe_scalar_move` / `Rollback` and
   `commit_scalar_move`, so an incremental Sum (#188) above v moves by its one
   changed term rather than being re-summed. `solve()` re-grounds every drifted
-  Sum before it returns, early stop included, so the search's raw reads after
-  the hook see re-grounded values.
+  Sum before the multi-variable pass, which reads raw, and again before it
+  returns, early stop included, so the search's raw reads after the hook see
+  re-grounded values.
 
 A coordinate sweep is therefore O(Σ_v up-cone(v)). Before #207 every variable
 paid a reverse sweep over the objective's whole cone and a scan of every row,

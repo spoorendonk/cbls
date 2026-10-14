@@ -515,12 +515,19 @@ void FloatIntensifyHook::solve(Model& model, ViolationManager& vm,
                                const std::vector<int32_t>& /*last_changed_vars*/, StopRef stop) {
     const int stride = vars_per_poll(model);
     Scratch scratch(model);
+    std::vector<int32_t> regrounded;
     for (int sweep = 0; sweep < max_sweeps; ++sweep) {
         const PassOutcome coordinate = coordinate_pass(model, vm, scratch, initial_step_size,
                                                        max_line_search_steps, stop, stride);
         if (coordinate == PassOutcome::Stopped) {
             break;
         }
+        // The multi-variable step reads rows and the objective raw and scores
+        // by two absolute readings, the second after a plain delta_evaluate that
+        // re-sums every incremental Sum it reaches. On a drifted state that
+        // difference would include the drift the re-sum removed, so the pass
+        // starts from re-grounded Sums. O(1) when nothing drifted.
+        reground_drifted_sums(model, regrounded);
         const PassOutcome multi = multi_var_pass(model, vm, max_multi_var_constraints, stop);
         if (multi == PassOutcome::Stopped) {
             break;
@@ -536,7 +543,6 @@ void FloatIntensifyHook::solve(Model& model, ViolationManager& vm,
     // keeps by re-grounding at every batch end (src/model.cpp, the incremental
     // Sum rules). So the hook leaves them as it found them: re-grounded.
     // O(1) when nothing drifted.
-    std::vector<int32_t> regrounded;
     reground_drifted_sums(model, regrounded);
     vm.invalidate_cache();
 }
