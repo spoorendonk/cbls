@@ -131,7 +131,7 @@ nothing to jump. Before #201 the automatic structural probability was 0.33 and
 the other two thirds of batches were empty FJ batches — GLS weight pumps that
 reported themselves stuck and took the unproductive diversification kick. #201
 makes the automatic setting resolve to every batch structural on such a model,
-which is exactly the `--struct-prob 1.0` arm measured in [Why the Set encoding
+which is exactly the `--structural-prob 1.0` arm measured in [Why the Set encoding
 loses](#why-the-set-encoding-loses), now as the default. The `bool` encoding has
 no structured variable, so #201 cannot reach it: its column is a fresh
 measurement at the same commit, not a before/after.
@@ -277,7 +277,7 @@ regimes — the idle FJ batches buy nothing that outweighs the passes they
 displace. Both columns below are one 10s sweep at engine commit `adc8ee4`,
 seeds 42-44 in that order:
 
-| Instance | default | `--struct-prob 1.0` |
+| Instance | default | `--structural-prob 1.0` |
 |---|---|---|
 | scpe1 (unicost) | 7, 7, 7 | 6, 6, 6 |
 | scp41 (weighted) | 4917, 4739, 4902 | 2593, 2727, 2916 |
@@ -292,8 +292,8 @@ because the roster uses the engine default throughout, which is the
 configuration a user gets.
 
 **Since #201 this is the default** on any model where FJ has nothing to jump,
-so the roster table above now measures the `1.0` arm. `--struct-prob` still
-selects an arm: an explicit value is honoured, so `--struct-prob 0.33` is the
+so the roster table above now measures the `1.0` arm. `--structural-prob` still
+selects an arm: an explicit value is honoured, so `--structural-prob 0.33` is the
 pre-#201 mix — except that its empty FJ batches no longer take the
 unproductive kick or count toward the perturbation period, so it is not a
 bit-exact reproduction of the pre-#201 default. It has no effect on the `bool`

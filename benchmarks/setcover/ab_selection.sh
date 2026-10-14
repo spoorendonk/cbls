@@ -26,7 +26,7 @@
 # READ THE RESULT WITH THIS CAVEAT. At a fixed wall-clock budget the comparison
 # is policy quality MINUS representation cost, and the two arms do not pay the
 # same representation cost: `best_of_sample` / `violation_guided` score up to
-# `--sample-size` candidates per variable per pass where `first_improving`
+# `--structural-sample-size` candidates per variable per pass where `first_improving`
 # scores the generator's 3-5.
 #
 # That term is much smaller since #164, which made a structured change a
@@ -161,13 +161,13 @@ for arm in "${arm_list[@]}"; do
 	# structural batch at all (build_bool_model creates no List or Set), so it
 	# would be the same run in both arms.
 	status=0
-	"$bin" --dir "$dir" --encoding set --selection "$arm" \
+	"$bin" --dir "$dir" --encoding set --structural-selection "$arm" \
 		--time "$time_limit" --seeds "$seeds" --seed "$first_seed" --csv "$csv" || status=$?
 	# The runner exits 2 on a bad flag value and 1 on infeasible/unverified runs.
 	# Reporting a mistyped --arms as "infeasible" would send the reader looking
 	# at the search instead of at the command line, so the two are kept apart.
 	if [ "$status" -eq 2 ]; then
-		echo "arm '$arm' was rejected by the runner (bad --selection value?)" >&2
+		echo "arm '$arm' was rejected by the runner (bad --structural-selection value?)" >&2
 		failed_arms="$failed_arms $arm"
 		continue
 	fi

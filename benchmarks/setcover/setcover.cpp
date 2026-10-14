@@ -8,7 +8,8 @@
 //   cbls_setcover --encoding set --time 30
 //   cbls_setcover --instance benchmarks/instances/setcover/scpe1.txt --seeds 5
 //   cbls_setcover --csv results.csv
-//   cbls_setcover --encoding set --selection violation_guided --sample-size 8
+//   cbls_setcover --encoding set --structural-selection violation_guided
+//                 --structural-sample-size 8
 //
 // ab_selection.sh in this directory is the A/B harness for the last of those:
 // the `Set` encoding under two structural-selection policies, several seeds per
@@ -55,7 +56,7 @@ struct Options {
     double time_limit = 10.0;
     int seeds = 1;
     uint64_t first_seed = 42;
-    double struct_prob = -1.0;  // <0 = engine auto (0.33 on a Set model)
+    double struct_prob = -1.0;  // the default, engine auto; a typed value is in [0, 1]
     // Structural-selection arm (#165). The default is the engine's own, which
     // is the pre-#165 rule, so an unflagged run is the configuration the README
     // reports.
@@ -88,22 +89,22 @@ struct Run {
 void print_usage() {
     printf(
         "usage: cbls_setcover [--dir D] [--instance F] [--time S] [--seeds N]\n"
-        "                     [--seed S0] [--encoding set|bool|both] [--struct-prob P]\n"
-        "                     [--selection first_improving|best_of_sample|violation_guided]\n"
-        "                     [--sample-size K] [--csv OUT]\n");
+        "                     [--seed S0] [--encoding set|bool|both] [--structural-prob P]\n"
+        "                     [--structural-selection "
+        "first_improving|best_of_sample|violation_guided]\n"
+        "                     [--structural-sample-size K] [--csv OUT]\n");
 }
 
 // Flag values are read through this rather than through
 // benchmarks/common/runner_args.h, and the difference is policy rather than an
 // oversight. That header reports a bad integer and calls std::exit(2), and
 // hands a bad double back as NaN for a later `!(x > 0.0)` guard in the runner
-// to turn into exit 2. This runner has no such guard -- a negative
-// --struct-prob means "engine auto" and a NaN would sail through -- so it
-// rejects a malformed value where it reads it, records the failure, and lets
-// run_benchmark return 1. Unsigned rather than signed integers, NaN rejected
-// rather than passed on, and a failure flag rather than an exit: three
-// differences, so the two policies stay apart instead of being parameterised
-// into one helper that carries both.
+// to turn into exit 2. This runner has no such guard -- it has no `> 0` double
+// to guard, and a NaN would sail through -- so it rejects a malformed value
+// where it reads it, records the failure, and lets run_benchmark return 1. Unsigned rather than
+// signed integers, NaN rejected rather than passed on, and a failure flag rather than an exit:
+// three differences, so the two policies stay apart instead of being parameterised into one helper
+// that carries both.
 //
 // Numeric flags go through the strict parse rule rather than std::stod /
 // std::strtoull. strtoull in particular has no error path: `--seed abc`
@@ -113,6 +114,17 @@ void print_usage() {
 // they reported `Error: stod` without naming the flag. NaN is rejected
 // for the same reason the CLI rejects it: it is a well-formed double
 // that yields a solve which never searched.
+//
+// WHY NOT benchmarks/common/search_config_flags.h EITHER (#198). The three
+// structural flags here take that table's SPELLINGS and value rules
+// (`--structural-prob` in [0, 1], `--structural-sample-size` >= 1 and refused
+// under first_improving), so one flag has one name and one meaning across
+// runners. The table itself does not fit: one invocation of this runner solves
+// BOTH encodings by default, and the Bool encoding is a scalar model on which
+// the structural flags are read by nothing -- the case the table's
+// per-runner applicability mask refuses. A mask is per runner, not per row, so
+// it cannot describe a run that spans both. The flags stay here, applied to
+// the Set rows and recorded on every row as before.
 struct FlagValues {
     int argc = 0;
     char** argv = nullptr;
@@ -172,7 +184,7 @@ int seed_count(FlagValues& v) {
 /// that function stays one dispatch rather than a dispatch plus two validators.
 /// Returns false when `arg` is not one of them.
 bool parse_selection_flag(const std::string& arg, FlagValues& v, Options& opt) {
-    if (arg == "--selection") {
+    if (arg == "--structural-selection") {
         const std::string name = v.next("first_improving|best_of_sample|violation_guided");
         if (v.ok && !cbls::try_parse_structural_selection(name, opt.selection)) {
             fprintf(stderr, "unknown selection '%s'\n", name.c_str());
@@ -180,10 +192,10 @@ bool parse_selection_flag(const std::string& arg, FlagValues& v, Options& opt) {
         }
         return true;
     }
-    if (arg == "--sample-size") {
-        const uint64_t k = v.integer("--sample-size", "count");
+    if (arg == "--structural-sample-size") {
+        const uint64_t k = v.integer("--structural-sample-size", "count");
         if (v.ok && (k == 0 || k > static_cast<uint64_t>(std::numeric_limits<int>::max()))) {
-            fprintf(stderr, "--sample-size must be a positive int\n");
+            fprintf(stderr, "--structural-sample-size must be a positive int\n");
             v.ok = false;
         }
         // Validate, THEN narrow -- seed_count's shape. Narrowing an out-of-range
@@ -223,8 +235,14 @@ Options parse_args(int argc, char** argv, bool* ok) {
             opt.seeds = seed_count(v);
         } else if (arg == "--seed") {
             opt.first_seed = v.integer("--seed", "seed");
-        } else if (arg == "--struct-prob") {
-            opt.struct_prob = v.number("--struct-prob", "probability");
+        } else if (arg == "--structural-prob") {
+            opt.struct_prob = v.number("--structural-prob", "probability");
+            // The shared table's rule: "automatic" is the default and is
+            // spelled by omitting the flag.
+            if (v.ok && (opt.struct_prob < 0.0 || opt.struct_prob > 1.0)) {
+                fprintf(stderr, "--structural-prob must be in [0, 1]\n");
+                v.ok = false;
+            }
         } else if (parse_selection_flag(arg, v, opt)) {
             // handled, including its own validation
         } else if (arg == "--csv") {
@@ -242,6 +260,16 @@ Options parse_args(int argc, char** argv, bool* ok) {
         if (!v.ok) {
             break;
         }
+    }
+    // The shared table's no-effect rule: first_improving scores exactly one
+    // sample, so a sample size other than the engine's would be recorded on
+    // nothing the run read.
+    if (v.ok && opt.selection == cbls::StructuralSelection::FirstImprovingSample &&
+        opt.sample_size > 0 && opt.sample_size != cbls::SearchConfig{}.structural_sample_size) {
+        fprintf(stderr,
+                "--structural-sample-size has no effect under --structural-selection "
+                "first_improving\n");
+        v.ok = false;
     }
     *ok = v.ok;
     return opt;

@@ -288,8 +288,8 @@ Three conventions therefore rest on you rather than on a tool: branch only from 
 
 ### Fast vs. slow tests
 
-The C++ suite is **748 ctest tests**: 746 Catch2 ones over **743 `TEST_CASE`s**
-— 738 registered by `catch_discover_tests` plus **8 registered by hand**, the 5
+The C++ suite is **756 ctest tests**: 754 Catch2 ones over **751 `TEST_CASE`s**
+— 746 registered by `catch_discover_tests` plus **8 registered by hand**, the 5
 `[timing]` cases and the three hang guards `hang_guard_iteration_only_portfolio`,
 `hang_guard_novelty_zero_move_batch` and `hang_guard_nonpositive_batch_iterations`,
 each hand-registered *as well as*
@@ -297,14 +297,14 @@ discovered (a hang only reports through a `TIMEOUT`, but all three are cheap eno
 to belong in the fast set), so each of those `TEST_CASE`s accounts for two
 ctest tests — plus **2 shell tests that are not Catch2 at all**,
 `clang_tidy_gate_probe` and `gate_lib_shell_test`, registered in the root
-`CMakeLists.txt` (they pin the clang-tidy gate and the hook filters, #171). Of the 738,
+`CMakeLists.txt` (they pin the clang-tidy gate and the hook filters, #171). Of the 746,
 **6 carry the
 Catch2 `[slow]` tag** — the CHPED and UC-CHPED benchmark solves, ~46s of
 aggregate (summed per-test) time, which `-j$(nproc)` compresses to a ~25s
 wall-clock full run. `tests/CMakeLists.txt` discovers them in a second
 `catch_discover_tests` call with `LABELS "slow"`, so:
 
-- `ctest -LE slow` — the other 738 tests, ~12s with `-j`. The fast inner loop; run it yourself before committing (the hook no longer does).
+- `ctest -LE slow` — the other 746 tests, ~12s with `-j`. The fast inner loop; run it yourself before committing (the hook no longer does).
 - `ctest` — everything. This is what **pre-push** and CI run.
 - `ctest -L timing` — 5 tests: `timing_structural_batch_deadline`, the three
   `timing_throughput_*` floors added for #125, and
@@ -332,7 +332,7 @@ agree:
 1. this section,
 2. the comment above `catch_discover_tests` in `tests/CMakeLists.txt`,
 3. the build section of `README.md`,
-4. the `.venv/bin/pytest` line in `README.md` for the Python side (1174 tests, 243
+4. the `.venv/bin/pytest` line in `README.md` for the Python side (1182 tests, 243
    of them binding tests, echoed in prose by `pyproject.toml` and
    `tests/python/conftest.py`),
 5. the `-LE slow` guidance and the ~25s/~490s figures in `docs/profiling.md`.
@@ -944,6 +944,19 @@ and **a non-default arm may never write a published comparison table**, which is
 why `first_non_default_search_flag` feeds both runners' `resolve_out_csv`. Every
 flag has a behavioural probe in `tests/test_bench_flags.cpp`; add one with the
 next flag, and check it fails when the apply step is neutered.
+
+Whether the engine reads a flag depends on the model too, so every flag belongs
+to a **family** (common, scalar, structural, neighbour; #198) and every runner
+declares the families its models can use: `minlplib` and `uc-chped` declare
+`kScalarRunnerSearchFlags`, a List runner the common, structural and — when it
+supplies the cost — neighbour families. A flag outside the declared set is
+refused by `validate_search_flags`, and the `search_config` cell and `--help`
+carry the declared families only, which keeps a scalar runner's cell
+byte-identical to its committed tables. `--neighbours K` carries only K; the
+runner hands its cost to `neighbours_argument`. `setcover` keeps its own parser
+(one invocation spans a Set and a Bool model, which no per-runner mask can
+describe) but uses the table's spellings and value rules for its three
+structural flags.
 
 Neither header has a CMake target — runners reach them through the
 `target_include_directories(<target> PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})` line

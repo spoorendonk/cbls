@@ -1727,8 +1727,8 @@ to expose to Python (#156).
 measured choice**, and nothing in this repo is derived from it: the two policies
 it feeds are opt-in and off by default. `benchmarks/setcover/ab_selection.sh`
 A/Bs the **policies** on the set-covering roster at that default; it takes no
-`--sample-size`, so sweeping the size itself means driving `cbls_setcover
---sample-size` directly.
+`--structural-sample-size`, so sweeping the size itself means driving
+`cbls_setcover --structural-sample-size` directly.
 
 ### Structure-only models: what the structural batch is and is not
 

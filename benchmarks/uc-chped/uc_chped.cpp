@@ -46,6 +46,12 @@
 
 namespace {
 
+// The search-flag families this runner's models can use (#198). Its models are
+// scalar -- no List or Set variable, so the engine resolves the structural
+// batch to probability 0 -- and a structural flag would be recorded and read by
+// nothing. validate_search_flags() refuses one.
+constexpr unsigned kSearchFlagFamilies = cbls::bench::kScalarRunnerSearchFlags;
+
 constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
 
 /// The tolerance `verify_uc_chped()` applies to its UC-semantic checks,
@@ -139,11 +145,12 @@ bool is_positive_finite(double v) {
 /// the exit code (tests/python/test_run_benchmark.py pins both halves).
 void check_numeric_flags(Args& a) {
     std::string flag_error;
-    if (!cbls::bench::validate_search_flags(a.search, a.time_limit_set, flag_error)) {
+    if (!cbls::bench::validate_search_flags(a.search, kSearchFlagFamilies, a.time_limit_set,
+                                            flag_error)) {
         std::fprintf(stderr, "%s\n", flag_error.c_str());
         std::exit(2);
     }
-    a.search_config = cbls::bench::search_config_string(a.search);
+    a.search_config = cbls::bench::search_config_string(a.search, kSearchFlagFamilies);
     // A NaN from parse_double fails this guard, as does a literal 0 or a
     // negative: solve() with a non-positive budget returns having searched
     // nothing, which would publish a full-looking table of empty results.
@@ -403,7 +410,7 @@ Args parse_args(int argc, char** argv) {
                 " [--feas-tol T] [--instance NAME ...] [--commit SHA] [--out CSV]"
                 " [--trace CSV]\n"
                 "       %s\n",
-                cbls::bench::search_flags_usage().c_str());
+                cbls::bench::search_flags_usage(kSearchFlagFamilies).c_str());
             std::exit(0);
         } else if (!s.empty() && s[0] == '-') {
             // A typo'd flag must not silently become the instance directory:

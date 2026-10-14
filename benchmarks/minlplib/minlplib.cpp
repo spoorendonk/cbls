@@ -32,6 +32,12 @@
 
 namespace {
 
+// The search-flag families this runner's models can use (#198). Its models are
+// scalar -- no List or Set variable, so the engine resolves the structural
+// batch to probability 0 -- and a structural flag would be recorded and read by
+// nothing. validate_search_flags() refuses one.
+constexpr unsigned kSearchFlagFamilies = cbls::bench::kScalarRunnerSearchFlags;
+
 struct Args {
     std::string inst_dir = "benchmarks/instances/minlplib";
     // 60s per instance. The previously published run used 5s, which is a stingy
@@ -76,11 +82,12 @@ using cbls::bench::parse_int64;
 /// is what decides the exit code.
 void check_flag_values(Args& a) {
     std::string flag_error;
-    if (!cbls::bench::validate_search_flags(a.search, a.time_limit_set, flag_error)) {
+    if (!cbls::bench::validate_search_flags(a.search, kSearchFlagFamilies, a.time_limit_set,
+                                            flag_error)) {
         std::fprintf(stderr, "%s\n", flag_error.c_str());
         std::exit(2);
     }
-    a.search_config = cbls::bench::search_config_string(a.search);
+    a.search_config = cbls::bench::search_config_string(a.search, kSearchFlagFamilies);
     if (a.search.no_time_limit) {
         // The wall-clock-free arm (#136): solve() disables its clock at
         // `time_limit <= 0`, which is what makes an iteration-budgeted run
@@ -239,7 +246,7 @@ Args parse_args(int argc, char** argv) {
                 " [--feas-tol T] [--instance NAME ...] [--commit SHA] [--out CSV]"
                 " [--trace CSV] [--solution-dir DIR]\n"
                 "       %s\n",
-                cbls::bench::search_flags_usage().c_str());
+                cbls::bench::search_flags_usage(kSearchFlagFamilies).c_str());
             std::exit(0);
         } else if (s.rfind("--", 0) == 0) {
             // A typo'd flag must not silently become the instance directory:

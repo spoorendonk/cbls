@@ -290,7 +290,7 @@ TEST_CASE("Bool encoding returns a verified cover on scpe1", "[setcover]") {
 
 // The structural-selection arm reaches the engine (#165).
 //
-// `cbls_setcover --selection` sets one `SearchConfig` field, and a flag whose
+// `cbls_setcover --structural-selection` sets one `SearchConfig` field, and a flag whose
 // field the engine ignores must not ship (the rule benchmarks/common's
 // search_config_flags.h states). The probe is behavioural rather than a read-back
 // of the config: same instance, same seed, same iteration budget, three policies,

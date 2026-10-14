@@ -17,7 +17,9 @@
 #include <cbls/inner_solver.h>
 #include <cbls/lns.h>
 #include <cbls/model.h>
+#include <cbls/move_generator.h>
 #include <cbls/search.h>
+#include <cmath>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -30,6 +32,14 @@ using cbls::TerminationReason;
 using cbls::bench::SearchFlags;
 
 namespace {
+
+// What minlplib and uc-chped declare, which is what every test of the original
+// nine flags runs under: their cell is pinned byte-for-byte by committed tables.
+constexpr unsigned kScalar = cbls::bench::kScalarRunnerSearchFlags;
+// What a List runner that supplies a cost declares (cbls_cvrp, #197).
+constexpr unsigned kStructural = cbls::bench::kCommonSearchFlags |
+                                 cbls::bench::kStructuralSearchFlags |
+                                 cbls::bench::kNeighbourSearchFlags;
 
 struct ParseOutcome {
     SearchFlags flags;
@@ -121,10 +131,73 @@ SearchResult probe(const std::vector<std::string>& args, void (*build)(Model&),
     const ParseOutcome parsed = parse(args);
     REQUIRE(parsed.unmatched.empty());
     std::string error;
-    REQUIRE(cbls::bench::validate_search_flags(parsed.flags, /*time_limit_set=*/false, error));
+    REQUIRE(
+        cbls::bench::validate_search_flags(parsed.flags, kScalar, /*time_limit_set=*/false, error));
     Model m;
     build(m);
     return run_arm(m, parsed.flags, batch_iterations);
+}
+
+/// A tiny capacitated routing model on Lists only -- three routes partitioning
+/// ten customers, at most four per route, minimising Euclidean route length
+/// from a depot at the origin. FJ has nothing to jump on it, so it is what the
+/// structural flags are read on (#198), and what cbls_cvrp's models look like.
+struct RoutingFixture {
+    static constexpr int kCustomers = 10;
+    std::vector<double> x;
+    std::vector<double> y;
+
+    RoutingFixture() {
+        for (int i = 0; i < kCustomers; ++i) {
+            // Two rings, so nearest neighbours are not simply index order.
+            const double r = (i % 2 == 0) ? 10.0 : 25.0;
+            const double a = 0.7 * i;
+            x.push_back(r * std::cos(a));
+            y.push_back(r * std::sin(a));
+        }
+    }
+    [[nodiscard]] double cost(int a, int b) const { return std::hypot(x[a] - x[b], y[a] - y[b]); }
+    [[nodiscard]] double depot(int e) const { return std::hypot(x[e], y[e]); }
+
+    void build(Model& m) const {
+        std::vector<int32_t> routes;
+        std::vector<int32_t> lengths;
+        for (int r = 0; r < 3; ++r) {
+            const int32_t route = m.list_var(kCustomers, 0, kCustomers, cbls::ListInit::Empty);
+            routes.push_back(route);
+            m.add_constraint(
+                m.sum({m.lambda_sum(route, [](int) { return 1.0; }), m.constant(-4.0)}));
+            lengths.push_back(m.pair_lambda_sum(
+                route, [this](int a, int b) { return cost(a, b); },
+                [this](int e) { return depot(e); }, [this](int e) { return depot(e); }));
+        }
+        m.add_list_partition(routes, cbls::Cover::Exact);
+        m.minimize(m.sum(lengths));
+        m.close();
+    }
+};
+
+/// The structural counterpart of probe(): validated under the List runner's
+/// families, with `--neighbours` resolved against the fixture's cost exactly as
+/// a runner would resolve it against its instance's.
+SearchResult structural_probe(const std::vector<std::string>& args) {
+    const ParseOutcome parsed = parse(args);
+    REQUIRE(parsed.unmatched.empty());
+    std::string error;
+    REQUIRE(cbls::bench::validate_search_flags(parsed.flags, kStructural, false, error));
+    const RoutingFixture fx;
+    Model m;
+    fx.build(m);
+    LNS lns(0.3);
+    SearchConfig cfg;
+    cfg.batch_iterations = 20;
+    cbls::bench::apply_search_flags(parsed.flags, cfg);
+    cfg.structural_neighbours = cbls::bench::neighbours_argument(
+        parsed.flags, RoutingFixture::kCustomers, [&fx](int a, int b) { return fx.cost(a, b); });
+    return cbls::solve(m, cbls::bench::time_limit_argument(parsed.flags, 0.0), /*seed=*/42,
+                       /*use_fj=*/true, /*hook=*/nullptr,
+                       cbls::bench::lns_argument(parsed.flags, lns),
+                       cbls::bench::lns_interval_argument(parsed.flags), nullptr, cfg);
 }
 
 }  // namespace
@@ -159,7 +232,8 @@ TEST_CASE("every search flag sets the field it claims", "[bench][flags]") {
                "--max-iterations", "1234", "--no-time-limit"});
     REQUIRE(parsed.unmatched.empty());
     std::string error;
-    REQUIRE(cbls::bench::validate_search_flags(parsed.flags, /*time_limit_set=*/false, error));
+    REQUIRE(
+        cbls::bench::validate_search_flags(parsed.flags, kScalar, /*time_limit_set=*/false, error));
     const SearchFlags& f = parsed.flags;
     REQUIRE_FALSE(f.float_hook);
     REQUIRE(f.lns);
@@ -222,7 +296,7 @@ TEST_CASE("an unrelated argument is left for the runner", "[bench][flags]") {
 }
 
 TEST_CASE("the search config cell is canonical and deterministic", "[bench][flags]") {
-    REQUIRE(cbls::bench::search_config_string(SearchFlags{}) ==
+    REQUIRE(cbls::bench::search_config_string(SearchFlags{}, kScalar) ==
             "float_hook=on;lns=on;lns_interval=3;compound_moves=on;novelty_prob=0.5;"
             "unproductive_iters=300;perturbation_period=100;max_iterations=0;time_limit=on");
 
@@ -231,7 +305,7 @@ TEST_CASE("the search config cell is canonical and deterministic", "[bench][flag
                "0.25", "--unproductive-iters", "0", "--perturbation-period", "9",
                "--max-iterations", "1234", "--no-time-limit"})
             .flags;
-    const std::string cell = cbls::bench::search_config_string(f);
+    const std::string cell = cbls::bench::search_config_string(f, kScalar);
     REQUIRE(cell ==
             "float_hook=off;lns=on;lns_interval=7;compound_moves=on;novelty_prob=0.25;"
             "unproductive_iters=0;perturbation_period=9;max_iterations=1234;time_limit=off");
@@ -244,7 +318,8 @@ TEST_CASE("the search config cell is canonical and deterministic", "[bench][flag
                 parse({"--max-iterations", "1234", "--no-time-limit", "--perturbation-period", "9",
                        "--unproductive-iters", "0", "--novelty-prob", "0.25", "--compound-moves",
                        "--lns-interval", "7", "--no-float-hook"})
-                    .flags) == cell);
+                    .flags,
+                kScalar) == cell);
 }
 
 TEST_CASE("one run cannot be recorded under two different cells", "[bench][flags]") {
@@ -256,32 +331,37 @@ TEST_CASE("one run cannot be recorded under two different cells", "[bench][flags
     // and use_fj rejections rest on.
     std::string error;
     REQUIRE_FALSE(cbls::bench::validate_search_flags(
-        parse({"--no-lns", "--lns-interval", "5"}).flags, false, error));
+        parse({"--no-lns", "--lns-interval", "5"}).flags, kScalar, false, error));
     REQUIRE(error.find("--lns-interval") != std::string::npos);
     REQUIRE_FALSE(cbls::bench::validate_search_flags(
-        parse({"--no-compound-moves", "--novelty-prob", "0.25"}).flags, false, error));
+        parse({"--no-compound-moves", "--novelty-prob", "0.25"}).flags, kScalar, false, error));
     REQUIRE(error.find("--novelty-prob") != std::string::npos);
 
     // Restating the default alongside the switch is not a no-effect flag; it is
     // a no-op, and nothing was asked for that the run does not do.
     REQUIRE(cbls::bench::validate_search_flags(parse({"--no-lns", "--lns-interval", "3"}).flags,
+                                               kScalar, false, error));
+    REQUIRE(cbls::bench::validate_search_flags(parse({"--novelty-prob", "0.5"}).flags, kScalar,
                                                false, error));
-    REQUIRE(
-        cbls::bench::validate_search_flags(parse({"--novelty-prob", "0.5"}).flags, false, error));
     // ...and each is fine in the combination the engine actually reads.
-    REQUIRE(cbls::bench::validate_search_flags(parse({"--lns-interval", "5"}).flags, false, error));
+    REQUIRE(cbls::bench::validate_search_flags(parse({"--lns-interval", "5"}).flags, kScalar, false,
+                                               error));
     REQUIRE(cbls::bench::validate_search_flags(
-        parse({"--compound-moves", "--novelty-prob", "0.25"}).flags, false, error));
+        parse({"--compound-moves", "--novelty-prob", "0.25"}).flags, kScalar, false, error));
 }
 
 TEST_CASE("the usage line documents exactly the recorded flags", "[bench][flags]") {
     // Both strings come from kSearchFlagSpecs, so this pins that they stay
-    // generated from it rather than hand-maintained in parallel.
-    const std::string usage = cbls::bench::search_flags_usage();
-    const std::string cell = cbls::bench::search_config_string(SearchFlags{});
-    for (const auto& spec : cbls::bench::kSearchFlagSpecs) {
-        REQUIRE(usage.find(spec.usage) != std::string::npos);
-        REQUIRE(cell.find(std::string(spec.key) + "=") != std::string::npos);
+    // generated from it rather than hand-maintained in parallel -- and that a
+    // runner's line and cell carry exactly its declared families (#198).
+    for (const unsigned families : {kScalar, kStructural}) {
+        const std::string usage = cbls::bench::search_flags_usage(families);
+        const std::string cell = cbls::bench::search_config_string(SearchFlags{}, families);
+        for (const auto& spec : cbls::bench::kSearchFlagSpecs) {
+            const bool declared = (spec.family & families) != 0;
+            REQUIRE((usage.find(spec.usage) != std::string::npos) == declared);
+            REQUIRE((cell.find(std::string(spec.key) + "=") != std::string::npos) == declared);
+        }
     }
 }
 
@@ -299,6 +379,10 @@ TEST_CASE("a non-default arm is named for the published-table guard", "[bench][f
         {"--perturbation-period", "7"},
         {"--max-iterations", "10"},
         {"--no-time-limit"},
+        {"--structural-prob", "1"},
+        {"--structural-selection", "violation_guided"},
+        {"--structural-sample-size", "4"},
+        {"--neighbours", "5"},
     };
     REQUIRE(arms.size() == cbls::bench::kSearchFlagCount);
     for (const auto& arm : arms) {
@@ -328,7 +412,8 @@ TEST_CASE("a non-default arm is named for the published-table guard", "[bench][f
 TEST_CASE("validation rejects values the engine cannot use", "[bench][flags]") {
     std::string error;
     auto rejected = [&error](const std::vector<std::string>& args, bool time_limit_set = false) {
-        return !cbls::bench::validate_search_flags(parse(args).flags, time_limit_set, error);
+        return !cbls::bench::validate_search_flags(parse(args).flags, kScalar, time_limit_set,
+                                                   error);
     };
 
     REQUIRE(rejected({"--lns-interval", "0"}));  // --no-lns is the one spelling for that arm
@@ -347,9 +432,9 @@ TEST_CASE("validation rejects values the engine cannot use", "[bench][flags]") {
     // ...and it contradicts an explicit wall clock.
     REQUIRE(rejected({"--no-time-limit", "--max-iterations", "10"}, /*time_limit_set=*/true));
 
-    REQUIRE(cbls::bench::validate_search_flags(SearchFlags{}, false, error));
+    REQUIRE(cbls::bench::validate_search_flags(SearchFlags{}, kScalar, false, error));
     REQUIRE(cbls::bench::validate_search_flags(
-        parse({"--no-time-limit", "--max-iterations", "10"}).flags, false, error));
+        parse({"--no-time-limit", "--max-iterations", "10"}).flags, kScalar, false, error));
 }
 
 TEST_CASE("a non-number double is rejected rather than defaulted", "[bench][flags]") {
@@ -361,7 +446,7 @@ TEST_CASE("a non-number double is rejected rather than defaulted", "[bench][flag
     const ParseOutcome parsed = parse({"--novelty-prob", "not-a-number"});
     REQUIRE(parsed.unmatched.empty());
     std::string error;
-    REQUIRE_FALSE(cbls::bench::validate_search_flags(parsed.flags, false, error));
+    REQUIRE_FALSE(cbls::bench::validate_search_flags(parsed.flags, kScalar, false, error));
     REQUIRE(error.find("--novelty-prob") != std::string::npos);
 }
 
@@ -371,7 +456,7 @@ TEST_CASE("the --unproductive-iters flag takes zero on purpose", "[bench][flags]
     // positivity guard every other integer flag has. Zero is its spelling.
     std::string error;
     const ParseOutcome parsed = parse({"--unproductive-iters", "0"});
-    REQUIRE(cbls::bench::validate_search_flags(parsed.flags, false, error));
+    REQUIRE(cbls::bench::validate_search_flags(parsed.flags, kScalar, false, error));
     SearchConfig cfg;
     cbls::bench::apply_search_flags(parsed.flags, cfg);
     REQUIRE(cfg.unproductive_iterations == 0);
@@ -387,7 +472,7 @@ TEST_CASE("a negative --unproductive-iters is the same run as zero, so it is ref
     std::string error;
     for (const char* value : {"-1", "-300"}) {
         const ParseOutcome parsed = parse({"--unproductive-iters", value});
-        REQUIRE_FALSE(cbls::bench::validate_search_flags(parsed.flags, false, error));
+        REQUIRE_FALSE(cbls::bench::validate_search_flags(parsed.flags, kScalar, false, error));
         REQUIRE(error.find("--unproductive-iters") != std::string::npos);
     }
 }
@@ -555,4 +640,177 @@ TEST_CASE("the --no-float-hook flag changes where a continuous run lands",
     REQUIRE(with_hook.objective != without_hook.objective);
     // Not merely different: the hook is what gets this model near its optimum.
     REQUIRE(with_hook.objective < without_hook.objective);
+}
+
+// ---------------------------------------------------------------------------
+// The structural flags and the per-runner mask (#198)
+// ---------------------------------------------------------------------------
+
+TEST_CASE("every structural flag sets the field it claims", "[bench][flags]") {
+    const ParseOutcome parsed =
+        parse({"--structural-prob", "0.75", "--structural-selection", "best_of_sample",
+               "--structural-sample-size", "3", "--neighbours", "4"});
+    REQUIRE(parsed.unmatched.empty());
+    std::string error;
+    REQUIRE(cbls::bench::validate_search_flags(parsed.flags, kStructural, false, error));
+    SearchConfig cfg;
+    cbls::bench::apply_search_flags(parsed.flags, cfg);
+    REQUIRE(cfg.structural_batch_probability == 0.75);
+    REQUIRE(cfg.structural_selection == cbls::StructuralSelection::BestOfSample);
+    REQUIRE(cfg.structural_sample_size == 3);
+    const RoutingFixture fx;
+    const auto list = cbls::bench::neighbours_argument(
+        parsed.flags, RoutingFixture::kCustomers, [&fx](int a, int b) { return fx.cost(a, b); });
+    REQUIRE(list != nullptr);
+    REQUIRE(list->of(0).size() == 4);
+    // Unflagged, the engine's defaults are untouched: automatic probability and
+    // no neighbour list.
+    const SearchFlags defaults;
+    SearchConfig untouched;
+    cbls::bench::apply_search_flags(defaults, untouched);
+    REQUIRE(untouched.structural_batch_probability == SearchConfig{}.structural_batch_probability);
+    REQUIRE(cbls::bench::neighbours_argument(defaults, 10, [](int, int) { return 0.0; }) ==
+            nullptr);
+}
+
+TEST_CASE("a List runner's cell records the structural arm and omits the scalar flags",
+          "[bench][flags]") {
+    REQUIRE(cbls::bench::search_config_string(SearchFlags{}, kStructural) ==
+            "lns=on;lns_interval=3;perturbation_period=100;max_iterations=0;time_limit=on;"
+            "structural_prob=auto;structural_selection=first_improving;"
+            "structural_sample_size=8;neighbours=off");
+    const SearchFlags f = parse({"--structural-prob", "1", "--structural-selection",
+                                 "violation_guided", "--neighbours", "20"})
+                              .flags;
+    REQUIRE(cbls::bench::search_config_string(f, kStructural) ==
+            "lns=on;lns_interval=3;perturbation_period=100;max_iterations=0;time_limit=on;"
+            "structural_prob=1;structural_selection=violation_guided;"
+            "structural_sample_size=8;neighbours=20");
+}
+
+TEST_CASE("a flag outside the runner's families is refused, not recorded", "[bench][flags]") {
+    std::string error;
+    // Structural flags on a scalar runner -- even restated at the default,
+    // which is still a flag that would be accepted and read by nothing.
+    for (const std::vector<std::string>& args :
+         std::vector<std::vector<std::string>>{{"--structural-prob", "1"},
+                                               {"--structural-selection", "first_improving"},
+                                               {"--structural-sample-size", "8"},
+                                               {"--neighbours", "5"}}) {
+        REQUIRE_FALSE(cbls::bench::validate_search_flags(parse(args).flags, kScalar, false, error));
+        REQUIRE(error.find(args.front()) != std::string::npos);
+    }
+    // Scalar-only flags on a List runner.
+    for (const std::vector<std::string>& args :
+         std::vector<std::vector<std::string>>{{"--no-float-hook"},
+                                               {"--compound-moves"},
+                                               {"--no-compound-moves"},
+                                               {"--novelty-prob", "0.5"},
+                                               {"--unproductive-iters", "300"}}) {
+        REQUIRE_FALSE(
+            cbls::bench::validate_search_flags(parse(args).flags, kStructural, false, error));
+        REQUIRE(error.find(args.front()) != std::string::npos);
+    }
+    // A List runner that supplies no cost does not declare the neighbour
+    // family, and the flag is refused rather than ignored.
+    const unsigned no_cost = kStructural & ~cbls::bench::kNeighbourSearchFlags;
+    REQUIRE_FALSE(cbls::bench::validate_search_flags(parse({"--neighbours", "5"}).flags, no_cost,
+                                                     false, error));
+    REQUIRE(error.find("--neighbours") != std::string::npos);
+    // The common flags are taken everywhere.
+    for (const unsigned families : {kScalar, kStructural, no_cost}) {
+        REQUIRE(cbls::bench::validate_search_flags(
+            parse({"--no-lns", "--perturbation-period", "7", "--max-iterations", "9"}).flags,
+            families, false, error));
+    }
+}
+
+TEST_CASE("structural flag values the engine cannot use are refused", "[bench][flags]") {
+    std::string error;
+    auto rejected = [&error](const std::vector<std::string>& args) {
+        return !cbls::bench::validate_search_flags(parse(args).flags, kStructural, false, error);
+    };
+    REQUIRE(rejected({"--structural-prob", "1.5"}));
+    REQUIRE(error.find("--structural-prob") != std::string::npos);
+    // "Automatic" is the default and is spelled by omitting the flag.
+    REQUIRE(rejected({"--structural-prob", "-1"}));
+    REQUIRE(rejected({"--structural-prob", "nope"}));
+    REQUIRE(
+        rejected({"--structural-selection", "best_of_sample", "--structural-sample-size", "0"}));
+    REQUIRE(rejected(
+        {"--structural-selection", "best_of_sample", "--structural-sample-size", "3000000000"}));
+    REQUIRE(rejected({"--neighbours", "0"}));
+    REQUIRE(error.find("--neighbours") != std::string::npos);
+    REQUIRE(rejected({"--neighbours", "-2"}));
+    // The no-effect pairs: the sample size is inert under first_improving, and
+    // at probability 0 no structural batch runs to read any of them.
+    REQUIRE(rejected({"--structural-sample-size", "4"}));
+    REQUIRE(error.find("--structural-sample-size") != std::string::npos);
+    REQUIRE(rejected({"--structural-prob", "0", "--neighbours", "5"}));
+    REQUIRE(rejected({"--structural-prob", "0", "--structural-selection", "violation_guided"}));
+    REQUIRE_FALSE(rejected({"--structural-prob", "0"}));
+    REQUIRE_FALSE(rejected({"--structural-prob", "0", "--structural-selection", "first_improving",
+                            "--structural-sample-size", "8"}));
+}
+
+TEST_CASE("the --structural-prob flag changes the batch mix", "[bench][flags][probe]") {
+    // On a List-only model the automatic setting is 1.0 (#201); an explicit 0.5
+    // is honoured, so half the batches become (empty) FJ batches.
+    const std::vector<std::string> budget = {"--no-lns", "--max-iterations", "200",
+                                             "--no-time-limit"};
+    std::vector<std::string> half = budget;
+    half.insert(half.end(), {"--structural-prob", "0.5"});
+    const SearchResult auto_arm = structural_probe(budget);
+    const SearchResult half_arm = structural_probe(half);
+    REQUIRE(auto_arm.counters.fj_batches == 0);
+    REQUIRE(half_arm.counters.fj_batches > 0);
+    REQUIRE(half_arm.counters.structural_batches > 0);
+}
+
+TEST_CASE("the --structural-selection flag changes how many candidates are scored",
+          "[bench][flags][probe]") {
+    const std::vector<std::string> budget = {"--no-lns", "--max-iterations", "50",
+                                             "--no-time-limit", "--structural-selection"};
+    std::vector<std::string> first = budget;
+    first.emplace_back("first_improving");
+    std::vector<std::string> best = budget;
+    best.emplace_back("best_of_sample");
+    const SearchResult first_arm = structural_probe(first);
+    const SearchResult best_arm = structural_probe(best);
+    REQUIRE(first_arm.counters.structural_moves_tried != best_arm.counters.structural_moves_tried);
+}
+
+TEST_CASE("the --structural-sample-size flag changes how many candidates are scored",
+          "[bench][flags][probe]") {
+    const std::vector<std::string> budget = {"--no-lns",
+                                             "--max-iterations",
+                                             "50",
+                                             "--no-time-limit",
+                                             "--structural-selection",
+                                             "best_of_sample",
+                                             "--structural-sample-size"};
+    std::vector<std::string> small = budget;
+    small.emplace_back("1");
+    std::vector<std::string> large = budget;
+    large.emplace_back("40");
+    const SearchResult small_arm = structural_probe(small);
+    const SearchResult large_arm = structural_probe(large);
+    REQUIRE(large_arm.counters.structural_moves_tried > small_arm.counters.structural_moves_tried);
+}
+
+TEST_CASE("the --neighbours flag changes the structural trajectory", "[bench][flags][probe]") {
+    // A neighbour list redirects the built-in generators' targets, so the same
+    // seed walks a different path. Read off the full set of observables a run
+    // reports; any one of them differing is a different run.
+    const std::vector<std::string> budget = {"--no-lns", "--max-iterations", "100",
+                                             "--no-time-limit"};
+    std::vector<std::string> near = budget;
+    near.insert(near.end(), {"--neighbours", "2"});
+    const SearchResult uniform = structural_probe(budget);
+    const SearchResult granular = structural_probe(near);
+    const bool differs =
+        uniform.objective != granular.objective ||
+        uniform.counters.structural_moves_tried != granular.counters.structural_moves_tried ||
+        uniform.counters.structural_moves_accepted != granular.counters.structural_moves_accepted;
+    REQUIRE(differs);
 }

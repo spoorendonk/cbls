@@ -155,8 +155,8 @@ SETCOVER_BAD_FLAGS = [
     ("--seeds", "2x"),
     ("--time", "60s"),
     ("--time", "nan"),
-    ("--struct-prob", "abc"),
-    ("--sample-size", "abc"),
+    ("--structural-prob", "abc"),
+    ("--structural-sample-size", "abc"),
 ]
 
 
@@ -174,7 +174,7 @@ def test_setcover_refuses_a_malformed_numeric_flag(flag: str, value: str) -> Non
 
 
 def test_setcover_refuses_an_unknown_selection() -> None:
-    """`--selection` is a word, not a number, so it has its own reject path.
+    """`--structural-selection` is a word, not a number, so it has its own reject path.
 
     Same failure shape as the numeric flags above, and the same reason it is
     pinned: a benchmark arm that silently fell back to the default policy would
@@ -183,7 +183,7 @@ def test_setcover_refuses_an_unknown_selection() -> None:
     if not SETCOVER_BINARY.exists():
         pytest.skip("cbls_setcover not built")
     result = subprocess.run(
-        [str(SETCOVER_BINARY), "--selection", "bogus"],
+        [str(SETCOVER_BINARY), "--structural-selection", "bogus"],
         capture_output=True,
         text=True,
         timeout=60,
@@ -322,6 +322,37 @@ def test_uc_chped_rejects_a_clock_free_run_with_no_iteration_budget(tmp_path: Pa
     assert result.returncode == 2, result.stdout
     assert "--max-iterations" in result.stderr, result.stderr
     assert not (tmp_path / "o.csv").exists()
+
+
+# Every flag of the shared table's structural families (#198). The scalar
+# runners' models have no List or Set, so the engine resolves the structural
+# batch to probability 0 and each of these would be recorded and read by
+# nothing -- refused instead, even restated at its default.
+STRUCTURAL_SEARCH_FLAGS = [
+    ["--structural-prob", "1"],
+    ["--structural-selection", "first_improving"],
+    ["--structural-sample-size", "8"],
+    ["--neighbours", "5"],
+]
+
+
+@pytest.mark.parametrize("flag", STRUCTURAL_SEARCH_FLAGS)
+def test_uc_chped_refuses_a_structural_search_flag(flag: list[str], tmp_path: Path) -> None:
+    if not UC_CHPED_BINARY.exists():
+        pytest.skip("cbls_uc_chped not built")
+    inst_dir = _uc_chped_scratch(tmp_path)
+    out = tmp_path / "o.csv"
+
+    result = subprocess.run(
+        [str(UC_CHPED_BINARY), str(inst_dir), "--out", str(out), *flag],
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+
+    assert result.returncode == 2, result.stdout
+    assert f"{flag[0]} is a " in result.stderr, result.stderr
+    assert not out.exists()
 
 
 def test_uc_chped_records_the_arm_on_every_measured_row(tmp_path: Path) -> None:
@@ -684,6 +715,20 @@ def test_minlplib_rejects_a_bad_search_flag_value(bad: list[str], tmp_path: Path
     assert not out.exists()
 
 
+@pytest.mark.parametrize("flag", STRUCTURAL_SEARCH_FLAGS)
+def test_minlplib_refuses_a_structural_search_flag(flag: list[str], tmp_path: Path) -> None:
+    if not MINLPLIB_BINARY.exists():
+        pytest.skip("cbls_minlplib not built")
+    inst_dir = _minlplib_scratch(tmp_path)
+    out = tmp_path / "scratch.csv"
+
+    result = _run_minlplib(str(inst_dir), "--out", str(out), *flag)
+
+    assert result.returncode == 2, result.stdout
+    assert f"{flag[0]} is a " in result.stderr, result.stderr
+    assert not out.exists()
+
+
 def test_minlplib_records_the_arm_on_an_early_exit_row(tmp_path: Path) -> None:
     if not MINLPLIB_BINARY.exists():
         pytest.skip("cbls_minlplib not built")
@@ -769,6 +814,9 @@ def test_minlplib_help_lists_the_search_flags() -> None:
         "--compound-moves",
     ):
         assert flag in result.stdout, flag
+    # ...and none it would refuse (#198).
+    for refused in STRUCTURAL_SEARCH_FLAGS:
+        assert refused[0] not in result.stdout, refused[0]
 
 
 @pytest.mark.parametrize(
