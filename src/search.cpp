@@ -363,7 +363,9 @@ constexpr int kUnproductiveArmDivisor = 20;
 //    open on #211 pending a measurement.
 double objective_bound_below(double obj, bool integral) {
     if (integral) {
-        return obj - 1.0;
+        // nextafter keeps the bound strictly below obj past 2^53, where obj - 1
+        // rounds back to obj.
+        return std::min(obj - 1.0, std::nextafter(obj, -std::numeric_limits<double>::infinity()));
     }
     return obj - (1e-3 * (std::abs(obj) + 1.0));
 }

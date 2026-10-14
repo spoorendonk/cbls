@@ -1254,8 +1254,8 @@ iteration, whichever is larger) — see
 [bound 1 of the wall-clock budget](#wall-clock-budget).
 
 `apply_jump` samples up to `sample_size` **distinct** variables from the scan
-set `Q` (best-of-N: `sample_size_general = 3` general, `sample_size_linear = 5`
-linear phase), refreshes any stale `JumpTable` entries via `compute_var_jump`,
+set `Q` (best-of-N: `sample_size_general = 5` general (3 until #211),
+`sample_size_linear = 5` linear phase), refreshes any stale `JumpTable` entries via `compute_var_jump`,
 removes non-improving vars from `Q` permanently, and commits the best improving
 jump via `update_var`. A removed var does not count toward `sample_size`, and
 there is no draw cap: `apply_jump` returns false — the local minimum that
@@ -3506,12 +3506,13 @@ Four details carry the implementation:
 - **Infinite contributions are counted, not summed.** A row where exactly one
   term is unbounded still bounds that term — the rest of the row is finite. This
   is the case that matters: it is what finitizes a genuinely free column.
-- **Derived bounds are relaxed outward** by `max(1e-9, 1e-12·|b|)` before being
-  applied, to absorb rounding in the activity sums. Integral columns round
-  inward *after* that relaxation. The margin is scaled to the derived bound, not
-  to the activity it came from, so it is a practical guard rather than a proof:
-  a row summing ~1e5 terms of magnitude ~1e9 accumulates more error than it
-  absorbs. No instance on the MIPLIB roster has reached that regime.
+- **Derived bounds are relaxed outward** by the larger of `max(1e-9, 1e-12·|b|)`
+  and a rounding bound scaled to the ACTIVITY the bound came from,
+  `(nnz + 3)·DBL_EPSILON·(|row bound| + Σ|contributions|)/|coef|`, before being
+  applied. Integral columns round inward *after* that relaxation. Until #211 the
+  margin was the bound-scaled term alone, and a slack of 3 left over from
+  activities of ~1e8 floored to 2, cutting off a feasible point
+  (`tests/test_bound_propagation.cpp` carries the instance).
 - **`1e20` and beyond is "no bound"** (the MPS/CPLEX/SCIP convention), read
   through `is_unbounded_below`/`is_unbounded_above`.
 - **Fixed-point iteration is capped** (`max_passes`, default 10) and each pass

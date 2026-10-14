@@ -707,11 +707,11 @@ double local_derivative(const ExprNode& node, int child_idx, const Model& model)
             return 0.0;  // non-differentiable
 
         case NodeOp::Lt:
-            // d/d(child0) of (child0 - child1 + kEps) = 1, d/d(child1) = -1
+            // d/d(child0) of (child0 - child1 + margin) = 1, d/d(child1) = -1
             return child_idx == 0 ? 1.0 : -1.0;
 
         case NodeOp::Gt:
-            // d/d(child0) of (child1 - child0 + kEps) = -1, d/d(child1) = 1
+            // d/d(child0) of (child1 - child0 + margin) = -1, d/d(child1) = 1
             return child_idx == 0 ? -1.0 : 1.0;
 
         case NodeOp::Custom: {
