@@ -193,6 +193,27 @@ def test_setcover_refuses_an_unknown_selection() -> None:
     assert "unknown selection 'bogus'" in result.stderr, result.stderr
 
 
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--structural-prob", "0", "--structural-selection", "violation_guided"],
+        ["--structural-prob", "-0", "--structural-selection", "best_of_sample"],
+        ["--structural-sample-size", "4"],  # inert under first_improving
+    ],
+)
+def test_setcover_refuses_a_structural_flag_read_by_nothing(args: list[str]) -> None:
+    """The shared table's no-effect rules, which setcover takes with its spellings
+    (#198): a row must not record a policy no structural batch ever ran."""
+    if not SETCOVER_BINARY.exists():
+        pytest.skip("cbls_setcover not built")
+    result = subprocess.run(
+        [str(SETCOVER_BINARY), *args], capture_output=True, text=True, timeout=60
+    )
+
+    assert 0 < result.returncode < 128, result.stderr
+    assert "read by nothing" in result.stderr or "no effect" in result.stderr, result.stderr
+
+
 # The uc-chped runner writes a published results table, so its guards are the
 # thing most worth pinning: a cold review found they tested whether `--out` was
 # OMITTED rather than which file it named, which meant the command the README

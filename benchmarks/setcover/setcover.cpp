@@ -220,6 +220,33 @@ void parse_encoding_flag(FlagValues& v, Options& opt) {
     }
 }
 
+/// The structural flags' cross-flag rules, taken from the shared table
+/// (benchmarks/common/search_config_flags.h): a combination in which a typed
+/// flag is read by nothing is refused, so a row never records an arm that did
+/// not run. Checked after the loop because the flags may come in any order.
+bool structural_arm_is_read(const Options& opt) {
+    // The shared table's no-effect rule: first_improving scores exactly one
+    // sample, so a sample size other than the engine's would be recorded on
+    // nothing the run read.
+    if (opt.selection == cbls::StructuralSelection::FirstImprovingSample && opt.sample_size > 0 &&
+        opt.sample_size != cbls::SearchConfig{}.structural_sample_size) {
+        fprintf(stderr,
+                "--structural-sample-size has no effect under --structural-selection "
+                "first_improving\n");
+        return false;
+    }
+    // ...and at an explicit probability of 0 no structural batch runs, so the
+    // policy and the sample size are read by nothing.
+    if (opt.struct_prob == 0.0 &&
+        (opt.selection != cbls::StructuralSelection::FirstImprovingSample || opt.sample_size > 0)) {
+        fprintf(stderr,
+                "--structural-prob 0 runs no structural batch, so --structural-selection and "
+                "--structural-sample-size are read by nothing\n");
+        return false;
+    }
+    return true;
+}
+
 Options parse_args(int argc, char** argv, bool* ok) {
     Options opt;
     FlagValues v{argc, argv, 0, true};
@@ -236,7 +263,8 @@ Options parse_args(int argc, char** argv, bool* ok) {
         } else if (arg == "--seed") {
             opt.first_seed = v.integer("--seed", "seed");
         } else if (arg == "--structural-prob") {
-            opt.struct_prob = v.number("--structural-prob", "probability");
+            // `+ 0.0` folds -0 onto 0, so one arm has one recorded value.
+            opt.struct_prob = v.number("--structural-prob", "probability") + 0.0;
             // The shared table's rule: "automatic" is the default and is
             // spelled by omitting the flag.
             if (v.ok && (opt.struct_prob < 0.0 || opt.struct_prob > 1.0)) {
@@ -261,14 +289,7 @@ Options parse_args(int argc, char** argv, bool* ok) {
             break;
         }
     }
-    // The shared table's no-effect rule: first_improving scores exactly one
-    // sample, so a sample size other than the engine's would be recorded on
-    // nothing the run read.
-    if (v.ok && opt.selection == cbls::StructuralSelection::FirstImprovingSample &&
-        opt.sample_size > 0 && opt.sample_size != cbls::SearchConfig{}.structural_sample_size) {
-        fprintf(stderr,
-                "--structural-sample-size has no effect under --structural-selection "
-                "first_improving\n");
+    if (v.ok && !structural_arm_is_read(opt)) {
         v.ok = false;
     }
     *ok = v.ok;

@@ -192,6 +192,7 @@ SearchResult structural_probe(const std::vector<std::string>& args) {
     SearchConfig cfg;
     cfg.batch_iterations = 20;
     cbls::bench::apply_search_flags(parsed.flags, cfg);
+    REQUIRE(cbls::bench::validate_neighbours(parsed.flags, RoutingFixture::kCustomers, error));
     cfg.structural_neighbours = cbls::bench::neighbours_argument(
         parsed.flags, RoutingFixture::kCustomers, [&fx](int a, int b) { return fx.cost(a, b); });
     return cbls::solve(m, cbls::bench::time_limit_argument(parsed.flags, 0.0), /*seed=*/42,
@@ -749,6 +750,18 @@ TEST_CASE("structural flag values the engine cannot use are refused", "[bench][f
     REQUIRE(rejected({"--structural-prob", "0", "--neighbours", "5"}));
     REQUIRE(rejected({"--structural-prob", "0", "--structural-selection", "violation_guided"}));
     REQUIRE_FALSE(rejected({"--structural-prob", "0"}));
+    // -0 is the 0 arm, and must be recorded as it: one run, one cell.
+    REQUIRE(
+        cbls::bench::search_config_string(parse({"--structural-prob", "-0"}).flags, kStructural) ==
+        cbls::bench::search_config_string(parse({"--structural-prob", "0"}).flags, kStructural));
+    REQUIRE(cbls::bench::search_config_string(parse({"--novelty-prob", "-0"}).flags, kScalar) ==
+            cbls::bench::search_config_string(parse({"--novelty-prob", "0"}).flags, kScalar));
+    // K past the instance's other elements is clamped by nearest_neighbours,
+    // so the runner refuses it against its universe.
+    REQUIRE(cbls::bench::validate_neighbours(parse({"--neighbours", "9"}).flags, 10, error));
+    REQUIRE_FALSE(cbls::bench::validate_neighbours(parse({"--neighbours", "10"}).flags, 10, error));
+    REQUIRE(error.find("--neighbours") != std::string::npos);
+    REQUIRE(cbls::bench::validate_neighbours(SearchFlags{}, 1, error));
     REQUIRE_FALSE(rejected({"--structural-prob", "0", "--structural-selection", "first_improving",
                             "--structural-sample-size", "8"}));
 }

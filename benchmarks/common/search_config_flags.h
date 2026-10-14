@@ -209,7 +209,9 @@ inline bool match_search_flag(ArgCursor& c, const std::string& s, SearchFlags& f
         flag = f.compound_moves ? "--compound-moves" : "--no-compound-moves";
         family = kScalarSearchFlags;
     } else if (c.value_flag("--novelty-prob", v)) {
-        f.novelty_prob = parse_double("--novelty-prob", v);
+        // `+ 0.0` folds a typed -0 onto 0: the same run must not be recorded
+        // under two cells (`novelty_prob=-0` and `novelty_prob=0`).
+        f.novelty_prob = parse_double("--novelty-prob", v) + 0.0;
         flag = "--novelty-prob";
         family = kScalarSearchFlags;
     } else if (c.value_flag("--unproductive-iters", v)) {
@@ -229,7 +231,8 @@ inline bool match_search_flag(ArgCursor& c, const std::string& s, SearchFlags& f
         // Out of [0, 1] -- a negative included, since "automatic" is spelled by
         // omitting the flag -- becomes NaN, the value validation refuses. A
         // NaN from a non-number already is one.
-        const double p = parse_double("--structural-prob", v);
+        // `+ 0.0` folds a typed -0 onto 0, as for --novelty-prob.
+        const double p = parse_double("--structural-prob", v) + 0.0;
         f.structural_prob = p >= 0.0 && p <= 1.0 ? p : std::numeric_limits<double>::quiet_NaN();
         flag = "--structural-prob";
         family = kStructuralSearchFlags;
@@ -556,6 +559,19 @@ inline void apply_search_flags(const SearchFlags& f, SearchConfig& cfg) {
     cfg.structural_batch_probability = f.structural_prob;
     cfg.structural_selection = f.structural_selection;
     cfg.structural_sample_size = static_cast<int>(f.structural_sample_size);
+}
+
+/// The neighbour flag's check against the instance, which only the runner can
+/// make: `nearest_neighbours` clamps K to `universe - 1`, so every K from there
+/// up is one run under several cells. Call it before neighbours_argument().
+inline bool validate_neighbours(const SearchFlags& f, int universe, std::string& error) {
+    if (f.neighbours > 0 && f.neighbours > static_cast<int64_t>(universe) - 1) {
+        error = "--neighbours " + std::to_string(f.neighbours) + " exceeds the " +
+                std::to_string(universe > 0 ? universe - 1 : 0) +
+                " other elements this instance has (a larger K is the same run)";
+        return false;
+    }
+    return true;
 }
 
 /// The K-nearest neighbour list `--neighbours K` asks for, ranked by the
