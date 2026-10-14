@@ -113,6 +113,10 @@ strict = true
 python_version = "3.12"
 warn_return_any = true
 warn_unused_configs = true
+# The wcp pre-commit runs `mypy .`, which walks the tree rather than the tracked
+# file list and so reached the vendored Python under build/_deps (Catch2's and
+# nlohmann/json's scripts: 366 errors, none of them this repository's code).
+exclude = ['^build/']
 
 # `data` is imported by bare module name because reference_solve.py is run from
 # inside its own directory (`cd benchmarks/chped && python reference_solve.py`),

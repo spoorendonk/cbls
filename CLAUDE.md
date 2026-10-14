@@ -1,4 +1,12 @@
-# CLAUDE.md
+<!-- wcp: CLAUDE.md base=32c47ef20d45 type=cpp-python -->
+<!-- wcp-declined: e9feadcddcb5 Testing (GoogleTest) -->
+<!-- wcp-declined: cc3df5ee540d Testing (pytest) -->
+<!-- wcp-declined: 004504610dd6 Dependencies -->
+<!-- wcp-declined: c4fc130d1235 Ownership and Lifetime -->
+<!-- wcp-declined: cf8d0fc1773f Type Conversions -->
+<!-- wcp-declined: 7e7de94f1273 Testing Bindings -->
+<!-- wcp-declined: 9070a09f6181 LSP -->
+# Project: cbls
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
@@ -55,12 +63,14 @@ Install `clangd-lsp@claude-plugins-official` plus `clangd` itself (`apt install 
 
 ### Where that standard is actually enforced
 
-`pre-push` runs `ruff check`, `ruff format --check` and `mypy --strict` over
-**every tracked `.py` in the repository** as a **hard block** — the same standing
-as clang-tidy, and for the same reason. There is no exclusion: `PY_GATE_EXCLUDE`
-in `.githooks/pre-push` is empty, and it is the one string to edit if a tree ever
-genuinely cannot be clean — with the reason written there, never widened in
-silence. Because they block, `ruff` and `mypy` are **pinned exactly** in
+`pre-commit` runs `ruff format --check .`, `ruff check .` and `mypy .` (strict,
+from `pyproject.toml`) over **the whole tree** as a **hard block**. There is no
+exclusion beyond `[tool.mypy] exclude = ['^build/']`, which keeps mypy out of the
+vendored Python FetchContent unpacks under `build/_deps`; a tree that genuinely
+cannot be clean gets its own entry there, with the reason written beside it,
+never a silent widening. (Until the move to wcp's hooks this gate lived in
+`pre-push`, over every tracked `.py`, with a `PY_GATE_EXCLUDE` that was empty.)
+Because they block, `ruff` and `mypy` are **pinned exactly** in
 `pyproject.toml`, on the same argument the clang tools are: a floating version
 turns "these files are at zero" into "at zero on whichever version this checkout
 resolved".
@@ -87,10 +97,10 @@ from that episode:
   for the vendored readers. A third waiver needs the same standard.
 
 Both escape routes that let the five binding-test modules rot are closed, and
-both mattered: pre-commit lints only **staged** files — and its ruff step
-auto-fixes rather than blocks, so a non-fixable finding like `E741` survives
-staging however often the file is edited — while pre-push's other Python steps
-see only the pushed file list and merely warn. That is how 139 `mypy --strict`
+both mattered: the pre-commit of the time linted only **staged** files — and its
+ruff step auto-fixed rather than blocked, so a non-fixable finding like `E741`
+survived staging however often the file was edited — while pre-push's other
+Python steps saw only the pushed file list and merely warned. That is how 139 `mypy --strict`
 errors and 9 ruff errors accumulated with every gate green throughout (#154).
 
 ### LSP
@@ -155,7 +165,7 @@ C++ tests use **Catch2** (not GoogleTest): files in `tests/`, registered in `tes
 plan (non-trivial) → implement → test → /review → push to main
 ```
 
-Run tests locally before considering work done — don't skip the suite even on changes that look trivial. The pre-push hook is the final gate for build and tests; review (`/review`, or the cold reviewer in a team run) is a discipline nothing enforces, so it is on you to actually get it done.
+Run tests locally before considering work done — don't skip the suite even on changes that look trivial. The pre-push hook is the final gate for build and tests, and it refuses a push whose tip carries no review receipt (**Self-Review**). The receipt records only that a review happened; doing the review (`/review`, or the cold reviewer in a team run) is still on you.
 
 ## Git Hooks
 
@@ -163,9 +173,13 @@ The hooks live in **`.githooks/`, tracked in this repo** — that directory is t
 
 `core.hooksPath` is shared across every worktree of a checkout, but `.githooks/` is resolved from the working tree — so a branch that does not carry the directory runs **no hooks at all**, silently. Merge main into any long-lived branch before relying on the gates.
 
-- `pre-commit` — auto-formats staged C++/Python/shell (clang-format, ruff, shfmt), applies safe clang-tidy fixes, re-stages, then runs the affected test suite. The test step is a hard block; the ruff step auto-fixes and does **not** block, so a non-fixable finding commits and is caught at push instead. The clang tools come from `.venv/bin` (resolved by `.githooks/resolve-venv.sh`); if neither the venv nor `PATH` has them it says so rather than skipping quietly.
-- `commit-msg` — Conventional Commits format.
-- `pre-push` — the clean build + **full** suite from `## Build & Test` below, then **clang-tidy as a hard block** — with **the Python lint/type gate, also a hard block, running first** because it needs nothing the build produces (scope and rationale in **Where that standard is actually enforced** above, the one place they are stated) — and ruff-complexity/shellcheck/mypy over the pushed file list remaining warnings. Both the ```build and ```test fences must resolve or the push is blocked; there is no auto-detect fallback, because guessing a build would gate a different one than the documented build.
+The three hooks are wcp's (see **Hooks Are Files In This Repository**); `gate-lib.sh`, `tidy-probe.sh`, `tidy-probe/` and `tests/` beside them are this project's own and are still exercised by ctest (`gate_lib_shell_test`, `clang_tidy_gate_probe`); `resolve-venv.sh` was used only by the old hooks and nothing calls it now.
+
+- `pre-commit` — **checks, never rewrites**: `ruff format --check .`, `ruff check .` and `mypy .` (strict, from `pyproject.toml`) over the whole tree, each through `uv run`, and `clang-format --dry-run -Werror` over every tracked C/C++ file, preferring the pinned tools in `.venv/bin`. Any finding blocks the commit; a tool that cannot run is reported on stderr and skipped. It runs **no tests**. `.venv/` here is a pip venv with no `uv.lock`, so `uv run` would lock and sync it (writing `uv.lock` and rebuilding `cbls` into the venv) — commit with `UV_NO_SYNC=1` set to have it use the venv as it is.
+- `commit-msg` — Conventional Commits, subject at most 72 characters. Unlike the hook it replaced, it does **not** pass `fixup!`/`squash!`/`amend!` subjects, so `git commit --fixup` is refused.
+- `pre-push` — refuses a merge commit pushed to `main` and a tip without its review receipt, then runs the ```clean, ```build and ```test fences from `## Build & Test` below as a local CI in a fresh worktree outside the checkout (skipped for a documentation-only push), each step timed. `git config hooks.localCiCpus 0-3` pins it to fewer CPUs.
+
+**What the hooks before wcp's enforced and these do not** (replaced 2026-10-14; the old scripts are in git history): the `ctest -LE slow` / pytest run at commit; auto-formatting and safe clang-tidy fixes at commit; at push, the **clang-tidy hard block** over the changed files plus a canary per config directory, `tidy-probe.sh` whenever a `.clang-tidy`, a `CMakeLists.txt` or the probe changed, the **block on any first-party compiler warning** in the gated build's log (configured with `CBLS_GATE_PROBE_IN_ALL=1` as its control), the advisory ruff-complexity/shellcheck/mypy pass, and the **Python gate over every tracked `.py`** (now `pre-commit`'s, over the tree). Until those are restored — a ```lint fence under `## Build & Test` is where wcp's pre-push would run them — the clang-tidy and compiler-warning policy below is **policy you check by hand** before pushing (`.venv/bin/clang-tidy -p build <files>`, and the build log), not something a hook enforces.
 
   clang-tidy blocks because the tree is held at **zero** warnings. Getting there
   took a **ratchet** — a list in `.clang-tidy` of checks disabled by name, each
@@ -264,7 +278,7 @@ The hooks live in **`.githooks/`, tracked in this repo** — that directory is t
   follows the local GCC version, so an upgrade can block a push; it cannot
   break a user's build, which is what `-Werror` would.
 
-Nothing enforces `/review` at push time, by design — a gate keyed on gitignored local tooling can only be satisfied in whichever checkout happens to carry it, and passes silently everywhere else. Review is still expected on every change (see **Agent Self-Review**); getting it done is on you.
+`pre-push` refuses a push whose tip has no review receipt, `refs/reviews/<sha>`, written by a line of plain git (**Self-Review**), so the check works in every checkout. It proves a review was recorded, not that it was done well; see **Agent Self-Review**.
 
 Gating lives in git hooks only — `.claude/settings.json` carries no `hooks` block, and none should be added. A `PostToolUse` formatter cannot see which file was edited, so it silently formats nothing; formatting belongs at commit time. Don't hand-tune formatting.
 
@@ -289,7 +303,7 @@ aggregate (summed per-test) time, which `-j$(nproc)` compresses to a ~25s
 wall-clock full run. `tests/CMakeLists.txt` discovers them in a second
 `catch_discover_tests` call with `LABELS "slow"`, so:
 
-- `ctest -LE slow` — the other 721 tests, ~12s with `-j`. This is what **pre-commit** runs.
+- `ctest -LE slow` — the other 721 tests, ~12s with `-j`. The fast inner loop; run it yourself before committing (the hook no longer does).
 - `ctest` — everything. This is what **pre-push** and CI run.
 - `ctest -L timing` — 5 tests: `timing_structural_batch_deadline`, the three
   `timing_throughput_*` floors added for #125, and
@@ -307,30 +321,29 @@ second spec is `[slow]~[timing]`; retagging one `[slow]` *instead of* `[timing]`
 would get it discovered *and* hand-registered, i.e. run twice (adding `[slow]`
 alongside `[timing]` changes nothing) —
 and are given `LABELS "timing;slow"` by hand so their wall-clock seconds stay
-out of the pre-commit set. Derive each count with the matching command rather
+out of the fast set. Derive each count with the matching command rather
 than by arithmetic: `ctest -N`, `ctest -N -L slow`, `ctest -N -LE slow`,
 `ctest -N -L timing`.
 
-These counts are hard-coded in **seven** places and nothing checks that they
+These counts are hard-coded in **six** places and nothing checks that they
 agree:
 
 1. this section,
 2. the comment above `catch_discover_tests` in `tests/CMakeLists.txt`,
 3. the build section of `README.md`,
-4. the comment above the `ctest` call in `.githooks/pre-commit`,
-5. the `.venv/bin/pytest` line in `README.md` for the Python side (1166 tests, 235
+4. the `.venv/bin/pytest` line in `README.md` for the Python side (1166 tests, 235
    of them binding tests, echoed in prose by `pyproject.toml` and
    `tests/python/conftest.py`),
-6. the `-LE slow` guidance and the ~25s/~490s figures in `docs/profiling.md`.
+5. the `-LE slow` guidance and the ~25s/~490s figures in `docs/profiling.md`.
    Note its "302/302 green" sanitizer line is a **dated record of one run at a
    named commit**, not a current count — it says so inline. Leave it alone
    apart from the parenthetical restating the current fast-set size.
-7. the binding count in **`## Build & Test`** below, in the paragraph explaining
+6. the binding count in **`## Build & Test`** below, in the paragraph explaining
    why the gated build turns `CBLS_BUILD_PYTHON` on ("235 binding tests silently
    unrun"). It is in this file, but not in this section, so a search that stops
    at the enumeration above misses it.
 
-Update all seven in the same commit as any change to the test roster, and
+Update all six in the same commit as any change to the test roster, and
 re-derive every number from `ctest -N` / `pytest --collect-only` rather than
 incrementing the one you find.
 
@@ -363,6 +376,36 @@ After a successful push:
 - **Close any gh issue the work resolved**: `gh issue close <num> -c "<one-line note>"`. Do this for every issue covered by the push.
 - **Delete the feature branch** if one was used: `git branch -d <branch>` locally, plus `git push origin --delete <branch>` if it was pushed. Don't leave stale branches behind.
 
+## Hooks Are Files In This Repository
+
+The git hooks live in `.githooks/` as ordinary shell scripts, committed like any other file. `wcp init` copies them there and points `core.hooksPath` at them; wcp installs no Claude Code hooks at all. The gate is those files and nothing else, so a clone without wcp installed is still gated — including the review receipt, which is a line of plain git the Self-Review section documents rather than anything wcp runs.
+
+- **They are yours to read, and yours to edit.** Each hook carries a `# wcp:` line recording the digest of the bytes wcp wrote. That is what lets `wcp doctor` tell an edit you made from a version wcp has moved past: an untouched hook is refreshed silently, an edited one is left alone, and one that moved on both sides is reported rather than overwritten. Edit them when the project needs something different — and say so upstream if the default was wrong for everyone.
+- **A clone is not gated until someone runs `wcp init` in it.** git clones neither a hooks directory nor local config, so the files arriving with the clone is not the same as git running them. `wcp doctor` reports an unset `core.hooksPath` as an error for exactly this reason.
+- **They call no wcp.** A hook that shelled out to a missing tool would exit 127, which git reads as a refusal — so a machine without wcp could not commit, and could not commit the fix either. What the hooks do call is the project's own toolchain, and there they fail open and say so on stderr.
+- **Never use `git push --no-verify` or `git commit --no-verify`** unless explicitly asked. A failing hook is a signal — fix the root cause, or change the hook deliberately and commit that.
+
+## This Document Carries A Provenance Line
+
+The comment at the top of this file is wcp's record of the bytes it wrote, in the same scheme the hooks use. `wcp doctor` reads it to tell an edit you made from a version wcp has moved past, and it is where this project's type is recorded — there is no `.wcp/` directory and no config file beside it.
+
+**The prose is yours.** wcp writes this document once and never rewrites it unasked; edit it freely. When wcp adds or changes a section you have not edited, `wcp doctor` names it and `wcp init --interactive` offers it, one section at a time; answering `n` declines that version for good. Leave the top line in place, and the tooling stays able to tell your changes from its own.
+
+## Running wcp
+
+wcp is a command-line tool installed once per machine, outside any repository. The hooks never call it, so a machine without it is still gated.
+
+```sh
+uv tool install git+https://github.com/spoorendonk/wcp   # once per machine; @vX.Y.Z for a release
+uv tool upgrade wcp                                       # to update an install without a tag
+uv tool install --force git+https://github.com/spoorendonk/wcp@vX.Y.Z   # to move a tagged one
+wcp --help                                                # the commands; `wcp <command> --help` for each one
+```
+
+- **Run `wcp doctor`** after pulling, after updating wcp, and before editing the hooks or this file. It changes nothing, and every finding names the command that fixes it. It exits 1 only when the gate does not work, e.g. `core.hooksPath` is unset, which is how every fresh clone starts until someone runs `wcp init` in it.
+- **Files wcp wrote carry a `wcp:` provenance line**: `# wcp:` in each hook, and the comment at the top of this file. Edit the files when the project needs to, but leave that line in place. It is how `wcp doctor` tells your edits apart from a newer wcp version.
+- **If `wcp` is not on PATH**, say so rather than installing it unasked. Installing it is a machine-wide change.
+
 ## Issue Tracking
 
 GitHub Issues is the tracker. Use the `gh` CLI.
@@ -389,6 +432,69 @@ If a benchmark is ever retired, it is a tracker job as well as a tree job:
   `gh api --method PATCH /repos/:owner/:repo/issues/<num> -f state=closed -f state_reason=not_planned`.
 - The epic itself closes as **completed** — retiring it was the job.
 - An issue that is still valid and merely *cites* the retired code (a hook name, a file path, a list of affected benchmarks) needs its body **edited** to name a surviving example instead. Closing it would drop live work.
+
+## Working Through Issues
+
+A session's goal is often a list of issues (`wcp goal`). Work through them in the order given, one at a time:
+
+1. **Issue check.** Read the issue and what it links. If it is clear and implementable, say so in one line and go on; this should be fast. If not, write a plan as a comment on the issue (plans go on issues, never in git) and work from it. If a later issue's plan changes an earlier one, re-plan then.
+2. **Implement.**
+3. **Gate and commit.** Run the project's gate (`## Build & Test`) and commit: a review reads commits, never uncommitted changes (`## Self-Review`).
+4. **Review by one cold reviewer**: a fresh teammate or subagent running `/code-review` on the commits not yet pushed, never several reviewers in parallel. On findings, fix, gate, commit, and review again with a fresh reviewer. **At most two rounds**; the fix after the second is confirmed, not reviewed again (`## Self-Review`). Anything real left after that, or found out of scope, becomes its own issue. The bar for filing is a concrete failure scenario or a missing acceptance criterion; nits are fixed within the round or dropped.
+5. **Record, push, close.** Record the review on a clean tree, push it with the commit (`## Self-Review`), and close the issue.
+
+Without agent teams, implement in the session itself and review with a fresh subagent; the caps and the bar are the same.
+
+**A hygiene goal** (`/goal Hygiene round …`, set by `wcp hygiene`) is a task, not a list of issues: work it from its note. Its findings are edits to existing issues or new issues labelled `tech-debt`; nothing is fixed inside the round, one cold reviewer checks the findings (at most two rounds), and the task ends with the summary comment its note specifies, whose first line is the marker wcp looks for.
+
+## Self-Review
+
+**Code you produced gets reviewed before it lands on main.** Run `/code-review`
+on your own changes and act on what it finds; the review is not a formality you
+report having done. The pre-push hook is the backstop, not the review.
+
+**Then record the review, and push it with the commit**, or `pre-push` will
+refuse the push:
+
+```sh
+git update-ref "refs/reviews/$(git rev-parse HEAD)" HEAD
+git push --atomic origin HEAD "refs/reviews/$(git rev-parse HEAD)"
+```
+
+The receipt is a ref named by the reviewed commit, `refs/reviews/<sha>`, and it
+travels with the push, so a CI step can check every commit that reaches the
+trunk — including one pushed with `--no-verify`, or from a clone whose hooks
+never ran. wcp's README has the step to paste into the project's CI.
+`--atomic` lands the branch and its receipt together or not at all.
+
+Plain git, on purpose. No wcp, no harness, nothing installed — so a reviewer on
+any machine can write it, and a clone that has never heard of wcp is still able
+to record a review and push. Every worktree of a clone sees the same receipts,
+and each names one commit, so a review counts for that commit wherever it is
+checked out and for nothing else.
+
+**What it means, and what it does not.** It records that a review happened at
+this commit — not what was reviewed. It carries exactly the trust of whoever ran
+it, and it is a line anybody can write by hand; what it buys is that nobody can
+push work no one has looked at *without noticing they are doing it*.
+
+A later commit has no receipt, and the next push is refused again. That is
+deliberate: a new commit is work nobody reviewed, including the commit that
+fixes what the review found.
+
+**The fix after the last round.** Reviews stop after two rounds, so the commit
+that fixes the second round's findings gets no third review. That round's
+reviewer reads the fix commit alone (`git show <sha>`) against its own
+findings, and the receipt is recorded for the fix once it confirms they are
+addressed. It looks for nothing new. What it does not confirm is taken out of
+the fix, which makes a new commit: the same reviewer confirms that one before
+its receipt is recorded, and what was taken out becomes its own issue.
+
+**Record it only when the tree is clean.** With nothing new committed, a review
+falls back to reading uncommitted changes — so a record written then names a
+commit that does not contain what was read, and the push it clears is of work
+nobody reviewed. Commit first, then review, then record. Untracked scratch files
+do not matter; staged and unstaged changes to tracked files do.
 
 ## Agent Self-Review
 
@@ -483,7 +589,7 @@ When implementing from papers, pseudocode, or open-source references:
 ## Common Mistakes
 
 - **Don't invent APIs — verify they exist.** Check that functions, flags, and methods actually exist before using them.
-- **Don't ignore type errors.** If mypy/clang-tidy flags something, fix the root cause — don't suppress. Both are hard blocks at push; silencing either — by disabling a clang-tidy check or by adding to `PY_GATE_EXCLUDE` — is the route explicitly closed (see **Git Hooks**).
+- **Don't ignore type errors.** If mypy/clang-tidy flags something, fix the root cause — don't suppress. Silencing either — by disabling a clang-tidy check or by widening `[tool.mypy] exclude` — is the route explicitly closed (see **Git Hooks**).
 - **Don't use deprecated patterns.** Check current docs, not training data.
 - **Performance matters.** Most of our code is solvers — don't sacrifice perf
   for "clean code". `docs/profiling.md` is how to measure: heap attribution, CPU
@@ -514,7 +620,7 @@ rm -rf build
 ```
 
 ```build
-cmake -B build -DCBLS_BUILD_PYTHON=ON -DPython_EXECUTABLE="$PWD/.venv/bin/python" && cmake --build build -j$(nproc)
+py="$PWD/.venv/bin/python"; [ -x "$py" ] || py=$(command -v python); cmake -B build -DCBLS_BUILD_PYTHON=ON -DPython_EXECUTABLE="$py" && cmake --build build -j$(nproc)
 ```
 
 **No `-DCMAKE_BUILD_TYPE` here on purpose.** `CMakeLists.txt` defaults it to
@@ -528,11 +634,24 @@ Release (both re-measured 2026-09-26 at 566 tests, `-j12`, on an idle machine).
 has it (`apt install ccache`), which matters because pre-push's ```clean fence is
 `rm -rf build`. Rebuilding the same path with a warm cache is **0.9s** against
 **23s** cold. It is optional — a system package cannot be committed, so a machine
-without it just builds normally.
+without it just builds normally. pre-push builds in a worktree under
+`~/.cache/local-ci`, a different path for every push, so ccache only hits there
+with `base_dir` set (e.g. `ccache -o base_dir=$HOME`); without it each push is a
+cold build.
 
 ```test
-ctest --test-dir build --output-on-failure -j$(nproc) && (CBLS_REQUIRE_BINDINGS=1 CBLS_REQUIRE_BENCHMARKS=1 .venv/bin/pytest --tb=short -q; rc=$?; [ $rc -eq 0 ] || [ $rc -eq 5 ])
+ctest --test-dir build --output-on-failure -j$(nproc) && (py="$PWD/.venv/bin/python"; [ -x "$py" ] || py=$(command -v python); CBLS_REQUIRE_BINDINGS=1 CBLS_REQUIRE_BENCHMARKS=1 "$py" -m pytest --tb=short -q || [ $? -eq 5 ])
 ```
+
+**Why the fences look for `python` on PATH when `.venv/` is missing.** `.githooks/pre-push`
+runs these fences (`clean`, `build`, `test`) as a local CI in a fresh worktree
+*outside* this checkout, which has no `.venv/` of its own; it puts this
+checkout's `.venv/bin` first on PATH instead. So each fence uses
+`$PWD/.venv/bin/python` when it exists (the checkout itself) and otherwise the
+`python` PATH resolves to (the hook's worktree), and runs pytest as
+`python -m pytest` from that interpreter. `|| [ $? -eq 5 ]` keeps pytest's
+"nothing collected" exit a pass, and is written that way because the hook
+evaluates each fence under `set -e`. Keep the fences runnable in both places.
 
 **The gated build turns the Python bindings on, and the gated test run requires
 them.** `CBLS_BUILD_PYTHON` defaults to `OFF` and `tests/python/conftest.py`
@@ -556,7 +675,8 @@ error instead of a silent one.
 `python3 -m pytest` has no module, so always spell out `.venv/bin/pytest`.
 A git worktree has no `.venv` of its own; symlink the main checkout's in before
 building or running the Python suite there. The build needs it too — the
-```build fence locates nanobind through `$PWD/.venv/bin/python`, so without the
+```build fence locates nanobind through `$PWD/.venv/bin/python` (falling back to
+whatever `python` is on PATH, usually one without nanobind), so without the
 symlink a worktree builds no bindings and the ```test fence fails on
 `CBLS_REQUIRE_BINDINGS=1`:
 
@@ -592,7 +712,7 @@ to each other *or* to the committed tables. Run A/B comparisons serially, check
 configures Release, but an existing `build/` keeps whatever type it was first
 configured with — and the same goes for `CBLS_SANITIZE`/`CBLS_PROFILE`, which are
 cache entries too: a `build/` once configured with a sanitizer stays that way
-through every later flag-less `cmake -B build`, and pre-commit gates on it. So
+through every later flag-less `cmake -B build`. So
 for a timing comparison either check `CMAKE_BUILD_TYPE` and `CBLS_SANITIZE` in
 `build/CMakeCache.txt` or configure a fresh directory. The measurement recipes —
 heap attribution, CPU profiling, sanitizers — are in `docs/profiling.md`.
