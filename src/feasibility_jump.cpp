@@ -1021,9 +1021,8 @@ void float_escape_candidates(const Variable& var, double x0, Consider&& consider
 }
 
 // An Int whose weighted rows are all linear (`prepared`: `linear` holds its
-// snapshot): the
-// exact argmin of its weighted violation (#208), which replaces the enumeration
-// and the grid. It covers every value a jump could reach, so no breakpoint
+// snapshot): the exact argmin of its weighted violation (#208), which replaces
+// the enumeration and the grid. It covers every value a jump could reach, so no breakpoint
 // candidate (#186) can add anything. False where it declines -- x0 outside the
 // window, a domain past 2^53, a residual the kInfPenalty clamp can reach -- and
 // the candidate path runs as before.

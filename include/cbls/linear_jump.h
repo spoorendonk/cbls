@@ -141,7 +141,7 @@ public:
     [[nodiscard]] double delta(double j) const;
 
     /// The exact best jump of the prepared INT variable over the integers of
-    /// [lo, hi] (#208): OR-Tools' `ComputeLinearJump`, step for step. Every
+    /// [lo, hi] (#208): OR-Tools' `ComputeLinearJump`. Every
     /// prepared term is `w * clamped(affine in j)` with w >= 0 -- max(0, .) of
     /// an affine residual, or its absolute value for Eq -- so f(j) = delta(j) is
     /// convex piecewise-linear, and over the integers its minimum sits at a
@@ -154,7 +154,11 @@ public:
     /// returns whichever of its points that binary search lands on first, as
     /// OR-Tools' does. Convexity is what makes a non-improving x0 +/- 1 final:
     /// then x0 is the integer minimum, and the result is {x0, 0}, the jump
-    /// table's "no move" contract.
+    /// table's "no move" contract (OR-Tools returns the better neighbour, at a
+    /// positive score). The one other departure: only the prepared terms'
+    /// kinks are breakpoints, so a masked (zero-weight) row's kink, which
+    /// OR-Tools' `SlopeBreakpoints` would include, is not -- the minimum is the
+    /// same, the point a plateau's tie lands on can differ.
     ///
     /// COST: two delta() calls on the common no-improvement path, else
     /// O(|terms| log |terms|) for the points plus O(log |terms|) delta() calls,

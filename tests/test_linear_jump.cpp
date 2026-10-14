@@ -311,6 +311,9 @@ void require_exact_int_jump(Model& m, const std::vector<double>& w, int32_t v,
     }
     INFO("var " << v << " x0 " << x0 << " jump " << got.jump_value << " score " << got.score
                 << " brute-force min " << best);
+    REQUIRE(got.jump_value == std::floor(got.jump_value));
+    REQUIRE(var.lb <= got.jump_value);
+    REQUIRE(got.jump_value <= var.ub);
     REQUIRE(std::abs(got.score - (-best)) <= tol);
     if (got.jump_value == x0) {
         REQUIRE(best >= -tol);
@@ -1105,20 +1108,43 @@ TEST_CASE("an Int argmin on a plateau takes OR-Tools' binary-search point (#208)
     // is flat on [4, 7]. x0 + 1 improves, so the search runs over the points
     // right of it -- the side's ends 2 and 10 and the kinks 4 and 7 -- seeded
     // with {1, -1}. RangeConvexMinimum probes index 2 (point 7, f = -4), then
-    // the point before it (4, f = -4); equal, so it returns 4: the plateau's
-    // near end here, by the binary search's own tie rule rather than by a
-    // nearest-to-x0 rule.
-    Model m;
-    auto x = m.int_var(0, 10);
-    m.add_constraint(m.geq(x, m.constant(4.0)));
-    m.add_constraint(m.leq(x, m.constant(7.0)));
-    m.close();
-    full_evaluate(m);
-    ViolationManager vm(m);
-    RNG rng(1);
-    FeasibilityJump fj(m, vm, rng);
-    const std::vector<double> w(m.constraint_ids().size(), 1.0);
-    const JumpResult r = compute_var_jump(m, w, vid(x), false, &fj.linear_scorer());
-    REQUIRE(r.jump_value == 4.0);
-    REQUIRE(r.score == 4.0);
+    // the point before it (4, f = -4); equal, so it returns 4, the plateau's
+    // near end.
+    //
+    // The mirror tells the rule from a nearest-to-x0 one: x at 10, rows x >= 3
+    // and x <= 6. x0 - 1 improves, so the points are left of it -- 0, 3, 6, 8 --
+    // seeded from the right with {9, -1}. The probe at index 2 (point 6, f = -4)
+    // and the point before it (3, f = -4) tie, so it returns 3, the plateau's
+    // FAR end; nearest-to-x0 would take 6.
+    SECTION("seeded from the left") {
+        Model m;
+        auto x = m.int_var(0, 10);
+        m.add_constraint(m.geq(x, m.constant(4.0)));
+        m.add_constraint(m.leq(x, m.constant(7.0)));
+        m.close();
+        full_evaluate(m);
+        ViolationManager vm(m);
+        RNG rng(1);
+        FeasibilityJump fj(m, vm, rng);
+        const std::vector<double> w(m.constraint_ids().size(), 1.0);
+        const JumpResult r = compute_var_jump(m, w, vid(x), false, &fj.linear_scorer());
+        REQUIRE(r.jump_value == 4.0);
+        REQUIRE(r.score == 4.0);
+    }
+    SECTION("seeded from the right") {
+        Model m;
+        auto x = m.int_var(0, 10);
+        m.add_constraint(m.geq(x, m.constant(3.0)));
+        m.add_constraint(m.leq(x, m.constant(6.0)));
+        m.close();
+        m.var_mut(vid(x)).value = 10.0;
+        full_evaluate(m);
+        ViolationManager vm(m);
+        RNG rng(1);
+        FeasibilityJump fj(m, vm, rng);
+        const std::vector<double> w(m.constraint_ids().size(), 1.0);
+        const JumpResult r = compute_var_jump(m, w, vid(x), false, &fj.linear_scorer());
+        REQUIRE(r.jump_value == 3.0);
+        REQUIRE(r.score == 4.0);
+    }
 }

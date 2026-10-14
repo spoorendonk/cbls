@@ -2040,8 +2040,8 @@ TEST_CASE("an own best that ties the shared bound still counts as an improvement
     // bound is not an improvement"). The A/B was measured with this tie
     // behaviour; change it deliberately, with a re-measurement, or not at all.
     //
-    // The peer's 65 is an objective this worker records exactly, at seed 5, in
-    // a batch that starts with the bound already at the cap 65 earns. (It was
+    // The peer's 63 is an objective this worker records exactly, at seed 5, in
+    // a batch that starts with the bound already at the cap 63 earns. (It was
     // 68 until #206 moved the trajectory, then 69; #211 -- the integral
     // objective's bound step of 1, and FJ's sample of 5 -- moved it to 65, and
     // #208's exact Int jump to 63, which a scan of 40-140 at seed 5 finds alone.) Compound moves

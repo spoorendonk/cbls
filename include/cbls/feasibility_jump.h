@@ -75,7 +75,8 @@ struct JumpResult {
 };
 
 // Compute the best jump for `var_id` under the per-constraint `weights`: the
-// value minimising the weighted violation delta over a small candidate set, and
+// value minimising the weighted violation delta over a small candidate set (or,
+// for an Int over linear rows given `linear`, exactly; see below), and
 // score = −delta (>0 improving). For Float variables the candidates are
 // gradient-informed — a Newton step toward each violated constraint's root
 // (reverse-mode AD) plus the domain midpoint and endpoints. A single call is not
@@ -92,7 +93,11 @@ struct JumpResult {
 // otherwise. Same candidates and the
 // same first-seen-minimum rule; the scores agree to rounding, not to the bit, so
 // the selected jump is guaranteed identical only on integral data (where both
-// are exact) -- on fractional data an ulp can flip a near-tie.
+// are exact) -- on fractional data an ulp can flip a near-tie. EXCEPT an Int
+// column whose weighted rows are all linear (#208): with `linear` it takes the
+// exact argmin (`LinearJumpScorer::int_argmin`) instead of the candidates, so it
+// reaches the same minimum score but, on a plateau, not necessarily the same
+// point as the candidate path without `linear`.
 // It also supplies the Float Newton candidates' row partials where its cached
 // slope is bit-identical to `compute_partial`, so those candidates do not move.
 // `tol` is the residual a row may keep and still count as satisfied (FJ passes
