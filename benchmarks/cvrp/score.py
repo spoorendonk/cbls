@@ -403,7 +403,16 @@ def uneven_groups(runs: list[Run], instances: list[str]) -> dict[str, list[str]]
 
 def check_publishable(runs: list[Run], banners: list[str], roster: str) -> None:
     """Refuse a table that may not become `PUBLISHED_TABLE`: one carrying a
-    group outside `PUBLISHABLE_GROUPS`, any banner, or the wrong roster."""
+    group outside `PUBLISHABLE_GROUPS`, more than one thread count, any banner,
+    or the wrong roster."""
+    threads = sorted({r.group[2] for r in runs})
+    if len(threads) > 1:
+        # PyVRP is single-threaded: a multi-thread CBLS row beside it would read
+        # as the same comparison, which it is not (#200).
+        raise ScoreError(
+            f"refusing to write the published table {PUBLISHED_TABLE}: rows at "
+            f"{threads} threads; publish one thread count per table"
+        )
     groups = sorted({r.group[:2] for r in runs} - PUBLISHABLE_GROUPS)
     if groups or banners:
         raise ScoreError(

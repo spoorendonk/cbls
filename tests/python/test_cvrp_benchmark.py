@@ -544,6 +544,16 @@ def test_score_refuses_the_published_table_from_the_smoke_roster(tmp_path: Path)
         _score(results, "out", score.PUBLISHED_TABLE)
 
 
+def test_score_refuses_the_published_table_across_thread_counts(tmp_path: Path) -> None:
+    """Multi-thread CBLS is never set beside single-thread PyVRP (#200)."""
+    results = _stamped(tmp_path / "r")
+    for instance in SMOKE:
+        _write_run(results, instance, arm=DEFAULT, threads=4)
+        _write_run(results, instance, arm=rb.ARMS["pyvrp"], threads=1)
+    with pytest.raises(score.ScoreError, match="thread"):
+        _score(results, "roster", "smoke", "out", score.PUBLISHED_TABLE)
+
+
 def test_score_refuses_the_published_table_from_a_modified_tree(tmp_path: Path) -> None:
     results = _stamped(tmp_path / "r")
     for instance in SMOKE:

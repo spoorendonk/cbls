@@ -11,12 +11,13 @@ and a drift on either side fails a check rather than skewing a gap.
 from __future__ import annotations
 
 import json
+import time
 from typing import TYPE_CHECKING
 
 import numpy as np
 import pytest
 
-pytest.importorskip("pyvrp")
+pyvrp = pytest.importorskip("pyvrp")
 
 from benchmarks.common import jobs  # noqa: E402
 from benchmarks.cvrp import reference_solve as ref  # noqa: E402
@@ -76,6 +77,20 @@ def test_reference_solve_writes_a_record_and_sol_the_verifier_accepts(tmp_path: 
     assert record["commit_sha"] == "abc1234"
     verdict = verify(INST_DIR / "X" / "X-n101-k25.vrp", sol, record["objective"])
     assert verdict.ok, verdict.errors
+
+
+def test_the_budget_and_ttff_include_pyvrps_construction_phase() -> None:
+    """PyVRP's own clocks start after its exhaustive start-solution search."""
+    inst = read_vrp_file(INST_DIR / "X" / "X-n1001-k43.vrp")
+    data = ref.problem_data(inst)
+    started = time.monotonic()
+    result = pyvrp.solve(data, stop=ref.Deadline(0.3), seed=1, collect_stats=True)
+    wall = time.monotonic() - started
+    setup = wall - result.runtime
+    assert setup > 0.01  # the construction phase PyVRP's own clocks leave out
+    # The deadline covers it: MaxRuntime would give the search itself >= 0.3 s.
+    assert result.runtime < 0.3
+    assert ref.time_to_first_feasible(result, wall) >= setup
 
 
 def test_reference_solve_refuses_more_than_one_thread(tmp_path: Path) -> None:
