@@ -260,9 +260,29 @@ TEST_CASE("the quadratic-roots flag reaches solve() and the LNS repair (#221)",
         }
         REQUIRE(iterations[1] < iterations[0]);
     }
-    SECTION("LNS::set_quadratic_roots") {
-        LNS lns;
-        lns.set_quadratic_roots(true);
-        REQUIRE(lns.quadratic_roots());
+    SECTION("LNS::set_quadratic_roots reaches the repair FJ") {
+        // Four copies of x^2 == 7000^2 over [-1e6, 1e6], all at 5e5: the
+        // nearest grid point is 0 (step 62500), and the repair's 2000
+        // iterations of +-1 steps cannot walk the 7000 from there; the roots
+        // jump to it.
+        for (const bool on : {false, true}) {
+            Model m;
+            for (int i = 0; i < 4; ++i) {
+                auto x = m.int_var(-1'000'000, 1'000'000);
+                m.add_constraint(m.eq_expr(m.prod(x, x), m.constant(49e6)));
+                m.var_mut(vid(x)).value = 500'000.0;
+            }
+            m.close();
+            full_evaluate(m);
+            ViolationManager vm(m);
+            RNG rng(1);
+            LNS lns;
+            lns.set_quadratic_roots(on);
+            REQUIRE(lns.quadratic_roots() == on);
+            lns.destroy_repair(m, vm, rng, /*repair_time_limit=*/0.0);
+            full_evaluate(m);
+            CAPTURE(on, vm.total_violation());
+            REQUIRE((vm.total_violation() == 0.0) == on);
+        }
     }
 }

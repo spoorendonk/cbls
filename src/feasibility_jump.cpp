@@ -510,14 +510,45 @@ private:
                 return of(ch[0], p) && of(ch[1], q) && poly_divide(p, q, out);
             case NodeOp::Pow:
                 return of(ch[0], p) && of(ch[1], q) && poly_power(p, q, value, out);
-            default:
-                // Any other op: a constant if nothing below it reads var_.
+            // Every other op is a polynomial in nothing: a constant if nothing
+            // below it reads var_, else not a quadratic. Listed rather than a
+            // `default:`, so a new op has to choose here (-Wswitch).
+            case NodeOp::Min:
+            case NodeOp::Max:
+            case NodeOp::Abs:
+            case NodeOp::Sin:
+            case NodeOp::Cos:
+            case NodeOp::Tan:
+            case NodeOp::Exp:
+            case NodeOp::Log:
+            case NodeOp::Sqrt:
+            case NodeOp::SignPower:
+            case NodeOp::Tanh:
+            case NodeOp::If:
+            case NodeOp::At:
+            case NodeOp::Count:
+            case NodeOp::Lambda:
+            case NodeOp::PairLambda:
+            case NodeOp::Leq:
+            case NodeOp::Eq:
+            case NodeOp::Geq:
+            case NodeOp::Neq:
+            case NodeOp::Lt:
+            case NodeOp::Gt:
+            case NodeOp::Custom:
+            case NodeOp::Element:
+            case NodeOp::Ceil:
+            case NodeOp::Floor:
+            case NodeOp::Round:
+            case NodeOp::LambdaExtra:
+            case NodeOp::PairLambdaExtra:
                 if (reaches_var(node)) {
                     return false;
                 }
                 out = poly_constant(value);
                 return true;
         }
+        return false;
     }
 
     bool of_sum(ConstSpan<ChildRef> ch, Poly2& out) {
