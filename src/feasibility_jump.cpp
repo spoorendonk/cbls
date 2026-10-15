@@ -1036,9 +1036,19 @@ bool exact_int_jump(const Variable& var, bool enabled, bool prepared, LinearJump
         return false;
     }
     const DomainWindow w = domain_window(var);
+    const double lo = std::ceil(w.lo);
+    const double hi = std::floor(w.hi);
+    // A 0/1 column declared integer (MIPLIB's binaries without a BV marker come
+    // in as Int [0, 1]): the enumeration's single candidate IS the argmin, with
+    // the same strict-improvement rule, and costs one delta() where the argmin
+    // costs that plus its O(|terms|) precondition pass -- ~5% of mas76's
+    // iterations at a 10s smoke (#216). So decline; the result is identical.
+    if (hi - lo <= 1.0) {
+        return false;
+    }
     double j = var.value;
     double fv = 0.0;
-    if (!linear->int_argmin(std::ceil(w.lo), std::floor(w.hi), j, fv)) {
+    if (!linear->int_argmin(lo, hi, j, fv)) {
         return false;
     }
     out = {j, -fv};
