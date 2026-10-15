@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <limits>
 #include <optional>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -488,6 +489,33 @@ public:
     /// between calls, not inside one. O(|V| + |Q| + |Q'|).
     [[nodiscard]] bool scan_sets_consistent() const;
 
+    /// Compare every incremental structure FJ keeps against a from-scratch
+    /// recompute of the current assignment (#225), and return one line per
+    /// disagreement -- empty when consistent. For tests, through
+    /// `SearchAuditor`; the search never calls it. Meaningful between calls.
+    ///
+    /// Checked, against a copy of the model re-evaluated by `full_evaluate`:
+    /// every node value (incremental Sums included); V (row membership by `is_violated` on the
+    /// committed residual, a row whose verdict its Sum's drift leaves undecided excepted), its
+    /// dense index, the counted bits and the per-variable counts; that each valid jump-table entry
+    /// holds a value in its variable's domain and the score `-W.delta` of that value under the
+    /// current weights; and that every variable Q's rule admits but Q does not hold has a valid
+    /// entry with a non-positive score, so no improving jump is lost from the scan.
+    ///
+    /// NOT checked: the unweighted progress accumulator. It rounds every
+    /// residual that passes through it (a 1e9 residual entering and leaving a
+    /// row leaves ~1e-8 behind), so no tolerance read off the current state
+    /// bounds it; it is a heuristic measure, re-grounded at every batch entry
+    /// and confirmed by an exact sum before it ends a batch, and its own test
+    /// pins it against a recompute.
+    ///
+    /// Tolerance: a value agrees when |cached - fresh| <= 1e-9 * (1 +
+    /// |fresh|), plus, for a node, its incremental Sum's tracked drift bound;
+    /// a score when |cached - fresh| <= 1e-7 * (1 + |cached| + |fresh|), since
+    /// the closed-form scorer agrees with the probe only to rounding.
+    /// O(#nodes + #rows + jumpable vars x |G_v|) and a model copy per call.
+    [[nodiscard]] std::vector<std::string> audit() const;
+
     /// The jump table's cached entry for `var_id` -- jump value and score as
     /// apply_jump last computed them -- or nullopt when the entry is invalid and
     /// the next draw of the variable will recompute it. Read-only observability
@@ -820,6 +848,14 @@ private:
     /// ViolationManager's weights, are sized for the model as it is NOW. See the
     /// definition for why it is checked per batch rather than per row.
     void require_tables_in_step() const;
+    // audit()'s three parts (#225): node values, V and its counts, and the jump
+    // table with Q's completeness; audit_admits is Q's rule read off `fresh`.
+    void audit_nodes(const Model& fresh, std::vector<std::string>& out) const;
+    void audit_violated_set(std::vector<std::string>& out) const;
+    void audit_counts(const std::vector<int32_t>& counts, size_t in_v,
+                      std::vector<std::string>& out) const;
+    void audit_jump_table(Model& fresh, std::vector<std::string>& out) const;
+    [[nodiscard]] bool audit_admits(int32_t v, const Model& fresh) const;
     void enqueue(int32_t var_id);
 
     // Novelty Jump internals (Algorithm 5). A candidate var with its W'-argmin

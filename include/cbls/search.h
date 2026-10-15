@@ -33,6 +33,9 @@ struct SearchCoordination;
 /// `cbls/pool.h`, which needs the definition for `tracer_factory`).
 class Tracer;
 
+/// Defined in `audit.h` (#225), forward-declared for the same reason.
+class SearchAuditor;
+
 struct SearchConfig {
     // Keep the assignment the caller handed in, whole: suppresses both the
     // List/Set randomisation and FeasibilityJump's closest-to-zero scalar start.
@@ -286,6 +289,10 @@ struct SearchConfig {
     // `ParallelConfig::tracer_factory`, which builds one per worker. See
     // `Tracer` for the granularity contract and for what attaching one costs.
     Tracer* tracer = nullptr;
+
+    // A test-facing consistency hook (#225), or null. Non-owning, like
+    // `tracer`; see `SearchAuditor` for where it is called and what it may do.
+    SearchAuditor* auditor = nullptr;
 };
 
 /// Why `solve()`'s outer loop stopped. Exactly one of these ends every run.

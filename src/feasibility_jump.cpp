@@ -9,11 +9,13 @@
 #include <cassert>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <limits>
 #include <numeric>
 #include <optional>
 #include <stdexcept>
+#include <string>
 #include <utility>
 
 namespace cbls {
@@ -1819,6 +1821,164 @@ bool FeasibilityJump::scan_sets_consistent() const {
         return i < on_stack_.size() && on_stack_[i] != 0;
     });
     return flags_match(queue_, in_queue_) && flags_match(nj_queue_, nj_in_queue_) && none_on_stack;
+}
+
+// ---- The consistency audit (#225); see FeasibilityJump::audit ----
+
+namespace {
+
+std::string audit_mismatch(const std::string& what, double cached, double fresh) {
+    std::array<char, 96> buf{};
+    std::snprintf(buf.data(), buf.size(), ": cached %.17g != fresh %.17g", cached, fresh);
+    return what + buf.data();
+}
+
+// |cached - fresh| <= 1e-9 (1 + |fresh|) + slack; NaN agrees only with NaN and
+// an infinity only with itself.
+bool audit_agrees(double cached, double fresh, double slack) {
+    if (std::isnan(cached) || std::isnan(fresh)) {
+        return std::isnan(cached) && std::isnan(fresh);
+    }
+    if (std::isinf(cached) || std::isinf(fresh)) {
+        return cached == fresh;
+    }
+    return std::fabs(cached - fresh) <= (1e-9 * (1.0 + std::fabs(fresh))) + slack;
+}
+
+}  // namespace
+
+std::vector<std::string> FeasibilityJump::audit() const {
+    std::vector<std::string> out;
+    // The from-scratch side: a copy, re-evaluated in topological order.
+    Model fresh(model_);
+    full_evaluate(fresh);
+    audit_nodes(fresh, out);
+    audit_violated_set(out);
+    audit_jump_table(fresh, out);
+    return out;
+}
+
+void FeasibilityJump::audit_nodes(const Model& fresh, std::vector<std::string>& out) const {
+    // A drifting incremental Sum may sit up to its tracked bound off a re-sum
+    // (#188), and so may every node that reads it; the largest bound covers all.
+    double drift = 0.0;
+    for (const IncSumState& st : model_.inc_sums().slots) {
+        if (st.drifting != 0) {
+            drift = std::max(drift, st.drift_bound);
+        }
+    }
+    const std::vector<double>& cached = model_.node_values();
+    const std::vector<double>& recomputed = fresh.node_values();
+    for (size_t i = 0; i < cached.size(); ++i) {
+        if (!audit_agrees(cached[i], recomputed[i], drift)) {
+            out.push_back(audit_mismatch("node " + std::to_string(i), cached[i], recomputed[i]));
+        }
+    }
+}
+
+void FeasibilityJump::audit_violated_set(std::vector<std::string>& out) const {
+    const auto& cids = model_.constraint_ids();
+    std::vector<int32_t> counts(active_violated_of_var_.size(), 0);
+    size_t in_v = 0;
+    for (size_t c = 0; c < cids.size(); ++c) {
+        const auto ci = static_cast<int32_t>(c);
+        const std::string row = "row " + std::to_string(c);
+        const double residual = model_.node_value(cids[c]);
+        const bool have = (violated_[c] & kInV) != 0;
+        if (have != is_violated(residual, config_.tolerance) && !verdict_undecided(ci, residual)) {
+            out.push_back(
+                row +
+                (have ? " in V but satisfied, residual " : " violated but not in V, residual ") +
+                std::to_string(residual));
+        }
+        const bool counted = (violated_[c] & kCounted) != 0;
+        if (counted != (have && active(ci))) {
+            out.push_back(row + " counted bit disagrees with in-V-and-active");
+        }
+        if (counted) {
+            for (const int32_t v : vars_of_constraint_[c]) {
+                ++counts[static_cast<size_t>(v)];
+            }
+        }
+        const int32_t pos = violated_pos_[c];
+        const bool indexed = pos >= 0 && static_cast<size_t>(pos) < violated_rows_.size() &&
+                             violated_rows_[static_cast<size_t>(pos)] == ci;
+        if (have != indexed || (!have && pos != -1)) {
+            out.push_back(row + " dense index disagrees with its V bit");
+        }
+        in_v += have ? 1 : 0;
+    }
+    audit_counts(counts, in_v, out);
+}
+
+void FeasibilityJump::audit_counts(const std::vector<int32_t>& counts, size_t in_v,
+                                   std::vector<std::string>& out) const {
+    if (in_v != violated_rows_.size()) {
+        out.push_back("V lists " + std::to_string(violated_rows_.size()) + " rows, " +
+                      std::to_string(in_v) + " flagged");
+    }
+    for (size_t v = 0; v < counts.size(); ++v) {
+        if (counts[v] != active_violated_of_var_[v]) {
+            out.push_back("var " + std::to_string(v) + " active-violated count " +
+                          std::to_string(active_violated_of_var_[v]) +
+                          " != " + std::to_string(counts[v]));
+        }
+    }
+    if (!scan_sets_consistent()) {
+        out.emplace_back("scan sets inconsistent");
+    }
+}
+
+bool FeasibilityJump::audit_admits(int32_t v, const Model& fresh) const {
+    if (config_.objective_tie_break && objective_scan(v)) {
+        return true;
+    }
+    const auto& cids = model_.constraint_ids();
+    const ConstSpan<int32_t> gv = model_.constraints_of_var(v);
+    return std::any_of(gv.begin(), gv.end(), [&](int32_t c) {
+        const auto ci = static_cast<size_t>(c);
+        const std::vector<int32_t>& members = vars_of_constraint_[ci];
+        return active(c) && is_violated(fresh.node_value(cids[ci]), config_.tolerance) &&
+               std::find(members.begin(), members.end(), v) != members.end();
+    });
+}
+
+void FeasibilityJump::audit_jump_table(Model& fresh, std::vector<std::string>& out) const {
+    for (int32_t v = 0; v < static_cast<int32_t>(model_.num_vars()); ++v) {
+        if (!jumpable(v)) {
+            continue;
+        }
+        const Variable& var = model_.var(v);
+        const std::string name = "var " + std::to_string(v);
+        if (jumps_.valid(v)) {
+            const double j = jumps_.jump_value(v);
+            if (j < var.lb || j > var.ub || std::isnan(j) ||
+                (var.type != VarType::Float && j != std::round(j))) {
+                out.push_back(name + " cached jump " + std::to_string(j) + " outside its domain");
+            }
+            const double score = jumps_.score(v);
+            const double recomputed = -fresh.weighted_violation_delta(v, j, vm_.weights);
+            // An objective-only jump (#218) is cached at kObjectiveTieScore.
+            const double expect = (score == kObjectiveTieScore && recomputed == 0.0)
+                                      ? kObjectiveTieScore
+                                      : recomputed;
+            if (std::fabs(score - expect) > 1e-7 * (1.0 + std::fabs(score) + std::fabs(expect)) ||
+                std::isnan(score) != std::isnan(expect)) {
+                out.push_back(
+                    audit_mismatch(name + " jump score at " + std::to_string(j), score, expect));
+            }
+        }
+        // Q's completeness: a variable its rule admits is in Q, or is known
+        // not to improve.
+        if (in_queue_[static_cast<size_t>(v)] != 0 || !audit_admits(v, fresh)) {
+            continue;
+        }
+        if (!jumps_.valid(v)) {
+            out.push_back(name + " has an invalid jump and is not in Q");
+        } else if (jumps_.score(v) > 0.0) {
+            out.push_back(name + " has an improving jump and is not in Q");
+        }
+    }
 }
 
 void FeasibilityJump::enqueue(int32_t var_id) {

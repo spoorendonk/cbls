@@ -1,5 +1,6 @@
 #include "cbls/search.h"
 
+#include "cbls/audit.h"
 #include "cbls/dag_ops.h"
 #include "cbls/feasibility_jump.h"
 #include "cbls/randomize.h"
@@ -25,6 +26,7 @@
 namespace cbls {
 
 SolveCallback::~SolveCallback() = default;
+SearchAuditor::~SearchAuditor() = default;
 
 namespace {
 
@@ -1894,7 +1896,16 @@ SearchResult ViolationLSLoop::run() {
         // pick_batch_kind so the kind is drawn from the RNG exactly as before
         // either way -- the sync itself draws nothing.
         sync_shared_bound();
+        if (config_.auditor != nullptr) {
+            config_.auditor->audit(AuditPoint::BeforeBatch, fj_);
+        }
         bool resync = run_batch(kind);
+        if (config_.auditor != nullptr && kind != BatchKind::Structural) {
+            config_.auditor->audit(kind == BatchKind::FeasibilityJump
+                                       ? AuditPoint::AfterFeasibilityJump
+                                       : AuditPoint::AfterNoveltyJump,
+                                   fj_);
+        }
         account_behind_batch();
         ++batches_;
         count_batch(kind);
