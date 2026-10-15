@@ -353,6 +353,12 @@ def test_resuming_under_a_different_search_arm_is_refused(tmp_path: Path) -> Non
     result.write_text(json.dumps({"instance": "a", "threads": 1}))
     assert check() is None
     assert check(exact_int_jump=True) == 2
+    # The same for the near-value kick (#217).
+    result.write_text(json.dumps({"instance": "a", "threads": 1, "perturb_near_value": False}))
+    assert check() is None
+    assert check(perturb_near_value=True) == 2
+    result.write_text(json.dumps({"instance": "a", "threads": 1}))
+    assert check(perturb_near_value=True) == 2
     result.write_text(json.dumps({"instance": "a", "threads": 1, "compound_moves": True}))
     assert check() is None
     assert check(compound_moves=False) == 2

@@ -871,13 +871,14 @@ def check_resume_configuration(
     """
     # Per engine: (record key, what this run asks for, what a row without the
     # key ran -- None when that is unknown and the row is left alone).
-    # `exact_int_jump` is back-read as off: every row from before the flag ran
-    # the candidate path.
+    # `exact_int_jump` and `perturb_near_value` are back-read as off: every row
+    # from before either flag ran its off arm.
     wanted: dict[str, list[tuple[str, object, object]]] = {
         "cbls": [
             ("threads", args.cbls_threads, None),
             ("compound_moves", args.compound_moves, None),
             ("exact_int_jump", args.exact_int_jump, False),
+            ("perturb_near_value", args.perturb_near_value, False),
         ],
         "cpsat": [("workers", args.cpsat_workers, None)],
     }
