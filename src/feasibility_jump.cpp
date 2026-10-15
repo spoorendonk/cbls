@@ -410,18 +410,23 @@ struct Poly2 {
     double b = 0.0;
     double c = 0.0;
     int deg = 0;  // an upper bound on the degree: 0 constant, 1 affine, 2
+    // Sum of |term| at the current point: the scale the residual check's
+    // rounding allowance is taken against, since the walk sums the terms in a
+    // different order from the DAG and a large cancelling row loses digits.
+    double mag = 0.0;
 };
 
 Poly2 poly_constant(double v) {
-    return {0.0, 0.0, v, 0};
+    return {0.0, 0.0, v, 0, std::abs(v)};
 }
 
 Poly2 poly_add(const Poly2& p, const Poly2& q, double sign) {
-    return {p.a + (sign * q.a), p.b + (sign * q.b), p.c + (sign * q.c), std::max(p.deg, q.deg)};
+    return {p.a + (sign * q.a), p.b + (sign * q.b), p.c + (sign * q.c), std::max(p.deg, q.deg),
+            p.mag + q.mag};
 }
 
 Poly2 poly_scale(const Poly2& p, double s) {
-    return {s * p.a, s * p.b, s * p.c, p.deg};
+    return {s * p.a, s * p.b, s * p.c, p.deg, std::abs(s) * p.mag};
 }
 
 // p * q, false when the product's degree bound passes 2.
@@ -431,7 +436,7 @@ bool poly_multiply(const Poly2& p, const Poly2& q, Poly2& out) {
     }
     // Degree <= 2 overall, so the cubic and quartic terms are exactly 0.
     out = {(p.a * q.c) + (p.b * q.b) + (p.c * q.a), (p.b * q.c) + (p.c * q.b), p.c * q.c,
-           p.deg + q.deg};
+           p.deg + q.deg, p.mag * q.mag};
     return true;
 }
 
@@ -476,8 +481,8 @@ public:
     // The polynomial of `ref` in var_; false when it is not one of degree <= 2.
     bool of(const ChildRef& ref, Poly2& out) {
         if (ref.is_var) {
-            out = ref.id == var_ ? Poly2{0.0, 1.0, 0.0, 1}
-                                 : poly_constant(model_.variables()[ref.id].value);
+            const double value = model_.variables()[ref.id].value;
+            out = ref.id == var_ ? Poly2{0.0, 1.0, 0.0, 1, std::abs(value)} : poly_constant(value);
             return true;
         }
         if (--budget_ < 0) {
@@ -644,7 +649,7 @@ bool row_quadratic_in(const Model& model, int32_t ci, int32_t var_id, Univariate
     const double at_x0 = (((r.a * x0) + r.b) * x0) + r.c;
     const double held = model.node_value(row);
     const double got = abs_row ? std::abs(at_x0) : at_x0;
-    if (!(std::abs(got - held) <= 1e-9 * (1.0 + std::abs(held)))) {
+    if (!(std::abs(got - held) <= 1e-9 * (1.0 + std::abs(held) + r.mag))) {
         return false;
     }
     out = {r.a, r.b, r.c};
@@ -706,11 +711,13 @@ void int_quadratic_candidates(const Model& model, int32_t var_id, double x0,
         if (linear != nullptr && linear->residual_partial_at(var_id, k, grad)) {
             continue;
         }
-        if (quadratic_row_candidates(model, c, var_id, x0, roots) && !roots.empty()) {
+        // Every walked row spends the budget, offered roots or not: the walk is
+        // the cost, and an Int has no Newton step to spend it otherwise.
+        --budget;
+        if (quadratic_row_candidates(model, c, var_id, x0, roots)) {
             for (const double r : roots) {
                 consider(r);
             }
-            --budget;
         }
     }
 }
@@ -727,6 +734,19 @@ bool int_jump_candidates(const Model& model, int32_t var_id, const Variable& var
         int_quadratic_candidates(model, var_id, x0, linear, tol, consider);
     }
     return complete;
+}
+
+// The Float path's scratch for one row's roots, kept out of its loop so the
+// off path never touches it.
+std::vector<double>& float_roots() {
+    thread_local std::vector<double> roots;
+    return roots;
+}
+
+// quadratic_row_candidates into float_roots(); true when it offered any.
+bool float_quadratic_roots(const Model& model, int32_t ci, int32_t var_id, double x0) {
+    std::vector<double>& roots = float_roots();
+    return quadratic_row_candidates(model, ci, var_id, x0, roots) && !roots.empty();
 }
 
 // Float jump candidates: cheap convex-ish descent — a Newton step toward the
@@ -784,10 +804,8 @@ bool float_jump_candidates(Model& model, int32_t var_id, const Variable& var, do
         saw_violated = true;
         double grad = 0.0;
         if (linear == nullptr || !linear->residual_partial_at(var_id, k, grad)) {
-            thread_local std::vector<double> roots;
-            if (quadratic_roots && quadratic_row_candidates(model, c, var_id, x0, roots) &&
-                !roots.empty()) {
-                for (const double r : roots) {
+            if (quadratic_roots && float_quadratic_roots(model, c, var_id, x0)) {
+                for (const double r : float_roots()) {
                     consider(r);
                 }
                 any_newton = true;

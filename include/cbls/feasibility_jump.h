@@ -169,7 +169,8 @@ int quadratic_roots(const UnivariateQuadratic& q, std::array<double, 2>& roots);
 /// product of degree > 2, `!=`, ...) is not a quadratic and returns false. So
 /// does a walk past a fixed node budget (a shared DAG walked as a tree), a
 /// non-finite coefficient, and a polynomial that does not reproduce the row's
-/// current residual (to 1e-9 relative), which is the guard against a node whose
+/// current residual (to 1e-9 of the residual plus the sum of its terms'
+/// magnitudes, so a large cancelling row still matches), which is the guard against a node whose
 /// value is not the plain function of its children the walk assumes.
 bool row_quadratic_in(const Model& model, int32_t ci, int32_t var_id, UnivariateQuadratic& out);
 

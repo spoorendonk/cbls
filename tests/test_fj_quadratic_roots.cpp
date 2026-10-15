@@ -90,6 +90,9 @@ TEST_CASE("row_quadratic_in reads a row's residual in one variable (#221)",
     m.add_constraint(m.leq(m.div_expr(x, y), m.constant(1.0)));
     // 8: y / x <= 1               a division by x: not a polynomial
     m.add_constraint(m.leq(m.div_expr(y, x), m.constant(1.0)));
+    // 9: x^2 + 1e8 y - 1e8 <= 0.3 large cancelling terms, a modest residual
+    m.add_constraint(m.leq(m.sum({m.prod(x, x), m.prod(m.constant(1e8), y), m.constant(-1e8)}),
+                           m.constant(0.3)));
     m.close();
     set_value(m, x, 1.5);
     set_value(m, y, 3.0);
@@ -120,6 +123,11 @@ TEST_CASE("row_quadratic_in reads a row's residual in one variable (#221)",
     REQUIRE(row_quadratic_in(m, 7, vid(x), q));
     REQUIRE((q.a == 0.0 && q.b == Catch::Approx(1.0 / 3.0) && q.c == -1.0));
     REQUIRE_FALSE(row_quadratic_in(m, 8, vid(x), q));
+    // Recognised although the walk's sum and the DAG's round differently at 1e8.
+    m.var_mut(vid(x)).value = 0.7;
+    set_value(m, y, 1.0);
+    REQUIRE(row_quadratic_in(m, 9, vid(x), q));
+    REQUIRE(q.a == 1.0);
 }
 
 TEST_CASE("row_quadratic_in gives up past its node budget (#221)", "[fj][quadratic_roots]") {
