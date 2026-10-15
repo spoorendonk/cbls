@@ -19,6 +19,9 @@ public:
 
 private:
     std::ostream& out_;
+    // The model's sense, read at print_header: the engine reports a maximised
+    // objective negated (it minimises -f), and this prints f (#225).
+    bool maximizing_ = false;
 };
 
 class JsonlFormatter : public SolveCallback {
@@ -32,6 +35,9 @@ public:
 
 private:
     std::ostream& out_;
+    // The model's sense, read at print_header: the engine reports a maximised
+    // objective negated (it minimises -f), and this prints f (#225).
+    bool maximizing_ = false;
 };
 
 }  // namespace cbls

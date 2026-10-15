@@ -373,6 +373,11 @@ struct SearchResult {
     /// `feasible` for solvedness and `std::isfinite(objective)` before using the
     /// value; the CLI prints "no finite objective at this assignment" and the
     /// JSONL record emits `"objective": null` for that case.
+    ///
+    /// In the engine's MINIMISED sense: on a model built with `maximize(e)` this
+    /// is `-e` at `best_state`, since the objective node is `neg(e)`. A caller
+    /// reporting it to a user flips the sign itself, as the CLI's formatters do
+    /// (`Model::is_maximizing`); `SolveProgress::objective` follows the same rule.
     double objective = std::numeric_limits<double>::infinity();
     /// Whether `best_state` satisfies every real constraint. A property of the
     /// constraints alone — independent of whether the objective is finite there.

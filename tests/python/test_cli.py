@@ -1217,6 +1217,36 @@ def test_the_jsonl_solution_object_is_a_solution_of_the_printed_problem(threads:
     assert final["objective"] == pytest.approx(solution["x"] ** 2 + solution["y"] ** 2, rel=1e-6)
 
 
+@pytest.mark.parametrize("fmt", ["human", "jsonl"])
+def test_a_maximize_objective_is_printed_in_the_models_own_sense(fmt: str, tmp_path: Path) -> None:
+    # The engine minimises internally: `maximize(e)` makes its objective `-e`,
+    # and SearchResult/SolveProgress carry that negated value. The CLI printed
+    # it as it was, so maximising x^2 + y^2 over [0, 10]^2 reported -200 at
+    # x = y = 10 -- in the result and in every progress row (#225).
+    model = tmp_path / "max.cbls"
+    model.write_text(MODEL.read_text().replace('"minimize"', '"maximize"'))
+    result = _run_cbls(str(model), "--threads", "1", "--format", fmt, "--time-limit", "0.3")
+    assert result.returncode == 0, result.stderr
+
+    if fmt == "jsonl":
+        records = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
+        final = next(r for r in records if "solution" in r)
+        values = final["solution"]
+        objective = final["objective"]
+        progress = [r["objective"] for r in records if r.get("event") == "progress"]
+    else:
+        values = _parse_human_solution(result.stdout)
+        objective = float(
+            next(line for line in result.stdout.splitlines() if line.startswith("Objective:"))
+            .removeprefix("Objective:")
+            .strip()
+        )
+        progress = []
+    assert objective == pytest.approx(values["x"] ** 2 + values["y"] ** 2, abs=0.2), result.stdout
+    assert objective > 0.0, result.stdout
+    assert all(p is None or p > 0.0 for p in progress), result.stdout
+
+
 NQUEENS = Path(__file__).resolve().parents[2] / "examples" / "nqueens.cbls"
 
 

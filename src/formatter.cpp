@@ -23,12 +23,21 @@ static std::string format_count(int64_t n) {
     return std::to_string(n);
 }
 
+// The objective in the model's own sense. The engine minimises internally, and
+// `maximize(e)` makes its objective `-e`, so SearchResult::objective and
+// SolveProgress::objective carry -f on a maximize model. A user reads f, which
+// the CLI printed negated until #225.
+static double user_objective(double internal, bool maximizing) {
+    return maximizing ? -internal : internal;
+}
+
 void HumanFormatter::print_header(const std::string& model_path, const Model& model, uint64_t seed,
                                   double time_limit) {
     const char* objective_label = "feasibility";
     if (model.objective_id() >= 0) {
         objective_label = model.is_maximizing() ? "maximize obj" : "minimize obj";
     }
+    maximizing_ = model.objective_id() >= 0 && model.is_maximizing();
     out_ << "cbls " << kVersion << " — Constraint-Based Local Search\n";
     out_ << "Model: " << model_path << " | " << model.num_vars() << " vars"
          << " | " << model.constraint_ids().size() << " constraints"
@@ -45,7 +54,7 @@ void HumanFormatter::on_progress(const SolveProgress& p) {
          << std::setw(11) << format_count(p.iteration);
 
     if (p.feasible && p.objective < std::numeric_limits<double>::infinity()) {
-        out_ << std::setw(16) << std::setprecision(6) << p.objective;
+        out_ << std::setw(16) << std::setprecision(6) << user_objective(p.objective, maximizing_);
     } else {
         out_ << std::setw(16) << "-";
     }
@@ -70,7 +79,8 @@ void HumanFormatter::print_result(const SearchResult& result, const Model& model
     if (model.objective_id() < 0) {
         out_ << "Objective:  -\n";  // pure feasibility model
     } else if (std::isfinite(result.objective)) {
-        out_ << "Objective:  " << std::fixed << std::setprecision(6) << result.objective << "\n";
+        out_ << "Objective:  " << std::fixed << std::setprecision(6)
+             << user_objective(result.objective, model.is_maximizing()) << "\n";
     } else {
         // The objective exists but is not a number here. On a feasible
         // assignment that is worth saying (issue #100): the point is real, the
@@ -114,6 +124,7 @@ void JsonlFormatter::print_header(const std::string& model_path, const Model& mo
     j["has_objective"] = model.objective_id() >= 0;
     j["seed"] = seed;
     j["time_limit"] = time_limit;
+    maximizing_ = model.objective_id() >= 0 && model.is_maximizing();
     out_ << j.dump() << "\n";
 }
 
@@ -123,7 +134,7 @@ void JsonlFormatter::on_progress(const SolveProgress& p) {
     j["time"] = std::round(p.time_seconds * 1000.0) / 1000.0;
     j["iteration"] = p.iteration;
     if (p.feasible && p.objective < std::numeric_limits<double>::infinity()) {
-        j["objective"] = p.objective;
+        j["objective"] = user_objective(p.objective, maximizing_);
     } else {
         j["objective"] = nullptr;
     }
@@ -148,7 +159,7 @@ void JsonlFormatter::print_result(const SearchResult& result, const Model& model
     // internal 0.0 placeholder, which is not a value of the model), and a
     // feasible point whose objective is +inf/NaN has none either (#100).
     if (model.objective_id() >= 0 && std::isfinite(result.objective)) {
-        j["objective"] = result.objective;
+        j["objective"] = user_objective(result.objective, model.is_maximizing());
     } else {
         j["objective"] = nullptr;
     }
