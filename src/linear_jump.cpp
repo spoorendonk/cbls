@@ -520,6 +520,18 @@ bool LinearJumpScorer::residual_partial_at(int32_t var_id, size_t k, double& out
     return true;
 }
 
+bool LinearJumpScorer::row_slope_at(int32_t var_id, size_t k, double& out) {
+    if (slots_.size() != model_.constraint_ids().size()) {
+        return false;  // the layout moved under the slope array; see residual_partial_at
+    }
+    const ConstSpan<int32_t> gv = model_.constraints_of_var(var_id);
+    if (k >= gv.size() || ready_row(gv[k]) == nullptr) {
+        return false;
+    }
+    out = slope_at_.get()[model_.constraints_of_var_offset(var_id) + k];
+    return true;
+}
+
 bool LinearJumpScorer::row_max_variation(int32_t ci, const std::vector<int32_t>& vars,
                                          double& out) {
     if (slots_.size() != model_.constraint_ids().size()) {

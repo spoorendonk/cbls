@@ -119,7 +119,7 @@ bool LNS::destroy_repair(Model& model, ViolationManager& vm, RNG& rng, double re
 
     // Repair via FJ-NL
     fj_nl_initialize(model, vm, 2000, &rng, repair_time_limit, feasibility_tolerance_,
-                     exact_int_jump_, quadratic_roots_);
+                     exact_int_jump_, quadratic_roots_, equality_balance_);
 
     auto new_key = lns_acceptance_key(model, feasibility_tolerance_);
 

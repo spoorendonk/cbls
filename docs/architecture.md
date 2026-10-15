@@ -1240,12 +1240,26 @@ cheap jumps. The continuous heavy lifting is left to the
 
 ### The GLS Loop
 
+**Equality-balance move (#222, default off, `SearchConfig::fj_equality_balance` /
+`GFJConfig::equality_balance`).** At a local minimum, before the bump, up to
+`sample_size` draws of a variable `v` from a random violated row. `v`'s target is
+its best jump with its satisfied linear `Eq` rows masked to weight 0. For up to 2
+of those rows and up to 8 partners `u` each (the whole row when that short),
+`du = -a_v dv / a_u` from `LinearJumpScorer::row_slope_at`, so the row keeps its
+residual. Two integral columns over integral slopes step `v` by the nonzero
+multiple of `|a_u| / gcd` nearest the target (`balance_steps`); a pair leaving a
+declared domain is skipped. The pair is scored exactly (v's leg, then u's with v
+applied) under the real weights, and the best improving one is committed through
+`update_var` for both legs in place of the bump. FJ batches and the LNS repair
+take it; Novelty batches do not. Off is the pre-#222 loop bit for bit.
+
 `gls_loop(sample_size, batch_iter_limit)`:
 
 ```
 loop:
     if apply_jump(sample_size) fails (no sampled var improves):
         if no active constraint is violated: return Feasible
+        [fj_equality_balance, #222] if apply_balance_move(sample_size): skip the bump
         decay by rho, bump active violated   # lazily: s *= rho, w' += 1/s on V (#175)
         re-enqueue vars of violated active constraints, invalidate their jumps
     ++iterations

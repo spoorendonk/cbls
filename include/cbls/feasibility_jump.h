@@ -186,6 +186,18 @@ bool row_quadratic_in(const Model& model, int32_t ci, int32_t var_id, Univariate
 bool quadratic_row_candidates(const Model& model, int32_t ci, int32_t var_id, double x0,
                               std::vector<double>& out);
 
+/// The two legs of an equality-balance move (#222): `dv` and `du` with
+/// `a_v dv + a_u du = 0`, dv as close to `target` as the columns' integrality
+/// allows. Two integral columns (Int/Bool) with integral slopes take dv as the
+/// nonzero multiple of |a_u| / gcd(a_v, a_u) nearest target, so du is integral
+/// exactly; with non-integral slopes they take round(target) and keep the pair
+/// only where du comes out integral (to 1e-9). One integral column keeps its
+/// own step integral (rounded, away from 0) and solves the other. False -- skip
+/// the pair -- for a zero slope, a zero or non-finite target, or a leg that
+/// comes out 0 or non-finite. Domains are the caller's to check.
+bool balance_steps(const Variable& v, double a_v, const Variable& u, double a_u, double target,
+                   double& dv, double& du);
+
 // Guided Local Search weight update (paper Algorithm 3, lines 8-10): decay all
 // weights by rho, then bump every currently-violated constraint by 1. Weights
 // of constraints masked to 0 (e.g. non-linear constraints in the linear phase)
@@ -355,6 +367,14 @@ struct GFJConfig {
     // better bound is infinite, or whose coefficient is 0, keeps the
     // closest-to-zero start.
     bool objective_start = false;
+    // Opt-in equality-balance move (#222, LS-IQCQP): at an FJ local minimum,
+    // before the GLS bump, try a two-variable move along a satisfied linear
+    // equality row's nullspace (a_v dv + a_u du = 0), so that row stays
+    // satisfied while others improve -- see apply_balance_move. Off by default,
+    // which is today's path bit for bit. solve() sets it from
+    // SearchConfig::fj_equality_balance; whether to turn it on is a
+    // needs-benchmark follow-up.
+    bool equality_balance = false;
     bool two_phase = true;       // GLS on linear submodel first, then full model
     bool set_initial_x = true;   // set X[v] to the domain value closest to 0 first
     int64_t max_iterations = 0;  // 0 = unbounded (bounded by time_limit)
@@ -593,6 +613,8 @@ public:
     [[nodiscard]] int64_t novelty_moves() const { return novelty_moves_; }
     [[nodiscard]] int64_t novelty_commits() const { return novelty_commits_; }
     [[nodiscard]] int64_t novelty_weight_bumps() const { return novelty_bumps_; }
+    /// Equality-balance moves committed since construction (#222). Diagnostics.
+    [[nodiscard]] int64_t balance_moves() const { return balance_moves_; }
     /// The novelty weight W' of row `ci` as Novelty last left it -- read-only
     /// observability for the tests that pin its incremental upkeep (#209).
     /// Throws `std::out_of_range` on a row the model does not have, or before
@@ -700,6 +722,29 @@ private:
     // ApplyJump (Algorithm 2): sample up to `sample_size` vars from Q, apply the
     // best improving jump via update_var. Returns false if none improves.
     bool apply_jump(int sample_size);
+    // The equality-balance move (#222): see the definition. Samples up to
+    // `sample_size` variables of violated rows and commits the best improving
+    // two-variable move along one of their satisfied linear Eq rows, through
+    // update_var for both legs. Returns false if none improves.
+    bool apply_balance_move(int sample_size);
+    struct BalanceMove {
+        int32_t v = -1;
+        double v_to = 0.0;
+        int32_t u = -1;
+        double u_to = 0.0;
+        double score = 0.0;  // -(weighted violation delta of the pair)
+    };
+    // The best balance move from v into `best`, if it beats best.score.
+    void balance_from(int32_t v, BalanceMove& best);
+    // v's satisfied, active, linear Eq rows with v's slope in each.
+    void held_eq_rows(int32_t v, std::vector<std::pair<int32_t, double>>& rows);
+    // v's best jump step with `rows` masked to weight 0; 0 when it does not improve.
+    double masked_jump_step(int32_t v, const std::vector<std::pair<int32_t, double>>& rows);
+    // u's slope in row e, false when unknown or 0.
+    bool partner_slope(int32_t u, int32_t e, double& a_u);
+    // f(j) of compute_var_jump for one variable under the GLS weights, in the
+    // model's current state: the closed form where the rows allow, else the probe.
+    double jump_delta(int32_t var_id, double j);
     // UpdateVar (Algorithm 1): commit X[v] <- jump, refresh V, invalidate
     // neighbour jumps, replenish Q.
     void update_var(int32_t var_id);
@@ -1174,6 +1219,7 @@ private:
     int64_t nj_moves_this_call_ = 0;                    // see novelty_moves_last_call()
     int64_t nj_move_cost_ = 1;             // work units a move takes from nj_work_remaining_
     int64_t novelty_moves_ = 0;            // see novelty_moves()
+    int64_t balance_moves_ = 0;            // see balance_moves()
     int64_t novelty_commits_ = 0;          // see novelty_commits()
     int64_t novelty_bumps_ = 0;            // see novelty_weight_bumps()
     int64_t novelty_seeds_ = 0;            // see novelty_scan_set_seeds()

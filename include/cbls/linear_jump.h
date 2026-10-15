@@ -185,6 +185,15 @@ public:
     /// this scorer's.
     bool residual_partial_at(int32_t var_id, size_t k, double& out);
 
+    /// The row's own slope d(p - q)/d(var_id) for ci = `constraints_of_var(
+    /// var_id)[k]`, before any `|.|` an Eq row applies, building the row if
+    /// pending. Unlike `residual_partial_at` this is not tied to the Newton
+    /// step's bit-identity, so every eligible row answers; the equality-balance
+    /// move (#222) reads two variables' slopes in one Eq row from it, and only
+    /// their ratio matters. False when the row is not eligible, k is past G_v,
+    /// or the scorer is not sized to the model's rows.
+    bool row_slope_at(int32_t var_id, size_t k, double& out);
+
     /// OR-Tools' `row_max_variations` for row `ci`, over the variables `vars`:
     /// the largest |d(p - q)/dv| * (ub_v - lb_v), a bound on how far any ONE of
     /// them can move the row's residual by a jump inside its declared box. Builds

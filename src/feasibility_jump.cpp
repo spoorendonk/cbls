@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <numeric>
 #include <optional>
 #include <stdexcept>
 #include <utility>
@@ -2537,6 +2538,278 @@ bool FeasibilityJump::apply_jump(int sample_size) {
     return true;
 }
 
+// ---- Equality-balance moves (#222, LS-IQCQP arXiv 2409.19668) ----
+//
+// With single-variable moves a satisfied equality row is broken by any move of
+// one of its variables, so near an equality-dense feasible region every jump
+// that would help elsewhere scores badly on the equality, and FJ sits at a
+// local minimum. A balance move changes two variables v, u of a satisfied
+// linear Eq row together along the row's nullspace, a_v dv + a_u du = 0, so
+// that row keeps its residual while the others move.
+//
+// WHEN: at an FJ local minimum (apply_jump found no positive jump), before the
+// GLS bump, with GFJConfig::equality_balance on. A committed balance move takes
+// the bump's place for that iteration; finding none, the bump happens as
+// before. With the flag off nothing here runs.
+//
+// WHICH PAIR: up to `sample_size` draws of a variable v from a random violated
+// row. v's target is its best jump (compute_var_jump, same candidates) under
+// the GLS weights with every satisfied linear Eq row of v masked to 0 -- the
+// jump it would make if those rows were held. For each of up to
+// kBalanceRows of those rows, up to kBalancePartners partners u (the whole row
+// when it is that short, else a random sample) give du = -a_v dv / a_u, the
+// slopes being the scorer's cached row slopes. The pair is scored exactly:
+// the weighted violation delta of v's leg, then u's leg with v applied (one
+// delta_evaluate each way, as Novelty's legs are), under the real weights. The
+// best improving pair over all draws is committed through update_var, v first.
+//
+// INTEGRALITY. Two integral columns with integral slopes take dv as the
+// nonzero multiple of |a_u| / gcd(a_v, a_u) nearest the target, which makes du
+// integral exactly. An integral column against a continuous one keeps the
+// integral side's step integral (rounded, away from 0) and solves the other;
+// two integral columns over non-integral slopes take the pair only where du
+// comes out integral. Otherwise, and for a pair leaving either declared
+// domain, the pair is skipped.
+//
+// COST per local minimum: per draw one masked compute_var_jump plus, per
+// partner, two delta_evaluates of v (only when integrality changes dv) and
+// one scored leg of u. The draw budget is the FJ sample size.
+
+namespace {
+
+constexpr int kBalanceRows = 2;
+constexpr size_t kBalancePartners = 8;
+constexpr int64_t kBalanceMaxIntSlope = int64_t{1} << 31;
+
+bool integral_column(const Variable& var) {
+    return var.type == VarType::Int || var.type == VarType::Bool;
+}
+
+// The integral value of `a`, if it is one small enough for the gcd step.
+bool integral_slope(double a, int64_t& out) {
+    const double r = std::round(a);
+    if (r != a || !(std::abs(r) < static_cast<double>(kBalanceMaxIntSlope))) {
+        return false;
+    }
+    out = static_cast<int64_t>(r);
+    return true;
+}
+
+// Rounds `x` to an integer, away from 0 when it would round to 0 (x != 0).
+double round_nonzero(double x) {
+    const double r = std::round(x);
+    return (r == 0.0 && x != 0.0) ? std::copysign(1.0, x) : r;
+}
+
+}  // namespace
+
+bool balance_steps(const Variable& v, double a_v, const Variable& u, double a_u, double target,
+                   double& dv, double& du) {
+    if (a_v == 0.0 || a_u == 0.0 || !std::isfinite(target) || target == 0.0) {
+        return false;
+    }
+    const bool v_int = integral_column(v);
+    const bool u_int = integral_column(u);
+    if (v_int && u_int) {
+        int64_t iv = 0;
+        int64_t iu = 0;
+        if (integral_slope(a_v, iv) && integral_slope(a_u, iu)) {
+            // a_v dv = -a_u du over the integers: dv = k |a_u| / g, du = -k a_v sgn(a_u) / g.
+            const int64_t g = std::gcd(iv, iu);
+            const int64_t step_v = std::abs(iu) / g;  // exact: g divides both
+            const int64_t step_u = iv / g;
+            const double k = round_nonzero(target / static_cast<double>(step_v));
+            dv = k * static_cast<double>(step_v);
+            du = -k * static_cast<double>(step_u) * (iu > 0 ? 1.0 : -1.0);
+        } else {
+            dv = std::round(target);
+            du = -a_v * dv / a_u;
+            if (dv == 0.0 || std::abs(du - std::round(du)) > 1e-9) {
+                return false;
+            }
+            du = std::round(du);
+        }
+    } else if (u_int) {
+        du = round_nonzero(-a_v * target / a_u);
+        dv = -a_u * du / a_v;
+    } else {
+        dv = v_int ? round_nonzero(target) : target;
+        du = -a_v * dv / a_u;
+    }
+    return std::isfinite(dv) && std::isfinite(du) && dv != 0.0 && du != 0.0;
+}
+
+double FeasibilityJump::jump_delta(int32_t var_id, double j) {
+    const double x0 = model_.var(var_id).value;
+    if (std::isfinite(j - x0) && linear_.prepare(var_id, vm_.weights)) {
+        return linear_.delta(j);
+    }
+    return model_.weighted_violation_delta(var_id, j, vm_.weights);
+}
+
+namespace {
+
+// v's leg of the pairs balance_from scores, applied to the model once per
+// distinct step rather than once per partner; revert() puts v back.
+class AppliedLeg {
+public:
+    AppliedLeg(Model& model, int32_t v) : model_(model), v_(v), x_(model.var(v).value) {}
+    AppliedLeg(const AppliedLeg&) = delete;
+    AppliedLeg& operator=(const AppliedLeg&) = delete;
+    AppliedLeg(AppliedLeg&&) = delete;
+    AppliedLeg& operator=(AppliedLeg&&) = delete;
+    ~AppliedLeg() = default;
+
+    void revert() { set(x_); }
+
+    // The leg x -> x + dv applied, with `delta` (f of the base state) scoring
+    // it; returns that score.
+    template <class Delta>
+    double apply(double dv, Delta&& delta) {
+        if (dv != dv_) {
+            set(x_);
+            d_ = delta(x_ + dv);
+            set(x_ + dv);
+            dv_ = dv;
+        }
+        return d_;
+    }
+
+private:
+    void set(double value) {
+        if (model_.var(v_).value != value) {
+            model_.var_mut(v_).value = value;
+            delta_evaluate(model_, &v_, 1);
+        }
+    }
+
+    Model& model_;
+    int32_t v_;
+    double x_;
+    double dv_ = 0.0;
+    double d_ = 0.0;
+};
+
+bool in_domain(const Variable& var, double x) {
+    return x >= var.lb && x <= var.ub;
+}
+
+}  // namespace
+
+void FeasibilityJump::held_eq_rows(int32_t v, std::vector<std::pair<int32_t, double>>& rows) {
+    const auto& cids = model_.constraint_ids();
+    const ConstSpan<int32_t> gv = model_.constraints_of_var(v);
+    rows.clear();
+    for (size_t k = 0; k < gv.size(); ++k) {
+        const int32_t c = gv[k];
+        double a = 0.0;
+        if (c != objective_ci_ && violated_[c] == 0 && active(c) &&
+            model_.nodes()[cids[c]].op == NodeOp::Eq && linear_.row_slope_at(v, k, a) && a != 0.0) {
+            rows.emplace_back(c, a);
+        }
+    }
+}
+
+double FeasibilityJump::masked_jump_step(int32_t v,
+                                         const std::vector<std::pair<int32_t, double>>& rows) {
+    thread_local std::vector<double> saved;
+    saved.clear();
+    for (const auto& [c, a] : rows) {
+        saved.push_back(vm_.weights[c]);
+        vm_.weights[c] = 0.0;
+    }
+    const JumpResult masked =
+        compute_var_jump(model_, vm_.weights, v, false, &linear_, config_.tolerance,
+                         config_.exact_int_jump, nullptr, config_.quadratic_roots);
+    for (size_t i = 0; i < rows.size(); ++i) {
+        vm_.weights[rows[i].first] = saved[i];
+    }
+    return masked.score > 0.0 ? masked.jump_value - model_.var(v).value : 0.0;
+}
+
+bool FeasibilityJump::partner_slope(int32_t u, int32_t e, double& a_u) {
+    const ConstSpan<int32_t> gu = model_.constraints_of_var(u);
+    const auto* it = std::lower_bound(gu.begin(), gu.end(), e);
+    return it != gu.end() && *it == e &&
+           linear_.row_slope_at(u, static_cast<size_t>(it - gu.begin()), a_u) && a_u != 0.0;
+}
+
+void FeasibilityJump::balance_from(int32_t v, BalanceMove& best) {
+    thread_local std::vector<std::pair<int32_t, double>> rows;
+    held_eq_rows(v, rows);
+    if (rows.empty()) {
+        return;
+    }
+    const double target = masked_jump_step(v, rows);
+    if (target == 0.0) {
+        return;
+    }
+    // Rows to pair through: all when few, else a random kBalanceRows.
+    const auto keep = std::min(rows.size(), static_cast<size_t>(kBalanceRows));
+    for (size_t i = 0; i < keep && rows.size() > keep; ++i) {
+        std::swap(
+            rows[i],
+            rows[i + static_cast<size_t>(rng_.integers(0, static_cast<int64_t>(rows.size() - i)))]);
+    }
+    rows.resize(keep);
+
+    const Variable& var_v = model_.var(v);
+    const double x_v = var_v.value;
+    AppliedLeg leg(model_, v);
+    auto v_delta = [this, v](double j) { return jump_delta(v, j); };
+    for (const auto& [e, a_v] : rows) {
+        const std::vector<int32_t>& members = vars_of_constraint_[e];
+        const size_t n = members.size();
+        for (size_t t = 0; t < std::min(n, kBalancePartners); ++t) {
+            // The whole row when it is short, else a random sample of it.
+            const int32_t u =
+                n <= kBalancePartners
+                    ? members[t]
+                    : members[static_cast<size_t>(rng_.integers(0, static_cast<int64_t>(n)))];
+            double a_u = 0.0;
+            double dv = 0.0;
+            double du = 0.0;
+            if (u == v || !partner_slope(u, e, a_u) ||
+                !balance_steps(var_v, a_v, model_.var(u), a_u, target, dv, du)) {
+                continue;
+            }
+            const double u_to = model_.var(u).value + du;
+            if (!in_domain(var_v, x_v + dv) || !in_domain(model_.var(u), u_to)) {
+                continue;
+            }
+            const double score = -(leg.apply(dv, v_delta) + jump_delta(u, u_to));
+            if (score > best.score) {
+                best = {v, x_v + dv, u, u_to, score};
+            }
+        }
+    }
+    leg.revert();
+}
+
+bool FeasibilityJump::apply_balance_move(int sample_size) {
+    BalanceMove best;
+    for (int s = 0; s < sample_size && !violated_rows_.empty(); ++s) {
+        const int32_t r = violated_rows_[static_cast<size_t>(
+            rng_.integers(0, static_cast<int64_t>(violated_rows_.size())))];
+        const std::vector<int32_t>& members = vars_of_constraint_[r];
+        if (!active(r) || members.empty()) {
+            continue;
+        }
+        const int32_t v =
+            members[static_cast<size_t>(rng_.integers(0, static_cast<int64_t>(members.size())))];
+        balance_from(v, best);
+    }
+    if (best.v < 0) {
+        return false;
+    }
+    jumps_.set(best.v, best.v_to, best.score);
+    update_var(best.v);
+    jumps_.set(best.u, best.u_to, best.score);
+    update_var(best.u);
+    ++balance_moves_;
+    return true;
+}
+
 // O(|V|) over the violated list, reading each row's weight live -- so it answers
 // correctly even for a weight changed since the row was last evaluated, which the
 // counted bits would only catch at the next reconcile.
@@ -2857,7 +3130,7 @@ GFJStatus FeasibilityJump::gls_loop_scaled(int sample_size, int64_t batch_iter_l
                 if (!any_active_violated()) {
                     return GFJStatus::Feasible;
                 }
-            } else {
+            } else if (!(config_.equality_balance && apply_balance_move(sample_size))) {
                 bump_weights_and_requeue();
             }
         }

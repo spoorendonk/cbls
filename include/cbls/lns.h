@@ -75,11 +75,18 @@ public:
     void set_quadratic_roots(bool on) { quadratic_roots_ = on; }
     [[nodiscard]] bool quadratic_roots() const { return quadratic_roots_; }
 
+    /// Whether the repair's FJ takes equality-balance moves (GFJConfig::
+    /// equality_balance, #222). `solve()` sets it from `SearchConfig::
+    /// fj_equality_balance` before each kick; off by default.
+    void set_equality_balance(bool on) { equality_balance_ = on; }
+    [[nodiscard]] bool equality_balance() const { return equality_balance_; }
+
 private:
     double destroy_fraction_;
     double feasibility_tolerance_ = kDefaultFeasibilityTolerance;
     bool exact_int_jump_ = false;
     bool quadratic_roots_ = false;
+    bool equality_balance_ = false;
 };
 
 }  // namespace cbls
