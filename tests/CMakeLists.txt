@@ -21,6 +21,7 @@ add_executable(cbls_tests
     test_fj_scan_set.cpp
     test_fj_objective_row.cpp
     test_fj_objective_tie.cpp
+    test_fj_quadratic_roots.cpp
     test_fj_novelty_incremental.cpp
     test_linear_jump.cpp
     test_perturb.cpp
@@ -69,7 +70,7 @@ include(Catch)
 #
 # Measured at Release: the 6 [slow]-tagged tests account for ~46s of the suite's
 # aggregate (summed per-test) time; with `-j$(nproc)` the full run is ~25s of
-# wall clock. The remaining 780 (774 discovered, plus the
+# wall clock. The remaining 788 (782 discovered, plus the
 # six hand-registered tests that carry no slow label --
 # timing_structural_batch_deadline, hang_guard_iteration_only_portfolio,
 # hang_guard_novelty_zero_move_batch and hang_guard_nonpositive_batch_iterations
@@ -86,9 +87,9 @@ include(Catch)
 # the tag -- "measure both ways before tagging" applies to KEEPING a tag as
 # much as to adding one.
 #
-# The roster is therefore 790 ctest tests: 780 discovered here, the 8
+# The roster is therefore 798 ctest tests: 788 discovered here, the 8
 # hand-registered ones below, and the 2 non-Catch2 shell gate tests the root
-# CMakeLists.txt registers. The 788 Catch2 ones are three more than the 785
+# CMakeLists.txt registers. The 796 Catch2 ones are three more than the 793
 # TEST_CASEs in tests/*.cpp, because the three hang_guard_* tests are both
 # discovered and hand-registered -- see their notes below. `ctest -N -L slow` reports 10, not 6 --
 # the three #125 throughput floors and #191's hook deadline carry the slow

@@ -103,7 +103,8 @@ const char* termination_reason_name(TerminationReason reason) {
 // the model's current assignment toward feasibility. Delegates to
 // FeasibilityJump; see src/feasibility_jump.cpp.
 int64_t fj_nl_initialize(Model& model, ViolationManager& vm, int max_iterations, RNG* rng_ptr,
-                         double time_limit, double tolerance, bool exact_int_jump) {
+                         double time_limit, double tolerance, bool exact_int_jump,
+                         bool quadratic_roots) {
     RNG local_rng(42);
     RNG& rng = rng_ptr != nullptr ? *rng_ptr : local_rng;
 
@@ -113,6 +114,7 @@ int64_t fj_nl_initialize(Model& model, ViolationManager& vm, int max_iterations,
     config.set_initial_x = false;  // refine the current (already-initialised) assignment
     config.tolerance = tolerance;
     config.exact_int_jump = exact_int_jump;
+    config.quadratic_roots = quadratic_roots;
     // As an SA/LNS warm-start (not the full solver), the two-phase linear-first
     // pass over-commits the linear submodel to cost-pessimal feasibility-boundary
     // values; single-phase gives a better start. Two-phase stays the default for
@@ -1435,6 +1437,7 @@ void ViolationLSLoop::diversify(bool allow_lns) {
         trace_kick(KickKind::LNS);
         lns_->set_feasibility_tolerance(config_.feasibility_tolerance);
         lns_->set_exact_int_jump(config_.fj_exact_int_jump);
+        lns_->set_quadratic_roots(config_.fj_quadratic_roots);
         const bool accepted = lns_->destroy_repair(model_, vm_, rng_, repair_limit);
         ++lns_repairs_;
         lns_repairs_accepted_ += accepted ? 1 : 0;
@@ -2017,6 +2020,7 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
     gfj.unproductive_iterations = config.unproductive_iterations;
     gfj.tolerance = config.feasibility_tolerance;  // one meaning of "satisfied" (#211)
     gfj.exact_int_jump = config.fj_exact_int_jump;
+    gfj.quadratic_roots = config.fj_quadratic_roots;
     gfj.perturb_near_value = config.perturb_near_value;
     gfj.objective_tie_break = config.fj_objective_tie_break;
     gfj.objective_start = config.fj_objective_start;

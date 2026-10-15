@@ -383,6 +383,321 @@ bool int_jump_candidates(const Variable& var, double x0, Consider&& consider) {
     return false;
 }
 
+}  // namespace
+
+// ---------------------------------------------------------------------------
+// Exact univariate quadratic roots (#221, LS-IQCQP arXiv 2409.19668)
+// ---------------------------------------------------------------------------
+//
+// A row's residual read as `a v^2 + b v + c` in the moved variable v. The walk
+// is a tree walk over the row's expression -- children before nothing, no
+// memo -- so a DAG that shares a subexpression pays for it once per path. That
+// is what the node budget is for: past it the row is "not a quadratic" and
+// keeps its Newton step, so the budget decides only how much a row may cost to
+// recognise, never which candidates a recognised row offers. Cost on a row it
+// does recognise is O(nodes on the row's paths), the order of the reverse AD
+// sweep the Newton step it replaces would run.
+
+namespace {
+
+// Node visits per row. A MINLPLib quadratic row of n terms is ~3n visits (Sum,
+// then Prod(coefficient, x) or Pow(x, 2) per term), so this admits rows of
+// ~300 terms; a larger one falls back to Newton.
+constexpr int kQuadraticWalkBudget = 1024;
+
+struct Poly2 {
+    double a = 0.0;
+    double b = 0.0;
+    double c = 0.0;
+    int deg = 0;  // an upper bound on the degree: 0 constant, 1 affine, 2
+};
+
+Poly2 poly_constant(double v) {
+    return {0.0, 0.0, v, 0};
+}
+
+Poly2 poly_add(const Poly2& p, const Poly2& q, double sign) {
+    return {p.a + (sign * q.a), p.b + (sign * q.b), p.c + (sign * q.c), std::max(p.deg, q.deg)};
+}
+
+Poly2 poly_scale(const Poly2& p, double s) {
+    return {s * p.a, s * p.b, s * p.c, p.deg};
+}
+
+// p * q, false when the product's degree bound passes 2.
+bool poly_multiply(const Poly2& p, const Poly2& q, Poly2& out) {
+    if (p.deg + q.deg > 2) {
+        return false;
+    }
+    // Degree <= 2 overall, so the cubic and quartic terms are exactly 0.
+    out = {(p.a * q.c) + (p.b * q.b) + (p.c * q.a), (p.b * q.c) + (p.c * q.b), p.c * q.c,
+           p.deg + q.deg};
+    return true;
+}
+
+// p / q for q a constant `div_value` reads as nonzero: its near-zero
+// denominator rule is not a polynomial.
+bool poly_divide(const Poly2& p, const Poly2& q, Poly2& out) {
+    if (q.deg != 0 || !(std::abs(q.c) >= 1e-15)) {
+        return false;
+    }
+    out = poly_scale(p, 1.0 / q.c);
+    return true;
+}
+
+// base ^ e for e a constant 0, 1 or 2 and a base that reads var_; `value` is the
+// node's own value, which is the answer for a base that does not.
+bool poly_power(const Poly2& base, const Poly2& e, double value, Poly2& out) {
+    if (e.deg != 0) {
+        return false;
+    }
+    if (base.deg == 0) {
+        out = poly_constant(value);
+        return true;
+    }
+    if (e.c == 1.0) {
+        out = base;
+        return true;
+    }
+    if (e.c == 2.0) {
+        return poly_multiply(base, base, out);
+    }
+    if (e.c == 0.0) {
+        out = poly_constant(1.0);  // pow(x, 0) is 1 for every x, NaN included
+        return true;
+    }
+    return false;
+}
+
+class QuadraticWalk {
+public:
+    QuadraticWalk(const Model& model, int32_t var_id) : model_(model), var_(var_id) {}
+
+    // The polynomial of `ref` in var_; false when it is not one of degree <= 2.
+    bool of(const ChildRef& ref, Poly2& out) {
+        if (ref.is_var) {
+            out = ref.id == var_ ? Poly2{0.0, 1.0, 0.0, 1}
+                                 : poly_constant(model_.variables()[ref.id].value);
+            return true;
+        }
+        if (--budget_ < 0) {
+            return false;
+        }
+        return of_node(model_.nodes()[ref.id], out);
+    }
+
+private:
+    bool of_node(const ExprNode& node, Poly2& out) {
+        const ConstSpan<ChildRef> ch = model_.children(node);
+        const double value = model_.node_values()[node.id];
+        Poly2 p;
+        Poly2 q;
+        switch (node.op) {
+            case NodeOp::Const:
+                out = poly_constant(value);
+                return true;
+            case NodeOp::Neg:
+                if (!of(ch[0], p)) {
+                    return false;
+                }
+                out = poly_scale(p, -1.0);
+                return true;
+            case NodeOp::Sum:
+                return of_sum(ch, out);
+            case NodeOp::Prod:
+                return of(ch[0], p) && of(ch[1], q) && poly_multiply(p, q, out);
+            case NodeOp::Div:
+                return of(ch[0], p) && of(ch[1], q) && poly_divide(p, q, out);
+            case NodeOp::Pow:
+                return of(ch[0], p) && of(ch[1], q) && poly_power(p, q, value, out);
+            default:
+                // Any other op: a constant if nothing below it reads var_.
+                if (reaches_var(node)) {
+                    return false;
+                }
+                out = poly_constant(value);
+                return true;
+        }
+    }
+
+    bool of_sum(ConstSpan<ChildRef> ch, Poly2& out) {
+        Poly2 s = poly_constant(0.0);
+        for (const ChildRef& c : ch) {
+            Poly2 t;
+            if (!of(c, t)) {
+                return false;
+            }
+            s = poly_add(s, t, 1.0);
+        }
+        out = s;
+        return true;
+    }
+
+    // Whether var_ is below `node`; on running out of budget, true (the
+    // conservative answer: the row is then not recognised).
+    bool reaches_var(const ExprNode& node) {
+        const ConstSpan<ChildRef> ch = model_.children(node);
+        return std::any_of(ch.begin(), ch.end(), [this](const ChildRef& c) {
+            if (c.is_var) {
+                return c.id == var_;
+            }
+            return --budget_ < 0 || reaches_var(model_.nodes()[c.id]);
+        });
+    }
+
+    const Model& model_;
+    int32_t var_;
+    int budget_ = kQuadraticWalkBudget;
+};
+
+}  // namespace
+
+int quadratic_roots(const UnivariateQuadratic& q, std::array<double, 2>& roots) {
+    int n = 0;
+    auto push = [&](double r) {
+        if (std::isfinite(r)) {
+            roots[static_cast<size_t>(n++)] = r;
+        }
+    };
+    if (q.a == 0.0) {
+        if (q.b != 0.0) {
+            push(-q.c / q.b);
+        }
+        return n;
+    }
+    const double disc = (q.b * q.b) - (4.0 * q.a * q.c);
+    if (!(disc >= 0.0)) {
+        return 0;  // no real root (or a NaN coefficient)
+    }
+    if (disc == 0.0) {
+        push(-q.b / (2.0 * q.a));
+        return n;
+    }
+    const double t = -0.5 * (q.b + std::copysign(std::sqrt(disc), q.b));
+    // t == 0 needs b == 0 and disc == 0, handled above.
+    push(t / q.a);
+    push(q.c / t);
+    if (n == 2 && roots[1] < roots[0]) {
+        std::swap(roots[0], roots[1]);
+    }
+    return n;
+}
+
+bool row_quadratic_in(const Model& model, int32_t ci, int32_t var_id, UnivariateQuadratic& out) {
+    const int32_t row = model.constraint_ids()[static_cast<size_t>(ci)];
+    const ExprNode& node = model.nodes()[row];
+    QuadraticWalk walk(model, var_id);
+    Poly2 r;
+    bool abs_row = false;
+    if (is_comparison_op(node.op)) {
+        const ConstSpan<ChildRef> ch = model.children(node);
+        Poly2 lhs;
+        Poly2 rhs;
+        if (!walk.of(ch[0], lhs) || !walk.of(ch[1], rhs)) {
+            return false;
+        }
+        const bool reversed = node.op == NodeOp::Geq || node.op == NodeOp::Gt;
+        r = reversed ? poly_add(rhs, lhs, -1.0) : poly_add(lhs, rhs, -1.0);
+        if (node.op == NodeOp::Lt || node.op == NodeOp::Gt) {
+            r.c += node.const_value;  // the strict margin
+        }
+        abs_row = node.op == NodeOp::Eq;
+    } else if (node.op == NodeOp::Neq || !walk.of(ChildRef{row, false}, r)) {
+        return false;  // Neq is an indicator, not a residual
+    }
+    if (!std::isfinite(r.a) || !std::isfinite(r.b) || !std::isfinite(r.c)) {
+        return false;
+    }
+    // The polynomial must reproduce the residual the row holds now.
+    const double x0 = model.var(var_id).value;
+    const double at_x0 = (((r.a * x0) + r.b) * x0) + r.c;
+    const double held = model.node_value(row);
+    const double got = abs_row ? std::abs(at_x0) : at_x0;
+    if (!(std::abs(got - held) <= 1e-9 * (1.0 + std::abs(held)))) {
+        return false;
+    }
+    out = {r.a, r.b, r.c};
+    return true;
+}
+
+bool quadratic_row_candidates(const Model& model, int32_t ci, int32_t var_id, double x0,
+                              std::vector<double>& out) {
+    out.clear();
+    UnivariateQuadratic q;
+    if (!row_quadratic_in(model, ci, var_id, q) || q.a == 0.0) {
+        return false;
+    }
+    std::array<double, 2> roots{};
+    const int n = quadratic_roots(q, roots);
+    const Variable& var = model.var(var_id);
+    auto offer = [&](double v) {
+        if (v >= var.lb && v <= var.ub && v != x0 &&
+            std::find(out.begin(), out.end(), v) == out.end()) {
+            out.push_back(v);
+        }
+    };
+    for (int i = 0; i < n; ++i) {
+        const double r = roots[static_cast<size_t>(i)];
+        if (var.type == VarType::Int) {
+            if (std::abs(r) < kExactIntMagnitude) {
+                offer(std::floor(r));
+                offer(std::ceil(r));
+            }
+        } else {
+            offer(r);
+        }
+    }
+    return true;
+}
+
+namespace {
+
+// The Int half of #221 (`quadratic_roots`, default off): for each violated row
+// of v, up to the Float path's budget of four, the floor and ceil of each
+// in-domain root of a row `row_quadratic_in` reads as a quadratic in v. The
+// grid candidates land near a root only by chance on a wide domain; these land
+// on it. Called only where the enumeration was NOT exhaustive, since there
+// every integer was offered already. A row with a cached closed-form slope is
+// affine and skipped, as on the Float path.
+template <class Consider>
+void int_quadratic_candidates(const Model& model, int32_t var_id, double x0,
+                              LinearJumpScorer* linear, double tol, Consider&& consider) {
+    const auto& cids = model.constraint_ids();
+    int budget = 4;
+    thread_local std::vector<double> roots;
+    const ConstSpan<int32_t> gv = model.constraints_of_var(var_id);
+    for (size_t k = 0; k < gv.size() && budget > 0; ++k) {
+        const int32_t c = gv[k];
+        if (!(model.node_value(cids[c]) > tol)) {
+            continue;  // satisfied (or NaN, which offers no root): nothing to chase
+        }
+        double grad = 0.0;
+        if (linear != nullptr && linear->residual_partial_at(var_id, k, grad)) {
+            continue;
+        }
+        if (quadratic_row_candidates(model, c, var_id, x0, roots) && !roots.empty()) {
+            for (const double r : roots) {
+                consider(r);
+            }
+            --budget;
+        }
+    }
+}
+
+// The Int candidates: the enumeration or grid, then (#221, with
+// `quadratic_roots`) the quadratic roots where the enumeration was not
+// exhaustive. Returns what `int_jump_candidates` does.
+template <class Consider>
+bool int_jump_candidates(const Model& model, int32_t var_id, const Variable& var, double x0,
+                         LinearJumpScorer* linear, double tol, bool quadratic_roots,
+                         Consider&& consider) {
+    const bool complete = int_jump_candidates(var, x0, consider);
+    if (!complete && quadratic_roots) {
+        int_quadratic_candidates(model, var_id, x0, linear, tol, consider);
+    }
+    return complete;
+}
+
 // Float jump candidates: cheap convex-ish descent — a Newton step toward the
 // root of each violated constraint containing v (reverse-mode AD), plus
 // midpoint/endpoints. The GLS loop iterates these to converge; the
@@ -406,9 +721,18 @@ bool int_jump_candidates(const Variable& var, double x0, Consider&& consider) {
 // where that is bit-identical to compute_partial (LinearJumpScorer::
 // residual_partial_at), so the Newton candidates are exactly the ones the AD sweep
 // would produce, without the sweep.
+//
+// `quadratic_roots` (#221, default off): a violated row that `row_quadratic_in`
+// reads as a quadratic in v offers its in-domain roots (`quadratic_row_candidates`)
+// in place of the Newton step, at the Newton step's place in the order and
+// against the same budget of rows. A row whose closed-form slope is cached
+// (`linear`) is affine and is not walked; an affine row, one the walk does not
+// recognise, and a quadratic whose roots all fall outside the domain keep the
+// Newton step. Off, this is the pre-#221 loop call for call.
 template <class Consider>
 bool float_jump_candidates(Model& model, int32_t var_id, const Variable& var, double x0,
-                           LinearJumpScorer* linear, double tol, Consider&& consider) {
+                           LinearJumpScorer* linear, double tol, bool quadratic_roots,
+                           Consider&& consider) {
     if (var.ub <= var.lb) {
         return true;  // fixed: nothing to escape
     }
@@ -429,6 +753,16 @@ bool float_jump_candidates(Model& model, int32_t var_id, const Variable& var, do
         saw_violated = true;
         double grad = 0.0;
         if (linear == nullptr || !linear->residual_partial_at(var_id, k, grad)) {
+            thread_local std::vector<double> roots;
+            if (quadratic_roots && quadratic_row_candidates(model, c, var_id, x0, roots) &&
+                !roots.empty()) {
+                for (const double r : roots) {
+                    consider(r);
+                }
+                any_newton = true;
+                --budget;
+                continue;
+            }
             grad = compute_partial(model, cids[c], var_id);
         }
         // A NaN residual (a domain error, #205) gives a NaN step, and an
@@ -1119,7 +1453,7 @@ private:
 
 JumpResult compute_var_jump(Model& model, const std::vector<double>& weights, int32_t var_id,
                             bool allow_escape_probe, LinearJumpScorer* linear, double tol,
-                            bool exact_int, const double* objective_coef) {
+                            bool exact_int, const double* objective_coef, bool quadratic_roots) {
     const Variable& var = model.var(var_id);
     const double x0 = var.value;
 
@@ -1171,7 +1505,8 @@ JumpResult compute_var_jump(Model& model, const std::vector<double>& weights, in
     if (var.type == VarType::Bool) {
         consider(1.0 - x0);
     } else if (var.type == VarType::Int) {
-        const bool complete = int_jump_candidates(var, x0, consider_seen);
+        const bool complete = int_jump_candidates(model, var_id, var, x0, linear, tol,
+                                                  quadratic_roots, consider_seen);
         if (!complete && breakpoints) {
             breakpoint_jump_candidates(model, var_id, var, x0, extra);
             consider_unique(extra, seen, consider);
@@ -1183,8 +1518,8 @@ JumpResult compute_var_jump(Model& model, const std::vector<double>& weights, in
         // seed: the drip of tiny improvements suppresses stagnation, so
         // diversification never fires. Hence `allow_escape_probe`, which the
         // search loop arms only once it is genuinely stuck.
-        const bool gradient_usable =
-            float_jump_candidates(model, var_id, var, x0, linear, tol, consider_seen);
+        const bool gradient_usable = float_jump_candidates(model, var_id, var, x0, linear, tol,
+                                                           quadratic_roots, consider_seen);
         // After the Newton candidates, so those keep winning a tie (#186).
         if (breakpoints) {
             breakpoint_jump_candidates(model, var_id, var, x0, extra);
@@ -2123,7 +2458,7 @@ bool FeasibilityJump::apply_jump(int sample_size) {
         if (!jumps_.valid(v)) {
             JumpResult r =
                 compute_var_jump(model_, vm_.weights, v, escape_probe_, &linear_, config_.tolerance,
-                                 config_.exact_int_jump, objective_tie(v));
+                                 config_.exact_int_jump, objective_tie(v), config_.quadratic_roots);
             jumps_.set(v, r.jump_value, r.score);
         }
         const double s = jumps_.score(v);
@@ -3099,8 +3434,9 @@ FeasibilityJump::NoveltyPick FeasibilityJump::select_novelty_var(double s_m, dou
         }
         // W'-argmin, then its score under W. Both in closed form where the rows
         // allow it, exactly as apply_jump scores.
-        JumpResult nr = compute_var_jump(model_, novelty_weights_, v, false, &linear_,
-                                         config_.tolerance, config_.exact_int_jump);
+        JumpResult nr =
+            compute_var_jump(model_, novelty_weights_, v, false, &linear_, config_.tolerance,
+                             config_.exact_int_jump, nullptr, config_.quadratic_roots);
         double score = 0.0;
         if (linear_.prepare(v, vm_.weights) && std::isfinite(nr.jump_value - model_.var(v).value)) {
             score = -linear_.delta(nr.jump_value);

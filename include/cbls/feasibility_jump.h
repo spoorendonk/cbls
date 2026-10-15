@@ -5,6 +5,7 @@
 #include "rng.h"
 #include "violation.h"
 
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <limits>
@@ -132,7 +133,57 @@ struct JumpResult {
 JumpResult compute_var_jump(Model& model, const std::vector<double>& weights, int32_t var_id,
                             bool allow_escape_probe = false, LinearJumpScorer* linear = nullptr,
                             double tol = kDefaultFeasibilityTolerance, bool exact_int = false,
-                            const double* objective_coef = nullptr);
+                            const double* objective_coef = nullptr, bool quadratic_roots = false);
+
+// ---- Exact univariate quadratic roots (#221, LS-IQCQP) ----------------------
+//
+// With `quadratic_roots` set (GFJConfig::quadratic_roots, default off), a
+// violated row whose residual is a quadratic in the moved variable -- the
+// others held at their current values -- offers the roots that make it tight
+// instead of one Newton step toward them. Detected from the DAG by
+// `row_quadratic_in`; any row it does not read as a quadratic with a nonzero
+// leading coefficient keeps today's Newton candidate.
+
+/// `a v^2 + b v + c`.
+struct UnivariateQuadratic {
+    double a = 0.0;
+    double b = 0.0;
+    double c = 0.0;
+};
+
+/// The real roots of `q`, ascending, in `roots`; returns how many (0, 1 or 2).
+/// `a == 0` is the linear case: one root `-c/b`, none when `b == 0` too (a
+/// constant row has no root even when it is 0 everywhere). Two roots are taken
+/// by the cancellation-free form (q = -(b + sgn(b) sqrt(D)) / 2, roots q/a and
+/// c/q); a zero discriminant gives the one root -b/(2a). Non-finite roots are
+/// dropped.
+int quadratic_roots(const UnivariateQuadratic& q, std::array<double, 2>& roots);
+
+/// Reads constraint row `ci`'s RESIDUAL (the value `node_value` holds for it:
+/// `a - b` for `a <= b`, `b - a` for `>=`, plus the strict margin for `<`/`>`,
+/// `a - b` under the `|.|` of `==`, the body itself for a bare row) as a
+/// polynomial of degree <= 2 in variable `var_id`, every other variable at its
+/// current value. Sum, Neg, binary Prod, Div by a quantity free of `var_id`, and
+/// Pow by a constant 0, 1 or 2 compose; a subexpression free of `var_id` is the
+/// constant its current value is; anything else that reaches `var_id` (exp, a
+/// product of degree > 2, `!=`, ...) is not a quadratic and returns false. So
+/// does a walk past a fixed node budget (a shared DAG walked as a tree), a
+/// non-finite coefficient, and a polynomial that does not reproduce the row's
+/// current residual (to 1e-9 relative), which is the guard against a node whose
+/// value is not the plain function of its children the walk assumes.
+bool row_quadratic_in(const Model& model, int32_t ci, int32_t var_id, UnivariateQuadratic& out);
+
+/// The jump candidates row `ci` offers `var_id` (at value `x0`) under #221:
+/// true, with `out` holding them, when the row is a quadratic with a nonzero
+/// leading coefficient in `var_id`; false (and `out` empty) otherwise, which is
+/// the caller's cue to take the Newton step. Each real root inside the declared
+/// domain [lb, ub] is a candidate (one outside is dropped, not clamped: the
+/// bounds are candidates already); for an Int the root's floor and ceil, inside
+/// the domain, both of them because which side of the root satisfies the row
+/// depends on its sense. `x0` itself and duplicates are left out. `out` is
+/// cleared first.
+bool quadratic_row_candidates(const Model& model, int32_t ci, int32_t var_id, double x0,
+                              std::vector<double>& out);
 
 // Guided Local Search weight update (paper Algorithm 3, lines 8-10): decay all
 // weights by rho, then bump every currently-violated constraint by 1. Weights
@@ -257,6 +308,14 @@ struct GFJConfig {
     // whether to turn it on is #208's timed A/B. solve() sets it from
     // SearchConfig::fj_exact_int_jump.
     bool exact_int_jump = false;
+    // Opt-in exact quadratic roots (#221, LS-IQCQP): a violated row that reads
+    // as a quadratic in the moved variable offers its in-domain roots (an Int
+    // their floor and ceil) as jump candidates, in place of the Float Newton
+    // step and beside the Int grid -- see `row_quadratic_in`. Off by default,
+    // which is today's path bit for bit. solve() sets it from
+    // SearchConfig::fj_quadratic_roots; whether to turn it on is a
+    // needs-benchmark follow-up.
+    bool quadratic_roots = false;
     // Opt-in OR-Tools-style kick (#217), off by default: perturb() redraws each
     // jumpable variable with probability `perturb_near_value_probability`
     // (OR-Tools' feasibility_jump_var_randomization_probability, 0.05) to a

@@ -1498,6 +1498,7 @@ NB_MODULE(_cbls_core, m) {
             })
         .def_rw("feasibility_tolerance", &SearchConfig::feasibility_tolerance)
         .def_rw("fj_exact_int_jump", &SearchConfig::fj_exact_int_jump)
+        .def_rw("fj_quadratic_roots", &SearchConfig::fj_quadratic_roots)
         .def_rw("perturb_near_value", &SearchConfig::perturb_near_value)
         .def_rw("fj_objective_tie_break", &SearchConfig::fj_objective_tie_break)
         .def_rw("fj_objective_start", &SearchConfig::fj_objective_start)
@@ -1734,5 +1735,6 @@ NB_MODULE(_cbls_core, m) {
           nb::arg("rng"));
     m.def("fj_nl_initialize", &fj_nl_initialize, nb::arg("model"), nb::arg("vm"),
           nb::arg("max_iterations") = 10000, nb::arg("rng") = nullptr, nb::arg("time_limit") = 2.0,
-          nb::arg("tolerance") = kDefaultFeasibilityTolerance, nb::arg("exact_int_jump") = false);
+          nb::arg("tolerance") = kDefaultFeasibilityTolerance, nb::arg("exact_int_jump") = false,
+          nb::arg("quadratic_roots") = false);
 }
