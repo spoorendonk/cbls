@@ -1498,6 +1498,7 @@ NB_MODULE(_cbls_core, m) {
             })
         .def_rw("feasibility_tolerance", &SearchConfig::feasibility_tolerance)
         .def_rw("fj_exact_int_jump", &SearchConfig::fj_exact_int_jump)
+        .def_rw("perturb_near_value", &SearchConfig::perturb_near_value)
         // A NON-OWNING view of a StopToken the Python caller holds (#169). The
         // keep_alive is what makes that safe: it ties the token's lifetime to
         // this config, so `cbls.solve(m, cfg)` cannot be reading a token Python

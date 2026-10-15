@@ -361,22 +361,18 @@ def test_a_row_without_the_shared_bound_key_scores_only_where_it_is_equivalent(
             check_uniform_configuration(rows)
 
 
+@pytest.mark.parametrize("key", ["exact_int_jump", "perturb_near_value"])
 @pytest.mark.parametrize(
-    ("old", "new", "match"),
-    [
-        # Before #216 every CBLS row ran the candidate path: the flag's off arm.
-        ({"compound_moves": True}, {"compound_moves": True, "exact_int_jump": False}, None),
-        (
-            {"compound_moves": True},
-            {"compound_moves": True, "exact_int_jump": True},
-            "span 2 configurations",
-        ),
-    ],
+    ("on", "match"),
+    # Before the flag (#216, #217) every CBLS row ran its off arm.
+    [(False, None), (True, "span 2 configurations")],
     ids=["old-row-is-the-off-arm", "on-arm-refused"],
 )
-def test_a_row_without_the_exact_int_jump_key_is_the_off_arm(
-    tmp_path: Path, old: dict[str, object], new: dict[str, object], match: str | None
+def test_a_row_without_an_opt_in_engine_key_is_the_off_arm(
+    tmp_path: Path, key: str, on: bool, match: str | None
 ) -> None:
+    old: dict[str, object] = {"compound_moves": True}
+    new: dict[str, object] = {"compound_moves": True, key: on}
     for instance, extra in (("a", old), ("b", new)):
         _write_result(
             tmp_path,

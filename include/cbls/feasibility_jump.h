@@ -231,6 +231,21 @@ struct GFJConfig {
     // whether to turn it on is #208's timed A/B. solve() sets it from
     // SearchConfig::fj_exact_int_jump.
     bool exact_int_jump = false;
+    // Opt-in OR-Tools-style kick (#217), off by default: perturb() redraws each
+    // jumpable variable with probability `perturb_near_value_probability`
+    // (OR-Tools' feasibility_jump_var_randomization_probability, 0.05) to a
+    // value NEAR its current one, `random_near_value` at
+    // `perturb_range_ratio` (feasibility_jump_var_perburbation_range_ratio,
+    // 0.2), instead of with the caller's probability to a uniform draw over the
+    // whole domain -- which under a 1e7 inf-clamp throws a column anywhere in
+    // [-1e7, 1e7]. A binary then flips w.p. 0.05 * 0.2 = 1% where today's kick
+    // flips 5%. The List/Set half of the kick keeps the caller's probability.
+    // Off is today's kick, draw for draw. solve() sets it from
+    // SearchConfig::perturb_near_value; whether to turn it on is a
+    // needs-benchmark follow-up.
+    bool perturb_near_value = false;
+    double perturb_near_value_probability = 0.05;
+    double perturb_range_ratio = 0.2;
     bool two_phase = true;       // GLS on linear submodel first, then full model
     bool set_initial_x = true;   // set X[v] to the domain value closest to 0 first
     int64_t max_iterations = 0;  // 0 = unbounded (bounded by time_limit)
@@ -293,6 +308,8 @@ public:
     // scalar if any can move, else a structure — so the kick is never a no-op
     // (#109). The fallback leaves large models bit-identical to plain p-draws,
     // and a model without List/Set variables keeps its exact draw sequence.
+    // With GFJConfig::perturb_near_value the scalar half draws near the current
+    // value at that config's own probability instead (#217); see there.
     void perturb(double probability);
     void set_rho(double rho) { config_.rho = rho; }
     // Armed by the search loop once it has stagnated; see solve().

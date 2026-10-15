@@ -100,6 +100,119 @@ double random_in_domain(const Variable& var, RNG& rng) {
     }
 }
 
+namespace {
+
+// absl::LogUniform<int64_t>(0, range), base 2: a bucket e uniform over
+// [0, bit_width(range)], bucket 0 being {0} and bucket e >= 1 being
+// [2^(e-1), min(2^e - 1, range)], then a value uniform within the bucket.
+int64_t log_uniform_offset(RNG& rng, int64_t range) {
+    if (range <= 0) {
+        return 0;
+    }
+    int64_t width = 0;
+    for (auto r = static_cast<uint64_t>(range); r != 0; r >>= 1U) {
+        ++width;
+    }
+    const int64_t e = rng.integers(0, width + 1);
+    if (e == 0) {
+        return 0;
+    }
+    const int64_t lo = int64_t{1} << static_cast<uint64_t>(e - 1);
+    const int64_t hi =
+        (e == 63) ? range : std::min((int64_t{1} << static_cast<uint64_t>(e)) - 1, range);
+    return rng.integers(lo, hi + 1);
+}
+
+// The reference's RandomValueNearMin / RandomValueNearMax over a contiguous
+// integer domain [lo, hi]; ValueAtOrBefore / ValueAtOrAfter reduce to a clamp.
+int64_t int_near_end(RNG& rng, int64_t lo, int64_t hi, double range_ratio, bool near_min) {
+    if (lo >= hi) {
+        return lo;
+    }
+    if (hi - lo == 1) {
+        const bool stay = rng.random() < 1.0 - range_ratio;
+        return (stay == near_min) ? lo : hi;
+    }
+    const auto range = static_cast<int64_t>(std::ceil(static_cast<double>(hi - lo) * range_ratio));
+    const int64_t offset = std::min(log_uniform_offset(rng, range), hi - lo);
+    return near_min ? lo + offset : hi - offset;
+}
+
+double float_near_end(RNG& rng, double lo, double hi, double range_ratio, bool near_min) {
+    const double r = (hi - lo) * range_ratio;
+    const double offset = r * std::exp2(-kNearValueFloatOctaves * rng.random());
+    return near_min ? std::min(lo + offset, hi) : std::max(hi - offset, lo);
+}
+
+// random_near_value over a Float: the reference's rule carried to a
+// continuous domain (see the header).
+double float_near_value(const Variable& var, RNG& rng, double range_ratio, bool exclude_current) {
+    const DomainWindow w = domain_window(var);
+    if (!(w.hi > w.lo)) {
+        return w.lo;
+    }
+    const double v = var.value;
+    double out = 0.0;
+    if (!(v > w.lo)) {  // at or below the minimum, NaN included
+        out = float_near_end(rng, w.lo, w.hi, range_ratio, /*near_min=*/true);
+    } else if (!(v < w.hi)) {
+        out = float_near_end(rng, w.lo, w.hi, range_ratio, /*near_min=*/false);
+    } else if (rng.random() < (w.hi - v) / (w.hi - w.lo)) {
+        out = float_near_end(rng, v, w.hi, range_ratio, /*near_min=*/true);
+    } else {
+        out = float_near_end(rng, w.lo, v, range_ratio, /*near_min=*/false);
+    }
+    if (exclude_current && out == v) {
+        // An offset below one ulp of v rounds back onto it; take the end
+        // further from v instead, as random_different_in_domain does.
+        out = (v - w.lo >= w.hi - v) ? w.lo : w.hi;
+    }
+    return out;
+}
+
+// random_near_value over a Bool or an Int: one contiguous integer domain, the
+// reference's RandomValueNearValue verbatim.
+double int_near_value(const Variable& var, RNG& rng, double range_ratio, bool exclude_current) {
+    const DomainWindow s = int_sample_window(var);
+    if (s.lo > s.hi) {
+        return random_in_domain(var, rng);  // wholly past 2^53; see the header
+    }
+    const auto lo = static_cast<int64_t>(s.lo);
+    const auto hi = static_cast<int64_t>(s.hi);
+    if (lo == hi) {
+        return s.lo;
+    }
+    const double v = var.value;
+    // Whether v is at (or past) an end. Compared in double: v need not be
+    // castable at all, and a NaN reads as below the minimum.
+    if (!(v > s.lo)) {
+        // The current value is lo when v == lo, so excluding it starts at lo + 1.
+        const int64_t start = (exclude_current && v == s.lo) ? lo + 1 : lo;
+        return static_cast<double>(int_near_end(rng, start, hi, range_ratio, /*near_min=*/true));
+    }
+    if (!(v < s.hi)) {
+        const int64_t end = (exclude_current && v == s.hi) ? hi - 1 : hi;
+        return static_cast<double>(int_near_end(rng, lo, end, range_ratio, /*near_min=*/false));
+    }
+    // Strictly inside. The split excludes the value, so this always moves;
+    // floor/ceil keep a fractional v (not reachable from any reader) inside.
+    const auto above_lo = static_cast<int64_t>(std::floor(v)) + 1;
+    const auto below_hi = static_cast<int64_t>(std::ceil(v)) - 1;
+    const auto above_size = static_cast<double>(hi - above_lo + 1);
+    const auto below_size = static_cast<double>(below_hi - lo + 1);
+    const int64_t out = (rng.random() < above_size / (above_size + below_size))
+                            ? int_near_end(rng, above_lo, hi, range_ratio, /*near_min=*/true)
+                            : int_near_end(rng, lo, below_hi, range_ratio, /*near_min=*/false);
+    return static_cast<double>(out);
+}
+
+}  // namespace
+
+double random_near_value(const Variable& var, RNG& rng, double range_ratio, bool exclude_current) {
+    return (var.type == VarType::Float) ? float_near_value(var, rng, range_ratio, exclude_current)
+                                        : int_near_value(var, rng, range_ratio, exclude_current);
+}
+
 void randomize_structured_var(Variable& var, RNG& rng, ListOrder order) {
     switch (var.type) {
         case VarType::List:

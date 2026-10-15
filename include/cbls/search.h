@@ -236,6 +236,14 @@ struct SearchConfig {
     // off and what decides whether it turns on.
     bool fj_exact_int_jump = false;
 
+    // OR-Tools' diversification kick (#217), off by default: forwarded to
+    // GFJConfig::perturb_near_value. Each scalar is redrawn with probability
+    // 0.05 to a value near its current one (log-uniform within 20% of the side
+    // of the domain it moves into; a binary flips ~1%), instead of with
+    // `perturbation_probability` uniformly over the whole domain. The List/Set
+    // half of the kick is unchanged. Off is today's kick, draw for draw.
+    bool perturb_near_value = false;
+
     // ---- host integration (#169): cancellation and tracing ------------------
     //
     // Both are NON-OWNING views of objects the CALLER keeps alive for the whole

@@ -144,6 +144,47 @@ bool movable_domain(const Variable& var);
 /// reason `movable_domain` checks the bounds anyway.
 double random_in_domain(const Variable& var, RNG& rng);
 
+/// Draw a value NEAR the current one: OR-Tools' `RandomValueNearValue`
+/// (ortools/sat/feasibility_jump.cc), the per-variable draw of its perturbation
+/// (#217). Off the default path: only FJ's kick calls it, and only with
+/// `GFJConfig::perturb_near_value` on.
+///
+/// Over an integral domain (Bool and Int), exactly the reference's rule:
+///
+///  - value at or below the domain's minimum: a value near the minimum; at or
+///    above the maximum, near the maximum (the reference draws over the WHOLE
+///    domain there, so the draw can return the current value);
+///  - strictly inside: pick the side above or below the value with probability
+///    proportional to its size, then a value near the value's own neighbour on
+///    that side, so an interior draw always moves.
+///
+/// "Near the minimum of [lo, hi]" is: lo itself when the domain is one value; on
+/// two values, lo with probability 1 - `range_ratio` and hi otherwise (so a
+/// binary flips with probability `range_ratio`: 0.2, times the kick's 0.05, is
+/// the reference's ~1%); else lo + LogUniform(0, ceil((hi - lo) * range_ratio)),
+/// the offset drawn as absl's base-2 `LogUniform` draws it -- a uniformly chosen
+/// power-of-two bucket, then uniformly within it. "Near the maximum" mirrors it.
+///
+/// The reference has no continuous domain. A Float takes the same side rule
+/// with sides weighted by length, and an offset `r * 2^(-kNearValueFloatOctaves
+/// * u)`, u ~ U[0, 1), where r = (side width) * range_ratio: log-uniform over
+/// twenty octaves below r. Twenty is a structural choice, not a measured one.
+///
+/// `exclude_current` drops the current value from the domain before the same
+/// rule, so the draw differs from it whenever the domain holds another value:
+/// the never-a-no-op fallback of FJ's kick (#109) in this mode.
+///
+/// Finite and in-domain for every domain the model can hold, the unbounded ones
+/// included: it draws from `domain_window` / `int_sample_window`, exactly as
+/// `random_in_domain` does, so an infinite bound is the clamp box rather than a
+/// width that overflows. An Int domain wholly past 2^53, which no `int64_t`
+/// names, falls back to `random_in_domain`.
+double random_near_value(const Variable& var, RNG& rng, double range_ratio,
+                         bool exclude_current = false);
+
+/// Octaves below the side's range a Float `random_near_value` offset spans.
+inline constexpr double kNearValueFloatOctaves = 20.0;
+
 /// How a List's new order relates to its current one.
 ///
 /// On a PERMUTATION List — `list_var(n)`, and every List there was before #164 —

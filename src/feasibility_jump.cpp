@@ -2658,14 +2658,21 @@ void FeasibilityJump::perturb(double probability) {
     // the distribution — and the exact draw sequence — it had before. Forcing a
     // variable unconditionally instead would shift the draw sequence on every
     // model.
+    //
+    // GFJConfig::perturb_near_value (#217) swaps the scalar half for OR-Tools'
+    // kick: its own probability, and a draw near the current value. Off, the
+    // loop below is the pre-#217 loop, draw for draw.
+    const bool near = config_.perturb_near_value;
+    const double scalar_probability = near ? config_.perturb_near_value_probability : probability;
     bool changed = false;
     for (int32_t v = 0; v < static_cast<int32_t>(model_.num_vars()); ++v) {
-        if (!jumpable(v) || rng_.random() >= probability) {
+        if (!jumpable(v) || rng_.random() >= scalar_probability) {
             continue;
         }
         Variable& var = model_.var_mut(v);
         const double previous = var.value;
-        var.value = random_in_domain(var, rng_);
+        var.value = near ? random_near_value(var, rng_, config_.perturb_range_ratio)
+                         : random_in_domain(var, rng_);
         changed = changed || var.value != previous;
     }
     // The loop above only reaches jumpable (scalar) variables. List and Set
@@ -2687,7 +2694,9 @@ void FeasibilityJump::perturb(double probability) {
         const int32_t forced = pick_forced_perturb_var();
         if (forced >= 0) {
             Variable& var = model_.var_mut(forced);
-            var.value = random_different_in_domain(var, rng_);
+            var.value = near ? random_near_value(var, rng_, config_.perturb_range_ratio,
+                                                 /*exclude_current=*/true)
+                             : random_different_in_domain(var, rng_);
         } else {
             force_structural_move();
         }

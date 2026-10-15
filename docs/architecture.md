@@ -1357,7 +1357,14 @@ The ViolationLS outer loop owns the iteration clock and calls:
   hook/structural mutation outside the engine's bookkeeping).
 - `perturb(probability)` — randomise each scalar var w.p. `probability` and
   apply `max(1, round(probability * |elements|))` random structural moves to
-  each List/Set var, full-evaluate, reset weights.
+  each List/Set var, full-evaluate, reset weights. With
+  `GFJConfig::perturb_near_value` (`SearchConfig::perturb_near_value`; default
+  **off**, #217) the scalar half is OR-Tools' kick instead: each scalar w.p.
+  0.05 (not `probability`) to `random_near_value`, the reference's
+  `RandomValueNearValue` — a side of the value chosen by size, then a
+  log-uniform offset within 20% of that side — so a binary flips ~1% where the
+  default flips 5%, and a column under a 1e7 inf-clamp moves near where it was
+  instead of anywhere in the box. The List/Set half is unchanged.
 - `set_rho(rho)` — re-randomise the GLS decay between batches.
 
 ---
