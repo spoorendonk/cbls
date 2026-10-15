@@ -863,9 +863,9 @@ CBLS = constraint-based local search. ViolationLS (guided local search over sing
   `lambda_funcs`, which every replica invokes concurrently and which therefore
   cannot carry state. A model holding one cannot be written to `.cbls`, and it
   is **not** exposed to Python (that waits on #132). `docs/architecture.md`
-  carries the contract table and names the **three** apply-then-revert sites
+  carries the contract table and names the **four** apply-then-revert sites
   deliberately left unbracketed (the inner solver's is only its multi-variable
-  step since #207). `in.edits(i)` (#172) says *where* a List/Set
+  step since #207; the equality-balance leg is the fourth, #222). `in.edits(i)` (#172) says *where* a List/Set
   input moved, as positional edits since the last committed state, so a delta
   over a List can be O(edits) — but only the structural batch supplies them, only
   for an invariant that opts in (`wants_positional_edits()`), and on every other

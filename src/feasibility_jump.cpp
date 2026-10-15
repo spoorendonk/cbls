@@ -2556,8 +2556,8 @@ bool FeasibilityJump::apply_jump(int sample_size) {
 // row. v's target is its best jump (compute_var_jump, same candidates) under
 // the GLS weights with every satisfied linear Eq row of v masked to 0 -- the
 // jump it would make if those rows were held. For each of up to
-// kBalanceRows of those rows, up to kBalancePartners partners u (the whole row
-// when it is that short, else a random sample) give du = -a_v dv / a_u, the
+// kBalanceRows of those rows, up to kBalancePartners partners u (the first
+// usable ones of a cyclic scan from a random offset) give du = -a_v dv / a_u, the
 // slopes being the scorer's cached row slopes. The pair is scored exactly:
 // the weighted violation delta of v's leg, then u's leg with v applied (one
 // delta_evaluate each way, as Novelty's legs are), under the real weights. The
@@ -2573,7 +2573,8 @@ bool FeasibilityJump::apply_jump(int sample_size) {
 //
 // COST per local minimum: per draw one masked compute_var_jump plus, per
 // partner, two delta_evaluates of v (only when integrality changes dv) and
-// one scored leg of u. The draw budget is the FJ sample size.
+// one scored leg of u, plus the partner scan, up to O(|row|) when usable
+// partners are scarce. The draw budget is the FJ sample size.
 
 namespace {
 
@@ -2760,12 +2761,21 @@ void FeasibilityJump::balance_from(int32_t v, BalanceMove& best) {
     for (const auto& [e, a_v] : rows) {
         const std::vector<int32_t>& members = vars_of_constraint_[e];
         const size_t n = members.size();
-        for (size_t t = 0; t < std::min(n, kBalancePartners); ++t) {
-            // The whole row when it is short, else a random sample of it.
-            const int32_t u =
-                n <= kBalancePartners
-                    ? members[t]
-                    : members[static_cast<size_t>(rng_.integers(0, static_cast<int64_t>(n)))];
+        // The first kBalancePartners usable partners of a cyclic scan from a
+        // random offset (the whole row when it is that short). Usability is
+        // checked before the partner counts: on a set-partitioning row
+        // sum x = 1, v's flip has exactly one usable partner, the member at 1,
+        // which a blind sample of kBalancePartners out of n finds with
+        // probability ~kBalancePartners / n. The checks are O(log deg u) each,
+        // so the scan costs O(n log deg) only when usable partners are scarce
+        // -- the regime where it is the only way to find one -- against
+        // kBalancePartners scored legs when they are plentiful.
+        const size_t start = n <= kBalancePartners
+                                 ? 0
+                                 : static_cast<size_t>(rng_.integers(0, static_cast<int64_t>(n)));
+        size_t scored = 0;
+        for (size_t t = 0; t < n && scored < kBalancePartners; ++t) {
+            const int32_t u = members[(start + t) % n];
             double a_u = 0.0;
             double dv = 0.0;
             double du = 0.0;
@@ -2777,6 +2787,7 @@ void FeasibilityJump::balance_from(int32_t v, BalanceMove& best) {
             if (!in_domain(var_v, x_v + dv) || !in_domain(model_.var(u), u_to)) {
                 continue;
             }
+            ++scored;
             const double score = -(leg.apply(dv, v_delta) + jump_delta(u, u_to));
             if (score > best.score) {
                 best = {v, x_v + dv, u, u_to, score};

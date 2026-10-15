@@ -555,13 +555,14 @@ replica invokes concurrently and which therefore cannot carry state at all.
 `per_constraint_violation_delta` — the per-candidate scalar probe Feasibility
 Jump runs for every jump value — are bracketed as `Probe` then `Rollback`, so a
 custom node in one of those cones costs **one `delta` and one `rollback`** per
-candidate rather than two deltas. **Three** other sites score by evaluating
-forwards and evaluating back, and every leg of all three stays `Commit`: the
+candidate rather than two deltas. **Four** other sites score by evaluating
+forwards and evaluating back, and every leg of all four stays `Commit`: the
 structural batch (`src/structural_batch.cpp`), the inner solver's
 multi-variable Newton step (`src/inner_solver.cpp`; its coordinate probes are
-bracketed since #207), and Novelty Jump's backtracking compound-move search
+bracketed since #207), Novelty Jump's backtracking compound-move search
 (`src/feasibility_jump.cpp`), which is on the same per-candidate path the
-bracketed probe is. All three are correct — each leg really is a new committed
+bracketed probe is, and the equality-balance move's first leg (`AppliedLeg` in
+the same file, #222, only with `fj_equality_balance` on). All four are correct — each leg really is a new committed
 assignment, and the `changed` set each passes is a complete superset of what it
 moved — but **twice the cost** of the bracketed path, and an invariant caching a
 List's prefix sums updates it on both legs (O(edits) per leg on the structural

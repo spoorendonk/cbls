@@ -144,21 +144,51 @@ TEST_CASE("a balance move between Ints takes the gcd step (#222)", "[fj][equalit
 }
 
 TEST_CASE("a balance move never leaves a domain (#222)", "[fj][equality_balance]") {
-    // x + y == 10 at (8, 2) with y <= 2; x <= 5 violated by 3. The balanced
-    // move x - 3, y + 3 takes y to 5, outside its domain: no move.
-    Model m;
-    auto x = m.int_var(0, 10);
-    auto y = m.int_var(0, 2);
-    m.add_constraint(m.eq_expr(m.sum({x, y}), m.constant(10.0)));
-    m.add_constraint(m.leq(x, m.constant(5.0)));
-    m.close();
-    m.var_mut(vid(x)).value = 8.0;
-    m.var_mut(vid(y)).value = 2.0;
-    full_evaluate(m);
-    OneIteration run(m, true);
-    run.fj.batch(1);
-    REQUIRE(run.fj.balance_moves() == 0);
-    REQUIRE(m.var(vid(y)).value <= 2.0);
+    SECTION("no partner with room: no move") {
+        // x + y == 10 at (8, 2) with y <= 2; x <= 5 violated by 3. The balanced
+        // move x - 3, y + 3 takes y to 5, outside its domain: no move.
+        Model m;
+        auto x = m.int_var(0, 10);
+        auto y = m.int_var(0, 2);
+        m.add_constraint(m.eq_expr(m.sum({x, y}), m.constant(10.0)));
+        m.add_constraint(m.leq(x, m.constant(5.0)));
+        m.close();
+        m.var_mut(vid(x)).value = 8.0;
+        m.var_mut(vid(y)).value = 2.0;
+        full_evaluate(m);
+        OneIteration run(m, true);
+        run.fj.batch(1);
+        REQUIRE(run.fj.balance_moves() == 0);
+        REQUIRE(m.var(vid(y)).value <= 2.0);
+    }
+    SECTION("a long row: the one partner with room is found") {
+        // Set partitioning, sum of 1000 Bools == 1 with b[k] = 1, and b[3] >= 1
+        // violated. Flipping b[3] alone trades the two rows; the balanced move
+        // has exactly one partner that stays a Bool, b[k]. A partner drawn
+        // without regard to its domain finds it ~4% of the time over a GLS
+        // iteration's draws; the scan always does.
+        constexpr int kN = 1000;
+        constexpr size_t kOne = 617;
+        Model m;
+        std::vector<int32_t> b;
+        b.reserve(kN);
+        for (int i = 0; i < kN; ++i) {
+            b.push_back(m.bool_var());
+        }
+        const int32_t eq = m.eq_expr(m.sum(b), m.constant(1.0));
+        m.add_constraint(eq);
+        m.add_constraint(m.geq(b[3], m.constant(1.0)));
+        m.close();
+        m.var_mut(vid(b[kOne])).value = 1.0;
+        full_evaluate(m);
+        OneIteration run(m, true);
+        run.fj.batch(1);
+        REQUIRE(run.fj.balance_moves() == 1);
+        REQUIRE(m.var(vid(b[3])).value == 1.0);
+        REQUIRE(m.var(vid(b[kOne])).value == 0.0);
+        REQUIRE(m.node_value(eq) == 0.0);
+        REQUIRE(run.vm.total_violation() == 0.0);
+    }
 }
 
 TEST_CASE("the equality-balance flag reaches solve() and the LNS repair (#222)",
