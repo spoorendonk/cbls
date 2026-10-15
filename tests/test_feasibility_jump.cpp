@@ -1594,3 +1594,28 @@ TEST_CASE("#208's repro under the LNS repair FJ, exact Int jump off and on (#216
         REQUIRE((vm.total_violation() == 0.0) == !exact);
     }
 }
+
+// Novelty Jump scores its moves through the same compute_var_jump, and takes the
+// flag too. Every batch here is a Novelty batch, so FJ's batch path never runs:
+// with the flag dropped at the Novelty call the on-arm solves in off's 72
+// iterations, which is what this pins against.
+TEST_CASE("#208's repro under Novelty Jump batches, exact Int jump off and on (#216)",
+          "[fj][linear_jump]") {
+    for (const bool exact : {false, true}) {
+        Model m;
+        build_exact_jump_repro(m);
+        SearchConfig config;
+        config.max_iterations = 10'000;
+        config.use_compound_moves = true;
+        config.novelty_jump_probability = 1.0;
+        config.fj_exact_int_jump = exact;
+        const SearchResult r =
+            solve(m, /*time_limit=*/0.0, /*seed=*/1, true, nullptr, nullptr, 3, nullptr, config);
+        CAPTURE(exact, r.iterations);
+        REQUIRE(r.counters.novelty_batches == r.counters.batches);
+        REQUIRE(r.feasible == !exact);
+        if (!exact) {
+            REQUIRE(r.iterations == 72);
+        }
+    }
+}

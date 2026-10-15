@@ -331,6 +331,28 @@ def test_resuming_at_a_different_thread_count_is_refused(tmp_path: Path) -> None
     assert run_benchmark.check_resume_configuration([Job("cpsat", "a")], tmp_path, args) == 2
 
 
+def test_resuming_under_a_different_search_arm_is_refused(tmp_path: Path) -> None:
+    # The same hole for CBLS's search-arm flags (#216): an --exact-int-jump re-run
+    # over an off-arm directory would skip every job and score a uniform off table.
+    (tmp_path / "cbls").mkdir()
+    result = tmp_path / "cbls" / "a.json"
+    jobs = [Job("cbls", "a")]
+
+    def check(**overrides: object) -> int | None:
+        return run_benchmark.check_resume_configuration(jobs, tmp_path, _driver_args(**overrides))
+
+    result.write_text(json.dumps({"instance": "a", "threads": 1, "exact_int_jump": False}))
+    assert check() is None
+    assert check(exact_int_jump=True) == 2
+    # A row from before the flag ran the off arm, so it is read as off, not skipped.
+    result.write_text(json.dumps({"instance": "a", "threads": 1}))
+    assert check() is None
+    assert check(exact_int_jump=True) == 2
+    result.write_text(json.dumps({"instance": "a", "threads": 1, "compound_moves": True}))
+    assert check() is None
+    assert check(compound_moves=False) == 2
+
+
 # --- resume: what still needs a solve, and what still needs a verdict (#138) -----
 
 

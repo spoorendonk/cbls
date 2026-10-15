@@ -849,14 +849,17 @@ def has_usable_result(job: Job, results_dir: Path, verify: bool = False) -> bool
 def check_resume_configuration(
     jobs: list[Job], results_dir: Path, args: argparse.Namespace
 ) -> int | None:
-    """Refuse to resume onto results produced at a different per-solve CPU.
+    """Refuse to resume onto results produced under a different configuration.
 
     Resume keys on file existence alone, and a result's path carries the engine
     and the instance but not the concurrency. So re-running a directory at
     `--cbls-threads 4` after a 1-thread run skips every job it finds, and the
     scorer then sees a UNIFORM `threads=1` table -- no mixture, nothing for
     `check_uniform_configuration` to refuse, and an operator who believes they
-    measured 4 threads. The row is truthful; the person reading it is not.
+    measured 4 threads. The row is truthful; the person reading it is not. The
+    same holds for CBLS's two search-arm flags, `compound_moves` and
+    `exact_int_jump` (#216): an on-arm re-run over an off-arm directory would
+    score a uniform off table.
 
     Checked here rather than at scoring time because by then the run has been
     paid for. `--force` is the documented way through, and it clears the old
@@ -864,27 +867,37 @@ def check_resume_configuration(
 
     Returns the exit code to fail with, or None to proceed.
     """
-    wanted = {"cbls": args.cbls_threads, "cpsat": args.cpsat_workers}
-    key = {"cbls": "threads", "cpsat": "workers"}
+    # Per engine: (record key, what this run asks for, what a row without the
+    # key ran -- None when that is unknown and the row is left alone).
+    # `exact_int_jump` is back-read as off: every row from before the flag ran
+    # the candidate path.
+    wanted: dict[str, list[tuple[str, object, object]]] = {
+        "cbls": [
+            ("threads", args.cbls_threads, None),
+            ("compound_moves", args.compound_moves, None),
+            ("exact_int_jump", args.exact_int_jump, False),
+        ],
+        "cpsat": [("workers", args.cpsat_workers, None)],
+    }
     for job in jobs:
         result = read_json_object(job.result_path(results_dir))
         if result is None:
             continue
-        recorded = result.get(key[job.engine])
-        if recorded is None:
-            continue  # predates the key; nothing to contradict
-        if recorded != wanted[job.engine]:
-            print(
-                f"{results_dir} already holds {job.engine} results at "
-                f"{key[job.engine]}={recorded}, but this run asks for "
-                f"{wanted[job.engine]} (first seen on {job.instance}). Resume skips "
-                f"jobs that have a result, so those rows would stay at "
-                f"{recorded} while the table claims this run's configuration. "
-                f"Score them where they are, re-run with --force, or choose a "
-                f"different --results-dir.",
-                file=sys.stderr,
-            )
-            return 2
+        for key, asked, absent in wanted[job.engine]:
+            recorded = result.get(key, absent)
+            if recorded is None:
+                continue  # predates the key; nothing to contradict
+            if recorded != asked:
+                print(
+                    f"{results_dir} already holds {job.engine} results at "
+                    f"{key}={recorded}, but this run asks for {asked} (first seen "
+                    f"on {job.instance}). Resume skips jobs that have a result, so "
+                    f"those rows would stay at {recorded} while the table claims this "
+                    f"run's configuration. Score them where they are, re-run with "
+                    f"--force, or choose a different --results-dir.",
+                    file=sys.stderr,
+                )
+                return 2
     return None
 
 
