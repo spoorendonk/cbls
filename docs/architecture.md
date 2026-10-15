@@ -1381,7 +1381,13 @@ sweep; on any other objective they do nothing.
   bound (`objective_scan`, OR-Tools' `HasBetterObjectiveValue`). OR-Tools adds
   `delta * coefficient / INT64_MAX` to the score instead; in doubles, over
   fractional weights, that can outweigh a small violation decrease, so here the
-  comparison is lexicographic and the objective can only break a tie. FJ batches
+  comparison is lexicographic and the objective can only break a tie -- within a
+  variable's candidates, and between variables in `apply_jump`'s best-of-N,
+  where an exact score tie goes to the larger objective gain (so of several
+  objective-only jumps the largest gain wins, the order OR-Tools' term gives).
+  A weight rescale leaves `kObjectiveTieScore` unscaled: its delta is 0 under
+  any uniform rescale, and scaling the smallest double by <= 0.5 would round it
+  to 0 and drop the column from Q. FJ batches
   only, throughout the run; Novelty batches, the exact Int argmin and the LNS
   repair keep their own rules.
 - `objective_start`: `set_initial_assignment` puts a column with a positive

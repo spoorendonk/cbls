@@ -26,6 +26,11 @@ namespace cbls {
 // Only scalar variables (Bool/Int/Float) are jumped; List/Set variables are
 // left untouched (they are handled by structural moves, P4).
 
+// The score of a jump that improves only the objective (#218,
+// GFJConfig::objective_tie_break): the smallest positive double. Its f is 0,
+// which no weight change moves, so JumpTable::scale_scores leaves it alone.
+inline constexpr double kObjectiveTieScore = std::numeric_limits<double>::denorm_min();
+
 // Per-variable cached jump: the best value to move the variable to and the
 // resulting reduction in weighted violation (score = -W.deltaG(v, jump_value)).
 // A positive score means an improving move exists. Entries are lazily
@@ -51,9 +56,15 @@ public:
     /// into the stored weights the cached scores move with them and stay
     /// comparable to the ones computed afterwards. O(#vars); called only when a
     /// factor is actually folded, never per bump.
-    void scale_scores(double factor) {
+    ///
+    /// `keep_objective_ties` (#218, on only under
+    /// GFJConfig::objective_tie_break) leaves a kObjectiveTieScore entry as it
+    /// is: its weighted delta is 0 under any uniform rescale, and scaling the
+    /// smallest positive double by a factor <= 0.5 rounds it to 0, which made
+    /// apply_jump drop the column from Q as non-improving.
+    void scale_scores(double factor, bool keep_objective_ties = false) {
         for (auto& e : entries_) {
-            if (e.valid) {
+            if (e.valid && (!keep_objective_ties || e.score != kObjectiveTieScore)) {
                 e.score *= factor;
             }
         }
@@ -115,15 +126,13 @@ struct JumpResult {
 // objective alone (f = 0) scores kObjectiveTieScore: positive, so the scan
 // keeps and applies it, and below every score a violation decrease can earn
 // short of a denormal one. The exact Int argmin (`exact_int`) keeps its own tie
-// rule and ignores it.
+// rule and ignores it. Between variables, apply_jump breaks an exact score tie
+// on the same objective gain, so of several objective-only jumps the largest
+// gain wins, as OR-Tools' score term would order them.
 JumpResult compute_var_jump(Model& model, const std::vector<double>& weights, int32_t var_id,
                             bool allow_escape_probe = false, LinearJumpScorer* linear = nullptr,
                             double tol = kDefaultFeasibilityTolerance, bool exact_int = false,
                             const double* objective_coef = nullptr);
-
-// The score of a jump that improves only the objective (#218): the smallest
-// positive double.
-inline constexpr double kObjectiveTieScore = std::numeric_limits<double>::denorm_min();
 
 // Guided Local Search weight update (paper Algorithm 3, lines 8-10): decay all
 // weights by rho, then bump every currently-violated constraint by 1. Weights

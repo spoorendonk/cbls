@@ -147,6 +147,107 @@ TEST_CASE("objective_tie_break scans and moves an objective-only column (#218)",
     REQUIRE(z_after_batch(true) == 10.0);
 }
 
+TEST_CASE("a weight rescale keeps an objective-only score (#218)", "[fj][objective_tie]") {
+    // Scaling the smallest positive double by <= 0.5 rounds it to 0, which
+    // apply_jump reads as "no improving move" and drops from Q for good.
+    JumpTable t(2);
+    t.set(0, 1.0, kObjectiveTieScore);
+    t.set(1, 1.0, 4.0);
+    t.scale_scores(0.25, /*keep_objective_ties=*/true);
+    REQUIRE(t.score(0) == kObjectiveTieScore);
+    REQUIRE(t.score(1) == 1.0);
+    t.scale_scores(0.25);  // the default path, unchanged
+    REQUIRE(t.score(0) == 0.0);
+}
+
+TEST_CASE("objective-only columns stay scannable across weight folds (#218)",
+          "[fj][objective_tie]") {
+    // The review's repro: x >= 5 and x <= 4 never both hold, so every batch
+    // bumps; at rho = 0.5 a fold is due every few bumps. Each z_i can rise by
+    // the tie-break only while z_i + x <= 13 allows. After every batch, a
+    // cached entry must not read 0 where a fresh computation finds an
+    // objective-only jump.
+    Model m;
+    auto x = m.int_var(0, 10);
+    std::vector<int32_t> zs;
+    std::vector<int32_t> negs;
+    for (int i = 0; i < 20; ++i) {
+        zs.push_back(m.int_var(0, 20));
+        negs.push_back(m.neg(zs.back()));
+    }
+    m.add_constraint(m.geq(x, m.constant(5.0)));
+    m.add_constraint(m.leq(x, m.constant(4.0)));
+    for (const int32_t z : zs) {
+        m.add_constraint(m.leq(m.sum({z, x}), m.constant(13.0)));
+    }
+    m.minimize(m.sum(negs));
+    m.close();
+    m.add_objective_soft_constraint();
+    ViolationManager vm(m);
+    RNG rng(7);
+    GFJConfig cfg;
+    cfg.objective_tie_break = true;
+    cfg.rho = 0.5;
+    FeasibilityJump fj(m, vm, rng, cfg);
+    fj.begin(/*set_initial_x=*/true);
+    const double coef = -1.0;
+    int checked = 0;
+    for (int b = 0; b < 200; ++b) {
+        fj.batch(37);
+        for (const int32_t z : zs) {
+            const auto cached = fj.cached_jump(vid(z));
+            if (!cached.has_value()) {
+                continue;
+            }
+            const JumpResult fresh = compute_var_jump(m, vm.weights, vid(z), false, nullptr,
+                                                      kDefaultFeasibilityTolerance, false, &coef);
+            if (fresh.score == kObjectiveTieScore) {
+                ++checked;
+                CAPTURE(b, vid(z));
+                REQUIRE(cached->score == kObjectiveTieScore);
+            }
+        }
+    }
+    REQUIRE(checked > 0);
+}
+
+TEST_CASE("between variables the larger objective gain wins a score tie (#218)",
+          "[fj][objective_tie]") {
+    // Infeasible x as in ScanFixture; z1 can gain 1, z2 can gain 10, both only
+    // by the tie-break. The sample sees all of Q, so at the first local minimum
+    // both are offered at kObjectiveTieScore and z2 must move first. Without
+    // the cross-variable key the first sampled wins, about half the seeds.
+    for (uint64_t seed = 1; seed <= 20; ++seed) {
+        Model m;
+        auto x = m.int_var(0, 10);
+        auto z1 = m.int_var(0, 1);
+        auto z2 = m.int_var(0, 10);
+        m.add_constraint(m.geq(x, m.constant(5.0)));
+        m.add_constraint(m.leq(x, m.constant(4.0)));
+        m.minimize(m.neg(m.sum({z1, z2})));
+        m.close();
+        m.add_objective_soft_constraint();
+        ViolationManager vm(m);
+        RNG rng(seed);
+        GFJConfig cfg;
+        cfg.objective_tie_break = true;
+        cfg.sample_size_general = 10;
+        FeasibilityJump fj(m, vm, rng, cfg);
+        fj.begin(/*set_initial_x=*/true);
+        int first = 0;
+        for (int it = 0; it < 100 && first == 0; ++it) {
+            fj.batch(1);
+            if (m.var(vid(z2)).value != 0.0) {
+                first = 2;
+            } else if (m.var(vid(z1)).value != 0.0) {
+                first = 1;
+            }
+        }
+        CAPTURE(seed);
+        REQUIRE(first == 2);
+    }
+}
+
 TEST_CASE("objective_start puts objective columns at their better bound (#218)",
           "[fj][objective_tie]") {
     for (const bool on : {false, true}) {

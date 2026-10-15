@@ -54,7 +54,7 @@ m.close();
 ```bash
 cmake -B build
 cmake --build build
-ctest --test-dir build    # 787 C++ tests, ~25s (add -LE slow for the fast 777, ~12s)
+ctest --test-dir build    # 790 C++ tests, ~25s (add -LE slow for the fast 780, ~12s)
 ```
 
 The build type defaults to `Release`; pass `-DCMAKE_BUILD_TYPE=Debug` to override

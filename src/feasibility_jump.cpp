@@ -2106,6 +2106,14 @@ bool FeasibilityJump::apply_jump(int sample_size) {
     // distribution does not depend on where in Q a variable sits.
     int32_t best_v = -1;
     double best_score = 0.0;
+    // objective_tie_break (#218): an exact score tie goes to the larger
+    // objective gain, -c * (jump - value). Off, the second key is never read.
+    const bool objective_key = config_.objective_tie_break && !objective_coef_.empty();
+    double best_gain = 0.0;
+    auto gain = [this](int32_t v) {
+        return -objective_coef_[static_cast<size_t>(v)] *
+               (jumps_.jump_value(v) - model_.var(v).value);
+    };
     size_t n = 0;
     const auto want = static_cast<size_t>(std::max(sample_size, 0));
     while (n < queue_.size() && n < want) {
@@ -2130,6 +2138,12 @@ bool FeasibilityJump::apply_jump(int sample_size) {
         if (s > best_score) {
             best_score = s;
             best_v = v;
+            if (objective_key) {
+                best_gain = gain(v);
+            }
+        } else if (objective_key && s == best_score && gain(v) > best_gain) {
+            best_v = v;
+            best_gain = gain(v);
         }
     }
     if (best_v < 0) {
@@ -2269,7 +2283,9 @@ void FeasibilityJump::bump_weights_and_requeue() {
         // Cached scores live in the scaled space too, and this rescale is
         // REQUIRED, not cosmetic. A valid entry that survives a bump has no
         // counted violated row, so its score is <= 0 -- except in the (0, tol]
-        // residual band, where it is positive. Such an entry left in Q
+        // residual band, where it is positive, and an objective-only jump under
+        // objective_tie_break (#218), whose kObjectiveTieScore the rescale
+        // leaves alone (see scale_scores). Such an entry left in Q
         // unrescaled would be up to 1 / folded (~1e30) times too large against
         // every score computed after the fold, and apply_jump's argmax would take
         // it over any real improving jump. Reachable wherever one gls_loop makes
@@ -2277,7 +2293,7 @@ void FeasibilityJump::bump_weights_and_requeue() {
         // fj_nl_initialize on continuous equality rows (#102) -- but only for an
         // entry sampling happened to miss, which is why no test pins this site;
         // the batch-API fence pins the rescale in materialise_weights.
-        jumps_.scale_scores(folded);
+        jumps_.scale_scores(folded, config_.objective_tie_break);
     }
     vm_.invalidate_cache();
     // V in its list order. The order variables enter Q is the order apply_jump's
@@ -2396,7 +2412,7 @@ void FeasibilityJump::materialise_weights() {
     if (folded != 1.0) {
         // A positive weight stays positive and 0 stays 0 (see fold), so no row's
         // active bit moves and the counted bits need no reconcile.
-        jumps_.scale_scores(folded);
+        jumps_.scale_scores(folded, config_.objective_tie_break);
         vm_.invalidate_cache();
     }
 }
