@@ -47,7 +47,7 @@ dev = [
     # (CLAUDE.md's ```build fence) locates nanobind by running
     # `python -m nanobind --cmake_dir` against .venv/bin/python, so without it
     # here the documented bootstrap yields a venv that cannot build the
-    # bindings -- and the 243 binding tests would go unrun. 3.0.x is excluded
+    # bindings -- and the 245 binding tests would go unrun. 3.0.x is excluded
     # in both places: it has neither keep_alive entry point python/bindings.cpp
     # calls (see expr_object there).
     "nanobind>=2.0,!=3.0.*",

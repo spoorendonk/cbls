@@ -292,6 +292,58 @@ void mark_all_rows(const Model& m, LinearJumpScorer& sc) {
     }
 }
 
+// An Int column's jump against brute force over its whole domain (#208): the
+// score is the exact minimum of f over every other integer, and the jump value
+// one of its minimisers -- or x0 when nothing improves. Within `tol`, not to the
+// bit, even on integral rows: random_weights draws fractional weights (0.3,
+// 2.5), so two minimisers of the same exact value can sum to different last
+// bits, and the argmin and the brute force need not land on the same one.
+void require_exact_int_jump(Model& m, const std::vector<double>& w, int32_t v,
+                            const JumpResult& got, double tol) {
+    const Variable var = m.var(v);
+    const double x0 = var.value;
+    double best = 0.0;
+    for (auto k = static_cast<int64_t>(var.lb); k <= static_cast<int64_t>(var.ub); ++k) {
+        const auto j = static_cast<double>(k);
+        if (j != x0) {
+            best = std::min(best, m.weighted_violation_delta(v, j, w));
+        }
+    }
+    INFO("var " << v << " x0 " << x0 << " jump " << got.jump_value << " score " << got.score
+                << " brute-force min " << best);
+    REQUIRE(got.jump_value == std::floor(got.jump_value));
+    REQUIRE(var.lb <= got.jump_value);
+    REQUIRE(got.jump_value <= var.ub);
+    REQUIRE(std::abs(got.score - (-best)) <= tol);
+    if (got.jump_value == x0) {
+        REQUIRE(best >= -tol);
+    } else {
+        REQUIRE(std::abs(m.weighted_violation_delta(v, got.jump_value, w) - best) <= tol);
+    }
+}
+
+// The whole jump with the scorer against the probe path. By default (no exact
+// Int jump) every column takes the same candidates either way, so the jump is
+// identical to the bit. With the exact Int jump on (#208, #216) an Int takes the
+// exact argmin instead, checked against brute force; Bool and Float are
+// unaffected by the flag.
+void check_jumps(Model& m, const std::vector<double>& w, LinearJumpScorer& sc) {
+    for (int32_t v = 0; v < static_cast<int32_t>(m.num_vars()); ++v) {
+        const JumpResult a = compute_var_jump(m, w, v);
+        const JumpResult b = compute_var_jump(m, w, v, false, &sc);
+        REQUIRE(a.jump_value == b.jump_value);
+        REQUIRE(a.score == b.score);
+        const JumpResult e =
+            compute_var_jump(m, w, v, false, &sc, kDefaultFeasibilityTolerance, true);
+        if (m.var(v).type == VarType::Int) {
+            require_exact_int_jump(m, w, v, e, 1e-12 * (1.0 + std::abs(e.score)));
+        } else {
+            REQUIRE(e.jump_value == b.jump_value);
+            REQUIRE(e.score == b.score);
+        }
+    }
+}
+
 // A scalar input sum, as user code: affine in fact, never eligible by rule.
 class InputSum : public CustomInvariant {
 public:
@@ -330,13 +382,7 @@ TEST_CASE("linear jump scores equal the probe's exactly on integral rows", "[fj]
                                                  : static_cast<double>(rng.integers(-20, 20)));
             const std::vector<double> w = random_weights(m.constraint_ids().size(), rng);
             REQUIRE(check_scores(m, sc, w, rng, /*exact=*/true) > 50);
-            // Same candidates, same selection: the whole jump is unchanged.
-            for (int32_t v = 0; v < static_cast<int32_t>(m.num_vars()); ++v) {
-                const JumpResult a = compute_var_jump(m, w, v);
-                const JumpResult b = compute_var_jump(m, w, v, false, &sc);
-                REQUIRE(a.jump_value == b.jump_value);
-                REQUIRE(a.score == b.score);
-            }
+            check_jumps(m, w, sc);
         }
     }
 }
@@ -847,12 +893,7 @@ TEST_CASE("bare-body scores equal the probe's exactly on integral rows", "[fj][l
             randomise_assignment(m, rng);
             const std::vector<double> w = random_weights(m.constraint_ids().size(), rng);
             REQUIRE(check_scores(m, sc, w, rng, /*exact=*/true) > 50);
-            for (int32_t v = 0; v < static_cast<int32_t>(m.num_vars()); ++v) {
-                const JumpResult a = compute_var_jump(m, w, v);
-                const JumpResult b = compute_var_jump(m, w, v, false, &sc);
-                REQUIRE(a.jump_value == b.jump_value);
-                REQUIRE(a.score == b.score);
-            }
+            check_jumps(m, w, sc);
         }
         REQUIRE(check_partials(m, sc) > 20);
     }
@@ -1025,5 +1066,94 @@ TEST_CASE("a comparison nested inside a row is never closed-form eligible", "[fj
         if (sc.prepare(vid(z), w)) {
             CHECK(sc.delta(1.0) == 0.0);
         }
+    }
+}
+
+TEST_CASE("an Int jump over linear rows is the exact argmin of its whole domain (#208)",
+          "[fj][linear_jump]") {
+    // Random linear models: Ints on [-5, 5] (enumerated whole before #208) and on
+    // [0, 300] (the grid path, which offered no row threshold), every row shape
+    // the scorer models, bare bodies included, masked (zero-weight) rows mixed in
+    // by random_weights, on integral and fractional data.
+    int improving = 0;
+    for (uint64_t seed = 801; seed <= 840; ++seed) {
+        const bool integral = seed % 2 == 1;
+        RandomLinearModel r;
+        build_random_linear(r, seed, integral, /*bare=*/seed % 4 < 2);
+        Model& m = r.m;
+        ViolationManager vm(m);
+        RNG fj_rng(seed);
+        FeasibilityJump fj(m, vm, fj_rng);
+        LinearJumpScorer& sc = fj.linear_scorer();
+        RNG rng(seed * 6007);
+        for (int round = 0; round < 4; ++round) {
+            randomise_assignment(m, rng);
+            m.set_objective_bound(round % 2 == 0 ? std::numeric_limits<double>::infinity()
+                                                 : static_cast<double>(rng.integers(-20, 20)));
+            const std::vector<double> w = random_weights(m.constraint_ids().size(), rng);
+            for (int32_t v = 0; v < static_cast<int32_t>(m.num_vars()); ++v) {
+                if (m.var(v).type != VarType::Int) {
+                    continue;
+                }
+                REQUIRE(sc.prepare(v, w));
+                const JumpResult got =
+                    compute_var_jump(m, w, v, false, &sc, kDefaultFeasibilityTolerance, true);
+                const double tol = 1e-12 * (1.0 + score_magnitude(m, w, v, got.jump_value));
+                require_exact_int_jump(m, w, v, got, tol);
+                if (got.score > 0.0) {
+                    ++improving;
+                }
+            }
+        }
+    }
+    REQUIRE(improving > 100);  // the search side of the argmin ran, not only x0 +/- 1
+}
+
+TEST_CASE("an Int argmin on a plateau takes OR-Tools' binary-search point (#208)",
+          "[fj][linear_jump]") {
+    // x in [0, 10] at 0, rows x >= 4 and x <= 7: f falls by 1 per step to 4 and
+    // is flat on [4, 7]. x0 + 1 improves, so the search runs over the points
+    // right of it -- the side's ends 2 and 10 and the kinks 4 and 7 -- seeded
+    // with {1, -1}. RangeConvexMinimum probes index 2 (point 7, f = -4), then
+    // the point before it (4, f = -4); equal, so it returns 4, the plateau's
+    // near end.
+    //
+    // The mirror tells the rule from a nearest-to-x0 one: x at 10, rows x >= 3
+    // and x <= 6. x0 - 1 improves, so the points are left of it -- 0, 3, 6, 8 --
+    // seeded from the right with {9, -1}. The probe at index 2 (point 6, f = -4)
+    // and the point before it (3, f = -4) tie, so it returns 3, the plateau's
+    // FAR end; nearest-to-x0 would take 6.
+    SECTION("seeded from the left") {
+        Model m;
+        auto x = m.int_var(0, 10);
+        m.add_constraint(m.geq(x, m.constant(4.0)));
+        m.add_constraint(m.leq(x, m.constant(7.0)));
+        m.close();
+        full_evaluate(m);
+        ViolationManager vm(m);
+        RNG rng(1);
+        FeasibilityJump fj(m, vm, rng);
+        const std::vector<double> w(m.constraint_ids().size(), 1.0);
+        const JumpResult r = compute_var_jump(m, w, vid(x), false, &fj.linear_scorer(),
+                                              kDefaultFeasibilityTolerance, true);
+        REQUIRE(r.jump_value == 4.0);
+        REQUIRE(r.score == 4.0);
+    }
+    SECTION("seeded from the right") {
+        Model m;
+        auto x = m.int_var(0, 10);
+        m.add_constraint(m.geq(x, m.constant(3.0)));
+        m.add_constraint(m.leq(x, m.constant(6.0)));
+        m.close();
+        m.var_mut(vid(x)).value = 10.0;
+        full_evaluate(m);
+        ViolationManager vm(m);
+        RNG rng(1);
+        FeasibilityJump fj(m, vm, rng);
+        const std::vector<double> w(m.constraint_ids().size(), 1.0);
+        const JumpResult r = compute_var_jump(m, w, vid(x), false, &fj.linear_scorer(),
+                                              kDefaultFeasibilityTolerance, true);
+        REQUIRE(r.jump_value == 3.0);
+        REQUIRE(r.score == 4.0);
     }
 }

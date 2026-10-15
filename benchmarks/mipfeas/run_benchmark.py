@@ -303,6 +303,7 @@ def build_run_record(
             "force": args.force,
             "inf_clamp": args.inf_clamp,
             "compound_moves": args.compound_moves,
+            "exact_int_jump": args.exact_int_jump,
             "propagate_bounds": args.propagate_bounds,
             "large_bytes": args.large_bytes,
             "jobs_planned": planned,
@@ -418,6 +419,7 @@ def build_command(job: Job, args: argparse.Namespace, results_dir: Path) -> list
             "--inf-clamp",
             str(args.inf_clamp),
             "--compound-moves" if args.compound_moves else "--no-compound-moves",
+            *(["--exact-int-jump"] if args.exact_int_jump else []),
             "--threads",
             str(args.cbls_threads),
             *([] if args.propagate_bounds else ["--no-propagate-bounds"]),
@@ -1111,6 +1113,12 @@ def main() -> int:
         action="store_false",
         help="disable CBLS Novelty Jump; on by default here because roughly half of "
         "CP-SAT's incumbents on this roster come from its compound-move subsolvers",
+    )
+    parser.add_argument(
+        "--exact-int-jump",
+        action="store_true",
+        help="CBLS FJ takes the exact Int jump over linear columns (#208, #216); off by "
+        "default, as in the engine. Not a configuration to publish until #208's A/B",
     )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--engines", nargs="+", choices=ENGINES, default=list(ENGINES))

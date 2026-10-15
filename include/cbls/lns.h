@@ -63,9 +63,16 @@ public:
     void set_feasibility_tolerance(double tol) { feasibility_tolerance_ = tol; }
     [[nodiscard]] double feasibility_tolerance() const { return feasibility_tolerance_; }
 
+    /// Whether the repair's FJ takes the exact Int jump (GFJConfig::
+    /// exact_int_jump, #216). `solve()` sets it from `SearchConfig::
+    /// fj_exact_int_jump` before each kick; off by default.
+    void set_exact_int_jump(bool on) { exact_int_jump_ = on; }
+    [[nodiscard]] bool exact_int_jump() const { return exact_int_jump_; }
+
 private:
     double destroy_fraction_;
     double feasibility_tolerance_ = kDefaultFeasibilityTolerance;
+    bool exact_int_jump_ = false;
 };
 
 }  // namespace cbls

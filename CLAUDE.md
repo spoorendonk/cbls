@@ -288,8 +288,8 @@ Three conventions therefore rest on you rather than on a tool: branch only from 
 
 ### Fast vs. slow tests
 
-The C++ suite is **764 ctest tests**: 762 Catch2 ones over **759 `TEST_CASE`s**
-— 754 registered by `catch_discover_tests` plus **8 registered by hand**, the 5
+The C++ suite is **769 ctest tests**: 767 Catch2 ones over **764 `TEST_CASE`s**
+— 759 registered by `catch_discover_tests` plus **8 registered by hand**, the 5
 `[timing]` cases and the three hang guards `hang_guard_iteration_only_portfolio`,
 `hang_guard_novelty_zero_move_batch` and `hang_guard_nonpositive_batch_iterations`,
 each hand-registered *as well as*
@@ -297,14 +297,14 @@ discovered (a hang only reports through a `TIMEOUT`, but all three are cheap eno
 to belong in the fast set), so each of those `TEST_CASE`s accounts for two
 ctest tests — plus **2 shell tests that are not Catch2 at all**,
 `clang_tidy_gate_probe` and `gate_lib_shell_test`, registered in the root
-`CMakeLists.txt` (they pin the clang-tidy gate and the hook filters, #171). Of the 754,
+`CMakeLists.txt` (they pin the clang-tidy gate and the hook filters, #171). Of the 759,
 **6 carry the
 Catch2 `[slow]` tag** — the CHPED and UC-CHPED benchmark solves, ~46s of
 aggregate (summed per-test) time, which `-j$(nproc)` compresses to a ~25s
 wall-clock full run. `tests/CMakeLists.txt` discovers them in a second
 `catch_discover_tests` call with `LABELS "slow"`, so:
 
-- `ctest -LE slow` — the other 754 tests, ~12s with `-j`. The fast inner loop; run it yourself before committing (the hook no longer does).
+- `ctest -LE slow` — the other 759 tests, ~12s with `-j`. The fast inner loop; run it yourself before committing (the hook no longer does).
 - `ctest` — everything. This is what **pre-push** and CI run.
 - `ctest -L timing` — 5 tests: `timing_structural_batch_deadline`, the three
   `timing_throughput_*` floors added for #125, and
@@ -332,7 +332,7 @@ agree:
 1. this section,
 2. the comment above `catch_discover_tests` in `tests/CMakeLists.txt`,
 3. the build section of `README.md`,
-4. the `.venv/bin/pytest` line in `README.md` for the Python side (1283 tests, 243
+4. the `.venv/bin/pytest` line in `README.md` for the Python side (1289 tests, 245
    of them binding tests, echoed in prose by `pyproject.toml` and
    `tests/python/conftest.py`),
 5. the `-LE slow` guidance and the ~25s/~490s figures in `docs/profiling.md`.
@@ -340,7 +340,7 @@ agree:
    named commit**, not a current count — it says so inline. Leave it alone
    apart from the parenthetical restating the current fast-set size.
 6. the binding count in **`## Build & Test`** below, in the paragraph explaining
-   why the gated build turns `CBLS_BUILD_PYTHON` on ("243 binding tests silently
+   why the gated build turns `CBLS_BUILD_PYTHON` on ("245 binding tests silently
    unrun"). It is in this file, but not in this section, so a search that stops
    at the enumeration above misses it.
 
@@ -657,7 +657,7 @@ evaluates each fence under `set -e`. Keep the fences runnable in both places.
 **The gated build turns the Python bindings on, and the gated test run requires
 them.** `CBLS_BUILD_PYTHON` defaults to `OFF` and `tests/python/conftest.py`
 skips every test that imports `_cbls_core` when the module is missing, so a build
-without the flag would leave 243 binding tests silently unrun.
+without the flag would leave 245 binding tests silently unrun.
 `CBLS_REQUIRE_BINDINGS=1` turns that skip into a hard error. Bindings cost ~2.4s
 of build and ~6s of pytest against a suite that already spends ~25s in `ctest` —
 always build them. The cost argument is the weaker one: the reason is that
@@ -789,7 +789,7 @@ CBLS = constraint-based local search. ViolationLS (guided local search over sing
 
 3. **Search** (`src/search.cpp`) — ViolationLS batch outer loop (Davies et al. CPAIOR 2024, Algorithm 6). The objective is folded into the constraints as `obj <= bound`; each batch is a Feasibility Jump, Novelty Jump, or STRUCTURAL batch (selected by config probabilities). The objective bound is tightened on each new real-feasible solution; on stagnation the assignment is perturbed or diversified via LNS.
 
-4. **Feasibility Jump** (`src/feasibility_jump.cpp`) — Generalised Feasibility Jump: a `JumpTable` of cached per-variable best jumps (score = `-W·δ_G`), best-of-N scan-set sampling, GLS weight dynamics (bump violated + ρ-decay), and Novelty Jump compound moves (Algorithms 4–5). Float jump values come from Newton-toward-violated-root candidates via reverse-mode AD. A candidate over rows that are all linear (affine comparisons, or affine bare bodies `expr <= 0` since #190) is scored in closed form by `LinearJumpScorer` (`src/linear_jump.cpp`) rather than by a DAG probe; any other column falls back to `weighted_violation_delta`. A variable that reaches a `Ceil`/`Floor`/`Round`/`Element` node additionally gets that node's breakpoints — plateau edges and index values, mapped back through the argument's slope — as candidates (#186), since those ops' derivative is 0.
+4. **Feasibility Jump** (`src/feasibility_jump.cpp`) — Generalised Feasibility Jump: a `JumpTable` of cached per-variable best jumps (score = `-W·δ_G`), best-of-N scan-set sampling, GLS weight dynamics (bump violated + ρ-decay), and Novelty Jump compound moves (Algorithms 4–5). Float jump values come from Newton-toward-violated-root candidates via reverse-mode AD. A candidate over rows that are all linear (affine comparisons, or affine bare bodies `expr <= 0` since #190) is scored in closed form by `LinearJumpScorer` (`src/linear_jump.cpp`) rather than by a DAG probe; any other column falls back to `weighted_violation_delta`. With `SearchConfig::fj_exact_int_jump` on (default **off**, #216) an Int column over all-linear rows skips the candidates and takes the exact argmin, `LinearJumpScorer::int_argmin` (OR-Tools' `ComputeLinearJump`); it regresses #208's repro, and #208's timed A/B decides whether it turns on. A variable that reaches a `Ceil`/`Floor`/`Round`/`Element` node additionally gets that node's breakpoints — plateau edges and index values, mapped back through the argument's slope — as candidates (#186), since those ops' derivative is 0.
 
 5. **Moves** (`src/moves.cpp`) — typed move generators by variable type (bool flip, int ±1/rand, float perturb, list swap/2opt/relocate/or-opt/insert/exchange/remove, set add/remove/swap), plus the inter-list moves of a `ListPartition` (relocate/swap/2-opt\*, and insert/remove under `Cover::AtMostOnce`). Scalar moves are subsumed by FJ's jump values; the list/set moves feed the STRUCTURAL batch. A structured change is a **positional `ElementEdit`** on the variable's `elements`, not the whole vector — the batch restores the sample's starting assignment before each candidate so an edit lands where it was built.
 

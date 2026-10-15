@@ -306,7 +306,10 @@ bool apply_random_structural_move(Model& model, int32_t var_id, RNG& rng) {
 // amortises either across the GLS loop. Scoring is still per candidate: a
 // closed-form ARGMIN over a linear column would pick from a different candidate
 // set, which is a different algorithm rather than a cheaper evaluation of this
-// one.
+// one. That algorithm exists, opt-in (`GFJConfig::exact_int_jump`, #208/#216):
+// with it on, a column whose weighted rows are all linear does not get here but
+// takes the exact argmin of `LinearJumpScorer::int_argmin`, and this enumeration
+// is the path for every other column (and for the cases the argmin declines).
 //
 // Bounds are read as doubles through `domain_window` (#114): no `long`, so
 // nothing overflows and an unbounded Int gets candidates instead of freezing in
@@ -1020,6 +1023,28 @@ void float_escape_candidates(const Variable& var, double x0, Consider&& consider
     }
 }
 
+// With `enabled` (`GFJConfig::exact_int_jump`, default off, #216), an Int whose weighted
+// rows are all linear (`prepared`: `linear` holds its snapshot): the exact
+// argmin of its weighted violation (#208), which replaces the enumeration and
+// the grid. It covers every value a jump could reach, so no breakpoint
+// candidate (#186) can add anything. False where it declines -- x0 outside the
+// window, a domain past 2^53, a residual the kInfPenalty clamp can reach -- and
+// the candidate path runs as before.
+bool exact_int_jump(const Variable& var, bool enabled, bool prepared, LinearJumpScorer* linear,
+                    JumpResult& out) {
+    if (!enabled || !prepared || var.type != VarType::Int || !(var.lb < var.ub)) {
+        return false;
+    }
+    const DomainWindow w = domain_window(var);
+    double j = var.value;
+    double fv = 0.0;
+    if (!linear->int_argmin(std::ceil(w.lo), std::floor(w.hi), j, fv)) {
+        return false;
+    }
+    out = {j, -fv};
+    return true;
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -1027,7 +1052,8 @@ void float_escape_candidates(const Variable& var, double x0, Consider&& consider
 // ---------------------------------------------------------------------------
 
 JumpResult compute_var_jump(Model& model, const std::vector<double>& weights, int32_t var_id,
-                            bool allow_escape_probe, LinearJumpScorer* linear, double tol) {
+                            bool allow_escape_probe, LinearJumpScorer* linear, double tol,
+                            bool exact_int) {
     const Variable& var = model.var(var_id);
     const double x0 = var.value;
 
@@ -1039,6 +1065,9 @@ JumpResult compute_var_jump(Model& model, const std::vector<double>& weights, in
     // -- is one the closed form does not model, so that one candidate takes the
     // probe. The probe restores the assignment exactly, so the snapshot survives.
     const bool fast = linear != nullptr && linear->prepare(var_id, weights);
+    if (JumpResult exact{}; exact_int_jump(var, exact_int, fast, linear, exact)) {
+        return exact;
+    }
     auto f = [&](double j) {
         if (fast && std::isfinite(j - x0)) {
             return linear->delta(j);
@@ -1992,7 +2021,7 @@ bool FeasibilityJump::apply_jump(int sample_size) {
         const int32_t v = queue_[idx];
         if (!jumps_.valid(v)) {
             JumpResult r = compute_var_jump(model_, vm_.weights, v, escape_probe_, &linear_,
-                                            config_.tolerance);
+                                            config_.tolerance, config_.exact_int_jump);
             jumps_.set(v, r.jump_value, r.score);
         }
         const double s = jumps_.score(v);
@@ -2951,8 +2980,8 @@ FeasibilityJump::NoveltyPick FeasibilityJump::select_novelty_var(double s_m, dou
         }
         // W'-argmin, then its score under W. Both in closed form where the rows
         // allow it, exactly as apply_jump scores.
-        JumpResult nr =
-            compute_var_jump(model_, novelty_weights_, v, false, &linear_, config_.tolerance);
+        JumpResult nr = compute_var_jump(model_, novelty_weights_, v, false, &linear_,
+                                         config_.tolerance, config_.exact_int_jump);
         double score = 0.0;
         if (linear_.prepare(v, vm_.weights) && std::isfinite(nr.jump_value - model_.var(v).value)) {
             score = -linear_.delta(nr.jump_value);

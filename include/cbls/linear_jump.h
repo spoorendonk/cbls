@@ -50,11 +50,13 @@ class Model;
 /// real sum until the batch's end re-sums it. The scorer reads them as they
 /// are, which is what the commit it is scoring would move.
 ///
-/// What is NOT changed: the candidate set, the selection rule and its first-seen
-/// tie-breaking (`compute_var_jump`), and the per-constraint differencing of
+/// What `delta` does NOT change: the candidate set, the selection rule and its
+/// first-seen tie-breaking (`compute_var_jump`), and the per-constraint differencing of
 /// issue #100 -- each row's `w * (clamped(new) - clamped(old))` is accumulated on
 /// its own, so a row clamped to kInfPenalty cancels exactly instead of swallowing
-/// the O(1) rows.
+/// the O(1) rows. (An Int column is the exception when FJ's opt-in
+/// `GFJConfig::exact_int_jump` is on, #208/#216: `int_argmin` replaces its
+/// candidate set with the exact minimiser; Float columns always keep it.)
 ///
 /// Rows are classified by the OWNER (FeasibilityJump, which already derives
 /// per-node affineness) through `set_row_eligible`, and each row's slopes are
@@ -138,6 +140,40 @@ public:
     /// Weighted violation delta of moving the prepared variable to `j`, which
     /// must be finite (and so must `j - x0`); see `prepare`.
     [[nodiscard]] double delta(double j) const;
+
+    /// The exact best jump of the prepared INT variable over the integers of
+    /// [lo, hi] (#208): OR-Tools' `ComputeLinearJump`. Every
+    /// prepared term is `w * clamped(affine in j)` with w >= 0 -- max(0, .) of
+    /// an affine residual, or its absolute value for Eq -- so f(j) = delta(j) is
+    /// convex piecewise-linear, and over the integers its minimum sits at a
+    /// domain end or at the floor or ceiling of some row's kink. So: score
+    /// x0 - 1, and if it improves search the points left of it, else score
+    /// x0 + 1 and if that improves search the points right of it. The points
+    /// searched are the side's two ends plus floor/ceil of every kink inside it,
+    /// sorted and deduplicated (`SlopeBreakpoints`), and the search is
+    /// `RangeConvexMinimum` over them, which also fixes the tie rule: a plateau
+    /// returns whichever of its points that binary search lands on first, as
+    /// OR-Tools' does. Convexity is what makes a non-improving x0 +/- 1 final:
+    /// then x0 is the integer minimum, and the result is {x0, 0}, the jump
+    /// table's "no move" contract (OR-Tools returns the better neighbour, at a
+    /// positive score). The one other departure: only the prepared terms'
+    /// kinks are breakpoints, so a masked (zero-weight) row's kink, which
+    /// OR-Tools' `SlopeBreakpoints` would include, is not -- the minimum is the
+    /// same, the point a plateau's tie lands on can differ.
+    ///
+    /// COST: two delta() calls on the common no-improvement path, else
+    /// O(|terms| log |terms|) for the points plus O(log |terms|) delta() calls,
+    /// each O(|terms|). The enumeration it replaces cost up to 257 delta()
+    /// calls on a domain of width 256, and on a wider one offered no row
+    /// threshold at all, which converged by +/-1 steps inside a grid cell.
+    ///
+    /// False -- the caller keeps its candidate path -- unless x0 is an integer
+    /// in [lo, hi], lo < hi are integers below 2^53 in magnitude (so j +/- 1 is
+    /// exact), and no finite term's residual can reach kInfPenalty inside
+    /// [lo, hi]: the clamp at kInfPenalty flattens a term there, and a flattened
+    /// convex term is no longer convex. A term with an infinite (literal) side
+    /// is constant in j and takes no part in the search.
+    bool int_argmin(double lo, double hi, double& best_j, double& best_f);
 
     /// d(residual of row ci)/d(var_id) for ci = `constraints_of_var(var_id)[k]`
     /// -- the row named by its position in G_v, which is how the Newton step
@@ -223,6 +259,11 @@ private:
     [[nodiscard]] double row_partial(const BuiltRow& row, double r) const;
     // Every built row back to pending and the slope array released.
     void reset_built_rows();
+    // int_argmin's preconditions: an integral box below 2^53 holding x0, and no
+    // term the kInfPenalty clamp can flatten inside it.
+    [[nodiscard]] bool argmin_applies(double lo, double hi) const;
+    // OR-Tools' SlopeBreakpoints over [side_lo, side_hi], sorted and unique, into points_.
+    void slope_breakpoints(double side_lo, double side_hi);
     // The slope array, allocated on first use.
     double* slope_table();
     // Row ci's nonzero slopes (in merged_) into its variables' slots.
@@ -243,6 +284,7 @@ private:
     size_t slope_len_ = 0;  // elements in slope_at_, 0 while null
     size_t cached_slopes_ = 0;
     std::vector<Term> terms_;
+    std::vector<double> points_;  // int_argmin's sorted breakpoints, kept warm
     // build_row's scratch, kept so a build allocates only the row it keeps.
     std::vector<std::pair<int32_t, double>> merged_;
     std::vector<std::pair<int32_t, double>> side0_;

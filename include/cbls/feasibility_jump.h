@@ -75,7 +75,9 @@ struct JumpResult {
 };
 
 // Compute the best jump for `var_id` under the per-constraint `weights`: the
-// value minimising the weighted violation delta over a small candidate set, and
+// value minimising the weighted violation delta over a small candidate set (or,
+// for an Int over linear rows given `linear` and `exact_int`, exactly; see
+// below), and
 // score = −delta (>0 improving). For Float variables the candidates are
 // gradient-informed — a Newton step toward each violated constraint's root
 // (reverse-mode AD) plus the domain midpoint and endpoints. A single call is not
@@ -92,14 +94,19 @@ struct JumpResult {
 // otherwise. Same candidates and the
 // same first-seen-minimum rule; the scores agree to rounding, not to the bit, so
 // the selected jump is guaranteed identical only on integral data (where both
-// are exact) -- on fractional data an ulp can flip a near-tie.
+// are exact) -- on fractional data an ulp can flip a near-tie. EXCEPT, when
+// `exact_int` is set (GFJConfig::exact_int_jump, default off), an Int column
+// whose weighted rows are all linear (#208): with `linear` it takes the
+// exact argmin (`LinearJumpScorer::int_argmin`) instead of the candidates, so it
+// reaches the same minimum score but, on a plateau, not necessarily the same
+// point as the candidate path without `linear`.
 // It also supplies the Float Newton candidates' row partials where its cached
 // slope is bit-identical to `compute_partial`, so those candidates do not move.
 // `tol` is the residual a row may keep and still count as satisfied (FJ passes
 // GFJConfig::tolerance): a satisfied row offers no Newton candidate.
 JumpResult compute_var_jump(Model& model, const std::vector<double>& weights, int32_t var_id,
                             bool allow_escape_probe = false, LinearJumpScorer* linear = nullptr,
-                            double tol = kDefaultFeasibilityTolerance);
+                            double tol = kDefaultFeasibilityTolerance, bool exact_int = false);
 
 // Guided Local Search weight update (paper Algorithm 3, lines 8-10): decay all
 // weights by rho, then bump every currently-violated constraint by 1. Weights
@@ -215,6 +222,15 @@ struct GFJConfig {
     // SearchConfig::feasibility_tolerance, so FJ's "feasible" and the search's
     // agree (#211); it was a fixed 1e-9 before.
     double tolerance = kDefaultFeasibilityTolerance;
+    // Opt-in exact Int jump (#208, #216): an Int column whose weighted rows are
+    // all linear takes the exact argmin of its weighted violation
+    // (`LinearJumpScorer::int_argmin`, OR-Tools' ComputeLinearJump) instead of
+    // the enumeration / grid candidates. Off by default, which is today's path
+    // bit for bit. Off because it regresses #208's own repro (x + y == 1e7 - 1,
+    // |x - y| <= 1 as two rows: 261k-836k iterations to feasible against 19-72);
+    // whether to turn it on is #208's timed A/B. solve() sets it from
+    // SearchConfig::fj_exact_int_jump.
+    bool exact_int_jump = false;
     bool two_phase = true;       // GLS on linear submodel first, then full model
     bool set_initial_x = true;   // set X[v] to the domain value closest to 0 first
     int64_t max_iterations = 0;  // 0 = unbounded (bounded by time_limit)

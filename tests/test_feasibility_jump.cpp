@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <utility>
 #include <vector>
 
 using namespace cbls;
@@ -1513,4 +1514,83 @@ TEST_CASE("two-phase run() carries the linear phase's weights into the general p
     REQUIRE(fj.run() == GFJStatus::Feasible);
     REQUIRE(vm.weights[0] > 1.0);
     REQUIRE(vm.weights[3] == 1.0);  // the non-linear row: unmasked at 1
+}
+
+// #208's repro, kept for both settings of the exact Int jump (#216): x, y Int in
+// [0, 1e7], x + y == 1e7 - 1 and |x - y| <= 1 as two linear rows. Every row is
+// linear, so with the flag on every jump is the exact argmin.
+namespace {
+void build_exact_jump_repro(Model& m) {
+    auto x = m.int_var(0, 10'000'000);
+    auto y = m.int_var(0, 10'000'000);
+    m.add_constraint(m.eq_expr(m.sum({x, y}), m.constant(9'999'999.0)));
+    m.add_constraint(m.leq(m.sum({x, m.neg(y)}), m.constant(1.0)));
+    m.add_constraint(m.leq(m.sum({y, m.neg(x)}), m.constant(1.0)));
+    m.close();
+}
+}  // namespace
+
+TEST_CASE("the exact Int jump is off by default (#216)", "[fj][linear_jump]") {
+    REQUIRE_FALSE(GFJConfig{}.exact_int_jump);
+    REQUIRE_FALSE(SearchConfig{}.fj_exact_int_jump);
+    REQUIRE_FALSE(LNS{}.exact_int_jump());
+}
+
+// Off is today's path: these are main's iteration counts at 3a42bd2 (#208's
+// table: 72 / 19 / 19), pinned exactly since the run has no clock. On regresses
+// the repro -- 0.45M-2M+ iterations at these seeds -- so at a 10k cap it is not
+// feasible; that is the known regression #208's A/B weighs, and it is also what
+// shows the flag reaches solve()'s FJ.
+TEST_CASE("#208's repro under solve(), exact Int jump off and on (#216)", "[fj][linear_jump]") {
+    const std::vector<std::pair<uint64_t, int64_t>> off_iterations = {{1, 72}, {2, 19}, {3, 19}};
+    for (const auto& [seed, iterations] : off_iterations) {
+        for (const bool exact : {false, true}) {
+            Model m;
+            build_exact_jump_repro(m);
+            SearchConfig config;
+            config.max_iterations = 10'000;
+            config.fj_exact_int_jump = exact;
+            const SearchResult r =
+                solve(m, /*time_limit=*/0.0, seed, true, nullptr, nullptr, 3, nullptr, config);
+            CAPTURE(seed, exact, r.iterations);
+            if (exact) {
+                REQUIRE_FALSE(r.feasible);
+                REQUIRE(r.termination == TerminationReason::IterationLimit);
+            } else {
+                REQUIRE(r.feasible);
+                REQUIRE(r.termination == TerminationReason::Feasible);
+                REQUIRE(r.iterations == iterations);
+            }
+        }
+    }
+}
+
+// The LNS repair's FJ takes the flag too: through fj_nl_initialize's argument,
+// and from LNS::set_exact_int_jump, which solve() sets before each kick.
+TEST_CASE("#208's repro under the LNS repair FJ, exact Int jump off and on (#216)",
+          "[fj][linear_jump]") {
+    for (const bool exact : {false, true}) {
+        Model m;
+        build_exact_jump_repro(m);
+        full_evaluate(m);
+        ViolationManager vm(m);
+        RNG rng(1);
+        const int64_t it = fj_nl_initialize(m, vm, 10'000, &rng, /*time_limit=*/0.0,
+                                            kDefaultFeasibilityTolerance, exact);
+        CAPTURE(exact, it);
+        REQUIRE((vm.total_violation() == 0.0) == !exact);
+        REQUIRE((it == 10'000) == exact);
+    }
+    for (const bool exact : {false, true}) {
+        Model m;
+        build_exact_jump_repro(m);
+        full_evaluate(m);
+        ViolationManager vm(m);
+        RNG rng(1);
+        LNS lns;
+        lns.set_exact_int_jump(exact);
+        lns.destroy_repair(m, vm, rng, /*repair_time_limit=*/0.0);
+        CAPTURE(exact, vm.total_violation());
+        REQUIRE((vm.total_violation() == 0.0) == !exact);
+    }
 }

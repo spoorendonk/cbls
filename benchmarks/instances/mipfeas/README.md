@@ -607,7 +607,7 @@ inherited, so a published number cannot silently change when a default moves:
 | Presolve | implied variable bounds only (activity-based propagation) | default, i.e. on |
 | Feasibility tolerance | `1e-6`, stated explicitly | CP-SAT's own |
 | Unbounded column falls back to | `1e7` (`--inf-clamp`), where propagation derives nothing | not clamped |
-| Recorded per result | commit SHA, seed, tolerance, clamp + columns it still narrows, columns declared unbounded, columns tightened, propagation verdict and pass cap, compound-move and propagation flags, peak RSS, read/build/setup seconds, trace point count and trace source | OR-Tools version, seed, full parameter string, solver verdict, peak RSS, read/setup seconds, free-row count, trace source |
+| Recorded per result | commit SHA, seed, tolerance, clamp + columns it still narrows, columns declared unbounded, columns tightened, propagation verdict and pass cap, compound-move, exact-Int-jump (#216, off by default) and propagation flags, peak RSS, read/build/setup seconds, trace point count and trace source | OR-Tools version, seed, full parameter string, solver verdict, peak RSS, read/setup seconds, free-row count, trace source |
 | Solution verified against the instance file | yes, by SCIP | yes, by SCIP |
 
 Two of those are deliberate choices against the engine's defaults as they stood

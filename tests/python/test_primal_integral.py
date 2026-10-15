@@ -361,6 +361,38 @@ def test_a_row_without_the_shared_bound_key_scores_only_where_it_is_equivalent(
             check_uniform_configuration(rows)
 
 
+@pytest.mark.parametrize(
+    ("old", "new", "match"),
+    [
+        # Before #216 every CBLS row ran the candidate path: the flag's off arm.
+        ({"compound_moves": True}, {"compound_moves": True, "exact_int_jump": False}, None),
+        (
+            {"compound_moves": True},
+            {"compound_moves": True, "exact_int_jump": True},
+            "span 2 configurations",
+        ),
+    ],
+    ids=["old-row-is-the-off-arm", "on-arm-refused"],
+)
+def test_a_row_without_the_exact_int_jump_key_is_the_off_arm(
+    tmp_path: Path, old: dict[str, object], new: dict[str, object], match: str | None
+) -> None:
+    for instance, extra in (("a", old), ("b", new)):
+        _write_result(
+            tmp_path,
+            "cbls",
+            instance,
+            {"status": "feasible", "objective": 100.0, **extra},
+            trace=[(1.0, 100.0)],
+        )
+    rows = [_score(tmp_path, name) for name in ("a", "b")]
+    if match is None:
+        check_uniform_configuration(rows)  # must not raise
+    else:
+        with pytest.raises(ValueError, match=match):
+            check_uniform_configuration(rows)
+
+
 def test_summarize_excludes_not_run_instances_from_the_aggregates(tmp_path: Path) -> None:
     _write_result(
         tmp_path, "cbls", "solved", {"status": "feasible", "objective": 100.0}, trace=[(0.0, 100.0)]

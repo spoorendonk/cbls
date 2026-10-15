@@ -122,6 +122,7 @@ CONFIG_KEYS = (
     "share_objective_bound",
     "feasibility_tolerance",
     "compound_moves",
+    "exact_int_jump",
     "inf_clamp",
     "propagate_bounds",
     "max_propagation_passes",
@@ -133,7 +134,8 @@ CONFIG_KEYS = (
 def config_string(result: dict[str, object]) -> str:
     """The `config` cell: every CONFIG_KEYS entry the result carries.
 
-    One key is back-filled. `share_objective_bound` (#179) did not exist before
+    One key is back-filled, and one (`exact_int_jump`, #216) dropped when off;
+    see its line. `share_objective_bound` (#179) did not exist before
     the shared bound, and at one thread it names no behaviour at all -- a single
     `solve()` has no pool -- so a pre-#179 single-threaded row IS the default
     configuration and is read as such. A pre-#179 PORTFOLIO row is left without
@@ -143,6 +145,12 @@ def config_string(result: dict[str, object]) -> str:
     cells = dict(result)
     if "share_objective_bound" not in cells and cells.get("threads") == 1:
         cells["share_objective_bound"] = True
+    # `exact_int_jump` (#216) the other way round: its off arm is what every row
+    # from before the flag ran, so off is DROPPED rather than back-filled. Off
+    # rows old and new then share one cell, which also keeps every table scored
+    # before the flag byte-identical, and only an on-arm row carries the key.
+    if cells.get("exact_int_jump") is False:
+        del cells["exact_int_jump"]
     return ";".join(f"{k}={cells[k]}" for k in CONFIG_KEYS if k in cells)
 
 

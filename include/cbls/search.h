@@ -230,6 +230,12 @@ struct SearchConfig {
     //
     int64_t unproductive_iterations = 300;
 
+    // The exact Int jump (#208, #216), off by default: forwarded to
+    // GFJConfig::exact_int_jump for the batch FJ and to LNS's repair FJ. Off is
+    // today's candidate path, bit for bit; GFJConfig's comment says why it is
+    // off and what decides whether it turns on.
+    bool fj_exact_int_jump = false;
+
     // ---- host integration (#169): cancellation and tracing ------------------
     //
     // Both are NON-OWNING views of objects the CALLER keeps alive for the whole
@@ -621,7 +627,8 @@ void initialize_structured_random(Model& model, RNG& rng);
 /// difference (#104).
 int64_t fj_nl_initialize(Model& model, ViolationManager& vm, int max_iterations = 10000,
                          RNG* rng = nullptr, double time_limit = 2.0,
-                         double tolerance = kDefaultFeasibilityTolerance);
+                         double tolerance = kDefaultFeasibilityTolerance,
+                         bool exact_int_jump = false);
 
 /// `time_limit <= 0` disables the wall clock entirely: the run is then bounded by
 /// `config.max_iterations` alone and is fully deterministic for a given seed
