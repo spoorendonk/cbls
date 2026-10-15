@@ -1365,6 +1365,29 @@ The ViolationLS outer loop owns the iteration clock and calls:
   log-uniform offset within 20% of that side — so a binary flips ~1% where the
   default flips 5%, and a column under a 1e7 inf-clamp moves near where it was
   instead of anywhere in the box. The List/Set half is unchanged.
+
+**The objective before the first feasible point (#218), opt-in.** By default
+FJ ignores the objective until the first feasible point: the folded row's bound
+is +inf, so the row is inert, and the start is the closest-to-zero value. Two
+`GFJConfig` flags (`SearchConfig::fj_objective_tie_break` / `fj_objective_start`,
+both default **off**) carry over what OR-Tools does instead. Both need an affine
+objective, whose coefficients FJ reads once at construction by one reverse
+sweep; on any other objective they do nothing.
+
+- `objective_tie_break`: in `compute_var_jump` an exact tie in the weighted
+  violation delta goes to the candidate lowering the objective most, and a jump
+  that wins on the objective alone scores `kObjectiveTieScore` (the smallest
+  positive double); Q also keeps every variable not at its objective-better
+  bound (`objective_scan`, OR-Tools' `HasBetterObjectiveValue`). OR-Tools adds
+  `delta * coefficient / INT64_MAX` to the score instead; in doubles, over
+  fractional weights, that can outweigh a small violation decrease, so here the
+  comparison is lexicographic and the objective can only break a tie. FJ batches
+  only, throughout the run; Novelty batches, the exact Int argmin and the LNS
+  repair keep their own rules.
+- `objective_start`: `set_initial_assignment` puts a column with a positive
+  coefficient at its lower bound and a negative one at its upper bound
+  (OR-Tools' `ResetCurrentSolution` with `use_objective`), keeping the
+  closest-to-zero start where the coefficient is 0 or that bound is infinite.
 - `set_rho(rho)` — re-randomise the GLS decay between batches.
 
 ---

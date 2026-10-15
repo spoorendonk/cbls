@@ -101,6 +101,25 @@ double clamp_to_domain(const Variable& var, double value) {
     return std::min(std::max(value, var.lb), var.ub);
 }
 
+// GFJConfig::objective_start (#218): a column's objective-better bound, or
+// `fallback` (the closest-to-zero start) when the coefficient is 0 or that
+// bound is infinite. An Int bound is rounded inward, so the start stays in the
+// domain whatever the declared bound.
+double objective_start_value(const Variable& var, double coef, double fallback) {
+    if (coef == 0.0) {
+        return fallback;
+    }
+    const double bound = coef > 0.0 ? var.lb : var.ub;
+    if (!std::isfinite(bound)) {
+        return fallback;
+    }
+    if (var.type == VarType::Bool || var.type == VarType::Int) {
+        const double rounded = coef > 0.0 ? std::ceil(bound) : std::floor(bound);
+        return (rounded >= var.lb && rounded <= var.ub) ? rounded : fallback;
+    }
+    return bound;
+}
+
 // --- perturbation helpers --------------------------------------------------
 // `random_in_domain` itself lives in randomize.h, shared with search.cpp's
 // initialisers and LNS's destroy step (#112), and so does `movable_domain`,
@@ -1061,9 +1080,46 @@ bool exact_int_jump(const Variable& var, bool enabled, bool prepared, LinearJump
 // Free functions
 // ---------------------------------------------------------------------------
 
+namespace {
+
+// compute_var_jump's candidate rule: the first-seen minimum of f, the weighted
+// violation delta (0 at the current value x0, which is never offered). Given
+// an objective coefficient (#218, GFJConfig::objective_tie_break), an EXACT tie
+// in f goes to the candidate with the lower objective, so the objective only
+// ever breaks a tie; a jump that wins on the objective alone (f = 0) scores
+// kObjectiveTieScore.
+class JumpArgmin {
+public:
+    JumpArgmin(double x0, const double* objective_coef) : j_(x0), coef_(objective_coef) {}
+
+    void offer(double j, double fv) {
+        if (fv < f_) {
+            f_ = fv;
+            j_ = j;
+            objective_only_ = false;
+        } else if (coef_ != nullptr && fv == f_ && *coef_ * (j - j_) < 0.0) {
+            // c * (j - j_) is the objective change from the incumbent to j.
+            j_ = j;
+            objective_only_ = f_ == 0.0;
+        }
+    }
+    [[nodiscard]] double f() const { return f_; }
+    [[nodiscard]] JumpResult result() const {
+        return {j_, objective_only_ ? kObjectiveTieScore : -f_};
+    }
+
+private:
+    double j_;
+    double f_ = 0.0;  // f(x0) == 0
+    const double* coef_;
+    bool objective_only_ = false;  // j_ won on the objective alone
+};
+
+}  // namespace
+
 JumpResult compute_var_jump(Model& model, const std::vector<double>& weights, int32_t var_id,
                             bool allow_escape_probe, LinearJumpScorer* linear, double tol,
-                            bool exact_int) {
+                            bool exact_int, const double* objective_coef) {
     const Variable& var = model.var(var_id);
     const double x0 = var.value;
 
@@ -1085,17 +1141,12 @@ JumpResult compute_var_jump(Model& model, const std::vector<double>& weights, in
         return model.weighted_violation_delta(var_id, j, weights);
     };
 
-    double best_j = x0;
-    double best_f = 0.0;  // f(x0) == 0
+    JumpArgmin best(x0, objective_coef);
     auto consider = [&](double j) {
         if (j == x0) {
             return;
         }
-        double fv = f(j);
-        if (fv < best_f) {
-            best_f = fv;
-            best_j = j;
-        }
+        best.offer(j, f(j));
     };
     // A variable that reaches a breakpoint node (#186) records what the Int/Float
     // path offered, so its breakpoint candidates can skip those values; every
@@ -1139,12 +1190,12 @@ JumpResult compute_var_jump(Model& model, const std::vector<double>& weights, in
             breakpoint_jump_candidates(model, var_id, var, x0, extra);
             consider_unique(extra, seen, consider);
         }
-        if (allow_escape_probe && !gradient_usable && best_f >= 0.0) {
+        if (allow_escape_probe && !gradient_usable && best.f() >= 0.0) {
             float_escape_candidates(var, x0, consider);
         }
     }
 
-    return {best_j, -best_f};
+    return best.result();
 }
 
 void gls_update_weights(ViolationManager& vm, double rho, double tol) {
@@ -1215,6 +1266,17 @@ FeasibilityJump::FeasibilityJump(Model& model, ViolationManager& vm, RNG& rng, G
 
     compute_linear_constraints();
     build_row_slots();
+
+    // An affine objective's coefficients, for #218's two opt-in uses. Affine
+    // means the folded row is linear, and then every partial is constant, so one
+    // reverse sweep at the closed model's current values reads them all.
+    if ((config_.objective_tie_break || config_.objective_start) && objective_ci_ >= 0 &&
+        is_linear_[static_cast<size_t>(objective_ci_)] != 0) {
+        objective_coef_ = compute_all_partials(model_, model_.objective_id());
+        for (double& c : objective_coef_) {
+            c = std::isfinite(c) ? c : 0.0;
+        }
+    }
 
     for (int32_t v = 0; v < static_cast<int32_t>(model_.num_vars()); ++v) {
         if (!jumpable(v)) {
@@ -1525,6 +1587,9 @@ void FeasibilityJump::set_initial_assignment() {
         if (var.type == VarType::Bool || var.type == VarType::Int) {
             target = std::round(target);
         }
+        if (!objective_coef_.empty() && config_.objective_start) {
+            target = objective_start_value(var, objective_coef_[static_cast<size_t>(v)], target);
+        }
         var.value = target;
     }
 }
@@ -1574,7 +1639,25 @@ void FeasibilityJump::rebuild_violated_and_scan_set() {
             }
         }
     }
+    // objective_tie_break (#218): every variable that can still lower the
+    // objective, in index order after V's. O(#vars), only with the flag on.
+    if (config_.objective_tie_break && !objective_coef_.empty()) {
+        for (int32_t v = 0; v < static_cast<int32_t>(model_.num_vars()); ++v) {
+            if (objective_scan(v)) {
+                enqueue(v);
+            }
+        }
+    }
     jumps_.invalidate_all();
+}
+
+bool FeasibilityJump::objective_scan(int32_t var_id) const {
+    if (objective_coef_.empty() || !jumpable(var_id)) {
+        return false;
+    }
+    const double c = objective_coef_[static_cast<size_t>(var_id)];
+    const Variable& var = model_.var(var_id);
+    return (c > 0.0 && var.value > var.lb) || (c < 0.0 && var.value < var.ub);
 }
 
 void FeasibilityJump::update_var(int32_t var_id) {
@@ -1639,7 +1722,7 @@ void FeasibilityJump::update_var(int32_t var_id) {
                 continue;
             }
             jumps_.invalidate(vp);
-            if (in_queue_[vp] == 0 && participates_in_active_violated(vp)) {
+            if (in_queue_[vp] == 0 && should_scan(vp)) {
                 enqueue(vp);
             }
         }
@@ -1950,7 +2033,7 @@ bool FeasibilityJump::settle_regrounded_rows() {
         const int32_t c = row_before_[k].first;
         for (const int32_t vp : vars_of_constraint_[static_cast<size_t>(c)]) {
             jumps_.invalidate(vp);
-            if (in_queue_[vp] == 0 && participates_in_active_violated(vp)) {
+            if (in_queue_[vp] == 0 && should_scan(vp)) {
                 enqueue(vp);
             }
         }
@@ -2030,8 +2113,9 @@ bool FeasibilityJump::apply_jump(int sample_size) {
             n + static_cast<size_t>(rng_.integers(0, static_cast<int64_t>(queue_.size() - n)));
         const int32_t v = queue_[idx];
         if (!jumps_.valid(v)) {
-            JumpResult r = compute_var_jump(model_, vm_.weights, v, escape_probe_, &linear_,
-                                            config_.tolerance, config_.exact_int_jump);
+            JumpResult r =
+                compute_var_jump(model_, vm_.weights, v, escape_probe_, &linear_, config_.tolerance,
+                                 config_.exact_int_jump, objective_tie(v));
             jumps_.set(v, r.jump_value, r.score);
         }
         const double s = jumps_.score(v);

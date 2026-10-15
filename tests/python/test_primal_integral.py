@@ -361,10 +361,12 @@ def test_a_row_without_the_shared_bound_key_scores_only_where_it_is_equivalent(
             check_uniform_configuration(rows)
 
 
-@pytest.mark.parametrize("key", ["exact_int_jump", "perturb_near_value"])
+@pytest.mark.parametrize(
+    "key", ["exact_int_jump", "perturb_near_value", "objective_tie_break", "objective_start"]
+)
 @pytest.mark.parametrize(
     ("on", "match"),
-    # Before the flag (#216, #217) every CBLS row ran its off arm.
+    # Before the flag (#216, #217, #218) every CBLS row ran its off arm.
     [(False, None), (True, "span 2 configurations")],
     ids=["old-row-is-the-off-arm", "on-arm-refused"],
 )

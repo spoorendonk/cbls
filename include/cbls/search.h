@@ -244,6 +244,13 @@ struct SearchConfig {
     // half of the kick is unchanged. Off is today's kick, draw for draw.
     bool perturb_near_value = false;
 
+    // OR-Tools' use of the objective before the first feasible point (#218),
+    // both off by default and off meaning today's path bit for bit; forwarded to
+    // GFJConfig::objective_tie_break / objective_start, whose comments say what
+    // each does. Both need an affine objective and do nothing on any other.
+    bool fj_objective_tie_break = false;
+    bool fj_objective_start = false;
+
     // ---- host integration (#169): cancellation and tracing ------------------
     //
     // Both are NON-OWNING views of objects the CALLER keeps alive for the whole

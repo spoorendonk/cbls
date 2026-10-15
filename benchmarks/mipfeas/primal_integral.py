@@ -124,6 +124,8 @@ CONFIG_KEYS = (
     "compound_moves",
     "exact_int_jump",
     "perturb_near_value",
+    "objective_tie_break",
+    "objective_start",
     "inf_clamp",
     "propagate_bounds",
     "max_propagation_passes",
@@ -135,8 +137,9 @@ CONFIG_KEYS = (
 def config_string(result: dict[str, object]) -> str:
     """The `config` cell: every CONFIG_KEYS entry the result carries.
 
-    One key is back-filled, and two (`exact_int_jump`, #216, and
-    `perturb_near_value`, #217) dropped when off; see their lines.
+    One key is back-filled, and the opt-in engine flags (`exact_int_jump`,
+    #216; `perturb_near_value`, #217; `objective_tie_break` and
+    `objective_start`, #218) dropped when off; see their lines.
     `share_objective_bound` (#179) did not exist before
     the shared bound, and at one thread it names no behaviour at all -- a single
     `solve()` has no pool -- so a pre-#179 single-threaded row IS the default
@@ -153,9 +156,11 @@ def config_string(result: dict[str, object]) -> str:
     # before the flag byte-identical, and only an on-arm row carries the key.
     if cells.get("exact_int_jump") is False:
         del cells["exact_int_jump"]
-    # `perturb_near_value` (#217): the same rule for the same reason.
-    if cells.get("perturb_near_value") is False:
-        del cells["perturb_near_value"]
+    # `perturb_near_value` (#217) and the objective flags (#218): the same rule
+    # for the same reason.
+    for opt_in in ("perturb_near_value", "objective_tie_break", "objective_start"):
+        if cells.get(opt_in) is False:
+            del cells[opt_in]
     return ";".join(f"{k}={cells[k]}" for k in CONFIG_KEYS if k in cells)
 
 

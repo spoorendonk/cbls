@@ -7,6 +7,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -104,9 +105,25 @@ struct JumpResult {
 // slope is bit-identical to `compute_partial`, so those candidates do not move.
 // `tol` is the residual a row may keep and still count as satisfied (FJ passes
 // GFJConfig::tolerance): a satisfied row offers no Newton candidate.
+//
+// `objective_coef`, when given, is var_id's coefficient in an affine objective
+// and turns on the objective TIE-BREAK (#218, GFJConfig::objective_tie_break):
+// among candidates with exactly the minimum f, the one that lowers the objective
+// most wins, so it can never override a violation decrease -- the comparison is
+// lexicographic, not OR-Tools' additive 1/INT64_MAX * delta * coefficient, which
+// in doubles can outweigh a small violation decrease. A jump that wins on the
+// objective alone (f = 0) scores kObjectiveTieScore: positive, so the scan
+// keeps and applies it, and below every score a violation decrease can earn
+// short of a denormal one. The exact Int argmin (`exact_int`) keeps its own tie
+// rule and ignores it.
 JumpResult compute_var_jump(Model& model, const std::vector<double>& weights, int32_t var_id,
                             bool allow_escape_probe = false, LinearJumpScorer* linear = nullptr,
-                            double tol = kDefaultFeasibilityTolerance, bool exact_int = false);
+                            double tol = kDefaultFeasibilityTolerance, bool exact_int = false,
+                            const double* objective_coef = nullptr);
+
+// The score of a jump that improves only the objective (#218): the smallest
+// positive double.
+inline constexpr double kObjectiveTieScore = std::numeric_limits<double>::denorm_min();
 
 // Guided Local Search weight update (paper Algorithm 3, lines 8-10): decay all
 // weights by rho, then bump every currently-violated constraint by 1. Weights
@@ -246,6 +263,29 @@ struct GFJConfig {
     bool perturb_near_value = false;
     double perturb_near_value_probability = 0.05;
     double perturb_range_ratio = 0.2;
+    // OR-Tools' use of the objective before the first feasible solution (#218),
+    // both off by default and off meaning today's path bit for bit. Both need
+    // an AFFINE objective, whose coefficients FJ reads once at construction; on
+    // any other objective, or none, they do nothing.
+    //
+    // objective_tie_break: OR-Tools' ComputeScore epsilon and ShouldScan's
+    // HasBetterObjectiveValue, together because neither does anything alone.
+    // A tie in a variable's weighted violation delta goes to the candidate
+    // lowering the objective most (see compute_var_jump), and a variable not at
+    // its objective-better bound is kept in the scan set Q whether or not it
+    // sits in a violated row. Before the first feasible point the objective row
+    // is inert (its bound is +inf) and the objective is otherwise invisible;
+    // this lets FJ move objective columns toward their better bound wherever
+    // that costs no violation. Applies to FJ batches throughout the run, as in
+    // OR-Tools; Novelty batches and the LNS repair do not take it.
+    bool objective_tie_break = false;
+    // objective_start: the initial assignment (set_initial_x) puts a column
+    // with a positive objective coefficient at its lower bound and a negative
+    // one at its upper bound, as OR-Tools' ResetCurrentSolution does with
+    // use_objective, instead of at the value closest to zero. A column whose
+    // better bound is infinite, or whose coefficient is 0, keeps the
+    // closest-to-zero start.
+    bool objective_start = false;
     bool two_phase = true;       // GLS on linear submodel first, then full model
     bool set_initial_x = true;   // set X[v] to the domain value closest to 0 first
     int64_t max_iterations = 0;  // 0 = unbounded (bounded by time_limit)
@@ -1027,6 +1067,26 @@ private:
     // See objective_row_inert.
     enum class ObjectiveSlopes : uint8_t { Unbuilt, Built, NotAffine };
     ObjectiveSlopes objective_slopes_ = ObjectiveSlopes::Unbuilt;
+    // Per-variable coefficient of an affine objective (#218), read once at
+    // construction when GFJConfig::objective_tie_break or objective_start is on;
+    // empty otherwise, which is what turns both off.
+    std::vector<double> objective_coef_;
+    // objective_tie_break's per-variable handle for compute_var_jump: null when
+    // the tie-break is off.
+    [[nodiscard]] const double* objective_tie(int32_t var_id) const {
+        return (config_.objective_tie_break && !objective_coef_.empty())
+                   ? &objective_coef_[static_cast<size_t>(var_id)]
+                   : nullptr;
+    }
+    // Whether var_id can still lower the objective inside its box (OR-Tools'
+    // HasBetterObjectiveValue): what keeps it in Q under objective_tie_break.
+    [[nodiscard]] bool objective_scan(int32_t var_id) const;
+    // Q's membership rule: a variable of an active violated row, or, under
+    // objective_tie_break, one objective_scan admits.
+    [[nodiscard]] bool should_scan(int32_t var_id) const {
+        return participates_in_active_violated(var_id) ||
+               (config_.objective_tie_break && objective_scan(var_id));
+    }
     double objective_max_variation_ = 0.0;
     // objective_columns_in_box() as of the last rebuild_violated_and_scan_set.
     // False switches the finite-bound skip off until the next rebuild: a value
