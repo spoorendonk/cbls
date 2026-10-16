@@ -365,6 +365,29 @@ TEST_CASE("the objective flags reach solve() (#218)", "[fj][objective_tie]") {
             REQUIRE(r.first_feasible_objective == (on ? -25.0 : 0.0));
         }
     }
+    SECTION("objective_start_bound_limit: a clamp-sized bound is no start (#226)") {
+        // The same shape over columns whose lower bound is a 1e7 clamp: with
+        // the limit at the clamp they start at 0, without it at the clamp.
+        for (const double limit : {kInf, 1e7}) {
+            Model m;
+            std::vector<int32_t> xs;
+            xs.reserve(5);
+            for (int i = 0; i < 5; ++i) {
+                xs.push_back(m.float_var(-1e7, 1e7));
+            }
+            m.add_constraint(m.leq(m.sum(xs), m.constant(1e9)));
+            m.minimize(m.sum(xs));
+            m.close();
+            SearchConfig config;
+            config.max_iterations = 1'000;
+            config.fj_objective_start = true;
+            config.fj_objective_start_bound_limit = limit;
+            const SearchResult r = solve(m, /*time_limit=*/0.0, /*seed=*/1, true, nullptr, nullptr,
+                                         3, nullptr, config);
+            CAPTURE(limit, r.first_feasible_objective);
+            REQUIRE(r.first_feasible_objective == (limit == kInf ? -5e7 : 0.0));
+        }
+    }
     SECTION("objective_tie_break: the objective-only column moves while infeasible") {
         // ScanFixture's model through solve(): z is read only by the objective
         // row, which is inert while no feasible point exists, so only the
