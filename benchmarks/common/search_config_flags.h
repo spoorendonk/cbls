@@ -124,6 +124,13 @@ struct SearchFlags {
     // 0 = no neighbour list, the engine's default (a null
     // `structural_neighbours`). Typed values must be >= 1.
     int64_t neighbours = 0;
+    // Opt-in FJ satellites whose default is being decided (#226): OR-Tools'
+    // near-value kick (#217), exact quadratic roots (#221) and equality-balance
+    // moves (#222). Each is recorded in the cell only when on (see
+    // SearchFlagSpec::opt_in).
+    bool perturb_near_value = SearchConfig{}.perturb_near_value;
+    bool quadratic_roots = SearchConfig{}.fj_quadratic_roots;
+    bool equality_balance = SearchConfig{}.fj_equality_balance;
     // The first flag typed from each family, indexed by the family's bit, or
     // nullptr. Set by match_search_flag() whatever the value, so that a flag
     // restated at its default is refused on a runner that cannot read it too:
@@ -137,6 +144,11 @@ struct SearchFlagSpec {
     const char* key;
     const char* usage;
     unsigned family;
+    // An opt-in flag is written into the cell only when its value differs from
+    // the default. That is what lets a flag join a family whose runners already
+    // have committed tables: their default cell stays byte-identical, and an
+    // arm that turns the flag on is still named by it (#226).
+    bool opt_in = false;
 };
 
 /// The flag table. Order is the canonical order of the `search_config` cell and
@@ -146,7 +158,7 @@ struct SearchFlagSpec {
 ///
 /// New flags go at the END: a runner's cell is the table filtered by its
 /// families, so appending keeps every existing runner's cell byte-identical.
-inline constexpr std::array<SearchFlagSpec, 13> kSearchFlagSpecs = {{
+inline constexpr std::array<SearchFlagSpec, 16> kSearchFlagSpecs = {{
     {"float_hook", "[--no-float-hook]", kScalarSearchFlags},
     {"lns", "[--no-lns]", kCommonSearchFlags},
     {"lns_interval", "[--lns-interval N]", kCommonSearchFlags},
@@ -162,6 +174,9 @@ inline constexpr std::array<SearchFlagSpec, 13> kSearchFlagSpecs = {{
      kStructuralSearchFlags},
     {"structural_sample_size", "[--structural-sample-size N]", kStructuralSearchFlags},
     {"neighbours", "[--neighbours K]", kNeighbourSearchFlags},
+    {"perturb_near_value", "[--perturb-near-value]", kScalarSearchFlags, true},
+    {"quadratic_roots", "[--quadratic-roots]", kScalarSearchFlags, true},
+    {"equality_balance", "[--equality-balance]", kScalarSearchFlags, true},
 }};
 
 inline constexpr std::size_t kSearchFlagCount = kSearchFlagSpecs.size();
@@ -254,6 +269,18 @@ inline bool match_search_flag(ArgCursor& c, const std::string& s, SearchFlags& f
         f.neighbours = parse_int64("--neighbours", v);
         flag = "--neighbours";
         family = kNeighbourSearchFlags;
+    } else if (s == "--perturb-near-value") {
+        f.perturb_near_value = true;
+        flag = "--perturb-near-value";
+        family = kScalarSearchFlags;
+    } else if (s == "--quadratic-roots") {
+        f.quadratic_roots = true;
+        flag = "--quadratic-roots";
+        family = kScalarSearchFlags;
+    } else if (s == "--equality-balance") {
+        f.equality_balance = true;
+        flag = "--equality-balance";
+        family = kScalarSearchFlags;
     } else {
         return false;
     }
@@ -461,6 +488,15 @@ inline const char* first_non_default_search_flag(const SearchFlags& f,
     if (f.neighbours != d.neighbours) {
         return "--neighbours";
     }
+    if (f.perturb_near_value != d.perturb_near_value) {
+        return "--perturb-near-value";
+    }
+    if (f.quadratic_roots != d.quadratic_roots) {
+        return "--quadratic-roots";
+    }
+    if (f.equality_balance != d.equality_balance) {
+        return "--equality-balance";
+    }
     return nullptr;
 }
 
@@ -499,6 +535,9 @@ inline std::array<std::string, kSearchFlagCount> search_config_values(const Sear
         structural_selection_name(f.structural_selection),
         std::to_string(f.structural_sample_size),
         f.neighbours == 0 ? std::string(off) : std::to_string(f.neighbours),
+        f.perturb_near_value ? on : off,
+        f.quadratic_roots ? on : off,
+        f.equality_balance ? on : off,
     }};
 }
 
@@ -513,9 +552,13 @@ inline std::array<std::string, kSearchFlagCount> search_config_values(const Sear
 /// `--no-lns --lns-interval 5` would be one run under two different cells.
 inline std::string search_config_string(const SearchFlags& f, unsigned applicable) {
     const auto values = search_config_values(f);
+    const auto defaults = search_config_values(SearchFlags{});
     std::string out;
     for (std::size_t i = 0; i < kSearchFlagCount; ++i) {
         if ((kSearchFlagSpecs[i].family & applicable) == 0) {
+            continue;
+        }
+        if (kSearchFlagSpecs[i].opt_in && values[i] == defaults[i]) {
             continue;
         }
         if (!out.empty()) {
@@ -559,6 +602,9 @@ inline void apply_search_flags(const SearchFlags& f, SearchConfig& cfg) {
     cfg.structural_batch_probability = f.structural_prob;
     cfg.structural_selection = f.structural_selection;
     cfg.structural_sample_size = static_cast<int>(f.structural_sample_size);
+    cfg.perturb_near_value = f.perturb_near_value;
+    cfg.fj_quadratic_roots = f.quadratic_roots;
+    cfg.fj_equality_balance = f.equality_balance;
 }
 
 /// The neighbour flag's check against the instance, which only the runner can
