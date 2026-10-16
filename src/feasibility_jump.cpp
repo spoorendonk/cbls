@@ -106,14 +106,17 @@ double clamp_to_domain(const Variable& var, double value) {
 
 // GFJConfig::objective_start (#218): a column's objective-better bound, or
 // `fallback` (the closest-to-zero start) when the coefficient is 0 or that
-// bound is infinite. An Int bound is rounded inward, so the start stays in the
+// bound is infinite -- or at least `bound_limit` in magnitude, which is how a
+// caller that clamped unbounded columns to a finite box says the clamp is no
+// bound (#226). An Int bound is rounded inward, so the start stays in the
 // domain whatever the declared bound.
-double objective_start_value(const Variable& var, double coef, double fallback) {
+double objective_start_value(const Variable& var, double coef, double fallback,
+                             double bound_limit) {
     if (coef == 0.0) {
         return fallback;
     }
     const double bound = coef > 0.0 ? var.lb : var.ub;
-    if (!std::isfinite(bound)) {
+    if (!(std::abs(bound) < bound_limit)) {
         return fallback;
     }
     if (var.type == VarType::Bool || var.type == VarType::Int) {
@@ -2148,7 +2151,8 @@ void FeasibilityJump::set_initial_assignment() {
             target = std::round(target);
         }
         if (!objective_coef_.empty() && config_.objective_start) {
-            target = objective_start_value(var, objective_coef_[static_cast<size_t>(v)], target);
+            target = objective_start_value(var, objective_coef_[static_cast<size_t>(v)], target,
+                                           config_.objective_start_bound_limit);
         }
         var.value = target;
     }

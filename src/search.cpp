@@ -2038,6 +2038,7 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
     gfj.perturb_near_value = config.perturb_near_value;
     gfj.objective_tie_break = config.fj_objective_tie_break;
     gfj.objective_start = config.fj_objective_start;
+    gfj.objective_start_bound_limit = config.fj_objective_start_bound_limit;
     FeasibilityJump fj(model, vm, rng, gfj);
     fj.begin(/*set_initial_x=*/!config.skip_init);
 

@@ -263,6 +263,9 @@ struct SearchConfig {
     // each does. Both need an affine objective and do nothing on any other.
     bool fj_objective_tie_break = false;
     bool fj_objective_start = false;
+    // GFJConfig::objective_start_bound_limit (#226): a bound this large in
+    // magnitude is a reader's clamp, not a bound, to fj_objective_start.
+    double fj_objective_start_bound_limit = std::numeric_limits<double>::infinity();
 
     // ---- host integration (#169): cancellation and tracing ------------------
     //

@@ -705,6 +705,9 @@ int run_benchmark(int argc, char** argv) {
     cfg.perturb_near_value = args.perturb_near_value;
     cfg.fj_objective_tie_break = args.objective_tie_break;
     cfg.fj_objective_start = args.objective_start;
+    // A column the reader clamped to +-inf_clamp has no declared bound there,
+    // so --objective-start must not start it at the clamp (#226).
+    cfg.fj_objective_start_bound_limit = args.inf_clamp;
     cfg.lns_interval = kLnsInterval;
 
     // One model per portfolio worker, replicated BEFORE the solve bracket opens.

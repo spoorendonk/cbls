@@ -289,6 +289,40 @@ TEST_CASE("objective_start puts objective columns at their better bound (#218)",
     }
 }
 
+TEST_CASE("objective_start treats a bound at the clamp limit as infinite (#226)",
+          "[fj][objective_tie]") {
+    // The MPS reader clamps an unbounded column to +-inf_clamp; the runner says
+    // so through objective_start_bound_limit, and such a column must keep the
+    // closest-to-zero start rather than start a clamp's width from it.
+    for (const double limit : {kInf, 1e7}) {
+        Model m;
+        auto clamped = m.float_var(-1e7, 1e7);   // minimised: lb is the clamp
+        auto big_int = m.int_var(-3, 10000000);  // maximised: ub is the clamp
+        auto near = m.float_var(-9.99e6, 5.0);   // minimised: lb under the limit
+        m.add_constraint(m.leq(m.sum({clamped, big_int, near}), m.constant(1e9)));
+        m.minimize(m.sum({clamped, m.neg(big_int), near}));
+        m.close();
+        m.add_objective_soft_constraint();
+        ViolationManager vm(m);
+        RNG rng(1);
+        GFJConfig cfg;
+        cfg.objective_start = true;
+        cfg.objective_start_bound_limit = limit;
+        FeasibilityJump fj(m, vm, rng, cfg);
+        fj.begin(/*set_initial_x=*/true);
+        CAPTURE(limit);
+        REQUIRE(m.var(vid(near)).value == -9.99e6);
+        if (limit == kInf) {
+            REQUIRE(m.var(vid(clamped)).value == -1e7);
+            REQUIRE(m.var(vid(big_int)).value == 1e7);
+        } else {
+            REQUIRE(m.var(vid(clamped)).value == 0.0);
+            REQUIRE(m.var(vid(big_int)).value == 0.0);
+        }
+    }
+    REQUIRE(SearchConfig{}.fj_objective_start_bound_limit == kInf);
+}
+
 TEST_CASE("the objective flags do nothing on a non-affine objective (#218)",
           "[fj][objective_tie]") {
     Model m;

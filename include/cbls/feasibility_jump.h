@@ -368,6 +368,12 @@ struct GFJConfig {
     // better bound is infinite, or whose coefficient is 0, keeps the
     // closest-to-zero start.
     bool objective_start = false;
+    // A bound at least this large in magnitude counts as infinite for
+    // objective_start (#226). A reader that clamps unbounded columns to a
+    // finite box (the MPS reader's `inf_clamp`, 1e7 by default) sets it to
+    // that clamp, so such a column keeps the closest-to-zero start instead of
+    // starting at the clamp. Infinite by default: every finite bound counts.
+    double objective_start_bound_limit = std::numeric_limits<double>::infinity();
     // Opt-in equality-balance move (#222, LS-IQCQP): at an FJ local minimum,
     // before the GLS bump, try a two-variable move along a satisfied linear
     // equality row's nullspace (a_v dv + a_u du = 0), so that row stays
