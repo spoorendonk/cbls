@@ -1437,6 +1437,7 @@ void ViolationLSLoop::diversify(bool allow_lns) {
         trace_kick(KickKind::LNS);
         lns_->set_feasibility_tolerance(config_.feasibility_tolerance);
         lns_->set_exact_int_jump(config_.fj_exact_int_jump);
+        lns_->set_neighbours(config_.structural_neighbours);
         const bool accepted = lns_->destroy_repair(model_, vm_, rng_, repair_limit);
         ++lns_repairs_;
         lns_repairs_accepted_ += accepted ? 1 : 0;

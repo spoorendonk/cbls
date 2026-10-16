@@ -4,9 +4,12 @@
 #include "rng.h"
 #include "violation.h"
 
+#include <memory>
 #include <utility>
 
 namespace cbls {
+
+class NeighbourList;
 
 /// The key the built-in LNS accepts a repair on, compared lexicographically:
 /// (real violation, objective). The real violation sums each row's residual
@@ -16,6 +19,22 @@ namespace cbls {
 std::pair<double, double> lns_acceptance_key(const Model& model, double tol);
 
 /// Destroy-and-repair diversification for the ViolationLS loop.
+///
+/// Two destroy/repair pairs, by variable kind (#202):
+///
+///  - The members of every `ListPartition` are ruined and recreated: adjacent
+///    strings of elements are removed from a few of the partition's lists and
+///    reinserted one by one, each at its best position under the acceptance
+///    key's own lexicographic (real violation, objective) rule, probed through
+///    the DAG. That is ASB-RR/SISR (Christiaens & Vanden Berghe; KU Leuven
+///    technical report 2016, Transportation Science 54(2) 2020) with the
+///    paper's parameters; see `ruin_recreate_partition` in src/lns.cpp for
+///    the two places it departs. FJ cannot move a List, so the old
+///    perturb-then-FJ pair could only ever return a worse route: 0 repairs
+///    accepted in every CVRP smoke run before this.
+///  - Every other variable keeps the original pair: a random `destroy_fraction`
+///    is randomised and a Feasibility Jump pass repairs it. On a model with no
+///    partition this is the whole of it, with the same random draws as before.
 ///
 /// An extension point, like InnerSolverHook: `solve()` takes an `LNS*` and
 /// `ParallelSearch` a factory returning `shared_ptr<LNS>`, so a C++ caller can
@@ -69,10 +88,23 @@ public:
     void set_exact_int_jump(bool on) { exact_int_jump_ = on; }
     [[nodiscard]] bool exact_int_jump() const { return exact_int_jump_; }
 
+    /// The relatedness the partition ruin draws its strings by: an element's
+    /// neighbours, nearest first, over the partition's universe (#202). `solve()`
+    /// sets it from `SearchConfig::structural_neighbours` before each kick. Null
+    /// -- the default -- means no relatedness: after the seed, strings are taken
+    /// near randomly drawn elements instead.
+    void set_neighbours(std::shared_ptr<const NeighbourList> neighbours) {
+        neighbours_ = std::move(neighbours);
+    }
+    [[nodiscard]] const std::shared_ptr<const NeighbourList>& neighbours() const {
+        return neighbours_;
+    }
+
 private:
     double destroy_fraction_;
     double feasibility_tolerance_ = kDefaultFeasibilityTolerance;
     bool exact_int_jump_ = false;
+    std::shared_ptr<const NeighbourList> neighbours_;
 };
 
 }  // namespace cbls

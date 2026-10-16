@@ -1808,7 +1808,7 @@ only variables are structured. There, everything else is inert:
 | FJ batch | not scheduled at the automatic mix since #201: with no movable scalar every batch is structural. Before that it ran anyway, `apply_jump` failed every iteration, and the batch degenerated into a pure GLS weight pump that reported itself stuck and took the unproductive kick |
 | Novelty Jump | not scheduled at the automatic mix either — compound moves are chains of scalar jumps, nothing to chain |
 | `perturb` kick | reaches them since #111 (each List/Set variable gets its own pass of `clamp(round(p*|elements|), 1, |elements|)` random structural moves), but the moves are the same unguided ones — see [Diversification](#diversification) |
-| LNS | destroys the structured variables wholesale, i.e. a random restart, then repairs with an FJ that has nothing to jump. On a `ListPartition` it is weaker still: its destroy step uses `ListOrder::Perturb`, which shuffles a list in place, so it can neither gain nor lose an element — which is what keeps the cover safe, and also means LNS diversifies the ORDER within each list and never the membership across them |
+| LNS | on an unpartitioned List/Set, destroys the variable wholesale (a List keeps its elements and is reshuffled), then repairs with an FJ that has nothing to jump. A `ListPartition` is ruined and recreated instead (#202, see [LNS](#destroy-phase)): strings of elements leave a few lists and go back in one at a time at their best position, so the membership across lists moves. Before #202 the partition got the reshuffle too, and no repair was ever accepted on CVRP |
 
 so progress is slow once the sampled neighbourhood stops improving — slow, not
 finished: 6x the budget still buys ~18% on these instances (scp41 `set`, best of
@@ -2937,8 +2937,37 @@ perturbation instead.
 
 ### Destroy Phase
 
-`destroy_repair` snapshots the state and its lexicographic key, then selects
-variables to destroy:
+`destroy_repair` snapshots the state and its lexicographic key. Every
+`ListPartition` is then **ruined and recreated** (#202), ASB-RR/SISR's
+adjacent string removal and greedy insertion with blinks (Christiaens & Vanden
+Berghe, KU Leuven technical report 2016; Transportation Science 54(2) 2020),
+with the reference's parameters (c̄ = 10, L_max = 10, split string at 0.5,
+split depth 0.01, blink rate 0.01):
+
+- **Ruin.** A random assigned element is the seed; adj(seed) is the seed, its
+  row of `SearchConfig::structural_neighbours` (handed over by `solve()` through
+  `LNS::set_neighbours` before each kick), then every other assigned element in
+  random order. Walking adj(seed), each element whose list is not yet ruined
+  takes a string -- or a split string, which keeps a run inside its window --
+  out of that list, until k lists are ruined, k drawn from the mean list
+  length as the reference's Eq. 3-5 draw it. No list goes below its
+  `min_size`.
+- **Recreate.** The removed elements, in random order, each go to the best
+  position over the lists with room (random list order, each position skipped
+  with the blink rate), scored lexicographically on (real violation added on
+  the list's rows, objective) -- the acceptance key's own rule -- by a DAG
+  probe and rollback per position. Under `Cover::AtMostOnce` leaving the
+  element out is a candidate too. At the repair deadline the rest go in
+  unevaluated (`Exact`) or stay out (`AtMostOnce`).
+
+Two departures from the reference, both because the engine does not know what
+an element means: adj(seed) is a k-nearest row plus a random tail rather than a
+full distance order, and the removed set is reinserted in the reference's
+Random order only (its Demand, Far and Close orders are routing quantities).
+
+Every variable **outside** a partition is then destroyed and repaired as it
+always was -- with no partition, that is every variable, with the same random
+draws:
 
 - **Sequence-aware** (when the model registers `var_sequences`): pick
   `ceil(n_seqs * destroy_fraction)` whole sequences plus a proportional fraction
@@ -2955,7 +2984,8 @@ valid-cardinality subset.
 
 ### Repair Phase
 
-`full_evaluate`, then `fj_nl_initialize(model, vm, 2000, &rng)` — a single-phase
+When the scalar destroy chose anything, `full_evaluate`, then
+`fj_nl_initialize(model, vm, 2000, &rng)` — a single-phase
 GFJ repair (2000 iterations) refining the current (partially destroyed)
 assignment toward feasibility, leaving a clean unit-weight penalty landscape.
 
