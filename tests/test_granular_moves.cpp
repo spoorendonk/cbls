@@ -231,6 +231,15 @@ TEST_CASE("granular moves reopen an empty list (#203)", "[structural][partition]
         std::set<std::string> kinds;
         check_draws(r, 5, 50, kinds);
     }
+    // AtMostOnce with EVERY list empty: nothing is assigned, so the only moves
+    // are inserts of the drawn element into an empty list.
+    Routing r(Cover::AtMostOnce, 30, 5, 8, /*min_len=*/0);
+    for (const int32_t v : r.route_vars) {
+        r.m.var_mut(v).elements.clear();
+    }
+    std::set<std::string> kinds;
+    check_draws(r, 5, 20, kinds);
+    REQUIRE(kinds == std::set<std::string>{"g_insert"});
 }
 
 TEST_CASE("solve() under GranularBest keeps the cover and reaches the engine (#203)",
