@@ -1241,7 +1241,16 @@ def test_a_maximize_objective_is_printed_in_the_models_own_sense(fmt: str, tmp_p
             .removeprefix("Objective:")
             .strip()
         )
-        progress = []
+        # Progress rows: "<time>s <iter> <objective|-> ...", one per tick.
+        progress = [
+            float(fields[2])
+            for fields in (line.split() for line in result.stdout.splitlines())
+            if len(fields) >= 3
+            and fields[0].endswith("s")
+            and fields[2] != "-"
+            and fields[0][:-1].replace(".", "", 1).isdigit()
+        ]
+        assert progress, result.stdout
     assert objective == pytest.approx(values["x"] ** 2 + values["y"] ** 2, abs=0.2), result.stdout
     assert objective > 0.0, result.stdout
     assert all(p is None or p > 0.0 for p in progress), result.stdout

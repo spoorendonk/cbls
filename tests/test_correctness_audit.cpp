@@ -27,6 +27,7 @@
 #include "test_helpers.h"
 
 #include <algorithm>
+#include <atomic>
 #include <catch2/catch_test_macros.hpp>
 #include <cbls/audit.h>
 #include <cbls/cbls.h>
@@ -634,11 +635,8 @@ const std::vector<Arm>& arms() {
         {"default", [](SearchConfig&) {}},
         {"fj_exact_int_jump", [](SearchConfig& c) { c.fj_exact_int_jump = true; }},
         {"perturb_near_value", [](SearchConfig& c) { c.perturb_near_value = true; }},
-        {"fj_objective_tie_break+start",
-         [](SearchConfig& c) {
-             c.fj_objective_tie_break = true;
-             c.fj_objective_start = true;
-         }},
+        {"fj_objective_tie_break", [](SearchConfig& c) { c.fj_objective_tie_break = true; }},
+        {"fj_objective_start", [](SearchConfig& c) { c.fj_objective_start = true; }},
         {"fj_quadratic_roots", [](SearchConfig& c) { c.fj_quadratic_roots = true; }},
         {"fj_equality_balance", [](SearchConfig& c) { c.fj_equality_balance = true; }},
         {"all_opt_in",
@@ -799,14 +797,18 @@ void audit_family(std::unique_ptr<Instance> (*make)(uint64_t), uint64_t first_se
     CHECK(total.feasible);
 }
 
-// The portfolio: every worker audited (a worker restarted from the pool is
-// audited from its first batch), and the merged result checked independently.
-// Wall-clock bounded, so which points it reaches varies; what it asserts does
-// not.
+// The portfolio: every worker audited, and the merged result checked
+// independently. A small iteration cap makes each worker's solve() return and
+// restart on the time left, and its stagnation kicks may adopt a peer's pool
+// solution: both paths only exist here, so the tracers count them and the
+// test case requires each to have been audited at least once. Wall-clock
+// bounded, so how often varies; what it asserts does not.
 struct SharedAuditor : SearchAuditor {
     std::mutex mu;
     std::vector<std::string> findings;
     int audits = 0;
+    std::atomic<int> adoptions{0};
+    std::atomic<int> restarts{0};
     void audit(AuditPoint /*point*/, const FeasibilityJump& fj) override {
         std::vector<std::string> found = fj.audit();
         const std::scoped_lock lock(mu);
@@ -819,14 +821,43 @@ struct SharedAuditor : SearchAuditor {
     }
 };
 
-void audit_portfolio(Instance& inst, uint64_t seed) {
+// One per worker. A restart starts a fresh solve(), whose cumulative
+// iteration count starts again from zero.
+struct WorkerTracer : Tracer {
+    SharedAuditor* shared = nullptr;
+    int64_t last_iterations = 0;
+    void batch_end(BatchKind /*kind*/, int64_t iterations, bool /*improved*/) override {
+        if (iterations < last_iterations) {
+            ++shared->restarts;
+        }
+        last_iterations = iterations;
+    }
+    void kick(KickKind kind) override {
+        if (kind == KickKind::Adopt) {
+            ++shared->adoptions;
+        }
+    }
+};
+
+struct PortfolioOutcome {
+    int adoptions = 0;
+    int restarts = 0;
+};
+
+PortfolioOutcome audit_portfolio(Instance& inst, uint64_t seed) {
     SharedAuditor a;
     SearchConfig cfg;
     cfg.batch_iterations = 40;
     cfg.perturbation_period = 4;
+    cfg.max_iterations = 1500;
     cfg.auditor = &a;
     ParallelConfig par;
     par.n_threads = 2;
+    par.tracer_factory = [&a](int /*worker*/) {
+        auto t = std::make_unique<WorkerTracer>();
+        t->shared = &a;
+        return std::unique_ptr<Tracer>(std::move(t));
+    };
     ParallelSearch ps(2);
     const SearchResult r = ps.solve(
         inst.m, /*time_limit=*/0.15, seed, cfg, nullptr, [] { return std::make_shared<LNS>(); },
@@ -845,6 +876,7 @@ void audit_portfolio(Instance& inst, uint64_t seed) {
             CHECK(std::fabs(r.objective - internal) <= 1e-7 * (1.0 + std::fabs(internal)));
         }
     }
+    return {a.adoptions.load(), a.restarts.load()};
 }
 
 }  // namespace
@@ -866,10 +898,18 @@ TEST_CASE("audit: Set and List variables through lambda sums", "[audit]") {
 }
 
 TEST_CASE("audit: portfolio workers and the merged result", "[audit]") {
+    PortfolioOutcome total;
     for (uint64_t seed = 5000; seed < 5003; ++seed) {
-        audit_portfolio(*linear_instance(seed), seed);
-        audit_portfolio(*mip_instance(seed), seed);
+        for (const PortfolioOutcome o : {audit_portfolio(*linear_instance(seed), seed),
+                                         audit_portfolio(*mip_instance(seed), seed)}) {
+            total.adoptions += o.adoptions;
+            total.restarts += o.restarts;
+        }
     }
+    // The audit is only evidence for the paths it actually reached.
+    INFO("adoptions " << total.adoptions << ", restarts " << total.restarts);
+    CHECK(total.adoptions > 0);
+    CHECK(total.restarts > 0);
 }
 
 TEST_CASE("audit: FeasibilityJump::audit reports a corrupted cache", "[audit]") {

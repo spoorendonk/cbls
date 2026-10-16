@@ -510,7 +510,8 @@ public:
     /// pins it against a recompute.
     ///
     /// Tolerance: a value agrees when |cached - fresh| <= 1e-9 * (1 +
-    /// |fresh|), plus, for a node, its incremental Sum's tracked drift bound;
+    /// |fresh|), plus, for a drifting incremental Sum and the rows reading it,
+    /// that Sum's tracked drift bound (no other node reads one);
     /// a score when |cached - fresh| <= 1e-7 * (1 + |cached| + |fresh|), since
     /// the closed-form scorer agrees with the probe only to rounding.
     /// O(#nodes + #rows + jumpable vars x |G_v|) and a model copy per call.

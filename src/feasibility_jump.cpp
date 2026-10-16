@@ -1860,17 +1860,26 @@ std::vector<std::string> FeasibilityJump::audit() const {
 
 void FeasibilityJump::audit_nodes(const Model& fresh, std::vector<std::string>& out) const {
     // A drifting incremental Sum may sit up to its tracked bound off a re-sum
-    // (#188), and so may every node that reads it; the largest bound covers all.
-    double drift = 0.0;
-    for (const IncSumState& st : model_.inc_sums().slots) {
-        if (st.drifting != 0) {
-            drift = std::max(drift, st.drift_bound);
-        }
-    }
+    // (#188), and so may the top-level rows that read it -- the only nodes that
+    // do. Every other node gets no slack.
     const std::vector<double>& cached = model_.node_values();
     const std::vector<double>& recomputed = fresh.node_values();
+    std::vector<double> slack(cached.size(), 0.0);
+    const std::vector<IncSumState>& slots = model_.inc_sums().slots;
+    for (size_t s = 0; s < slots.size(); ++s) {
+        if (slots[s].drifting != 0) {
+            slack[static_cast<size_t>(model_.inc_sum_nodes()[s])] = slots[s].drift_bound;
+        }
+    }
+    const auto& cids = model_.constraint_ids();
+    for (size_t c = 0; c < cids.size(); ++c) {
+        const int32_t slot = row_slot_[c];
+        if (slot >= 0 && slots[static_cast<size_t>(slot)].drifting != 0) {
+            slack[static_cast<size_t>(cids[c])] = slots[static_cast<size_t>(slot)].drift_bound;
+        }
+    }
     for (size_t i = 0; i < cached.size(); ++i) {
-        if (!audit_agrees(cached[i], recomputed[i], drift)) {
+        if (!audit_agrees(cached[i], recomputed[i], slack[i])) {
             out.push_back(audit_mismatch("node " + std::to_string(i), cached[i], recomputed[i]));
         }
     }
@@ -1938,7 +1947,13 @@ bool FeasibilityJump::audit_admits(int32_t v, const Model& fresh) const {
     return std::any_of(gv.begin(), gv.end(), [&](int32_t c) {
         const auto ci = static_cast<size_t>(c);
         const std::vector<int32_t>& members = vars_of_constraint_[ci];
-        return active(c) && is_violated(fresh.node_value(cids[ci]), config_.tolerance) &&
+        // A row whose cached verdict the drift leaves undecided may read
+        // either way on a re-sum; Q's rule follows the cached one there.
+        const double residual = fresh.node_value(cids[ci]);
+        const bool violated = verdict_undecided(c, model_.node_value(cids[ci]))
+                                  ? (violated_[ci] & kInV) != 0
+                                  : is_violated(residual, config_.tolerance);
+        return active(c) && violated &&
                std::find(members.begin(), members.end(), v) != members.end();
     });
 }
