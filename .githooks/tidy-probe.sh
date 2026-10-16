@@ -118,7 +118,7 @@ if [ -z "$CLANG_TIDY" ] || ! command -v "$CLANG_TIDY" >/dev/null 2>&1; then
 	fi
 	echo "tidy-probe: flags OK; diagnostics SKIPPED -- no clang-tidy"
 	echo "('$CLANG_TIDY'). Install the pinned one with"
-	echo ".venv/bin/pip install -e '.[dev]' and reconfigure."
+	echo "uv sync --extra dev --extra benchmarks and reconfigure."
 	exit 77
 fi
 
