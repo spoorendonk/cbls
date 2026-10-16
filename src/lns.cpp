@@ -396,11 +396,14 @@ bool LNS::destroy_repair(Model& model, ViolationManager& vm, RNG& rng, double re
 
     // Every ListPartition is ruined and recreated (#202); its members are then
     // left out of the scalar destroy below, which FJ could not repair anyway.
+    // One deadline for the whole repair: the FJ pass below gets what the
+    // partitions left of it, so a kick on a model with both stays inside
+    // `repair_time_limit` rather than taking it twice.
     const auto& partitions = model.list_partitions();
+    const Clock::time_point deadline =
+        Clock::now() + std::chrono::duration_cast<Clock::duration>(
+                           std::chrono::duration<double>(std::max(0.0, repair_time_limit)));
     if (!partitions.empty()) {
-        const Clock::time_point deadline =
-            Clock::now() + std::chrono::duration_cast<Clock::duration>(
-                               std::chrono::duration<double>(std::max(0.0, repair_time_limit)));
         for (const ListPartition& part : partitions) {
             ruin_recreate_partition(model, part, rng, neighbours_.get(), feasibility_tolerance_,
                                     repair_time_limit > 0.0 ? &deadline : nullptr);
@@ -429,9 +432,15 @@ bool LNS::destroy_repair(Model& model, ViolationManager& vm, RNG& rng, double re
 
         full_evaluate(model);
 
-        // Repair via FJ-NL
-        fj_nl_initialize(model, vm, 2000, &rng, repair_time_limit, feasibility_tolerance_,
-                         exact_int_jump_);
+        // Repair via FJ-NL, on what the partitions left of the limit (with no
+        // partition, the limit as it always was). Floored at a tiny positive
+        // value while a limit exists: 0 means "no wall-clock limit" to
+        // fj_nl_initialize, the opposite of a deadline already used up.
+        const double fj_limit =
+            repair_time_limit > 0.0 && !partitions.empty()
+                ? std::max(1e-9, std::chrono::duration<double>(deadline - Clock::now()).count())
+                : repair_time_limit;
+        fj_nl_initialize(model, vm, 2000, &rng, fj_limit, feasibility_tolerance_, exact_int_jump_);
     } else {
         full_evaluate(model);
     }
