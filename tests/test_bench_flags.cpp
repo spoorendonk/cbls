@@ -374,15 +374,11 @@ TEST_CASE("an opt-in flag is recorded only when it is on (#226)", "[bench][flags
     const std::string base = cbls::bench::search_config_string(SearchFlags{}, kScalar);
     REQUIRE(cbls::bench::search_config_string(parse({"--perturb-near-value"}).flags, kScalar) ==
             base + ";perturb_near_value=on");
-    REQUIRE(cbls::bench::search_config_string(parse({"--quadratic-roots"}).flags, kScalar) ==
-            base + ";quadratic_roots=on");
-    REQUIRE(cbls::bench::search_config_string(parse({"--equality-balance"}).flags, kScalar) ==
-            base + ";equality_balance=on");
-    // They are scalar flags: a List runner refuses them.
+    // It is a scalar flag: a List runner refuses it.
     std::string error;
-    REQUIRE_FALSE(cbls::bench::validate_search_flags(parse({"--quadratic-roots"}).flags,
+    REQUIRE_FALSE(cbls::bench::validate_search_flags(parse({"--perturb-near-value"}).flags,
                                                      kStructural, false, error));
-    REQUIRE(error.find("--quadratic-roots") != std::string::npos);
+    REQUIRE(error.find("--perturb-near-value") != std::string::npos);
 }
 
 TEST_CASE("a non-default arm is named for the published-table guard", "[bench][flags]") {
@@ -404,8 +400,6 @@ TEST_CASE("a non-default arm is named for the published-table guard", "[bench][f
         {"--structural-sample-size", "4"},
         {"--neighbours", "5"},
         {"--perturb-near-value"},
-        {"--quadratic-roots"},
-        {"--equality-balance"},
     };
     REQUIRE(arms.size() == cbls::bench::kSearchFlagCount);
     for (const auto& arm : arms) {
@@ -571,51 +565,6 @@ TEST_CASE("the --unproductive-iters flag changes when a batch gives up", "[bench
                                      build_stagnant_model, /*batch_iterations=*/50);
     REQUIRE(early.perturbations > 0);
     REQUIRE(never.perturbations == 0);
-}
-
-/// x^2 == 49 over an Int domain too wide to enumerate: FJ walks to 7 by
-/// +-1 steps, unless the exact roots are candidates (#221).
-void build_quadratic_model(Model& m) {
-    const int32_t x = m.int_var(-1000, 1000);
-    m.add_constraint(m.eq_expr(m.prod(x, x), m.constant(49.0)));
-    m.close();
-}
-
-/// Twenty copies of 20 x + 20 y == 200 with x^2 >= 64: x alone gains on the
-/// square and loses more on the equality, so a balance move along the
-/// equality's nullspace (#222) is what lets x through.
-void build_balance_model(Model& m) {
-    for (int i = 0; i < 20; ++i) {
-        const int32_t x = m.int_var(0, 10);
-        const int32_t y = m.int_var(0, 10);
-        m.add_constraint(m.eq_expr(
-            m.sum({m.prod(m.constant(20.0), x), m.prod(m.constant(20.0), y)}), m.constant(200.0)));
-        m.add_constraint(m.geq(m.prod(x, x), m.constant(64.0)));
-    }
-    m.close();
-}
-
-TEST_CASE("the --quadratic-roots flag puts the exact root in reach", "[bench][flags][probe]") {
-    const SearchResult off =
-        probe({"--no-lns", "--max-iterations", "20000"}, build_quadratic_model, 100);
-    const SearchResult on = probe({"--no-lns", "--max-iterations", "20000", "--quadratic-roots"},
-                                  build_quadratic_model, 100);
-    CAPTURE(off.iterations, on.iterations);
-    REQUIRE(off.feasible);
-    REQUIRE(on.feasible);
-    REQUIRE(on.iterations < off.iterations);
-}
-
-TEST_CASE("the --equality-balance flag changes the FJ search", "[bench][flags][probe]") {
-    const SearchResult off = probe({"--no-lns", "--no-compound-moves", "--max-iterations", "20000"},
-                                   build_balance_model, 100);
-    const SearchResult on = probe(
-        {"--no-lns", "--no-compound-moves", "--max-iterations", "20000", "--equality-balance"},
-        build_balance_model, 100);
-    CAPTURE(off.iterations, on.iterations);
-    REQUIRE(off.feasible);
-    REQUIRE(on.feasible);
-    REQUIRE(on.iterations != off.iterations);
 }
 
 /// The stagnant model plus eight wide Ints nothing reads: FJ never moves them,

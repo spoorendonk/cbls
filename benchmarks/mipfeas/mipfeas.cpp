@@ -76,10 +76,9 @@ struct Args {
     // OR-Tools' near-value kick (#217), off as the engine's default is. Recorded
     // on every row for the same reason.
     bool perturb_near_value = false;
-    // OR-Tools' objective tie-break/scan and objective-favourable start (#218),
-    // off as the engine's defaults are, and recorded on every row likewise.
+    // OR-Tools' objective tie-break/scan (#218), off as the engine's default
+    // is, and recorded on every row likewise.
     bool objective_tie_break = false;
-    bool objective_start = false;
     // CBLS variables need finite bounds. Implied bounds supply most of them
     // (#120); this is the fallback for a column no constraint bounds. 1e7 rather
     // than the engine's 1e9 because it measured better on the smoke roster — NOT
@@ -126,7 +125,7 @@ void print_usage() {
         "                    [--max-propagation-passes N]\n"
         "                    [--no-compound-moves] [--exact-int-jump]\n"
         "                    [--perturb-near-value] [--objective-tie-break]\n"
-        "                    [--objective-start] [--threads N]\n"
+        "                    [--threads N]\n"
         "                    [--share-bound | --no-share-bound]\n"
         "                    [--solution-dir DIR]\n"
         "                    [--commit SHA]\n");
@@ -209,8 +208,6 @@ Args parse_args(int argc, char** argv) {
             a.perturb_near_value = true;
         } else if (s == "--objective-tie-break") {
             a.objective_tie_break = true;
-        } else if (s == "--objective-start") {
-            a.objective_start = true;
         } else if (s == "--share-bound") {
             a.share_objective_bound = true;
         } else if (s == "--no-share-bound") {
@@ -423,7 +420,6 @@ void write_result(const Args& args, const nlohmann::json& extra) {
     j["exact_int_jump"] = args.exact_int_jump;
     j["perturb_near_value"] = args.perturb_near_value;
     j["objective_tie_break"] = args.objective_tie_break;
-    j["objective_start"] = args.objective_start;
     j["inf_clamp"] = args.inf_clamp;
     j["propagate_bounds"] = args.propagate_bounds;
     j["max_propagation_passes"] = args.max_propagation_passes;
@@ -704,10 +700,6 @@ int run_benchmark(int argc, char** argv) {
     cfg.fj_exact_int_jump = args.exact_int_jump;
     cfg.perturb_near_value = args.perturb_near_value;
     cfg.fj_objective_tie_break = args.objective_tie_break;
-    cfg.fj_objective_start = args.objective_start;
-    // A column the reader clamped to +-inf_clamp has no declared bound there,
-    // so --objective-start must not start it at the clamp (#226).
-    cfg.fj_objective_start_bound_limit = args.inf_clamp;
     cfg.lns_interval = kLnsInterval;
 
     // One model per portfolio worker, replicated BEFORE the solve bracket opens.

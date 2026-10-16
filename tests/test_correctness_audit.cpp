@@ -345,8 +345,8 @@ std::unique_ptr<Instance> linear_instance(uint64_t seed) {
 }
 
 // A larger pure-integer model: 15-30 Bool/Int columns, longer rows with
-// integer data, equalities and ranges common -- where incremental Sums,
-// equality-balance moves and the exact Int jump all engage.
+// integer data, equalities and ranges common -- where incremental Sums
+// and the exact Int jump engage.
 std::unique_ptr<Instance> mip_instance(uint64_t seed) {
     auto inst = std::make_unique<Instance>();
     inst->family = "mip";
@@ -636,17 +636,11 @@ const std::vector<Arm>& arms() {
         {"fj_exact_int_jump", [](SearchConfig& c) { c.fj_exact_int_jump = true; }},
         {"perturb_near_value", [](SearchConfig& c) { c.perturb_near_value = true; }},
         {"fj_objective_tie_break", [](SearchConfig& c) { c.fj_objective_tie_break = true; }},
-        {"fj_objective_start", [](SearchConfig& c) { c.fj_objective_start = true; }},
-        {"fj_quadratic_roots", [](SearchConfig& c) { c.fj_quadratic_roots = true; }},
-        {"fj_equality_balance", [](SearchConfig& c) { c.fj_equality_balance = true; }},
         {"all_opt_in",
          [](SearchConfig& c) {
              c.fj_exact_int_jump = true;
              c.perturb_near_value = true;
              c.fj_objective_tie_break = true;
-             c.fj_objective_start = true;
-             c.fj_quadratic_roots = true;
-             c.fj_equality_balance = true;
          }},
     };
     return kArms;
@@ -886,7 +880,10 @@ TEST_CASE("audit: linear MIP rows over Bool/Int/Float columns", "[audit]") {
 }
 
 TEST_CASE("audit: larger integer models with long equality rows", "[audit]") {
-    audit_family(mip_instance, 4000, 1, 2000);
+    // Three seeds: with #222's equality-balance arm removed (#226), seed 4000
+    // alone reaches no feasible point in any arm, and the audit then has no
+    // evidence that it checked a reported feasible result.
+    audit_family(mip_instance, 4000, 3, 2000);
 }
 
 TEST_CASE("audit: nonlinear DAG rows", "[audit]") {

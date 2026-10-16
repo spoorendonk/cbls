@@ -5,7 +5,6 @@
 #include "rng.h"
 #include "violation.h"
 
-#include <array>
 #include <chrono>
 #include <cstdint>
 #include <limits>
@@ -134,70 +133,7 @@ struct JumpResult {
 JumpResult compute_var_jump(Model& model, const std::vector<double>& weights, int32_t var_id,
                             bool allow_escape_probe = false, LinearJumpScorer* linear = nullptr,
                             double tol = kDefaultFeasibilityTolerance, bool exact_int = false,
-                            const double* objective_coef = nullptr, bool quadratic_roots = false);
-
-// ---- Exact univariate quadratic roots (#221, LS-IQCQP) ----------------------
-//
-// With `quadratic_roots` set (GFJConfig::quadratic_roots, default off), a
-// violated row whose residual is a quadratic in the moved variable -- the
-// others held at their current values -- offers the roots that make it tight
-// instead of one Newton step toward them. Detected from the DAG by
-// `row_quadratic_in`; any row it does not read as a quadratic with a nonzero
-// leading coefficient keeps today's Newton candidate.
-
-/// `a v^2 + b v + c`.
-struct UnivariateQuadratic {
-    double a = 0.0;
-    double b = 0.0;
-    double c = 0.0;
-};
-
-/// The real roots of `q`, ascending, in `roots`; returns how many (0, 1 or 2).
-/// `a == 0` is the linear case: one root `-c/b`, none when `b == 0` too (a
-/// constant row has no root even when it is 0 everywhere). Two roots are taken
-/// by the cancellation-free form (q = -(b + sgn(b) sqrt(D)) / 2, roots q/a and
-/// c/q); a zero discriminant gives the one root -b/(2a). Non-finite roots are
-/// dropped.
-int quadratic_roots(const UnivariateQuadratic& q, std::array<double, 2>& roots);
-
-/// Reads constraint row `ci`'s RESIDUAL (the value `node_value` holds for it:
-/// `a - b` for `a <= b`, `b - a` for `>=`, plus the strict margin for `<`/`>`,
-/// `a - b` under the `|.|` of `==`, the body itself for a bare row) as a
-/// polynomial of degree <= 2 in variable `var_id`, every other variable at its
-/// current value. Sum, Neg, binary Prod, Div by a quantity free of `var_id`, and
-/// Pow by a constant 0, 1 or 2 compose; a subexpression free of `var_id` is the
-/// constant its current value is; anything else that reaches `var_id` (exp, a
-/// product of degree > 2, `!=`, ...) is not a quadratic and returns false. So
-/// does a walk past a fixed node budget (a shared DAG walked as a tree), a
-/// non-finite coefficient, and a polynomial that does not reproduce the row's
-/// current residual (to 1e-9 of the residual plus the sum of its terms'
-/// magnitudes, so a large cancelling row still matches), which is the guard against a node whose
-/// value is not the plain function of its children the walk assumes.
-bool row_quadratic_in(const Model& model, int32_t ci, int32_t var_id, UnivariateQuadratic& out);
-
-/// The jump candidates row `ci` offers `var_id` (at value `x0`) under #221:
-/// true, with `out` holding them, when the row is a quadratic with a nonzero
-/// leading coefficient in `var_id`; false (and `out` empty) otherwise, which is
-/// the caller's cue to take the Newton step. Each real root inside the declared
-/// domain [lb, ub] is a candidate (one outside is dropped, not clamped: the
-/// bounds are candidates already); for an Int the root's floor and ceil, inside
-/// the domain, both of them because which side of the root satisfies the row
-/// depends on its sense. `x0` itself and duplicates are left out. `out` is
-/// cleared first.
-bool quadratic_row_candidates(const Model& model, int32_t ci, int32_t var_id, double x0,
-                              std::vector<double>& out);
-
-/// The two legs of an equality-balance move (#222): `dv` and `du` with
-/// `a_v dv + a_u du = 0`, dv as close to `target` as the columns' integrality
-/// allows. Two integral columns (Int/Bool) with integral slopes take dv as the
-/// nonzero multiple of |a_u| / gcd(a_v, a_u) nearest target, so du is integral
-/// exactly; with non-integral slopes they take round(target) and keep the pair
-/// only where du comes out integral (to 1e-9). One integral column keeps its
-/// own step integral (rounded, away from 0) and solves the other. False -- skip
-/// the pair -- for a zero slope, a zero or non-finite target, or a leg that
-/// comes out 0 or non-finite. Domains are the caller's to check.
-bool balance_steps(const Variable& v, double a_v, const Variable& u, double a_u, double target,
-                   double& dv, double& du);
+                            const double* objective_coef = nullptr);
 
 // Guided Local Search weight update (paper Algorithm 3, lines 8-10): decay all
 // weights by rho, then bump every currently-violated constraint by 1. Weights
@@ -322,14 +258,6 @@ struct GFJConfig {
     // whether to turn it on is #208's timed A/B. solve() sets it from
     // SearchConfig::fj_exact_int_jump.
     bool exact_int_jump = false;
-    // Opt-in exact quadratic roots (#221, LS-IQCQP): a violated row that reads
-    // as a quadratic in the moved variable offers its in-domain roots (an Int
-    // their floor and ceil) as jump candidates, in place of the Float Newton
-    // step and beside the Int grid -- see `row_quadratic_in`. Off by default,
-    // which is today's path bit for bit. solve() sets it from
-    // SearchConfig::fj_quadratic_roots; whether to turn it on is a
-    // needs-benchmark follow-up.
-    bool quadratic_roots = false;
     // Opt-in OR-Tools-style kick (#217), off by default: perturb() redraws each
     // jumpable variable with probability `perturb_near_value_probability`
     // (OR-Tools' feasibility_jump_var_randomization_probability, 0.05) to a
@@ -361,27 +289,6 @@ struct GFJConfig {
     // that costs no violation. Applies to FJ batches throughout the run, as in
     // OR-Tools; Novelty batches and the LNS repair do not take it.
     bool objective_tie_break = false;
-    // objective_start: the initial assignment (set_initial_x) puts a column
-    // with a positive objective coefficient at its lower bound and a negative
-    // one at its upper bound, as OR-Tools' ResetCurrentSolution does with
-    // use_objective, instead of at the value closest to zero. A column whose
-    // better bound is infinite, or whose coefficient is 0, keeps the
-    // closest-to-zero start.
-    bool objective_start = false;
-    // A bound at least this large in magnitude counts as infinite for
-    // objective_start (#226). A reader that clamps unbounded columns to a
-    // finite box (the MPS reader's `inf_clamp`, 1e7 by default) sets it to
-    // that clamp, so such a column keeps the closest-to-zero start instead of
-    // starting at the clamp. Infinite by default: every finite bound counts.
-    double objective_start_bound_limit = std::numeric_limits<double>::infinity();
-    // Opt-in equality-balance move (#222, LS-IQCQP): at an FJ local minimum,
-    // before the GLS bump, try a two-variable move along a satisfied linear
-    // equality row's nullspace (a_v dv + a_u du = 0), so that row stays
-    // satisfied while others improve -- see apply_balance_move. Off by default,
-    // which is today's path bit for bit. solve() sets it from
-    // SearchConfig::fj_equality_balance; whether to turn it on is a
-    // needs-benchmark follow-up.
-    bool equality_balance = false;
     bool two_phase = true;       // GLS on linear submodel first, then full model
     bool set_initial_x = true;   // set X[v] to the domain value closest to 0 first
     int64_t max_iterations = 0;  // 0 = unbounded (bounded by time_limit)
@@ -648,8 +555,6 @@ public:
     [[nodiscard]] int64_t novelty_moves() const { return novelty_moves_; }
     [[nodiscard]] int64_t novelty_commits() const { return novelty_commits_; }
     [[nodiscard]] int64_t novelty_weight_bumps() const { return novelty_bumps_; }
-    /// Equality-balance moves committed since construction (#222). Diagnostics.
-    [[nodiscard]] int64_t balance_moves() const { return balance_moves_; }
     /// The novelty weight W' of row `ci` as Novelty last left it -- read-only
     /// observability for the tests that pin its incremental upkeep (#209).
     /// Throws `std::out_of_range` on a row the model does not have, or before
@@ -757,29 +662,6 @@ private:
     // ApplyJump (Algorithm 2): sample up to `sample_size` vars from Q, apply the
     // best improving jump via update_var. Returns false if none improves.
     bool apply_jump(int sample_size);
-    // The equality-balance move (#222): see the definition. Samples up to
-    // `sample_size` variables of violated rows and commits the best improving
-    // two-variable move along one of their satisfied linear Eq rows, through
-    // update_var for both legs. Returns false if none improves.
-    bool apply_balance_move(int sample_size);
-    struct BalanceMove {
-        int32_t v = -1;
-        double v_to = 0.0;
-        int32_t u = -1;
-        double u_to = 0.0;
-        double score = 0.0;  // -(weighted violation delta of the pair)
-    };
-    // The best balance move from v into `best`, if it beats best.score.
-    void balance_from(int32_t v, BalanceMove& best);
-    // v's satisfied, active, linear Eq rows with v's slope in each.
-    void held_eq_rows(int32_t v, std::vector<std::pair<int32_t, double>>& rows);
-    // v's best jump step with `rows` masked to weight 0; 0 when it does not improve.
-    double masked_jump_step(int32_t v, const std::vector<std::pair<int32_t, double>>& rows);
-    // u's slope in row e, false when unknown or 0.
-    bool partner_slope(int32_t u, int32_t e, double& a_u);
-    // f(j) of compute_var_jump for one variable under the GLS weights, in the
-    // model's current state: the closed form where the rows allow, else the probe.
-    double jump_delta(int32_t var_id, double j);
     // UpdateVar (Algorithm 1): commit X[v] <- jump, refresh V, invalidate
     // neighbour jumps, replenish Q.
     void update_var(int32_t var_id);
@@ -1225,8 +1107,8 @@ private:
     enum class ObjectiveSlopes : uint8_t { Unbuilt, Built, NotAffine };
     ObjectiveSlopes objective_slopes_ = ObjectiveSlopes::Unbuilt;
     // Per-variable coefficient of an affine objective (#218), read once at
-    // construction when GFJConfig::objective_tie_break or objective_start is on;
-    // empty otherwise, which is what turns both off.
+    // construction when GFJConfig::objective_tie_break is on; empty otherwise,
+    // which is what turns it off.
     std::vector<double> objective_coef_;
     // objective_tie_break's per-variable handle for compute_var_jump: null when
     // the tie-break is off.
@@ -1262,7 +1144,6 @@ private:
     int64_t nj_moves_this_call_ = 0;                    // see novelty_moves_last_call()
     int64_t nj_move_cost_ = 1;             // work units a move takes from nj_work_remaining_
     int64_t novelty_moves_ = 0;            // see novelty_moves()
-    int64_t balance_moves_ = 0;            // see balance_moves()
     int64_t novelty_commits_ = 0;          // see novelty_commits()
     int64_t novelty_bumps_ = 0;            // see novelty_weight_bumps()
     int64_t novelty_seeds_ = 0;            // see novelty_scan_set_seeds()

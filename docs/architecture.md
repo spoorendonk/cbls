@@ -555,14 +555,13 @@ replica invokes concurrently and which therefore cannot carry state at all.
 `per_constraint_violation_delta` — the per-candidate scalar probe Feasibility
 Jump runs for every jump value — are bracketed as `Probe` then `Rollback`, so a
 custom node in one of those cones costs **one `delta` and one `rollback`** per
-candidate rather than two deltas. **Four** other sites score by evaluating
-forwards and evaluating back, and every leg of all four stays `Commit`: the
+candidate rather than two deltas. **Three** other sites score by evaluating
+forwards and evaluating back, and every leg of all three stays `Commit`: the
 structural batch (`src/structural_batch.cpp`), the inner solver's
 multi-variable Newton step (`src/inner_solver.cpp`; its coordinate probes are
-bracketed since #207), Novelty Jump's backtracking compound-move search
+bracketed since #207), and Novelty Jump's backtracking compound-move search
 (`src/feasibility_jump.cpp`), which is on the same per-candidate path the
-bracketed probe is, and the equality-balance move's first leg (`AppliedLeg` in
-the same file, #222, only with `fj_equality_balance` on). All four are correct — each leg really is a new committed
+bracketed probe is. All three are correct — each leg really is a new committed
 assignment, and the `changed` set each passes is a complete superset of what it
 moved — but **twice the cost** of the bracketed path, and an invariant caching a
 List's prefix sums updates it on both legs (O(edits) per leg on the structural
@@ -1101,7 +1100,6 @@ candidate set, plus its score:
 | Int (window width <= 256), any other column (every Int column by default) | every integer in the sampling window — `domain_window(var)`, which is `[lb, ub]` verbatim whenever both bounds are finite and the width does not overflow (a domain as wide as `[-DBL_MAX, DBL_MAX]` is narrowed to the clamp). Taken only when both endpoints are within ±2^53; past that `v += 1.0` does not advance and the enumeration would not terminate |
 | Int (otherwise) | window endpoints, neighbours `x±1` (clamped to the *declared* bounds, so a value that has drifted outside the window keeps a local move), and a 32-point rounded grid across the window |
 | Float | Newton step toward the root of each violated constraint containing `v` (`x - residual/grad`, gradient via reverse-mode AD; up to 4), then midpoint and endpoints. Once the search has stagnated, a Float at a *stationary* point of every violated constraint containing it additionally gets a two-sided local probe at `x ± {1e-6, 1e-2}·(|x|+1)` — see below |
-| Int (otherwise) and Float, **only with `SearchConfig::fj_quadratic_roots` on** (`GFJConfig::quadratic_roots`; default off, #221, LS-IQCQP arXiv 2409.19668) | for each violated row of `v` (up to 4) whose residual `row_quadratic_in` reads as `a v² + b v + c` with `a ≠ 0`, every other variable at its current value, the real **roots** that make it tight: each inside the declared `[lb, ub]` (an Int: the floor and ceil of each, inside the domain). The read is a tree walk over the row: Sum, Neg, binary Prod, Div by a quantity free of `v`, and Pow by a constant 0/1/2 compose, a subexpression free of `v` is its current value, anything else reaching `v` is not a quadratic; past 1024 node visits, on a non-finite coefficient, or when the polynomial does not reproduce the row's current residual it gives up. A row with a cached closed-form slope is affine and is not walked. On a Float the roots **replace** that row's Newton step, at its place in the order; a row that is affine, not recognised, or whose roots all fall outside the domain keeps the Newton step. On an Int they come after the grid, only where the enumeration was not exhaustive. A bilinear row with the other factor fixed is affine in `v`, so its Newton step is already its root |
 | Int (otherwise) and Float, on a model with an `Element`/`Ceil`/`Floor`/`Round` node, for a variable `close()` marked as reaching one | additionally, the **breakpoints** (#186) of every such node: the argument values where `Ceil`/`Floor` change (the integers) and `Round` changes (the half-integers), and the index values of an `Element`, mapped back to `v`. The map is the argument's derivative in `v` at the current point, carried forward once per call through every op with a `local_derivative` (`carries_slope`; the structural ops, user code and the breakpoint ops stop it) over the part of the cone `close()` marked (`breakpoint_flags`), a Sum naming a child twice counting it twice. It is exact for a single-variable jump whenever the argument is a sum of `c·v` terms with `c` fixed; when the argument is itself `N / D` with `v` in `D` only (the epic's `ceil(cycle / headway)`) the exact reciprocal is used instead. **Limitation:** any other nonlinearity is linearised at the current point, so its candidates can miss the edge they aim at, and a path through a stopping op contributes nothing (`ceil(v + floor(v))` sees slope 1); candidates are still scored exactly. An Int gets the floor of the lower and the ceil of the upper of the two values of `v` landing just either side of each edge (plus the edge itself when it maps to an integer); a Float gets those two values stepped by `nextafter` until strictly on their own side, plus the edge itself when the map puts it in the plateau the edge belongs to; an `Element` index gets `k` itself (Int) or the middle of index `k`'s plateau intersected with the range `u` covers (Float). A `Ceil`/`Floor`/`Round` offers every breakpoint while there are at most 32; an `Element` every index while there are no more than its capped path would offer anyway. Above that: the breakpoints either side of the current argument, for an `Element` the representatives of the line the other index currently selects (up to 32 distinct values at evenly spaced ranks, min and max always included), and a grid whose 31 points are ONE budget shared by every capped argument the walk reaches. That cap is **a deviation** from #186's "all index values", for cost (measured, see `kExhaustiveBreakpoints`). Candidates are deduplicated across nodes and against the Int/Float path's finite ones. After the Float's Newton candidates, so those still win a tie. Every other variable, and every model without such a node, gets exactly the candidates above |
 
 Each candidate is scored with one `weighted_violation_delta` probe — or, when
@@ -1241,26 +1239,12 @@ cheap jumps. The continuous heavy lifting is left to the
 
 ### The GLS Loop
 
-**Equality-balance move (#222, default off, `SearchConfig::fj_equality_balance` /
-`GFJConfig::equality_balance`).** At a local minimum, before the bump, up to
-`sample_size` draws of a variable `v` from a random violated row. `v`'s target is
-its best jump with its satisfied linear `Eq` rows masked to weight 0. For up to 2
-of those rows and up to 8 partners `u` each (the whole row when that short),
-`du = -a_v dv / a_u` from `LinearJumpScorer::row_slope_at`, so the row keeps its
-residual. Two integral columns over integral slopes step `v` by the nonzero
-multiple of `|a_u| / gcd` nearest the target (`balance_steps`); a pair leaving a
-declared domain is skipped. The pair is scored exactly (v's leg, then u's with v
-applied) under the real weights, and the best improving one is committed through
-`update_var` for both legs in place of the bump. FJ batches and the LNS repair
-take it; Novelty batches do not. Off is the pre-#222 loop bit for bit.
-
 `gls_loop(sample_size, batch_iter_limit)`:
 
 ```
 loop:
     if apply_jump(sample_size) fails (no sampled var improves):
         if no active constraint is violated: return Feasible
-        [fj_equality_balance, #222] if apply_balance_move(sample_size): skip the bump
         decay by rho, bump active violated   # lazily: s *= rho, w' += 1/s on V (#175)
         re-enqueue vars of violated active constraints, invalidate their jumps
     ++iterations
@@ -1384,11 +1368,13 @@ The ViolationLS outer loop owns the iteration clock and calls:
 
 **The objective before the first feasible point (#218), opt-in.** By default
 FJ ignores the objective until the first feasible point: the folded row's bound
-is +inf, so the row is inert, and the start is the closest-to-zero value. Two
-`GFJConfig` flags (`SearchConfig::fj_objective_tie_break` / `fj_objective_start`,
-both default **off**) carry over what OR-Tools does instead. Both need an affine
+is +inf, so the row is inert, and the start is the closest-to-zero value.
+`GFJConfig::objective_tie_break` (`SearchConfig::fj_objective_tie_break`,
+default **off**) carries over what OR-Tools does instead. It needs an affine
 objective, whose coefficients FJ reads once at construction by one reverse
-sweep; on any other objective they do nothing.
+sweep; on any other objective it does nothing. (#218's second flag, an
+objective-favourable start, was neutral in #226's smoke A/B and was removed;
+so were #221's quadratic roots and #222's equality-balance moves.)
 
 - `objective_tie_break`: in `compute_var_jump` an exact tie in the weighted
   violation delta goes to the candidate lowering the objective most, and a jump
@@ -1406,10 +1392,6 @@ sweep; on any other objective they do nothing.
   to 0 and drop the column from Q. FJ batches
   only, throughout the run; Novelty batches, the exact Int argmin and the LNS
   repair keep their own rules.
-- `objective_start`: `set_initial_assignment` puts a column with a positive
-  coefficient at its lower bound and a negative one at its upper bound
-  (OR-Tools' `ResetCurrentSolution` with `use_objective`), keeping the
-  closest-to-zero start where the coefficient is 0 or that bound is infinite.
 - `set_rho(rho)` — re-randomise the GLS decay between batches.
 
 ---

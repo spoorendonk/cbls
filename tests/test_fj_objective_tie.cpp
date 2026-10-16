@@ -1,28 +1,21 @@
 // OR-Tools' use of the objective before the first feasible point (#218):
-// GFJConfig::objective_tie_break (score tie-break + objective-improving scan)
-// and GFJConfig::objective_start. Both default off, and the default path is
-// pinned by the trajectory fences; what is pinned here is that the tie-break
-// only ever breaks ties, that the scan reaches a column no violated row holds,
-// that the start respects bounds, and that both flags reach solve().
+// GFJConfig::objective_tie_break (score tie-break + objective-improving scan).
+// Default off, and the default path is pinned by the trajectory fences; what is
+// pinned here is that the tie-break only ever breaks ties, that the scan
+// reaches a column no violated row holds, and that the flag reaches solve().
+// (#218's objective-favourable start was removed after #226's A/B.)
 #include "test_helpers.h"
 
 #include <catch2/catch_test_macros.hpp>
 #include <cbls/cbls.h>
 #include <cstdint>
-#include <limits>
 #include <vector>
 
 using namespace cbls;
 
-namespace {
-constexpr double kInf = std::numeric_limits<double>::infinity();
-}  // namespace
-
-TEST_CASE("the objective flags are off by default (#218)", "[fj][objective_tie]") {
+TEST_CASE("the objective tie-break is off by default (#218)", "[fj][objective_tie]") {
     REQUIRE_FALSE(GFJConfig{}.objective_tie_break);
-    REQUIRE_FALSE(GFJConfig{}.objective_start);
     REQUIRE_FALSE(SearchConfig{}.fj_objective_tie_break);
-    REQUIRE_FALSE(SearchConfig{}.fj_objective_start);
 }
 
 TEST_CASE("the objective tie-break picks among exact ties only (#218)", "[fj][objective_tie]") {
@@ -248,82 +241,7 @@ TEST_CASE("between variables the larger objective gain wins a score tie (#218)",
     }
 }
 
-TEST_CASE("objective_start puts objective columns at their better bound (#218)",
-          "[fj][objective_tie]") {
-    for (const bool on : {false, true}) {
-        Model m;
-        auto up = m.int_var(-4, 10);             // minimised: lb -4
-        auto down = m.int_var(-3, 7);            // maximised: ub 7
-        auto flat = m.int_var(-5, 5);            // not in the objective: 0
-        auto free_lb = m.float_var(-kInf, 4.0);  // minimised, lb infinite: 0
-        auto b = m.bool_var();                   // maximised: 1
-        auto fl = m.float_var(1.5, 2.5);         // minimised: 1.5
-        m.add_constraint(m.leq(m.sum({up, down, flat, free_lb, b, fl}), m.constant(1e9)));
-        m.minimize(m.sum({up, m.neg(down), free_lb, m.neg(b), fl}));
-        m.close();
-        m.add_objective_soft_constraint();
-        ViolationManager vm(m);
-        RNG rng(1);
-        GFJConfig cfg;
-        cfg.objective_start = on;
-        FeasibilityJump fj(m, vm, rng, cfg);
-        fj.begin(/*set_initial_x=*/true);
-        CAPTURE(on);
-        for (int32_t v = 0; v < static_cast<int32_t>(m.num_vars()); ++v) {
-            REQUIRE(m.var(v).value >= m.var(v).lb);
-            REQUIRE(m.var(v).value <= m.var(v).ub);
-        }
-        REQUIRE(m.var(vid(flat)).value == 0.0);
-        REQUIRE(m.var(vid(free_lb)).value == 0.0);
-        if (on) {
-            REQUIRE(m.var(vid(up)).value == -4.0);
-            REQUIRE(m.var(vid(down)).value == 7.0);
-            REQUIRE(m.var(vid(b)).value == 1.0);
-            REQUIRE(m.var(vid(fl)).value == 1.5);
-        } else {
-            REQUIRE(m.var(vid(up)).value == 0.0);
-            REQUIRE(m.var(vid(down)).value == 0.0);
-            REQUIRE(m.var(vid(b)).value == 0.0);
-            REQUIRE(m.var(vid(fl)).value == 1.5);  // closest to zero is the lb
-        }
-    }
-}
-
-TEST_CASE("objective_start treats a bound at the clamp limit as infinite (#226)",
-          "[fj][objective_tie]") {
-    // The MPS reader clamps an unbounded column to +-inf_clamp; the runner says
-    // so through objective_start_bound_limit, and such a column must keep the
-    // closest-to-zero start rather than start a clamp's width from it.
-    for (const double limit : {kInf, 1e7}) {
-        Model m;
-        auto clamped = m.float_var(-1e7, 1e7);   // minimised: lb is the clamp
-        auto big_int = m.int_var(-3, 10000000);  // maximised: ub is the clamp
-        auto near = m.float_var(-9.99e6, 5.0);   // minimised: lb under the limit
-        m.add_constraint(m.leq(m.sum({clamped, big_int, near}), m.constant(1e9)));
-        m.minimize(m.sum({clamped, m.neg(big_int), near}));
-        m.close();
-        m.add_objective_soft_constraint();
-        ViolationManager vm(m);
-        RNG rng(1);
-        GFJConfig cfg;
-        cfg.objective_start = true;
-        cfg.objective_start_bound_limit = limit;
-        FeasibilityJump fj(m, vm, rng, cfg);
-        fj.begin(/*set_initial_x=*/true);
-        CAPTURE(limit);
-        REQUIRE(m.var(vid(near)).value == -9.99e6);
-        if (limit == kInf) {
-            REQUIRE(m.var(vid(clamped)).value == -1e7);
-            REQUIRE(m.var(vid(big_int)).value == 1e7);
-        } else {
-            REQUIRE(m.var(vid(clamped)).value == 0.0);
-            REQUIRE(m.var(vid(big_int)).value == 0.0);
-        }
-    }
-    REQUIRE(SearchConfig{}.fj_objective_start_bound_limit == kInf);
-}
-
-TEST_CASE("the objective flags do nothing on a non-affine objective (#218)",
+TEST_CASE("the objective tie-break does nothing on a non-affine objective (#218)",
           "[fj][objective_tie]") {
     Model m;
     auto x = m.int_var(-4, 10);
@@ -335,7 +253,6 @@ TEST_CASE("the objective flags do nothing on a non-affine objective (#218)",
     ViolationManager vm(m);
     RNG rng(1);
     GFJConfig cfg;
-    cfg.objective_start = true;
     cfg.objective_tie_break = true;
     FeasibilityJump fj(m, vm, rng, cfg);
     fj.begin(/*set_initial_x=*/true);
@@ -343,51 +260,7 @@ TEST_CASE("the objective flags do nothing on a non-affine objective (#218)",
     REQUIRE(m.var(vid(y)).value == 0.0);
 }
 
-TEST_CASE("the objective flags reach solve() (#218)", "[fj][objective_tie]") {
-    SECTION("objective_start: the first feasible point starts at the better bound") {
-        // Any assignment is feasible, so the first feasible point is the start.
-        for (const bool on : {false, true}) {
-            Model m;
-            std::vector<int32_t> xs;
-            xs.reserve(5);
-            for (int i = 0; i < 5; ++i) {
-                xs.push_back(m.int_var(-5, 5));
-            }
-            m.add_constraint(m.leq(m.sum(xs), m.constant(100.0)));
-            m.minimize(m.sum(xs));
-            m.close();
-            SearchConfig config;
-            config.max_iterations = 1'000;
-            config.fj_objective_start = on;
-            const SearchResult r = solve(m, /*time_limit=*/0.0, /*seed=*/1, true, nullptr, nullptr,
-                                         3, nullptr, config);
-            CAPTURE(on, r.first_feasible_objective);
-            REQUIRE(r.first_feasible_objective == (on ? -25.0 : 0.0));
-        }
-    }
-    SECTION("objective_start_bound_limit: a clamp-sized bound is no start (#226)") {
-        // The same shape over columns whose lower bound is a 1e7 clamp: with
-        // the limit at the clamp they start at 0, without it at the clamp.
-        for (const double limit : {kInf, 1e7}) {
-            Model m;
-            std::vector<int32_t> xs;
-            xs.reserve(5);
-            for (int i = 0; i < 5; ++i) {
-                xs.push_back(m.float_var(-1e7, 1e7));
-            }
-            m.add_constraint(m.leq(m.sum(xs), m.constant(1e9)));
-            m.minimize(m.sum(xs));
-            m.close();
-            SearchConfig config;
-            config.max_iterations = 1'000;
-            config.fj_objective_start = true;
-            config.fj_objective_start_bound_limit = limit;
-            const SearchResult r = solve(m, /*time_limit=*/0.0, /*seed=*/1, true, nullptr, nullptr,
-                                         3, nullptr, config);
-            CAPTURE(limit, r.first_feasible_objective);
-            REQUIRE(r.first_feasible_objective == (limit == kInf ? -5e7 : 0.0));
-        }
-    }
+TEST_CASE("the objective tie-break reaches solve() (#218)", "[fj][objective_tie]") {
     SECTION("objective_tie_break: the objective-only column moves while infeasible") {
         // ScanFixture's model through solve(): z is read only by the objective
         // row, which is inert while no feasible point exists, so only the

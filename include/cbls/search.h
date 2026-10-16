@@ -239,16 +239,6 @@ struct SearchConfig {
     // off and what decides whether it turns on.
     bool fj_exact_int_jump = false;
 
-    // Exact univariate quadratic roots as jump candidates (#221), off by
-    // default: forwarded to GFJConfig::quadratic_roots for the batch FJ and to
-    // LNS's repair FJ. Off is today's candidate path, bit for bit.
-    bool fj_quadratic_roots = false;
-
-    // Equality-balance moves (#222), off by default: forwarded to
-    // GFJConfig::equality_balance for the batch FJ and to LNS's repair FJ. Off
-    // is today's path, bit for bit.
-    bool fj_equality_balance = false;
-
     // OR-Tools' diversification kick (#217), off by default: forwarded to
     // GFJConfig::perturb_near_value. Each scalar is redrawn with probability
     // 0.05 to a value near its current one (log-uniform within 20% of the side
@@ -258,14 +248,10 @@ struct SearchConfig {
     bool perturb_near_value = false;
 
     // OR-Tools' use of the objective before the first feasible point (#218),
-    // both off by default and off meaning today's path bit for bit; forwarded to
-    // GFJConfig::objective_tie_break / objective_start, whose comments say what
-    // each does. Both need an affine objective and do nothing on any other.
+    // off by default and off meaning today's path bit for bit; forwarded to
+    // GFJConfig::objective_tie_break, whose comment says what it does. Needs an
+    // affine objective and does nothing on any other.
     bool fj_objective_tie_break = false;
-    bool fj_objective_start = false;
-    // GFJConfig::objective_start_bound_limit (#226): a bound this large in
-    // magnitude is a reader's clamp, not a bound, to fj_objective_start.
-    double fj_objective_start_bound_limit = std::numeric_limits<double>::infinity();
 
     // ---- host integration (#169): cancellation and tracing ------------------
     //
@@ -668,8 +654,7 @@ void initialize_structured_random(Model& model, RNG& rng);
 int64_t fj_nl_initialize(Model& model, ViolationManager& vm, int max_iterations = 10000,
                          RNG* rng = nullptr, double time_limit = 2.0,
                          double tolerance = kDefaultFeasibilityTolerance,
-                         bool exact_int_jump = false, bool quadratic_roots = false,
-                         bool equality_balance = false);
+                         bool exact_int_jump = false);
 
 /// `time_limit <= 0` disables the wall clock entirely: the run is then bounded by
 /// `config.max_iterations` alone and is fully deterministic for a given seed

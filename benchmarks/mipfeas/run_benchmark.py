@@ -306,7 +306,6 @@ def build_run_record(
             "exact_int_jump": args.exact_int_jump,
             "perturb_near_value": args.perturb_near_value,
             "objective_tie_break": args.objective_tie_break,
-            "objective_start": args.objective_start,
             "propagate_bounds": args.propagate_bounds,
             "large_bytes": args.large_bytes,
             "jobs_planned": planned,
@@ -425,7 +424,6 @@ def build_command(job: Job, args: argparse.Namespace, results_dir: Path) -> list
             *(["--exact-int-jump"] if args.exact_int_jump else []),
             *(["--perturb-near-value"] if args.perturb_near_value else []),
             *(["--objective-tie-break"] if args.objective_tie_break else []),
-            *(["--objective-start"] if args.objective_start else []),
             "--threads",
             str(args.cbls_threads),
             *([] if args.propagate_bounds else ["--no-propagate-bounds"]),
@@ -875,7 +873,7 @@ def check_resume_configuration(
     """
     # Per engine: (record key, what this run asks for, what a row without the
     # key ran -- None when that is unknown and the row is left alone).
-    # `exact_int_jump`, `perturb_near_value` and the two objective flags are
+    # `exact_int_jump`, `perturb_near_value` and `objective_tie_break` are
     # back-read as off: every row from before a flag ran its off arm.
     wanted: dict[str, list[tuple[str, object, object]]] = {
         "cbls": [
@@ -884,7 +882,6 @@ def check_resume_configuration(
             ("exact_int_jump", args.exact_int_jump, False),
             ("perturb_near_value", args.perturb_near_value, False),
             ("objective_tie_break", args.objective_tie_break, False),
-            ("objective_start", args.objective_start, False),
         ],
         "cpsat": [("workers", args.cpsat_workers, None)],
     }
@@ -1154,12 +1151,6 @@ def main() -> int:
         action="store_true",
         help="CBLS FJ breaks score ties on the objective and scans objective-improving "
         "columns, as OR-Tools does (#218); off by default, as in the engine",
-    )
-    parser.add_argument(
-        "--objective-start",
-        action="store_true",
-        help="CBLS starts each objective column at its objective-better bound, as "
-        "OR-Tools does (#218); off by default, as in the engine",
     )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--engines", nargs="+", choices=ENGINES, default=list(ENGINES))

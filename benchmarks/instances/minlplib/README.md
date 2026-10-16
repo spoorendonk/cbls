@@ -208,12 +208,10 @@ file states the configuration it was produced under (#136):
 --max-iterations N         GLS iteration budget (0 = unlimited)
 --no-time-limit            disable the wall clock; requires --max-iterations
 --perturb-near-value       OR-Tools' near-value kick (#217)
---quadratic-roots          exact quadratic roots as FJ jump candidates (#221)
---equality-balance         two-variable moves along an Eq row's nullspace (#222)
 ```
 
-The last three are opt-in: the cell records each only when it is on, so a
-default row's cell is the one the committed tables hold.
+`--perturb-near-value` is opt-in: the cell records it only when it is on, so
+a default row's cell is the one the committed tables hold.
 
 Two combinations are refused rather than accepted: `--lns-interval` with
 `--no-lns`, and `--novelty-prob` with `--no-compound-moves`. The engine never

@@ -204,7 +204,6 @@ def _driver_args(**overrides: object) -> argparse.Namespace:
         "exact_int_jump": False,
         "perturb_near_value": False,
         "objective_tie_break": False,
-        "objective_start": False,
         "propagate_bounds": True,
         "cpsat_workers": 1,
         "cbls_threads": 1,
@@ -240,9 +239,8 @@ def _driver_args(**overrides: object) -> argparse.Namespace:
         ("cbls", {"exact_int_jump": True}, {"--exact-int-jump": None}, []),
         ("cbls", {}, {}, ["--perturb-near-value"]),
         ("cbls", {"perturb_near_value": True}, {"--perturb-near-value": None}, []),
-        ("cbls", {}, {}, ["--objective-tie-break", "--objective-start"]),
+        ("cbls", {}, {}, ["--objective-tie-break"]),
         ("cbls", {"objective_tie_break": True}, {"--objective-tie-break": None}, []),
-        ("cbls", {"objective_start": True}, {"--objective-start": None}, []),
         ("cbls", {"cbls_threads": 4}, {"--threads": "4"}, []),
         ("cpsat", {}, {"--workers": "1"}, []),
         # Without a solution directory neither runner writes a solution vector, and
@@ -259,9 +257,8 @@ def _driver_args(**overrides: object) -> argparse.Namespace:
         "exact-int-jump",
         "perturb-near-value-off-by-default",
         "perturb-near-value",
-        "objective-flags-off-by-default",
+        "objective-tie-break-off-by-default",
         "objective-tie-break",
-        "objective-start",
         "cbls-threads",
         "cpsat-workers",
         "cbls-solution-dir",
@@ -367,13 +364,12 @@ def test_resuming_under_a_different_search_arm_is_refused(tmp_path: Path) -> Non
     assert check(perturb_near_value=True) == 2
     result.write_text(json.dumps({"instance": "a", "threads": 1}))
     assert check(perturb_near_value=True) == 2
-    # And the objective flags (#218).
-    for flag in ("objective_tie_break", "objective_start"):
-        result.write_text(json.dumps({"instance": "a", "threads": 1, flag: False}))
-        assert check() is None
-        assert check(**{flag: True}) == 2
-        result.write_text(json.dumps({"instance": "a", "threads": 1}))
-        assert check(**{flag: True}) == 2
+    # And the objective tie-break (#218).
+    result.write_text(json.dumps({"instance": "a", "threads": 1, "objective_tie_break": False}))
+    assert check() is None
+    assert check(objective_tie_break=True) == 2
+    result.write_text(json.dumps({"instance": "a", "threads": 1}))
+    assert check(objective_tie_break=True) == 2
     result.write_text(json.dumps({"instance": "a", "threads": 1, "compound_moves": True}))
     assert check() is None
     assert check(compound_moves=False) == 2
