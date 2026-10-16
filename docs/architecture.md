@@ -1366,10 +1366,10 @@ The ViolationLS outer loop owns the iteration clock and calls:
   default flips 5%, and a column under a 1e7 inf-clamp moves near where it was
   instead of anywhere in the box. The List/Set half is unchanged.
 
-**The objective before the first feasible point (#218), opt-in.** By default
-FJ ignores the objective until the first feasible point: the folded row's bound
-is +inf, so the row is inert, and the start is the closest-to-zero value.
-`GFJConfig::objective_tie_break` (`SearchConfig::fj_objective_tie_break`,
+**The objective before the first feasible point (#218), on by default.**
+Without help FJ ignores the objective until the first feasible point: the
+folded row's bound is +inf, so the row is inert, and the start is the
+closest-to-zero value. `GFJConfig::objective_tie_break` (`SearchConfig::fj_objective_tie_break`,
 default **on** since #226's smoke A/B, which put the gap at the first feasible
 point at 0.75x on MIPfeas; `GFJConfig`'s own default stays off) carries over
 what OR-Tools does instead. It needs an affine

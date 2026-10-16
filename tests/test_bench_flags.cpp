@@ -379,6 +379,10 @@ TEST_CASE("an opt-in flag is recorded only when it is on (#226)", "[bench][flags
     REQUIRE_FALSE(cbls::bench::validate_search_flags(parse({"--perturb-near-value"}).flags,
                                                      kStructural, false, error));
     REQUIRE(error.find("--perturb-near-value") != std::string::npos);
+    // An opt-out is the same rule from the other side: on by default, so the
+    // cell records it only when the flag turns it off.
+    REQUIRE(cbls::bench::search_config_string(parse({"--no-objective-tie-break"}).flags, kScalar) ==
+            base + ";objective_tie_break=off");
 }
 
 TEST_CASE("a non-default arm is named for the published-table guard", "[bench][flags]") {
@@ -400,6 +404,7 @@ TEST_CASE("a non-default arm is named for the published-table guard", "[bench][f
         {"--structural-sample-size", "4"},
         {"--neighbours", "5"},
         {"--perturb-near-value"},
+        {"--no-objective-tie-break"},
     };
     REQUIRE(arms.size() == cbls::bench::kSearchFlagCount);
     for (const auto& arm : arms) {
@@ -607,6 +612,38 @@ TEST_CASE("the --perturb-near-value flag changes the kick", "[bench][flags][prob
         }
     }
     REQUIRE(finals[0] != finals[1]);
+}
+
+/// x >= 5 and x <= 4 cannot both hold, so the run never becomes feasible and the
+/// objective row stays inert; z sits only in the objective (minimise -z), so
+/// only the objective tie-break and its scan ever move it.
+void build_infeasible_with_objective_only_model(Model& m) {
+    auto x = m.int_var(0, 10);
+    auto z = m.int_var(0, 10);
+    m.add_constraint(m.geq(x, m.constant(5.0)));
+    m.add_constraint(m.leq(x, m.constant(4.0)));
+    m.minimize(m.neg(z));
+    m.close();
+}
+
+TEST_CASE("the --no-objective-tie-break flag turns the tie-break off", "[bench][flags][probe]") {
+    std::array<double, 2> z_final{};
+    for (const bool off : {false, true}) {
+        std::vector<std::string> args = {"--no-lns", "--no-compound-moves", "--max-iterations",
+                                         "2000"};
+        if (off) {
+            args.emplace_back("--no-objective-tie-break");
+        }
+        const ParseOutcome parsed = parse(args);
+        REQUIRE(parsed.unmatched.empty());
+        Model m;
+        build_infeasible_with_objective_only_model(m);
+        const SearchResult r = run_arm(m, parsed.flags, /*batch_iterations=*/100);
+        REQUIRE_FALSE(r.feasible);
+        z_final[static_cast<size_t>(off)] = m.var(1).value;
+    }
+    REQUIRE(z_final[0] == 10.0);  // the default, on, drives z to its best bound
+    REQUIRE(z_final[1] == 0.0);   // off: nothing reads z, so it keeps its start
 }
 
 TEST_CASE("the --max-iterations flag bounds the run", "[bench][flags][probe]") {

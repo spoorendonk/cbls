@@ -208,10 +208,14 @@ file states the configuration it was produced under (#136):
 --max-iterations N         GLS iteration budget (0 = unlimited)
 --no-time-limit            disable the wall clock; requires --max-iterations
 --perturb-near-value       OR-Tools' near-value kick (#217)
+--no-objective-tie-break   drop the FJ objective tie-break (#218; on since #226)
 ```
 
-`--perturb-near-value` is opt-in: the cell records it only when it is on, so
-a default row's cell is the one the committed tables hold.
+`--perturb-near-value` and `--no-objective-tie-break` are recorded in the cell
+only when they move the engine off its default, so a default row's cell is the
+one the committed tables hold. Those tables predate #226 and so ran the
+tie-break off: their cells match a default row's, and only the engine commit
+tells them apart until they are regenerated.
 
 Two combinations are refused rather than accepted: `--lns-interval` with
 `--no-lns`, and `--novelty-prob` with `--no-compound-moves`. The engine never

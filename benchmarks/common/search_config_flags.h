@@ -124,9 +124,13 @@ struct SearchFlags {
     // 0 = no neighbour list, the engine's default (a null
     // `structural_neighbours`). Typed values must be >= 1.
     int64_t neighbours = 0;
-    // OR-Tools' near-value kick (#217), whose default #226 is deciding.
+    // OR-Tools' near-value kick (#217); off by default (#226 kept it off).
     // Recorded in the cell only when on (see SearchFlagSpec::opt_in).
     bool perturb_near_value = SearchConfig{}.perturb_near_value;
+    // The objective tie-break (#218), on by default since #226. The flag turns
+    // it off; recorded in the cell only when off, so a default row's cell is
+    // the one rows from before #226 carry -- tell those apart by commit.
+    bool objective_tie_break = SearchConfig{}.fj_objective_tie_break;
     // The first flag typed from each family, indexed by the family's bit, or
     // nullptr. Set by match_search_flag() whatever the value, so that a flag
     // restated at its default is refused on a runner that cannot read it too:
@@ -154,7 +158,7 @@ struct SearchFlagSpec {
 ///
 /// New flags go at the END: a runner's cell is the table filtered by its
 /// families, so appending keeps every existing runner's cell byte-identical.
-inline constexpr std::array<SearchFlagSpec, 14> kSearchFlagSpecs = {{
+inline constexpr std::array<SearchFlagSpec, 15> kSearchFlagSpecs = {{
     {"float_hook", "[--no-float-hook]", kScalarSearchFlags},
     {"lns", "[--no-lns]", kCommonSearchFlags},
     {"lns_interval", "[--lns-interval N]", kCommonSearchFlags},
@@ -171,6 +175,7 @@ inline constexpr std::array<SearchFlagSpec, 14> kSearchFlagSpecs = {{
     {"structural_sample_size", "[--structural-sample-size N]", kStructuralSearchFlags},
     {"neighbours", "[--neighbours K]", kNeighbourSearchFlags},
     {"perturb_near_value", "[--perturb-near-value]", kScalarSearchFlags, true},
+    {"objective_tie_break", "[--no-objective-tie-break]", kScalarSearchFlags, true},
 }};
 
 inline constexpr std::size_t kSearchFlagCount = kSearchFlagSpecs.size();
@@ -266,6 +271,10 @@ inline bool match_search_flag(ArgCursor& c, const std::string& s, SearchFlags& f
     } else if (s == "--perturb-near-value") {
         f.perturb_near_value = true;
         flag = "--perturb-near-value";
+        family = kScalarSearchFlags;
+    } else if (s == "--no-objective-tie-break") {
+        f.objective_tie_break = false;
+        flag = "--no-objective-tie-break";
         family = kScalarSearchFlags;
     } else {
         return false;
@@ -477,6 +486,9 @@ inline const char* first_non_default_search_flag(const SearchFlags& f,
     if (f.perturb_near_value != d.perturb_near_value) {
         return "--perturb-near-value";
     }
+    if (f.objective_tie_break != d.objective_tie_break) {
+        return "--no-objective-tie-break";
+    }
     return nullptr;
 }
 
@@ -516,6 +528,7 @@ inline std::array<std::string, kSearchFlagCount> search_config_values(const Sear
         std::to_string(f.structural_sample_size),
         f.neighbours == 0 ? std::string(off) : std::to_string(f.neighbours),
         f.perturb_near_value ? on : off,
+        f.objective_tie_break ? on : off,
     }};
 }
 
@@ -581,6 +594,7 @@ inline void apply_search_flags(const SearchFlags& f, SearchConfig& cfg) {
     cfg.structural_selection = f.structural_selection;
     cfg.structural_sample_size = static_cast<int>(f.structural_sample_size);
     cfg.perturb_near_value = f.perturb_near_value;
+    cfg.fj_objective_tie_break = f.objective_tie_break;
 }
 
 /// The neighbour flag's check against the instance, which only the runner can

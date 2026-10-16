@@ -131,7 +131,7 @@ def test_a_killed_job_scores_as_a_failure_not_as_unrun(tmp_path: Path) -> None:
     # never scheduled, which is excluded from the aggregate instead. The engine
     # directory does not exist yet: the failure record has to create it.
     job = Job("cbls", "inst")
-    write_failure_result(job, tmp_path, "killed", "exceeded wall clock", budget=60.0)
+    write_failure_result(job, tmp_path, "killed", "exceeded wall clock", 60.0, arm={})
     assert job.result_path(tmp_path) == tmp_path / "cbls" / "inst.json"
 
     scored = score_instance("inst", "cbls", 100.0, "opt", tmp_path, budget=60.0)
@@ -383,6 +383,27 @@ def test_resuming_under_a_different_search_arm_is_refused(tmp_path: Path) -> Non
     result.write_text(json.dumps({"instance": "a", "threads": 1, "compound_moves": True, **tie}))
     assert check() is None
     assert check(compound_moves=False) == 2
+
+
+def test_a_default_run_resumes_over_a_job_it_killed(tmp_path: Path) -> None:
+    # The driver writes the row for a job it killed, and resume keeps that row. It
+    # carried no arm keys once, so it read back as the tie-break's off arm and a
+    # default run (on since #226) refused to resume any directory holding one.
+    args = _driver_args()
+    jobs = [Job("cbls", "a"), Job("cpsat", "a")]
+    for job in jobs:
+        write_failure_result(
+            job,
+            tmp_path,
+            "killed",
+            "exceeded wall clock",
+            60.0,
+            run_benchmark.arm_keys(job.engine, args),
+        )
+    assert run_benchmark.check_resume_configuration(jobs, tmp_path, args) is None
+    # And the arm it records is still checked: an off-arm resume over it is refused.
+    off = _driver_args(objective_tie_break=False)
+    assert run_benchmark.check_resume_configuration(jobs, tmp_path, off) == 2
 
 
 # --- resume: what still needs a solve, and what still needs a verdict (#138) -----

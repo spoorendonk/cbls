@@ -450,10 +450,39 @@ def build_command(job: Job, args: argparse.Namespace, results_dir: Path) -> list
     ]
 
 
+def arm_keys(engine: str, args: argparse.Namespace) -> dict[str, object]:
+    """The record keys that say which configuration a row of `engine` ran.
+
+    The runners write these into their own rows; the driver writes them into the
+    rows it writes for a killed job, and `check_resume_configuration` compares
+    both against them. A killed row without them would be read back as the off
+    arm of every back-read flag, so a default run (tie-break on since #226)
+    could never resume a directory holding one.
+    """
+    if engine == "cpsat":
+        return {"workers": args.cpsat_workers}
+    return {
+        "threads": args.cbls_threads,
+        "compound_moves": args.compound_moves,
+        "exact_int_jump": args.exact_int_jump,
+        "perturb_near_value": args.perturb_near_value,
+        "objective_tie_break": args.objective_tie_break,
+    }
+
+
 def write_failure_result(
-    job: Job, results_dir: Path, status: str, message: str, budget: float
+    job: Job,
+    results_dir: Path,
+    status: str,
+    message: str,
+    budget: float,
+    arm: dict[str, object],
 ) -> None:
-    """Record a job the driver killed, so it scores as a failure rather than as unrun."""
+    """Record a job the driver killed, so it scores as a failure rather than as unrun.
+
+    `arm` is `arm_keys` for the job: the row is kept on resume, so it has to say
+    which configuration it failed under.
+    """
     write_json(
         job.result_path(results_dir),
         {
@@ -463,6 +492,7 @@ def write_failure_result(
             "message": message,
             "objective": None,
             "budget_seconds": budget,
+            **arm,
         },
     )
 
@@ -544,7 +574,12 @@ def run_job(job: Job, args: argparse.Namespace, results_dir: Path) -> str:
             # alone, the result is simply re-verified on the next pass.
             if not job.result_path(results_dir).exists():
                 write_failure_result(
-                    job, results_dir, "killed", f"driver error: {exc!r}", args.budget
+                    job,
+                    results_dir,
+                    "killed",
+                    f"driver error: {exc!r}",
+                    args.budget,
+                    arm_keys(job.engine, args),
                 )
         return f"{job.engine}/{job.instance}: DRIVER-ERROR {exc!r}"
 
@@ -674,6 +709,7 @@ def _run_solver(job: Job, args: argparse.Namespace, results_dir: Path) -> tuple[
             "killed",
             f"exceeded {args.budget + TIMEOUT_SLACK_SECONDS}s wall clock",
             args.budget,
+            arm_keys(job.engine, args),
         )
         return f"{job.engine}/{job.instance}: TIMEOUT", False
 
@@ -687,6 +723,7 @@ def _run_solver(job: Job, args: argparse.Namespace, results_dir: Path) -> tuple[
                 "killed",
                 f"exit {completed.returncode}: {completed.stderr.strip()[:400]}",
                 args.budget,
+                arm_keys(job.engine, args),
             )
         # A job that wrote a result and *then* died still died. Reporting that as
         # "done" is how a systematic crash goes unnoticed for a whole roster.
@@ -871,26 +908,16 @@ def check_resume_configuration(
 
     Returns the exit code to fail with, or None to proceed.
     """
-    # Per engine: (record key, what this run asks for, what a row without the
-    # key ran -- None when that is unknown and the row is left alone).
-    # `exact_int_jump`, `perturb_near_value` and `objective_tie_break` are
-    # back-read as off: every row from before a flag ran its off arm.
-    wanted: dict[str, list[tuple[str, object, object]]] = {
-        "cbls": [
-            ("threads", args.cbls_threads, None),
-            ("compound_moves", args.compound_moves, None),
-            ("exact_int_jump", args.exact_int_jump, False),
-            ("perturb_near_value", args.perturb_near_value, False),
-            ("objective_tie_break", args.objective_tie_break, False),
-        ],
-        "cpsat": [("workers", args.cpsat_workers, None)],
-    }
+    # What a row without a key ran: `exact_int_jump`, `perturb_near_value` and
+    # `objective_tie_break` are back-read as off, since every row from before a
+    # flag ran its off arm; any other missing key is unknown and left alone.
+    back_read_off = {"exact_int_jump", "perturb_near_value", "objective_tie_break"}
     for job in jobs:
         result = read_json_object(job.result_path(results_dir))
         if result is None:
             continue
-        for key, asked, absent in wanted[job.engine]:
-            recorded = result.get(key, absent)
+        for key, asked in arm_keys(job.engine, args).items():
+            recorded = result.get(key, False if key in back_read_off else None)
             if recorded is None:
                 continue  # predates the key; nothing to contradict
             if recorded != asked:
