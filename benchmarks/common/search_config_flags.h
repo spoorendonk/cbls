@@ -15,6 +15,7 @@
 #include <limits>
 #include <memory>
 #include <string>
+#include <utility>
 
 namespace cbls::bench {
 
@@ -190,6 +191,25 @@ inline std::size_t search_flag_family_index(unsigned family) {
     return i;
 }
 
+/// The opt-in FJ switches (#226), each a bare flag that turns one engine
+/// field on. Kept apart from match_search_flag() because they are one rule --
+/// spelling to field, no value -- that the table there would otherwise repeat.
+inline bool match_opt_in_switch(const std::string& s, SearchFlags& f, const char*& flag) {
+    const std::array<std::pair<const char*, bool SearchFlags::*>, 3> switches = {{
+        {"--perturb-near-value", &SearchFlags::perturb_near_value},
+        {"--quadratic-roots", &SearchFlags::quadratic_roots},
+        {"--equality-balance", &SearchFlags::equality_balance},
+    }};
+    for (const auto& [spelling, field] : switches) {
+        if (s == spelling) {
+            f.*field = true;
+            flag = spelling;
+            return true;
+        }
+    }
+    return false;
+}
+
 /// Matches and consumes one search-configuration flag under the cursor.
 ///
 /// Returns false when the argument is not one of ours, leaving the cursor where
@@ -269,17 +289,7 @@ inline bool match_search_flag(ArgCursor& c, const std::string& s, SearchFlags& f
         f.neighbours = parse_int64("--neighbours", v);
         flag = "--neighbours";
         family = kNeighbourSearchFlags;
-    } else if (s == "--perturb-near-value") {
-        f.perturb_near_value = true;
-        flag = "--perturb-near-value";
-        family = kScalarSearchFlags;
-    } else if (s == "--quadratic-roots") {
-        f.quadratic_roots = true;
-        flag = "--quadratic-roots";
-        family = kScalarSearchFlags;
-    } else if (s == "--equality-balance") {
-        f.equality_balance = true;
-        flag = "--equality-balance";
+    } else if (match_opt_in_switch(s, f, flag)) {
         family = kScalarSearchFlags;
     } else {
         return false;

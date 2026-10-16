@@ -622,6 +622,7 @@ TEST_CASE("the --equality-balance flag changes the FJ search", "[bench][flags][p
 /// so where they end up is exactly what the kicks drew.
 void build_stagnant_with_free_model(Model& m) {
     std::vector<int32_t> vars;
+    vars.reserve(8);
     for (int i = 0; i < 8; ++i) {
         vars.push_back(m.int_var(0, 10));
     }
@@ -651,6 +652,7 @@ TEST_CASE("the --perturb-near-value flag changes the kick", "[bench][flags][prob
         build_stagnant_with_free_model(m);
         const SearchResult r = run_arm(m, parsed.flags, /*batch_iterations=*/1);
         REQUIRE(r.perturbations > 0);
+        finals[static_cast<size_t>(on)].reserve(m.num_vars());
         for (int32_t v = 0; v < static_cast<int32_t>(m.num_vars()); ++v) {
             finals[static_cast<size_t>(on)].push_back(m.var(v).value);
         }
