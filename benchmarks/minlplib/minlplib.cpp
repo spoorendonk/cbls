@@ -25,6 +25,7 @@
 #include <iomanip>
 #include <limits>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -1057,6 +1058,14 @@ void run_instance(std::ostream& csv, std::ofstream& trace, const Args& args,
     cbls::bench::apply_search_flags(args.search, cfg);
     cbls::SearchResult result;
     try {
+        // Test seam: the solve-error path needs a solve that throws, and since
+        // #202 the engine no longer throws on the empty model the test used to
+        // provoke it with. Only `tests/python/test_minlplib_run_benchmark.py`
+        // sets this.
+        if (const char* boom = std::getenv("CBLS_MINLPLIB_THROW_IN_SOLVE");
+            boom != nullptr && name == boom) {
+            throw std::runtime_error("CBLS_MINLPLIB_THROW_IN_SOLVE names this instance");
+        }
         TraceRecorder recorder(trace, name);
         result =
             cbls::solve(built.model, cbls::bench::time_limit_argument(args.search, args.time_limit),

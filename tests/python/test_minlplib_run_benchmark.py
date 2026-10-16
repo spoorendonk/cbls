@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
 import socket
 import subprocess
 from pathlib import Path
@@ -1176,13 +1177,12 @@ def nl_header(nvars: int, ncons: int, nobjs: int) -> str:
 #: One variable in [0,10], one constraint `x <= 7`, minimise `x`. Solves.
 SOLVABLE_NL = nl_header(1, 1, 1) + "b\n0 0 10\nr\n1 7\nO0 0\nn0\nG0 1\n0 1\nC0\nn0\nJ0 1\n0 1\n"
 
-#: Zero variables, one objective. It reads and it builds -- and then `cbls::solve`
-#: throws `var id out of range` reaching for a variable that is not there, which
-#: is the runner's `solve-error` path with nothing added to production code to
-#: provoke it. If the engine ever handles an empty model gracefully this stops
-#: being a solve-error and the fixture needs replacing -- loudly, since the
-#: tally and the exit status both move.
-THROWS_ON_SOLVE_NL = nl_header(0, 0, 1) + "b\nr\nO0 0\nn0\n"
+#: The instance name the runner's test seam throws for inside the solve
+#: bracket (`CBLS_MINLPLIB_THROW_IN_SOLVE`). Until #202 a zero-variable model
+#: provoked the throw on its own -- the old LNS reached for variable 0 -- and the
+#: engine now solves that model, so the seam names the instance instead.
+THROW_IN_SOLVE_INSTANCE = "boom"
+THROWS_ON_SOLVE_NL = SOLVABLE_NL
 
 #: An opcode outside the adapter's set. A COVERAGE GAP, not an error: the runner
 #: buckets it as skipped(unsupported) and it must not move the exit status.
@@ -1235,6 +1235,7 @@ def run_the_runner(tmp_path: Path, fixtures: dict[str, str]) -> subprocess.Compl
         capture_output=True,
         text=True,
         check=False,
+        env={**os.environ, "CBLS_MINLPLIB_THROW_IN_SOLVE": THROW_IN_SOLVE_INSTANCE},
     )
 
 
