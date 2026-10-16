@@ -31,7 +31,8 @@ struct Routing {
     std::vector<double> x;
     std::vector<double> y;
 
-    explicit Routing(Cover cover, int customers = 30, int n_routes = 5, int capacity = 8)
+    explicit Routing(Cover cover, int customers = 30, int n_routes = 5, int capacity = 8,
+                     int min_len = 1)
         : customers(customers) {
         for (int i = 0; i < customers; ++i) {
             const double a = 0.7 * i;
@@ -42,7 +43,7 @@ struct Routing {
         std::vector<int32_t> routes;
         std::vector<int32_t> lengths;
         for (int r = 0; r < n_routes; ++r) {
-            const int32_t route = m.list_var(customers, 1, customers, ListInit::Random);
+            const int32_t route = m.list_var(customers, min_len, customers, ListInit::Random);
             routes.push_back(route);
             route_vars.push_back(handle_to_var_id(route));
             const int32_t load = m.lambda_sum(route, [](int) { return 1.0; });
@@ -99,7 +100,7 @@ void check_draws(Routing& r, int k, int draws, std::set<std::string>& kinds) {
     for (int d = 0; d < draws; ++d) {
         std::vector<Move> out;
         generate_granular_partition_moves(r.m, 0, rng, *nl, out, scratch);
-        REQUIRE(out.size() <= static_cast<size_t>((7 * k) + 1));
+        REQUIRE(out.size() <= static_cast<size_t>((5 * k) + 1) + r.route_vars.size());
         const std::vector<int> start = r.coverage();
         for (const Move& move : out) {
             REQUIRE_FALSE(move.changes.empty());
@@ -165,10 +166,11 @@ TEST_CASE("granular moves insert and remove under AtMostOnce (#203)", "[structur
     REQUIRE(kinds.count("g_remove") == 1);
 }
 
-TEST_CASE("every granular relocate and 2-opt leaves e next to a neighbour (#203)",
+TEST_CASE("every granular relocate and 2-opt puts the drawn element next to a neighbour (#203)",
           "[structural][partition]") {
-    // The neighbourhood is defined by the arc (e, f) it creates: a relocate and a
-    // 2-opt/2-opt* must each put some neighbour pair side by side.
+    // The neighbourhood is defined by the arc (e, f) it creates. The element is
+    // the call's first draw, so a copy of the RNG names it. No list is empty
+    // (min length 1), so every relocate lands next to some f.
     Routing r(Cover::Exact);
     RNG layout(9);
     randomize_list_partition(r.m, r.m.list_partitions().front(), layout);
@@ -177,6 +179,8 @@ TEST_CASE("every granular relocate and 2-opt leaves e next to a neighbour (#203)
     std::vector<int64_t> scratch;
     int checked = 0;
     for (int d = 0; d < 100; ++d) {
+        RNG probe = rng;
+        const auto e = static_cast<int32_t>(probe.integers(0, r.customers));
         std::vector<Move> out;
         generate_granular_partition_moves(r.m, 0, rng, *nl, out, scratch);
         for (const Move& move : out) {
@@ -186,23 +190,50 @@ TEST_CASE("every granular relocate and 2-opt leaves e next to a neighbour (#203)
             const SavedValues saved = save_move_values(r.m, move);
             apply_move(r.m, move);
             bool any = false;
-            for (int32_t e = 0; e < r.customers && !any; ++e) {
-                for (const int32_t f : nl->of(e)) {
-                    if (adjacent(r, e, f)) {
-                        any = true;
-                        break;
-                    }
-                }
+            for (const int32_t f : nl->of(e)) {
+                any = any || adjacent(r, e, f);
             }
+            CAPTURE(d, e, move.move_type);
             REQUIRE(any);
             ++checked;
             undo_move(r.m, move, saved);
         }
     }
-    REQUIRE(checked > 0);
+    REQUIRE(checked > 100);
 }
 
-TEST_CASE("solve() under GranularBest improves a partitioned List model (#203)",
+TEST_CASE("granular moves reopen an empty list (#203)", "[structural][partition]") {
+    for (const Cover cover : {Cover::Exact, Cover::AtMostOnce}) {
+        Routing r(cover, 30, 5, 8, /*min_len=*/0);
+        RNG layout(2);
+        randomize_list_partition(r.m, r.m.list_partitions().front(), layout);
+        // Empty the last route into the first.
+        auto& first = r.m.var_mut(r.route_vars.front()).elements;
+        auto& last = r.m.var_mut(r.route_vars.back()).elements;
+        first.insert(first.end(), last.begin(), last.end());
+        last.clear();
+        const auto nl = r.neighbours(5);
+        RNG rng(4);
+        std::vector<int64_t> scratch;
+        int reopened = 0;
+        for (int d = 0; d < 50; ++d) {
+            std::vector<Move> out;
+            generate_granular_partition_moves(r.m, 0, rng, *nl, out, scratch);
+            for (const Move& move : out) {
+                for (const Move::Change& c : move.changes) {
+                    reopened += c.var_id == r.route_vars.back() ? 1 : 0;
+                }
+            }
+        }
+        CAPTURE(static_cast<int>(cover));
+        REQUIRE(reopened > 0);
+        // ... and every candidate, the reopening ones included, keeps the cover.
+        std::set<std::string> kinds;
+        check_draws(r, 5, 50, kinds);
+    }
+}
+
+TEST_CASE("solve() under GranularBest keeps the cover and reaches the engine (#203)",
           "[structural][partition]") {
     std::array<double, 2> objective{};
     int i = 0;

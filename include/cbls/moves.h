@@ -186,9 +186,11 @@ void generate_partition_moves(const Model& model, int partition, int32_t anchor,
 ///
 /// Under `Cover::AtMostOnce` an assigned `e` is also offered for removal, and an
 /// unassigned one is inserted just after and just before each assigned `f`.
-/// Length bounds are respected and no-op moves are dropped. At most
-/// `7 * |neighbours.of(e)| + 1` candidates, so the batch's bounded-yield
-/// contract holds for any fixed k.
+/// Finally `e` is moved into (or inserted into) every EMPTY member list, so an
+/// emptied list can be reopened. Length bounds are respected and no-op moves
+/// are dropped. At most `5 * |neighbours.of(e)| + 1 + |empty lists|`
+/// candidates, so the batch's bounded-yield contract holds for any fixed k and
+/// fleet.
 ///
 /// SEVERAL CANDIDATES PER CALL, unlike `generate_partition_moves`: it is meant
 /// for a policy that commits at most one of them (take-best). Every candidate is

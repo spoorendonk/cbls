@@ -1249,6 +1249,36 @@ void granular_insert_moves(const Model& model, const ListPartition& part, int32_
     }
 }
 
+/// `e` moved into every EMPTY member list: relocated there when assigned, inserted
+/// when not. The granular pairs all land next to some assigned `f`, so without
+/// these an emptied list could never be reopened -- the depot arcs Toth & Vigo
+/// keep in the granular graph for the same reason.
+void granular_empty_list_moves(const Model& model, const ListPartition& part, int32_t e,
+                               ElementSlot se, std::vector<Move>& out) {
+    if (se.list >= 0) {
+        const Variable& va = model.var(part.list_ids[static_cast<size_t>(se.list)]);
+        if (static_cast<int32_t>(va.elements.size()) <= va.min_size) {
+            return;
+        }
+    }
+    for (const int32_t vid : part.list_ids) {
+        const Variable& vb = model.var(vid);
+        if (!vb.elements.empty() || vb.max_size < 1) {
+            continue;
+        }
+        Move m;
+        if (se.list >= 0) {
+            m.move_type = "g_relocate";
+            m.changes.push_back(
+                edit_change(part.list_ids[static_cast<size_t>(se.list)], erase_edit(se.pos)));
+        } else {
+            m.move_type = "g_insert";
+        }
+        m.changes.push_back(edit_change(vid, insert_edit(0, e)));
+        push_if_changed(model, std::move(m), out);
+    }
+}
+
 }  // namespace
 
 void generate_granular_partition_moves(const Model& model, int partition, RNG& rng,
@@ -1288,6 +1318,7 @@ void generate_granular_partition_moves(const Model& model, int partition, RNG& r
             granular_insert_moves(model, part, e, sf, out);
         }
     }
+    granular_empty_list_moves(model, part, e, se, out);
 }
 
 std::vector<Move> generate_standard_moves(const Variable& var, RNG& rng) {

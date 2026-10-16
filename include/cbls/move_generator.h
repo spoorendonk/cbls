@@ -125,10 +125,13 @@ enum class StructuralSelection : std::uint8_t {
     /// the custom-invariant work of #166.
     ViolationGuided,
     /// `ViolationGuided`, with each `ListPartition` searched by the GRANULAR
-    /// COMPLETE neighbourhood of one element instead of a sample (#203; Toth &
-    /// Vigo 2003): one random element, every relocate / swap / 2-opt / 2-opt*
-    /// pairing it with each of its k nearest neighbours, the best improving one
-    /// committed (`generate_granular_partition_moves`).
+    /// COMPLETE neighbourhood of one element per `generate` call instead of a
+    /// sampled move (#203; Toth & Vigo 2003): one random element, every relocate
+    /// / swap / 2-opt / 2-opt* pairing it with each of its k nearest neighbours,
+    /// and a move into each empty list (`generate_granular_partition_moves`).
+    /// The best improving candidate is committed. A call that yields fewer than
+    /// `structural_sample_size` is topped up like any other, i.e. with a further
+    /// element's neighbourhood.
     ///
     /// Needs `SearchConfig::structural_neighbours`; without a list the partition
     /// generator keeps its sampled moves and this is `ViolationGuided`. With one,
@@ -187,7 +190,10 @@ struct MoveContext {
 ///    `delta_evaluate`s, scores and rolls back EVERY candidate on offer. So a
 ///    `generate` that returns instantly and appends 100 000 candidates overruns
 ///    `solve()`'s budget exactly as thoroughly as one that never returns. The
-///    built-ins append at most 5. Only the sampling policies cap the count
+///    built-ins append at most 5, except the partition generator under
+///    `GranularBest`, which appends one element's granular neighbourhood
+///    (`generate_granular_partition_moves` states the bound). Only the sampling policies cap the
+///    count
 ///    (`SearchConfig::structural_sample_size`); `FirstImprovingSample` takes
 ///    whatever it is given.
 ///  - `generate` APPENDS; it must not clear or reorder what is already in `out`.
@@ -254,7 +260,8 @@ public:
     /// applied names, so the assignment is always the sample's own plus exactly
     /// one candidate -- and every candidate was built against that assignment.
     /// The built-in `ListPartition` generator nonetheless emits at most ONE
-    /// candidate per call, deliberately: a cover maintained by construction is
+    /// candidate per call (except under `GranularBest`, a take-best policy),
+    /// deliberately: a cover maintained by construction is
     /// expensive to get wrong, and one candidate is safe under any batch that
     /// applies moves at all rather than under this one's particular discipline.
     /// A generator that wants a larger sample can rely on the baseline, or run
