@@ -27,6 +27,7 @@ from benchmarks.mipfeas import run_benchmark
 from benchmarks.mipfeas.primal_integral import (
     MAX_WORKER_LOSS_ATTEMPTS,
     NO_SOLUTION_GAP,
+    check_uniform_configuration,
     score_instance,
     summarize,
 )
@@ -404,6 +405,26 @@ def test_a_default_run_resumes_over_a_job_it_killed(tmp_path: Path) -> None:
     # And the arm it records is still checked: an off-arm resume over it is refused.
     off = _driver_args(objective_tie_break=False)
     assert run_benchmark.check_resume_configuration(jobs, tmp_path, off) == 2
+
+
+def test_a_killed_row_does_not_split_the_scored_configuration(tmp_path: Path) -> None:
+    # The killed row's arm is kept out of the keys the scorer reads, or it would
+    # carry a partial config no completed row matches and the uniformity check
+    # would refuse every table holding a single killed job.
+    args = _driver_args()
+    killed = Job("cbls", "a")
+    write_failure_result(
+        killed,
+        tmp_path,
+        "killed",
+        "exceeded wall clock",
+        60.0,
+        run_benchmark.arm_keys("cbls", args),
+    )
+    done = {"status": "feasible", "objective": 1.0, "threads": 1, "seed": 42}
+    (tmp_path / "cbls" / "b.json").write_text(json.dumps({**done, "objective_tie_break": True}))
+    rows = [score_instance(name, "cbls", 1.0, "opt", tmp_path, budget=60.0) for name in ("a", "b")]
+    check_uniform_configuration(rows)  # raises on two configurations
 
 
 # --- resume: what still needs a solve, and what still needs a verdict (#138) -----

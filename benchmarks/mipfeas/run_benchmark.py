@@ -481,7 +481,11 @@ def write_failure_result(
     """Record a job the driver killed, so it scores as a failure rather than as unrun.
 
     `arm` is `arm_keys` for the job: the row is kept on resume, so it has to say
-    which configuration it failed under.
+    which configuration it failed under. It is nested under `driver_arm` rather
+    than spread into the row, because the scorer's `config_string` reads those
+    keys at the top level: there a killed row would carry a partial config that
+    no completed row matches, and `check_uniform_configuration` would refuse
+    the whole table.
     """
     write_json(
         job.result_path(results_dir),
@@ -492,7 +496,7 @@ def write_failure_result(
             "message": message,
             "objective": None,
             "budget_seconds": budget,
-            **arm,
+            "driver_arm": arm,
         },
     )
 
@@ -916,6 +920,10 @@ def check_resume_configuration(
         result = read_json_object(job.result_path(results_dir))
         if result is None:
             continue
+        # A row the driver wrote for a killed job keeps its arm apart.
+        nested = result.get("driver_arm")
+        if isinstance(nested, dict):
+            result = nested
         for key, asked in arm_keys(job.engine, args).items():
             recorded = result.get(key, False if key in back_read_off else None)
             if recorded is None:
