@@ -756,11 +756,13 @@ NB_MODULE(_cbls_core, m) {
 
     // StructuralSelection — how the structural batch turns a generator's
     // candidates into a commit (#165). FirstImprovingSample is the default and
-    // is bit-for-bit the pre-#165 rule; the other two are opt-in.
+    // is bit-for-bit the pre-#165 rule; the others are opt-in. GranularBest
+    // (#203) needs a NeighbourList on the config to differ from ViolationGuided.
     nb::enum_<StructuralSelection>(m, "StructuralSelection")
         .value("FirstImprovingSample", StructuralSelection::FirstImprovingSample)
         .value("BestOfSample", StructuralSelection::BestOfSample)
-        .value("ViolationGuided", StructuralSelection::ViolationGuided);
+        .value("ViolationGuided", StructuralSelection::ViolationGuided)
+        .value("GranularBest", StructuralSelection::GranularBest);
 
     // NeighbourList — a granular neighbourhood (Toth & Vigo 2003) for the
     // built-in structural generators.

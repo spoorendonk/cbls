@@ -190,6 +190,12 @@ bool parse_selection_flag(const std::string& arg, FlagValues& v, Options& opt) {
             fprintf(stderr, "unknown selection '%s'\n", name.c_str());
             v.ok = false;
         }
+        // No neighbour list here, so granular_best would be violation_guided
+        // under a second name (#203).
+        if (v.ok && opt.selection == cbls::StructuralSelection::GranularBest) {
+            fprintf(stderr, "granular_best needs a neighbour list, which setcover has none of\n");
+            v.ok = false;
+        }
         return true;
     }
     if (arg == "--structural-sample-size") {

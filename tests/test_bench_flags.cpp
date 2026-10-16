@@ -845,6 +845,10 @@ TEST_CASE("structural flag values the engine cannot use are refused", "[bench][f
     REQUIRE(rejected({"--structural-prob", "0", "--neighbours", "5"}));
     REQUIRE(rejected({"--structural-prob", "0", "--structural-selection", "violation_guided"}));
     REQUIRE_FALSE(rejected({"--structural-prob", "0"}));
+    // granular_best without a neighbour list is violation_guided by another name.
+    REQUIRE(rejected({"--structural-selection", "granular_best"}));
+    REQUIRE(error.find("granular_best") != std::string::npos);
+    REQUIRE_FALSE(rejected({"--structural-selection", "granular_best", "--neighbours", "5"}));
     // -0 is the 0 arm, and must be recorded as it: one run, one cell.
     REQUIRE(
         cbls::bench::search_config_string(parse({"--structural-prob", "-0"}).flags, kStructural) ==

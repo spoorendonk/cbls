@@ -124,6 +124,19 @@ enum class StructuralSelection : std::uint8_t {
     /// element-level form needs either a generator-supplied element scorer or
     /// the custom-invariant work of #166.
     ViolationGuided,
+    /// `ViolationGuided`, with each `ListPartition` searched by the GRANULAR
+    /// COMPLETE neighbourhood of one element instead of a sample (#203; Toth &
+    /// Vigo 2003): one random element, every relocate / swap / 2-opt / 2-opt*
+    /// pairing it with each of its k nearest neighbours, the best improving one
+    /// committed (`generate_granular_partition_moves`).
+    ///
+    /// Needs `SearchConfig::structural_neighbours`; without a list the partition
+    /// generator keeps its sampled moves and this is `ViolationGuided`. With one,
+    /// the per-variable intra-list generators of PARTITION MEMBERS propose
+    /// nothing: same-list neighbour pairs already give that list its relocate,
+    /// swap and 2-opt, under the granular restriction. A List or Set outside any
+    /// partition is sampled exactly as under `ViolationGuided`.
+    GranularBest,
 };
 
 /// Stable snake_case token for a `StructuralSelection`, and its inverse.

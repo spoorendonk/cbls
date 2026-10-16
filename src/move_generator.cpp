@@ -131,6 +131,8 @@ const char* structural_selection_name(StructuralSelection selection) {
             return "best_of_sample";
         case StructuralSelection::ViolationGuided:
             return "violation_guided";
+        case StructuralSelection::GranularBest:
+            return "granular_best";
     }
     return "unknown";
 }
@@ -146,6 +148,10 @@ bool try_parse_structural_selection(std::string_view text, StructuralSelection& 
     }
     if (text == "violation_guided") {
         out = StructuralSelection::ViolationGuided;
+        return true;
+    }
+    if (text == "granular_best") {
+        out = StructuralSelection::GranularBest;
         return true;
     }
     return false;
@@ -178,7 +184,14 @@ public:
     [[nodiscard]] ConstSpan<int32_t> scope() const override { return {&var_id_, 1}; }
 
     void generate(MoveContext& ctx, std::vector<Move>& out) override {
-        generate_standard_moves(ctx.model.var(var_id_), ctx.rng, out, neighbours_.get());
+        const Variable& var = ctx.model.var(var_id_);
+        // Under GranularBest a partition member's intra-list moves come from
+        // the partition generator's same-list neighbour pairs (#203).
+        if (ctx.selection == StructuralSelection::GranularBest && var.partitioned &&
+            neighbours_ != nullptr && !neighbours_->empty()) {
+            return;
+        }
+        generate_standard_moves(var, ctx.rng, out, neighbours_.get());
     }
 
     [[nodiscard]] std::unique_ptr<MoveGenerator> clone() const override {
@@ -227,6 +240,12 @@ public:
     }
 
     void generate(MoveContext& ctx, std::vector<Move>& out) override {
+        if (ctx.selection == StructuralSelection::GranularBest && neighbours_ != nullptr &&
+            !neighbours_->empty()) {
+            generate_granular_partition_moves(ctx.model, partition_, ctx.rng, *neighbours_, out,
+                                              slots_);
+            return;
+        }
         // anchor = -1: both lists are drawn. The kick is the only caller that
         // names one.
         generate_partition_moves(ctx.model, partition_, /*anchor=*/-1, ctx.rng, out,
@@ -245,6 +264,9 @@ private:
     int partition_;
     std::vector<int32_t> list_ids_;
     std::shared_ptr<const NeighbourList> neighbours_;
+    /// GranularBest's element -> slot index, rebuilt on every call: a reused
+    /// buffer, not state. Per clone, so per worker.
+    std::vector<int64_t> slots_;
 };
 
 }  // namespace

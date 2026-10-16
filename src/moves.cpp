@@ -1085,6 +1085,211 @@ void generate_partition_moves(const Model& model, int partition, int32_t anchor,
     }
 }
 
+namespace {
+
+/// Where element `e` sits: `list` indexes `part.list_ids`, -1 for unassigned.
+struct ElementSlot {
+    int32_t list = -1;
+    int32_t pos = -1;
+};
+
+/// The granular 2-opt* pair between two different lists that makes `e` (at
+/// `a[i]`) and `f` (at `b[j]`) adjacent: `a[..i] + b[j..]` with `b[..j) +
+/// a(i..]`, and `b[..j] + a[i..]` with `a[..i) + b(j..]`. Both keep the pair's
+/// membership; each is offered only when the two new lengths fit their bounds.
+void granular_two_opt_star(const Variable& va, int32_t i, const Variable& vb, int32_t j,
+                           const Model& model, std::vector<Move>& out) {
+    const auto cut = [](const std::vector<int32_t>& v, int32_t from, int32_t to) {
+        return std::vector<int32_t>(v.begin() + from, v.begin() + to);
+    };
+    const auto na = static_cast<int32_t>(va.elements.size());
+    const auto nb = static_cast<int32_t>(vb.elements.size());
+    const auto fits = [](const Variable& v, int32_t len) {
+        return len >= v.min_size && len <= v.max_size;
+    };
+    // e then f: a keeps its head through e, then takes b's tail from f.
+    if (fits(va, i + 1 + nb - j) && fits(vb, j + na - i - 1)) {
+        std::vector<int32_t> new_a = cut(va.elements, 0, i + 1);
+        std::vector<int32_t> tail_b = cut(vb.elements, j, nb);
+        new_a.insert(new_a.end(), tail_b.begin(), tail_b.end());
+        std::vector<int32_t> new_b = cut(vb.elements, 0, j);
+        std::vector<int32_t> tail_a = cut(va.elements, i + 1, na);
+        new_b.insert(new_b.end(), tail_a.begin(), tail_a.end());
+        Move m;
+        m.move_type = "g_2opt_star";
+        m.changes.push_back(replace_change(va.id, std::move(new_a)));
+        m.changes.push_back(replace_change(vb.id, std::move(new_b)));
+        push_if_changed(model, std::move(m), out);
+    }
+    // f then e: b keeps its head through f, then takes a's tail from e.
+    if (fits(vb, j + 1 + na - i) && fits(va, i + nb - j - 1)) {
+        std::vector<int32_t> new_b = cut(vb.elements, 0, j + 1);
+        std::vector<int32_t> tail_a = cut(va.elements, i, na);
+        new_b.insert(new_b.end(), tail_a.begin(), tail_a.end());
+        std::vector<int32_t> new_a = cut(va.elements, 0, i);
+        std::vector<int32_t> tail_b = cut(vb.elements, j + 1, nb);
+        new_a.insert(new_a.end(), tail_b.begin(), tail_b.end());
+        Move m;
+        m.move_type = "g_2opt_star";
+        m.changes.push_back(replace_change(va.id, std::move(new_a)));
+        m.changes.push_back(replace_change(vb.id, std::move(new_b)));
+        push_if_changed(model, std::move(m), out);
+    }
+}
+
+/// Every granular move pairing `e` with one neighbour `f`, both assigned.
+void granular_pair_moves(const Model& model, const ListPartition& part, int32_t e, ElementSlot se,
+                         int32_t f, ElementSlot sf, std::vector<Move>& out) {
+    const int32_t a = part.list_ids[static_cast<size_t>(se.list)];
+    const int32_t b = part.list_ids[static_cast<size_t>(sf.list)];
+    const Variable& va = model.var(a);
+    const Variable& vb = model.var(b);
+    const int32_t i = se.pos;
+    const int32_t j = sf.pos;
+    if (a == b) {
+        // Within one list. Relocate e next to f: positions in the vector
+        // SHORTENED by e's removal, where f has moved down one if it was after e.
+        const int32_t jf = j > i ? j - 1 : j;
+        for (const int32_t to : {jf + 1, jf}) {
+            Move m;
+            m.move_type = "g_relocate";
+            m.changes.push_back(edit_change(a, segment_edit(i, 1, to)));
+            push_if_changed(model, std::move(m), out);
+        }
+        Move sw;
+        sw.move_type = "g_swap";
+        sw.changes.push_back(edit_change(a, swap_edit(i, j)));
+        push_if_changed(model, std::move(sw), out);
+        // The two 2-opt reversals that leave e and f adjacent.
+        const int32_t lo = std::min(i, j);
+        const int32_t hi = std::max(i, j);
+        for (const auto& range :
+             {std::pair<int32_t, int32_t>{lo + 1, hi}, std::pair<int32_t, int32_t>{lo, hi - 1}}) {
+            Move m;
+            m.move_type = "g_2opt";
+            m.changes.push_back(edit_change(a, reverse_edit(range.first, range.second)));
+            push_if_changed(model, std::move(m), out);
+        }
+        return;
+    }
+    // Across two lists. Relocate e just after f and just before it.
+    if (static_cast<int32_t>(va.elements.size()) > va.min_size &&
+        static_cast<int32_t>(vb.elements.size()) < vb.max_size) {
+        for (const int32_t to : {j + 1, j}) {
+            Move m;
+            m.move_type = "g_relocate";
+            m.changes.push_back(edit_change(a, erase_edit(i)));
+            m.changes.push_back(edit_change(b, insert_edit(to, e)));
+            push_if_changed(model, std::move(m), out);
+        }
+    }
+    Move sw;
+    sw.move_type = "g_swap";
+    sw.changes.push_back(edit_change(a, assign_edit(i, f)));
+    sw.changes.push_back(edit_change(b, assign_edit(j, e)));
+    push_if_changed(model, std::move(sw), out);
+    granular_two_opt_star(va, i, vb, j, model, out);
+}
+
+/// Element -> (list, position) over one partition, recomputed from the lists on
+/// every call for the reason `partition_unassigned` is: nothing notifies a
+/// generator when the assignment moves. Packed as list * stride + pos into the
+/// caller's reused vector, so a call allocates nothing once it has grown. Every
+/// write and read is bounds-tested (#156).
+class PartitionSlots {
+public:
+    PartitionSlots(const Model& model, const ListPartition& part, std::vector<int64_t>& packed)
+        : packed_(packed) {
+        packed_.assign(static_cast<size_t>(part.universe_size), -1);
+        for (const int32_t vid : part.list_ids) {
+            stride_ =
+                std::max<int64_t>(stride_, static_cast<int64_t>(model.var(vid).elements.size()));
+        }
+        for (size_t li = 0; li < part.list_ids.size(); ++li) {
+            const std::vector<int32_t>& el = model.var(part.list_ids[li]).elements;
+            for (size_t p = 0; p < el.size(); ++p) {
+                if (el[p] >= 0 && static_cast<size_t>(el[p]) < packed_.size()) {
+                    packed_[static_cast<size_t>(el[p])] =
+                        (static_cast<int64_t>(li) * stride_) + static_cast<int64_t>(p);
+                }
+            }
+        }
+    }
+
+    [[nodiscard]] ElementSlot of(int32_t x) const {
+        ElementSlot s;
+        if (x < 0 || static_cast<size_t>(x) >= packed_.size()) {
+            return s;
+        }
+        const int64_t packed = packed_[static_cast<size_t>(x)];
+        if (packed >= 0) {
+            s.list = static_cast<int32_t>(packed / stride_);
+            s.pos = static_cast<int32_t>(packed % stride_);
+        }
+        return s;
+    }
+
+private:
+    std::vector<int64_t>& packed_;
+    int64_t stride_ = 1;
+};
+
+/// An unassigned `e` (AtMostOnce) brought in just after and just before `f`.
+void granular_insert_moves(const Model& model, const ListPartition& part, int32_t e, ElementSlot sf,
+                           std::vector<Move>& out) {
+    const Variable& vb = model.var(part.list_ids[static_cast<size_t>(sf.list)]);
+    if (static_cast<int32_t>(vb.elements.size()) >= vb.max_size) {
+        return;
+    }
+    for (const int32_t to : {sf.pos + 1, sf.pos}) {
+        Move m;
+        m.move_type = "g_insert";
+        m.changes.push_back(edit_change(vb.id, insert_edit(to, e)));
+        push_if_changed(model, std::move(m), out);
+    }
+}
+
+}  // namespace
+
+void generate_granular_partition_moves(const Model& model, int partition, RNG& rng,
+                                       const NeighbourList& neighbours, std::vector<Move>& out,
+                                       std::vector<int64_t>& slot_scratch) {
+    const std::vector<ListPartition>& partitions = model.list_partitions();
+    if (partition < 0 || partition >= static_cast<int>(partitions.size())) {
+        return;
+    }
+    const ListPartition& part = partitions[static_cast<size_t>(partition)];
+    if (part.universe_size <= 0 || part.list_ids.empty()) {
+        return;
+    }
+    const PartitionSlots slots(model, part, slot_scratch);
+    const auto e = static_cast<int32_t>(rng.integers(0, part.universe_size));
+    const ElementSlot se = slots.of(e);
+    if (se.list < 0 && part.cover != Cover::AtMostOnce) {
+        return;  // a cover something else broke; these moves do not repair one
+    }
+    if (se.list >= 0 && part.cover == Cover::AtMostOnce) {
+        const Variable& va = model.var(part.list_ids[static_cast<size_t>(se.list)]);
+        if (static_cast<int32_t>(va.elements.size()) > va.min_size) {
+            Move m;
+            m.move_type = "g_remove";
+            m.changes.push_back(edit_change(va.id, erase_edit(se.pos)));
+            push_if_changed(model, std::move(m), out);
+        }
+    }
+    for (const int32_t f : neighbours.of(e)) {
+        const ElementSlot sf = slots.of(f);
+        if (f == e || sf.list < 0) {
+            continue;
+        }
+        if (se.list >= 0) {
+            granular_pair_moves(model, part, e, se, f, sf, out);
+        } else {
+            granular_insert_moves(model, part, e, sf, out);
+        }
+    }
+}
+
 std::vector<Move> generate_standard_moves(const Variable& var, RNG& rng) {
     std::vector<Move> moves;
     generate_standard_moves(var, rng, moves, nullptr);

@@ -170,7 +170,7 @@ inline constexpr std::array<SearchFlagSpec, 15> kSearchFlagSpecs = {{
     {"time_limit", "[--no-time-limit]", kCommonSearchFlags},
     {"structural_prob", "[--structural-prob P]", kStructuralSearchFlags},
     {"structural_selection",
-     "[--structural-selection first_improving|best_of_sample|violation_guided]",
+     "[--structural-selection first_improving|best_of_sample|violation_guided|granular_best]",
      kStructuralSearchFlags},
     {"structural_sample_size", "[--structural-sample-size N]", kStructuralSearchFlags},
     {"neighbours", "[--neighbours K]", kNeighbourSearchFlags},
@@ -254,7 +254,7 @@ inline bool match_search_flag(ArgCursor& c, const std::string& s, SearchFlags& f
         if (!try_parse_structural_selection(v, f.structural_selection)) {
             std::fprintf(stderr,
                          "--structural-selection: unknown policy '%s' (expected first_improving, "
-                         "best_of_sample or violation_guided)\n",
+                         "best_of_sample, violation_guided or granular_best)\n",
                          v);
             std::exit(2);
         }
@@ -316,6 +316,11 @@ inline bool validate_structural_flags(const SearchFlags& f, std::string& error) 
     // call"), and at an explicit probability of 0 it never runs a structural
     // batch, so neither the policy, the sample size nor the neighbour list is
     // read.
+    // GranularBest without a neighbour list is ViolationGuided by another name.
+    if (f.structural_selection == StructuralSelection::GranularBest && f.neighbours == 0) {
+        error = "--structural-selection granular_best needs --neighbours K";
+        return false;
+    }
     if (f.structural_selection == StructuralSelection::FirstImprovingSample &&
         f.structural_sample_size != defaults.structural_sample_size) {
         error =

@@ -51,6 +51,7 @@ class TestStructuralSelection:
             cbls.StructuralSelection.FirstImprovingSample,
             cbls.StructuralSelection.BestOfSample,
             cbls.StructuralSelection.ViolationGuided,
+            cbls.StructuralSelection.GranularBest,
         ],
     )
     def test_every_policy_solves_a_set_model(self, selection: cbls.StructuralSelection) -> None:

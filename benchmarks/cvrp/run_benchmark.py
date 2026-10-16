@@ -116,7 +116,8 @@ class Arm:
 #: The arms this driver knows. `default` is the engine's own configuration, the
 #: one a published table carries (`score.PUBLISHABLE_GROUPS`). `guided` is the arm
 #: the smoke check uses (benchmarks/instances/cvrp/README.md, "Search arm for
-#: the smoke check"); which arm a campaign runs is decided on `dev.csv` (#204).
+#: the smoke check"); `granular` is #203's granular best-improvement search over
+#: the same neighbour list. Which arm a campaign runs is decided on `dev.csv` (#204).
 #: `pyvrp` is the reference baseline (#200, `reference_solve.py`): single-
 #: threaded, so it runs at `--threads 1` only and is compared only against
 #: `cbls_cvrp --threads 1`.
@@ -125,6 +126,7 @@ ARMS: dict[str, Arm] = {
     for arm in (
         Arm("default", ()),
         Arm("guided", ("--structural-selection", "violation_guided", "--neighbours", "20")),
+        Arm("granular", ("--structural-selection", "granular_best", "--neighbours", "20")),
         Arm("pyvrp", (), engine="pyvrp"),
     )
 }

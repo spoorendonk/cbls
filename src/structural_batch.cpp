@@ -533,7 +533,9 @@ bool StructuralBatch::run(Model& model, ViolationManager& vm, RNG& rng, bool has
         if (has_deadline && std::chrono::steady_clock::now() >= deadline) {
             break;
         }
-        if (selection_ == StructuralSelection::ViolationGuided && !scope_can_improve(model, gen)) {
+        if ((selection_ == StructuralSelection::ViolationGuided ||
+             selection_ == StructuralSelection::GranularBest) &&
+            !scope_can_improve(model, gen)) {
             continue;
         }
         draw_candidates(ctx, gen);

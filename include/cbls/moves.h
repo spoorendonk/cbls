@@ -172,6 +172,35 @@ void generate_standard_moves(const Variable& var, RNG& rng, std::vector<Move>& o
 void generate_partition_moves(const Model& model, int partition, int32_t anchor, RNG& rng,
                               std::vector<Move>& out, const NeighbourList* neighbours);
 
+/// The GRANULAR COMPLETE neighbourhood of one element of `partition`, for
+/// `StructuralSelection::GranularBest` (#203; Toth & Vigo 2003, INFORMS J.
+/// Computing 15(4)). Draws one element `e` of the universe uniformly, then
+/// appends every move pairing `e` with each of its `neighbours`:
+///
+///   - relocate `e` just after and just before `f` (within one list a segment
+///     move, across two an erase and an insert);
+///   - swap `e` and `f`;
+///   - the 2-opt that makes `e` and `f` adjacent: within one list the two
+///     reversals that do, across two lists the 2-opt* tail exchange in both
+///     orientations.
+///
+/// Under `Cover::AtMostOnce` an assigned `e` is also offered for removal, and an
+/// unassigned one is inserted just after and just before each assigned `f`.
+/// Length bounds are respected and no-op moves are dropped. At most
+/// `7 * |neighbours.of(e)| + 1` candidates, so the batch's bounded-yield
+/// contract holds for any fixed k.
+///
+/// SEVERAL CANDIDATES PER CALL, unlike `generate_partition_moves`: it is meant
+/// for a policy that commits at most one of them (take-best). Every candidate is
+/// built against the current assignment, which is what the batch's per-sample
+/// baseline restores before applying each one.
+///
+/// `slot_scratch` is the caller's reusable element -> (list, position) index;
+/// it is rebuilt from the lists on every call, never trusted across calls.
+void generate_granular_partition_moves(const Model& model, int partition, RNG& rng,
+                                       const NeighbourList& neighbours, std::vector<Move>& out,
+                                       std::vector<int64_t>& slot_scratch);
+
 // Move application
 std::vector<int32_t> apply_move(Model& model, const Move& move);
 /// `apply_move`, recording every structured change in `journal` -- the form to
