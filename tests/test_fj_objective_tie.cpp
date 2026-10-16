@@ -13,9 +13,10 @@
 
 using namespace cbls;
 
-TEST_CASE("the objective tie-break is off by default (#218)", "[fj][objective_tie]") {
+TEST_CASE("the objective tie-break is on by default in solve() (#226)", "[fj][objective_tie]") {
+    // GFJConfig's own default stays off: only solve() turns it on.
     REQUIRE_FALSE(GFJConfig{}.objective_tie_break);
-    REQUIRE_FALSE(SearchConfig{}.fj_objective_tie_break);
+    REQUIRE(SearchConfig{}.fj_objective_tie_break);
 }
 
 TEST_CASE("the objective tie-break picks among exact ties only (#218)", "[fj][objective_tie]") {

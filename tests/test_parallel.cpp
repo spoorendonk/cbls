@@ -2046,6 +2046,8 @@ TEST_CASE("an own best that ties the shared bound still counts as an improvement
     // objective's bound step of 1, and FJ's sample of 5 -- moved it again, and a
     // scan of 40-140 at seed 5 now finds 65 alone.) Compound moves are off, as they were when #179
     // was measured and the tie was found; the engine default turned them on afterwards.
+    // The objective tie-break is off for the same reason: it became the default
+    // at #226, after #179, and moves which objective values this worker records.
     constexpr double kTiePeer = 65.0;
     SolutionPool pool(1);
     SearchCoordination coord;
@@ -2057,6 +2059,7 @@ TEST_CASE("an own best that ties the shared bound still counts as an improvement
     config.batch_iterations = 100;
     config.tracer = &ledger;
     config.use_compound_moves = false;
+    config.fj_objective_tie_break = false;
     const SearchResult r = solve(m, /*time_limit=*/0.0, /*seed=*/5, true, nullptr, nullptr, 3,
                                  nullptr, config, &coord);
     REQUIRE(r.feasible);

@@ -76,9 +76,9 @@ struct Args {
     // OR-Tools' near-value kick (#217), off as the engine's default is. Recorded
     // on every row for the same reason.
     bool perturb_near_value = false;
-    // OR-Tools' objective tie-break/scan (#218), off as the engine's default
-    // is, and recorded on every row likewise.
-    bool objective_tie_break = false;
+    // OR-Tools' objective tie-break/scan (#218), on as the engine's default is
+    // since #226, and recorded on every row likewise.
+    bool objective_tie_break = true;
     // CBLS variables need finite bounds. Implied bounds supply most of them
     // (#120); this is the fallback for a column no constraint bounds. 1e7 rather
     // than the engine's 1e9 because it measured better on the smoke roster — NOT
@@ -124,7 +124,7 @@ void print_usage() {
         "                    [--inf-clamp B] [--no-propagate-bounds]\n"
         "                    [--max-propagation-passes N]\n"
         "                    [--no-compound-moves] [--exact-int-jump]\n"
-        "                    [--perturb-near-value] [--objective-tie-break]\n"
+        "                    [--perturb-near-value] [--no-objective-tie-break]\n"
         "                    [--threads N]\n"
         "                    [--share-bound | --no-share-bound]\n"
         "                    [--solution-dir DIR]\n"
@@ -208,6 +208,8 @@ Args parse_args(int argc, char** argv) {
             a.perturb_near_value = true;
         } else if (s == "--objective-tie-break") {
             a.objective_tie_break = true;
+        } else if (s == "--no-objective-tie-break") {
+            a.objective_tie_break = false;
         } else if (s == "--share-bound") {
             a.share_objective_bound = true;
         } else if (s == "--no-share-bound") {

@@ -545,6 +545,11 @@ TEST_CASE("MINLPLib ex4_1_8 solves within a loose gap of its published bound",
 // 343-point space, not a regression. Both seeds below already solve at an
 // 8 000-iteration budget, so 15 000 carries ~1.9x. Raise the budget or re-pick
 // seeds if the engine's trajectory changes; don't swap it for a wall clock.
+//
+// Re-picked again at #226, when the objective tie-break became the default:
+// over seeds 1-30 at 15 000 the pass rate is 20/30 with the tie-break on and
+// 20/30 with it off, but seed 13 is no longer among them. Seeds 11 and 26 solve
+// at 8 000 with it on (9/30 do), so 15 000 still carries ~1.9x.
 TEST_CASE("MINLPLib st_e40 reaches feasibility on a small iteration budget", "[minlplib][solve]") {
     // bounds.csv: st_e40,other,4,8,min,30.41421356,30.4142136,0
     const double primal_bks = 30.41421356;
@@ -553,7 +558,7 @@ TEST_CASE("MINLPLib st_e40 reaches feasibility on a small iteration budget", "[m
     REQUIRE(prob.n_vars == 4);
     REQUIRE(prob.n_cons == 8);
 
-    for (uint64_t seed : {2ULL, 13ULL}) {
+    for (uint64_t seed : {11ULL, 26ULL}) {
         INFO("seed " << seed);
         NlToModelResult built = nl_to_model(prob);
         REQUIRE(built.supported);

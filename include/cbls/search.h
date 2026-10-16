@@ -248,10 +248,12 @@ struct SearchConfig {
     bool perturb_near_value = false;
 
     // OR-Tools' use of the objective before the first feasible point (#218),
-    // off by default and off meaning today's path bit for bit; forwarded to
-    // GFJConfig::objective_tie_break, whose comment says what it does. Needs an
-    // affine objective and does nothing on any other.
-    bool fj_objective_tie_break = false;
+    // forwarded to GFJConfig::objective_tie_break, whose comment says what it
+    // does. Needs an affine objective and does nothing on any other. ON by
+    // default since #226: its smoke A/B cut the gap at the first feasible
+    // point to 0.75x on MIPfeas with no feasibility lost. (GFJConfig's own
+    // default stays off; only solve() turns it on.)
+    bool fj_objective_tie_break = true;
 
     // ---- host integration (#169): cancellation and tracing ------------------
     //

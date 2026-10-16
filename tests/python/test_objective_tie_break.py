@@ -33,11 +33,11 @@ def _final_z(**flags: bool) -> float:
     return float(m.var(-(z + 1)).value)  # a variable handle is -(id + 1)
 
 
-def test_objective_tie_break_defaults_off() -> None:
+def test_objective_tie_break_defaults_on() -> None:
     config = cbls.SearchConfig()
-    assert config.fj_objective_tie_break is False
+    assert config.fj_objective_tie_break is True  # since #226
 
 
 def test_objective_tie_break_reaches_the_solve() -> None:
-    assert _final_z() == 0.0
-    assert _final_z(fj_objective_tie_break=True) == 10.0
+    assert _final_z(fj_objective_tie_break=False) == 0.0
+    assert _final_z() == 10.0

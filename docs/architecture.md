@@ -1370,7 +1370,9 @@ The ViolationLS outer loop owns the iteration clock and calls:
 FJ ignores the objective until the first feasible point: the folded row's bound
 is +inf, so the row is inert, and the start is the closest-to-zero value.
 `GFJConfig::objective_tie_break` (`SearchConfig::fj_objective_tie_break`,
-default **off**) carries over what OR-Tools does instead. It needs an affine
+default **on** since #226's smoke A/B, which put the gap at the first feasible
+point at 0.75x on MIPfeas; `GFJConfig`'s own default stays off) carries over
+what OR-Tools does instead. It needs an affine
 objective, whose coefficients FJ reads once at construction by one reverse
 sweep; on any other objective it does nothing. (#218's second flag, an
 objective-favourable start, was neutral in #226's smoke A/B and was removed;

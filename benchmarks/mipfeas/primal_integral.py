@@ -156,7 +156,10 @@ def config_string(result: dict[str, object]) -> str:
     if cells.get("exact_int_jump") is False:
         del cells["exact_int_jump"]
     # `perturb_near_value` (#217) and the objective tie-break (#218): the same
-    # rule for the same reason.
+    # rule for the same reason. The tie-break has been on by default since
+    # #226, so a new default row carries `objective_tie_break=True` and does
+    # not match a table scored before it -- which is the point: that table was
+    # measured on the old default and must be regenerated, not averaged in.
     for opt_in in ("perturb_near_value", "objective_tie_break"):
         if cells.get(opt_in) is False:
             del cells[opt_in]

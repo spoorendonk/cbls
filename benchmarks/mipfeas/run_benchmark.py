@@ -423,7 +423,7 @@ def build_command(job: Job, args: argparse.Namespace, results_dir: Path) -> list
             "--compound-moves" if args.compound_moves else "--no-compound-moves",
             *(["--exact-int-jump"] if args.exact_int_jump else []),
             *(["--perturb-near-value"] if args.perturb_near_value else []),
-            *(["--objective-tie-break"] if args.objective_tie_break else []),
+            *([] if args.objective_tie_break else ["--no-objective-tie-break"]),
             "--threads",
             str(args.cbls_threads),
             *([] if args.propagate_bounds else ["--no-propagate-bounds"]),
@@ -1147,10 +1147,11 @@ def main() -> int:
         "before its own A/B",
     )
     parser.add_argument(
-        "--objective-tie-break",
-        action="store_true",
-        help="CBLS FJ breaks score ties on the objective and scans objective-improving "
-        "columns, as OR-Tools does (#218); off by default, as in the engine",
+        "--no-objective-tie-break",
+        dest="objective_tie_break",
+        action="store_false",
+        help="turn off CBLS FJ's objective tie-break and objective-improving scan "
+        "(#218), which is on by default since #226, as in the engine",
     )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--engines", nargs="+", choices=ENGINES, default=list(ENGINES))

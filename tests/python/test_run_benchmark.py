@@ -203,7 +203,7 @@ def _driver_args(**overrides: object) -> argparse.Namespace:
         "compound_moves": True,
         "exact_int_jump": False,
         "perturb_near_value": False,
-        "objective_tie_break": False,
+        "objective_tie_break": True,
         "propagate_bounds": True,
         "cpsat_workers": 1,
         "cbls_threads": 1,
@@ -239,8 +239,8 @@ def _driver_args(**overrides: object) -> argparse.Namespace:
         ("cbls", {"exact_int_jump": True}, {"--exact-int-jump": None}, []),
         ("cbls", {}, {}, ["--perturb-near-value"]),
         ("cbls", {"perturb_near_value": True}, {"--perturb-near-value": None}, []),
-        ("cbls", {}, {}, ["--objective-tie-break"]),
-        ("cbls", {"objective_tie_break": True}, {"--objective-tie-break": None}, []),
+        ("cbls", {}, {}, ["--no-objective-tie-break", "--objective-tie-break"]),
+        ("cbls", {"objective_tie_break": False}, {"--no-objective-tie-break": None}, []),
         ("cbls", {"cbls_threads": 4}, {"--threads": "4"}, []),
         ("cpsat", {}, {"--workers": "1"}, []),
         # Without a solution directory neither runner writes a solution vector, and
@@ -257,8 +257,8 @@ def _driver_args(**overrides: object) -> argparse.Namespace:
         "exact-int-jump",
         "perturb-near-value-off-by-default",
         "perturb-near-value",
-        "objective-tie-break-off-by-default",
-        "objective-tie-break",
+        "objective-tie-break-on-by-default",
+        "no-objective-tie-break",
         "cbls-threads",
         "cpsat-workers",
         "cbls-solution-dir",
@@ -321,7 +321,10 @@ def test_resuming_at_a_different_thread_count_is_refused(tmp_path: Path) -> None
     # mixed-configuration guard to catch, and an operator who believes they
     # measured 4. Caught before the run rather than after it is paid for.
     (tmp_path / "cbls").mkdir()
-    (tmp_path / "cbls" / "a.json").write_text(json.dumps({"instance": "a", "threads": 1}))
+    # `objective_tie_break` is on the row because it has been on by default
+    # since #226 and a row without it ran it off; this test is about threads.
+    tie = {"objective_tie_break": True}
+    (tmp_path / "cbls" / "a.json").write_text(json.dumps({"instance": "a", "threads": 1, **tie}))
     jobs = [Job("cbls", "a")]
 
     def check(threads: int) -> int | None:
@@ -332,7 +335,7 @@ def test_resuming_at_a_different_thread_count_is_refused(tmp_path: Path) -> None
     # The matching count resumes, and so does a result that predates the key:
     # it records nothing this run can contradict.
     assert check(1) is None
-    (tmp_path / "cbls" / "a.json").write_text(json.dumps({"instance": "a"}))
+    (tmp_path / "cbls" / "a.json").write_text(json.dumps({"instance": "a", **tie}))
     assert check(4) is None
     # The CP-SAT side keys on `workers`, not `threads`, and is checked separately.
     (tmp_path / "cpsat").mkdir()
@@ -351,26 +354,33 @@ def test_resuming_under_a_different_search_arm_is_refused(tmp_path: Path) -> Non
     def check(**overrides: object) -> int | None:
         return run_benchmark.check_resume_configuration(jobs, tmp_path, _driver_args(**overrides))
 
-    result.write_text(json.dumps({"instance": "a", "threads": 1, "exact_int_jump": False}))
+    # The rows below carry the tie-break, on by default since #226, so that each
+    # part tests only its own flag; the tie-break's own part is further down.
+    tie = {"objective_tie_break": True}
+    result.write_text(json.dumps({"instance": "a", "threads": 1, "exact_int_jump": False, **tie}))
     assert check() is None
     assert check(exact_int_jump=True) == 2
     # A row from before the flag ran the off arm, so it is read as off, not skipped.
-    result.write_text(json.dumps({"instance": "a", "threads": 1}))
+    result.write_text(json.dumps({"instance": "a", "threads": 1, **tie}))
     assert check() is None
     assert check(exact_int_jump=True) == 2
     # The same for the near-value kick (#217).
-    result.write_text(json.dumps({"instance": "a", "threads": 1, "perturb_near_value": False}))
+    result.write_text(
+        json.dumps({"instance": "a", "threads": 1, "perturb_near_value": False, **tie})
+    )
     assert check() is None
     assert check(perturb_near_value=True) == 2
-    result.write_text(json.dumps({"instance": "a", "threads": 1}))
+    result.write_text(json.dumps({"instance": "a", "threads": 1, **tie}))
     assert check(perturb_near_value=True) == 2
-    # And the objective tie-break (#218).
+    # And the objective tie-break (#218), on by default since #226: a row from
+    # before ran it off, so a default run cannot resume onto one.
     result.write_text(json.dumps({"instance": "a", "threads": 1, "objective_tie_break": False}))
-    assert check() is None
-    assert check(objective_tie_break=True) == 2
+    assert check(objective_tie_break=False) is None
+    assert check() == 2
     result.write_text(json.dumps({"instance": "a", "threads": 1}))
-    assert check(objective_tie_break=True) == 2
-    result.write_text(json.dumps({"instance": "a", "threads": 1, "compound_moves": True}))
+    assert check() == 2
+    assert check(objective_tie_break=False) is None
+    result.write_text(json.dumps({"instance": "a", "threads": 1, "compound_moves": True, **tie}))
     assert check() is None
     assert check(compound_moves=False) == 2
 
@@ -390,7 +400,10 @@ def _row(
     job = job or Job("cbls", "inst")
     job.result_path(results_dir).parent.mkdir(parents=True, exist_ok=True)
     if status is not None:
-        job.result_path(results_dir).write_text(json.dumps({"status": status, "objective": 1.0}))
+        # The tie-break is on by default since #226; a row without it ran it off,
+        # which a default resume would refuse.
+        row = {"status": status, "objective": 1.0, "objective_tie_break": True}
+        job.result_path(results_dir).write_text(json.dumps(row))
     if solution:
         job.solution_path(results_dir).write_text("=obj= 1.0\nx 1\n")
     if verdict is not None:
@@ -447,6 +460,7 @@ def test_a_resume_left_with_a_lost_worker_row_is_not_a_clean_run(
         "threads": 2,
         "workers_completed": 1,
         "worker_loss_attempts": MAX_WORKER_LOSS_ATTEMPTS,
+        "objective_tie_break": True,  # the default since #226
     }
     (results_dir / "cbls" / "tiny.json").write_text(json.dumps(row))
     argv = [
