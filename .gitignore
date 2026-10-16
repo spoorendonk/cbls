@@ -3,6 +3,9 @@ build*/
 # checkout's venv (see CLAUDE.md, Build & Test), and `.venv/` does not match a
 # symlink -- so `git add -A` there would commit it.
 .venv
+# `uv sync` writes one per clone (CLAUDE.md, Build & Test); the project pins
+# its dependencies in pyproject.toml, not in a lock.
+uv.lock
 *.egg-info/
 __pycache__/
 *.pyc

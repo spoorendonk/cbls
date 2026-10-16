@@ -32,7 +32,7 @@ Know the symbol → LSP. Know a string, not its location → Grep. Full-file Rea
 ## C++
 
 - **C++17** (`CMAKE_CXX_STANDARD 17`). `std::expected`, concepts and ranges are *not* available here; don't reach for them.
-- Style: Google-based, enforced by `.clang-format` and `.clang-tidy` at the repo root. Both tools are **pinned PyPI wheels in `.venv/`** (`clang-format==22.1.8`, `clang-tidy==22.1.8`), not system packages — `.venv/bin/pip install -e '.[dev]'` installs them, and the hooks prefer `.venv/bin` over `PATH`. Install `'.[benchmarks]'` too — the gated test fence requires it (see **Build & Test**). The exact pin keeps formatter and tidy output identical across checkouts.
+- Style: Google-based, enforced by `.clang-format` and `.clang-tidy` at the repo root. Both tools are **pinned PyPI wheels in `.venv/`** (`clang-format==22.1.8`, `clang-tidy==22.1.8`), not system packages — `uv sync --extra dev --extra benchmarks` (**Build & Test**) installs them, and the hooks prefer `.venv/bin` over `PATH`. The `benchmarks` extra is in that command because the gated test fence requires it. The exact pin keeps formatter and tidy output identical across checkouts.
 - Naming is **not** Google's default — `.clang-tidy` encodes what this codebase actually does:
 
   | Kind | Style | Example |
@@ -175,7 +175,7 @@ The hooks live in **`.githooks/`, tracked in this repo** — that directory is t
 
 The three hooks are wcp's (see **Hooks Are Files In This Repository**); `gate-lib.sh`, `tidy-probe.sh`, `tidy-probe/` and `tests/` beside them are this project's own and are still exercised by ctest (`gate_lib_shell_test`, `clang_tidy_gate_probe`); `resolve-venv.sh` was used only by the old hooks and nothing calls it now.
 
-- `pre-commit` — **checks, never rewrites**: `ruff format --check .`, `ruff check .` and `mypy .` (strict, from `pyproject.toml`) over the whole tree, each through `uv run`, and `clang-format --dry-run -Werror` over every tracked C/C++ file, preferring the pinned tools in `.venv/bin`. Any finding blocks the commit; a tool that cannot run is reported on stderr and skipped. It runs **no tests**. `.venv/` here is a pip venv with no `uv.lock`, so `uv run` would lock and sync it (writing `uv.lock` and rebuilding `cbls` into the venv) — commit with `UV_NO_SYNC=1` set to have it use the venv as it is.
+- `pre-commit` — **checks, never rewrites**: `ruff format --check .`, `ruff check .` and `mypy .` (strict, from `pyproject.toml`) over the whole tree, each through `uv run`, and `clang-format --dry-run -Werror` over every tracked C/C++ file, preferring the pinned tools in `.venv/bin`. Any finding blocks the commit; a tool that cannot run is reported on stderr and skipped. It runs **no tests**. A venv made by `uv sync` (**Build & Test**) is already locked and synced, so `uv run` uses it as it is. An older pip-made `.venv/` has no `uv.lock`, and there `uv run` would lock and sync it (writing `uv.lock` and rebuilding `cbls` into the venv) — commit with `UV_NO_SYNC=1` set to have it use the venv as it is.
 - `commit-msg` — Conventional Commits, subject at most 72 characters. Unlike the hook it replaced, it does **not** pass `fixup!`/`squash!`/`amend!` subjects, so `git commit --fixup` is refused.
 - `pre-push` — refuses a merge commit pushed to `main` and a tip without its review receipt, then runs the ```clean, ```build and ```test fences from `## Build & Test` below as a local CI in a fresh worktree outside the checkout (skipped for a documentation-only push), each step timed. `git config hooks.localCiCpus 0-3` pins it to fewer CPUs.
 
@@ -555,7 +555,7 @@ review finding: say so plainly, hand over the exact commands, and do not report
 the work as shipped. Committed-on-a-branch is not pushed, and the final report
 must not say otherwise.
 
-A subagent worktree may READ sibling worktrees to understand patterns, but must never WRITE to one or to its git branch. A fresh worktree has no `.venv`; see **Build & Test** for the symlink it needs before building or testing.
+A subagent worktree may READ sibling worktrees to understand patterns, but must never WRITE to one or to its git branch. A fresh worktree has no `.venv`; see **Build & Test** for the symlink it needs before building or testing (a worktree only — a full clone makes its own).
 
 ## Commit Messages
 
@@ -664,25 +664,43 @@ always build them. The cost argument is the weaker one: the reason is that
 without the flag those binding tests do not run at all.
 
 **`CBLS_REQUIRE_BENCHMARKS=1` is the same rule for the `benchmarks` extra.**
-`ortools` and `pyscipopt` are not in `[dev]`, so the documented
-`.venv/bin/pip install -e '.[dev]'` bootstrap leaves every test of the CP-SAT
+`ortools` and `pyscipopt` are not in `[dev]`, so a venv synced with
+`--extra dev` alone leaves every test of the CP-SAT
 baseline and of the independent solution verifier on a module-level
 `pytest.importorskip` — dozens of tests, including the one that is #138's whole
-acceptance criterion, disappearing into a green summary. Install the extra
-(`.venv/bin/pip install -e '.[benchmarks]'`); the flag makes the skip a hard
+acceptance criterion, disappearing into a green summary. Sync the extra
+(`uv sync --extra dev --extra benchmarks`); the flag makes the skip a hard
 error instead of a silent one.
 
 `pytest` is **only** in `.venv/` — a bare `pytest` is not on PATH and
 `python3 -m pytest` has no module, so always spell out `.venv/bin/pytest`.
-A git worktree has no `.venv` of its own; symlink the main checkout's in before
-building or running the Python suite there. The build needs it too — the
-```build fence locates nanobind through `$PWD/.venv/bin/python` (falling back to
-whatever `python` is on PATH, usually one without nanobind), so without the
-symlink a worktree builds no bindings and the ```test fence fails on
-`CBLS_REQUIRE_BINDINGS=1`:
+The build needs the venv too — the ```build fence locates nanobind through
+`$PWD/.venv/bin/python` (falling back to whatever `python` is on PATH, usually
+one without nanobind), so a checkout without one builds no bindings and the
+```test fence fails on `CBLS_REQUIRE_BINDINGS=1`.
+
+**A full clone — a `wcp session start` clone included — makes its own venv**,
+and never symlinks another checkout's:
 
 ```bash
-ln -sfn /path/to/main/checkout/.venv .venv && .venv/bin/pytest --tb=short -q; rm -f .venv
+uv sync --extra dev --extra benchmarks
+```
+
+`--extra benchmarks` is what the ```test fence requires; leave it out only for a
+clone that runs no gate. This builds `cbls` into `.venv` once (under the machine
+lock, like any C++ build) and writes an untracked `uv.lock`, which `.gitignore`
+ignores. Verified in a fresh clone (#227): the ```build and ```test fences then
+pass with the full roster. A symlink into another clone points outside the
+session's working directory, so every command touching `.venv` raises a
+permission prompt and the session stalls until a human answers; it also forces
+one set of extras on every clone that shares it (#226 needed `benchmarks` where
+the main checkout's env lacked it).
+
+**Only a subagent git worktree under this checkout** borrows the checkout's venv
+by symlink, since it has none and is torn down with the run:
+
+```bash
+ln -sfn /path/to/this/checkout/.venv .venv && .venv/bin/pytest --tb=short -q; rm -f .venv
 ```
 
 Run a single C++ test by name (`catch_discover_tests` registers each `TEST_CASE` as its own ctest test, so `-R` matches the test-case name):
