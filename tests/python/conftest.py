@@ -115,14 +115,14 @@ except ImportError:
             "Build them with:\n"
             '  cmake -B build -DCBLS_BUILD_PYTHON=ON -DPython_EXECUTABLE="$PWD/.venv/bin/python"\n'
             "  cmake --build build -j$(nproc)\n"
-            "If nanobind is missing from the venv, `.venv/bin/pip install -e '.[dev]'` "
-            "installs it."
+            "If nanobind is missing from the venv, "
+            "`uv sync --extra dev --extra benchmarks` installs it."
         ) from None
 
 
 # The same hazard one layer out. `ortools`, `pyscipopt` and `pyvrp` live in the
-# `benchmarks` extra, not `dev`, so a checkout bootstrapped with the documented
-# `.venv/bin/pip install -e '.[dev]'` has none of them -- and every test of the
+# `benchmarks` extra, not `dev`, so a checkout synced with `--extra dev` alone
+# has none of them -- and every test of the
 # CP-SAT baseline, of the independent solution verifier and of the PyVRP
 # baseline opens with `pytest.importorskip`, so all of them vanish into a green
 # summary. That is the same failure shape as the 254 binding tests, and gets the
@@ -171,8 +171,8 @@ if _ignored_benchmark_tests and os.environ.get("CBLS_REQUIRE_BENCHMARKS") == "1"
         f"CBLS_REQUIRE_BENCHMARKS=1, but {', '.join(_missing_benchmark_imports)} "
         f"{'is' if len(_missing_benchmark_imports) == 1 else 'are'} not importable, so "
         f"tests in these files would be skipped: {', '.join(_ignored_benchmark_tests)}. "
-        "Install them with:\n"
-        "  .venv/bin/pip install -e '.[benchmarks]'"
+        "Install them with (uv sync drops any extra it is not given, so name both):\n"
+        "  uv sync --extra dev --extra benchmarks"
     )
 
 

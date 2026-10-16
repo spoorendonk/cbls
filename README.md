@@ -67,9 +67,10 @@ Two off-by-default measurement builds, each into its own directory:
 See [docs/profiling.md](docs/profiling.md) for the heap and CPU profiling
 recipes that use them.
 
-With Python bindings:
+With Python bindings (the venv first, which also builds the package into it):
 
 ```bash
+uv sync --extra dev
 cmake -B build -DCBLS_BUILD_PYTHON=ON -DPython_EXECUTABLE="$PWD/.venv/bin/python"
 cmake --build build
 .venv/bin/pytest          # 1312 tests, 254 of them for the bindings
@@ -79,7 +80,7 @@ Tests of the benchmark baselines skip themselves when `ortools` or `pyscipopt` i
 absent, so install the extra before treating a green run as complete:
 
 ```bash
-.venv/bin/pip install -e '.[benchmarks]'
+uv sync --extra dev --extra benchmarks   # names both: uv sync drops an unnamed extra
 CBLS_REQUIRE_BENCHMARKS=1 .venv/bin/pytest   # turns that skip into an error
 ```
 
