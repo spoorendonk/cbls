@@ -429,6 +429,16 @@ TEST_CASE("a non-default arm is named for the published-table guard", "[bench][f
                 parse({"--no-compound-moves"}).flags)) == "--no-compound-moves");
     REQUIRE(cbls::bench::first_non_default_search_flag(parse({"--lns-interval", "3"}).flags) ==
             nullptr);
+    // The policy `auto` resolves to is not an arm of its own (#203): without a
+    // list that is first_improving, and with one the list is what is named.
+    REQUIRE(cbls::bench::first_non_default_search_flag(
+                parse({"--structural-selection", "first_improving"}).flags) == nullptr);
+    REQUIRE(std::string(cbls::bench::first_non_default_search_flag(
+                parse({"--structural-selection", "granular_best", "--neighbours", "5"}).flags)) ==
+            "--neighbours");
+    REQUIRE(std::string(cbls::bench::first_non_default_search_flag(
+                parse({"--structural-selection", "first_improving", "--neighbours", "5"}).flags)) ==
+            "--structural-selection");
 }
 
 TEST_CASE("validation rejects values the engine cannot use", "[bench][flags]") {
@@ -773,8 +783,22 @@ TEST_CASE("a List runner's cell records the structural arm and omits the scalar 
           "[bench][flags]") {
     REQUIRE(cbls::bench::search_config_string(SearchFlags{}, kStructural) ==
             "lns=on;lns_interval=3;perturbation_period=100;max_iterations=0;time_limit=on;"
-            "structural_prob=auto;structural_selection=auto;"
+            "structural_prob=auto;structural_selection=first_improving;"
             "structural_sample_size=8;neighbours=off");
+    // `auto` is recorded as the policy it runs (#203): with a list that is
+    // granular_best, and spelling it out is the same arm under the same cell.
+    const SearchFlags with_list = parse({"--neighbours", "20"}).flags;
+    const SearchFlags spelled =
+        parse({"--structural-selection", "granular_best", "--neighbours", "20"}).flags;
+    REQUIRE(cbls::bench::search_config_string(with_list, kStructural) ==
+            "lns=on;lns_interval=3;perturbation_period=100;max_iterations=0;time_limit=on;"
+            "structural_prob=auto;structural_selection=granular_best;"
+            "structural_sample_size=8;neighbours=20");
+    REQUIRE(cbls::bench::search_config_string(spelled, kStructural) ==
+            cbls::bench::search_config_string(with_list, kStructural));
+    REQUIRE(cbls::bench::search_config_string(
+                parse({"--structural-selection", "first_improving"}).flags, kStructural) ==
+            cbls::bench::search_config_string(SearchFlags{}, kStructural));
     const SearchFlags f = parse({"--structural-prob", "1", "--structural-selection",
                                  "violation_guided", "--neighbours", "20"})
                               .flags;
@@ -865,11 +889,11 @@ TEST_CASE("structural flag values the engine cannot use are refused", "[bench][f
     REQUIRE_FALSE(cbls::bench::validate_neighbours(parse({"--neighbours", "10"}).flags, 10, error));
     REQUIRE(error.find("--neighbours") != std::string::npos);
     REQUIRE(cbls::bench::validate_neighbours(SearchFlags{}, 1, error));
-    // Restating the defaults at probability 0 is still the 0 arm; first_improving
-    // is no longer the default (#203), so it is a policy read by nothing there.
-    REQUIRE_FALSE(rejected({"--structural-prob", "0", "--structural-selection", "auto",
+    // Restating the default at probability 0 is still the 0 arm, under either
+    // spelling: without a list `auto` runs first_improving (#203).
+    REQUIRE_FALSE(rejected({"--structural-prob", "0", "--structural-selection", "first_improving",
                             "--structural-sample-size", "8"}));
-    REQUIRE(rejected({"--structural-prob", "0", "--structural-selection", "first_improving"}));
+    REQUIRE_FALSE(rejected({"--structural-prob", "0", "--structural-selection", "auto"}));
 }
 
 TEST_CASE("the --structural-prob flag changes the batch mix", "[bench][flags][probe]") {

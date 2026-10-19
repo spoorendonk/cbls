@@ -286,6 +286,20 @@ inline bool match_search_flag(ArgCursor& c, const std::string& s, SearchFlags& f
     return true;
 }
 
+/// The selection policy the run executes (#203): `auto` resolved against
+/// whether `--neighbours` supplies a list. One run, one name: the cell, the
+/// published-table guard and the no-effect rules all compare this, so `auto`
+/// and the explicit policy it resolves to are the same arm, as they are the
+/// same trajectory.
+inline StructuralSelection effective_structural_selection(const SearchFlags& f) {
+    return resolve_structural_selection(f.structural_selection, f.neighbours != 0);
+}
+
+/// What the default selection runs under `f`'s neighbour list.
+inline StructuralSelection default_structural_selection(const SearchFlags& f) {
+    return resolve_structural_selection(SearchConfig{}.structural_selection, f.neighbours != 0);
+}
+
 /// The structural half of validate_search_flags(), split out because it is a
 /// separate family with its own no-effect rules. Every default passes.
 inline bool validate_structural_flags(const SearchFlags& f, std::string& error) {
@@ -322,8 +336,7 @@ inline bool validate_structural_flags(const SearchFlags& f, std::string& error) 
         return false;
     }
     // `auto` without a list runs first_improving, so the same rule holds there.
-    if (resolve_structural_selection(f.structural_selection, f.neighbours != 0) ==
-            StructuralSelection::FirstImprovingSample &&
+    if (effective_structural_selection(f) == StructuralSelection::FirstImprovingSample &&
         f.structural_sample_size != defaults.structural_sample_size) {
         error =
             "--structural-sample-size has no effect under --structural-selection "
@@ -331,7 +344,7 @@ inline bool validate_structural_flags(const SearchFlags& f, std::string& error) 
         return false;
     }
     if (f.structural_prob == 0.0 &&
-        (f.structural_selection != defaults.structural_selection ||
+        (effective_structural_selection(f) != default_structural_selection(f) ||
          f.structural_sample_size != defaults.structural_sample_size || f.neighbours != 0)) {
         error =
             "--structural-prob 0 runs no structural batch, so the structural selection, "
@@ -481,7 +494,8 @@ inline const char* first_non_default_search_flag(const SearchFlags& f,
     if (f.structural_prob != d.structural_prob) {
         return "--structural-prob";
     }
-    if (f.structural_selection != d.structural_selection) {
+    if (effective_structural_selection(f) !=
+        resolve_structural_selection(d.structural_selection, f.neighbours != 0)) {
         return "--structural-selection";
     }
     if (f.structural_sample_size != d.structural_sample_size) {
@@ -531,7 +545,7 @@ inline std::array<std::string, kSearchFlagCount> search_config_values(const Sear
         std::to_string(f.max_iterations),
         f.no_time_limit ? off : on,
         f.structural_prob < 0.0 ? std::string("auto") : search_flag_number(f.structural_prob),
-        structural_selection_name(f.structural_selection),
+        structural_selection_name(effective_structural_selection(f)),
         std::to_string(f.structural_sample_size),
         f.neighbours == 0 ? std::string(off) : std::to_string(f.neighbours),
         f.perturb_near_value ? on : off,
