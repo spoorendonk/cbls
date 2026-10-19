@@ -94,7 +94,8 @@ NeighbourList nearest_neighbours(int universe, int k, const std::function<double
 /// `FirstImprovingSample` is the DEFAULT and is bit-for-bit what the batch did
 /// before generators existed (#165): one `generate` call per generator, each
 /// candidate applied in turn and kept if it strictly lowers weighted violation.
-/// The other two are opt-in and change the trajectory.
+/// It is what the default, `Auto`, runs without a neighbour list; with one,
+/// `Auto` runs `GranularBest`. The others are opt-in and change the trajectory.
 enum class StructuralSelection : std::uint8_t {
     /// Today's rule: take every improving candidate from one sample, in order.
     FirstImprovingSample,
@@ -140,7 +141,19 @@ enum class StructuralSelection : std::uint8_t {
     /// swap and 2-opt, under the granular restriction. A List or Set outside any
     /// partition is sampled exactly as under `ViolationGuided`.
     GranularBest,
+    /// The default (#203, option (c)): `GranularBest` when the search has a
+    /// `SearchConfig::structural_neighbours` list, `FirstImprovingSample`
+    /// otherwise. A model run without a neighbour list therefore keeps the
+    /// pre-#165 trajectory bit for bit; one with a list gets the policy that won
+    /// #203's CVRP smoke (15/15 paired against `ViolationGuided`). Resolved once,
+    /// by `resolve_structural_selection`, when the batch is built.
+    Auto,
 };
+
+/// The policy a search actually runs: `Auto` resolved against whether a
+/// neighbour list is present, every other value unchanged.
+StructuralSelection resolve_structural_selection(StructuralSelection selection,
+                                                 bool has_neighbours);
 
 /// Stable snake_case token for a `StructuralSelection`, and its inverse.
 /// Used by the benchmark runners' flags and by the Python bindings, so there is

@@ -130,9 +130,10 @@ struct SearchConfig {
     // default: a custom generator is a peer of the built-ins, not a replacement
     // for them. Turn it off to run a model purely on custom moves.
     bool default_structural_generators = true;
-    // How the batch turns a generator's candidates into a commit. The default
-    // is bit-for-bit the pre-#165 rule; see StructuralSelection.
-    StructuralSelection structural_selection = StructuralSelection::FirstImprovingSample;
+    // How the batch turns a generator's candidates into a commit. The default,
+    // Auto, is GranularBest when `structural_neighbours` is set and otherwise
+    // bit-for-bit the pre-#165 rule (#203); see StructuralSelection.
+    StructuralSelection structural_selection = StructuralSelection::Auto;
     // Candidates scored per generator under BestOfSample / ViolationGuided.
     // Inert under the default policy, which takes exactly one generate() call.
     //
@@ -146,7 +147,8 @@ struct SearchConfig {
     // Optional granular neighbourhood handed to the BUILT-IN generators, making
     // a move's target one of the moved element's nearest neighbours instead of a
     // uniform draw (Toth & Vigo 2003). Null -- the default -- keeps the uniform
-    // draw and therefore the pre-#165 trajectory. Shared, not cloned: it is
+    // draw and therefore the pre-#165 trajectory. Setting it also turns the
+    // default selection (Auto) into GranularBest (#203). Shared, not cloned: it is
     // immutable, and copying a k-nearest list per worker is the cost sharing the
     // model's structure exists to avoid (#157).
     std::shared_ptr<const NeighbourList> structural_neighbours;

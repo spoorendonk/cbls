@@ -86,7 +86,11 @@ the engine's default structural arm -- `first_improving`, no neighbour list --
 was feasible on the three smaller instances but not on X-n801-k40 or
 X-n1001-k43. With `--structural-selection violation_guided --neighbours 20`,
 the arm #197's smoke evidence used, both were feasible and verified. So check
-the runner with that arm; which arm a campaign runs is decided on `dev.csv`.
+the runner with that arm. Since #203 the engine's default selection with a
+neighbour list is granular best improvement, which beat `violation_guided`
+15/15 paired on the smoke roster at 10 s (#203); the driver's `default` arm is
+therefore `--neighbours 20` and #204 runs it, with `guided` as the comparison
+arm.
 
 ## Running and scoring
 

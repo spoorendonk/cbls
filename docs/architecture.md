@@ -1730,7 +1730,8 @@ generator's candidates:
 
 | Policy | Rule |
 |---|---|
-| `FirstImprovingSample` (**default**) | one `generate` call, each candidate applied in turn and kept if it strictly improves — the pre-#165 rule, bit for bit |
+| `Auto` (**default**, #203) | `GranularBest` when `structural_neighbours` is set, `FirstImprovingSample` otherwise — so a search without a neighbour list keeps the pre-#165 trajectory bit for bit. Resolved once, when the batch is built (`resolve_structural_selection`) |
+| `FirstImprovingSample` | one `generate` call, each candidate applied in turn and kept if it strictly improves — the pre-#165 rule, bit for bit |
 | `BestOfSample` | call the generator until it has offered at least `structural_sample_size` candidates (one call always happens, and a call that appends several may overshoot), score them all, commit the best improving one |
 | `ViolationGuided` | `BestOfSample`, restricted to generators whose scope can still change a **violated** row |
 | `GranularBest` (#203) | `ViolationGuided`, except that each `ListPartition` offers the **granular complete neighbourhood** of one random element per `generate` call (Toth & Vigo 2003): every relocate (after/before), swap and adjacency-making 2-opt / 2-opt\* pairing it with each of its k nearest neighbours, a move into each empty member list (so an emptied list can be reopened), plus insert/remove under `AtMostOnce`. A call yielding fewer than `structural_sample_size` is topped up with a further element's neighbourhood. Partition members' own intra-list generators propose nothing, since same-list pairs cover them. Needs `structural_neighbours`; without one it is `ViolationGuided` |

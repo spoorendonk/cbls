@@ -773,7 +773,7 @@ TEST_CASE("a List runner's cell records the structural arm and omits the scalar 
           "[bench][flags]") {
     REQUIRE(cbls::bench::search_config_string(SearchFlags{}, kStructural) ==
             "lns=on;lns_interval=3;perturbation_period=100;max_iterations=0;time_limit=on;"
-            "structural_prob=auto;structural_selection=first_improving;"
+            "structural_prob=auto;structural_selection=auto;"
             "structural_sample_size=8;neighbours=off");
     const SearchFlags f = parse({"--structural-prob", "1", "--structural-selection",
                                  "violation_guided", "--neighbours", "20"})
@@ -842,6 +842,10 @@ TEST_CASE("structural flag values the engine cannot use are refused", "[bench][f
     // at probability 0 no structural batch runs to read any of them.
     REQUIRE(rejected({"--structural-sample-size", "4"}));
     REQUIRE(error.find("--structural-sample-size") != std::string::npos);
+    // ...including under `auto` without a list, which runs first_improving;
+    // with a list `auto` is granular_best (#203), which reads it.
+    REQUIRE(rejected({"--structural-selection", "auto", "--structural-sample-size", "4"}));
+    REQUIRE_FALSE(rejected({"--neighbours", "5", "--structural-sample-size", "4"}));
     REQUIRE(rejected({"--structural-prob", "0", "--neighbours", "5"}));
     REQUIRE(rejected({"--structural-prob", "0", "--structural-selection", "violation_guided"}));
     REQUIRE_FALSE(rejected({"--structural-prob", "0"}));
@@ -861,8 +865,11 @@ TEST_CASE("structural flag values the engine cannot use are refused", "[bench][f
     REQUIRE_FALSE(cbls::bench::validate_neighbours(parse({"--neighbours", "10"}).flags, 10, error));
     REQUIRE(error.find("--neighbours") != std::string::npos);
     REQUIRE(cbls::bench::validate_neighbours(SearchFlags{}, 1, error));
-    REQUIRE_FALSE(rejected({"--structural-prob", "0", "--structural-selection", "first_improving",
+    // Restating the defaults at probability 0 is still the 0 arm; first_improving
+    // is no longer the default (#203), so it is a policy read by nothing there.
+    REQUIRE_FALSE(rejected({"--structural-prob", "0", "--structural-selection", "auto",
                             "--structural-sample-size", "8"}));
+    REQUIRE(rejected({"--structural-prob", "0", "--structural-selection", "first_improving"}));
 }
 
 TEST_CASE("the --structural-prob flag changes the batch mix", "[bench][flags][probe]") {

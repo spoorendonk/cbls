@@ -99,7 +99,8 @@ RECORD_FIELDS: tuple[str, ...] = (
 PUBLISHED_TABLE = REPO_ROOT / "benchmarks" / "instances" / "cvrp" / "results.md"
 
 #: The (engine, arm) pairs a published table may carry. `cbls/default` is the
-#: engine's own configuration; #204 decides which arm it publishes and edits this.
+#: engine's own configuration over the runner's neighbour list; #204 decides
+#: which arm it publishes and edits this.
 #: `pyvrp/pyvrp` is the reference baseline of #200, published beside it.
 PUBLISHABLE_GROUPS: frozenset[tuple[str, str]] = frozenset(
     {("cbls", "default"), ("pyvrp", "pyvrp")}

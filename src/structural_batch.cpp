@@ -28,7 +28,8 @@ constexpr double kImprovementThreshold = -1e-12;
 }  // namespace
 
 StructuralBatch::StructuralBatch(const Model& model, const SearchConfig& config, bool enabled)
-    : selection_(config.structural_selection),
+    : selection_(resolve_structural_selection(config.structural_selection,
+                                              config.structural_neighbours != nullptr)),
       sample_size_(std::max(1, config.structural_sample_size)) {
     if (!enabled) {
         return;

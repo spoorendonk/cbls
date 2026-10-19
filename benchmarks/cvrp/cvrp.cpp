@@ -10,9 +10,10 @@
 // trusting the DAG, and only a verified solution is written to --solution-out.
 //
 // Smoke and campaign runs only. No result table is written by this runner;
-// publishing is #204's job. The engine's default structural arm is not feasible
-// within 10 s on the largest smoke instances; the smoke check uses
-// `--structural-selection violation_guided --neighbours 20` (see
+// publishing is #204's job. Give the run a neighbour list (`--neighbours 20`,
+// the driver's `default` arm): with one, the engine's default selection is
+// granular best improvement (#203); without one it is first_improving, which
+// is not feasible within 10 s on the largest smoke instances (see
 // benchmarks/instances/cvrp/README.md, "Search arm for the smoke check").
 
 #include "cvrp_model.h"

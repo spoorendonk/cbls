@@ -268,6 +268,53 @@ TEST_CASE("solve() under GranularBest keeps the cover and reaches the engine (#2
     REQUIRE(objective[0] != objective[1]);
 }
 
+TEST_CASE(
+    "the default selection is GranularBest with a neighbour list, first-improving without (#203)",
+    "[structural][partition]") {
+    // Auto must be exactly the policy it resolves to: the same objective, the
+    // same counters and the same routes, on a run long enough to commit moves.
+    struct Run {
+        double objective = 0.0;
+        int64_t tried = 0;
+        int64_t accepted = 0;
+        std::vector<std::vector<int32_t>> routes;
+    };
+    auto run = [](StructuralSelection sel, bool with_neighbours) {
+        Routing r(Cover::Exact);
+        SearchConfig cfg;
+        cfg.max_iterations = 300;
+        cfg.batch_iterations = 20;
+        cfg.structural_batch_probability = 1.0;
+        cfg.structural_selection = sel;
+        if (with_neighbours) {
+            cfg.structural_neighbours = r.neighbours(8);
+        }
+        const SearchResult res =
+            solve(r.m, /*time_limit=*/0.0, /*seed=*/3, true, nullptr, nullptr, 0, nullptr, cfg);
+        Run out;
+        out.objective = res.objective;
+        out.tried = res.counters.structural_moves_tried;
+        out.accepted = res.counters.structural_moves_accepted;
+        for (const int32_t v : r.route_vars) {
+            out.routes.push_back(r.m.var(v).elements);
+        }
+        return out;
+    };
+    REQUIRE(SearchConfig{}.structural_selection == StructuralSelection::Auto);
+    for (const bool with_neighbours : {true, false}) {
+        CAPTURE(with_neighbours);
+        const Run by_default = run(StructuralSelection::Auto, with_neighbours);
+        const Run spelled = run(with_neighbours ? StructuralSelection::GranularBest
+                                                : StructuralSelection::FirstImprovingSample,
+                                with_neighbours);
+        REQUIRE(by_default.accepted > 0);
+        REQUIRE(by_default.objective == spelled.objective);
+        REQUIRE(by_default.tried == spelled.tried);
+        REQUIRE(by_default.accepted == spelled.accepted);
+        REQUIRE(by_default.routes == spelled.routes);
+    }
+}
+
 TEST_CASE("GranularBest leaves a scalar model's trajectory alone (#203)", "[structural]") {
     std::array<std::vector<double>, 2> values{};
     std::array<double, 2> objective{};

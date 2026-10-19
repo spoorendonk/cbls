@@ -133,6 +133,8 @@ const char* structural_selection_name(StructuralSelection selection) {
             return "violation_guided";
         case StructuralSelection::GranularBest:
             return "granular_best";
+        case StructuralSelection::Auto:
+            return "auto";
     }
     return "unknown";
 }
@@ -154,7 +156,20 @@ bool try_parse_structural_selection(std::string_view text, StructuralSelection& 
         out = StructuralSelection::GranularBest;
         return true;
     }
+    if (text == "auto") {
+        out = StructuralSelection::Auto;
+        return true;
+    }
     return false;
+}
+
+StructuralSelection resolve_structural_selection(StructuralSelection selection,
+                                                 bool has_neighbours) {
+    if (selection != StructuralSelection::Auto) {
+        return selection;
+    }
+    return has_neighbours ? StructuralSelection::GranularBest
+                          : StructuralSelection::FirstImprovingSample;
 }
 
 // ---------------------------------------------------------------------------

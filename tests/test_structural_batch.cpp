@@ -456,13 +456,29 @@ TEST_CASE("a neighbour list restricts where a built-in move looks", "[structural
 TEST_CASE("structural selection names round-trip", "[structural]") {
     for (StructuralSelection s :
          {StructuralSelection::FirstImprovingSample, StructuralSelection::BestOfSample,
-          StructuralSelection::ViolationGuided}) {
+          StructuralSelection::ViolationGuided, StructuralSelection::GranularBest,
+          StructuralSelection::Auto}) {
         StructuralSelection back = StructuralSelection::BestOfSample;
         REQUIRE(try_parse_structural_selection(structural_selection_name(s), back));
         REQUIRE(back == s);
     }
     StructuralSelection unused = StructuralSelection::FirstImprovingSample;
     REQUIRE_FALSE(try_parse_structural_selection("nope", unused));
+}
+
+TEST_CASE("Auto resolves on the neighbour list, every other policy is itself (#203)",
+          "[structural]") {
+    REQUIRE(resolve_structural_selection(StructuralSelection::Auto, true) ==
+            StructuralSelection::GranularBest);
+    REQUIRE(resolve_structural_selection(StructuralSelection::Auto, false) ==
+            StructuralSelection::FirstImprovingSample);
+    for (StructuralSelection s :
+         {StructuralSelection::FirstImprovingSample, StructuralSelection::BestOfSample,
+          StructuralSelection::ViolationGuided, StructuralSelection::GranularBest}) {
+        for (const bool has_neighbours : {true, false}) {
+            REQUIRE(resolve_structural_selection(s, has_neighbours) == s);
+        }
+    }
 }
 
 TEST_CASE("a deadline that passes mid-sweep stops the sweep between generators",

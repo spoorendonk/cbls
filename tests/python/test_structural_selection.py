@@ -39,9 +39,10 @@ def set_cover_model(columns: int = 40, rows: int = 12) -> tuple[Any, int]:
 
 
 class TestStructuralSelection:
-    def test_default_is_first_improving(self) -> None:
+    def test_default_is_auto(self) -> None:
+        # Auto: GranularBest with a neighbour list, FirstImprovingSample without (#203).
         cfg = cbls.SearchConfig()
-        assert cfg.structural_selection == cbls.StructuralSelection.FirstImprovingSample
+        assert cfg.structural_selection == cbls.StructuralSelection.Auto
         assert cfg.structural_sample_size == 8
         assert cfg.structural_neighbours is None
 
@@ -52,6 +53,7 @@ class TestStructuralSelection:
             cbls.StructuralSelection.BestOfSample,
             cbls.StructuralSelection.ViolationGuided,
             cbls.StructuralSelection.GranularBest,
+            cbls.StructuralSelection.Auto,
         ],
     )
     def test_every_policy_solves_a_set_model(self, selection: cbls.StructuralSelection) -> None:

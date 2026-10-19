@@ -170,7 +170,7 @@ inline constexpr std::array<SearchFlagSpec, 15> kSearchFlagSpecs = {{
     {"time_limit", "[--no-time-limit]", kCommonSearchFlags},
     {"structural_prob", "[--structural-prob P]", kStructuralSearchFlags},
     {"structural_selection",
-     "[--structural-selection first_improving|best_of_sample|violation_guided|granular_best]",
+     "[--structural-selection auto|first_improving|best_of_sample|violation_guided|granular_best]",
      kStructuralSearchFlags},
     {"structural_sample_size", "[--structural-sample-size N]", kStructuralSearchFlags},
     {"neighbours", "[--neighbours K]", kNeighbourSearchFlags},
@@ -321,7 +321,9 @@ inline bool validate_structural_flags(const SearchFlags& f, std::string& error) 
         error = "--structural-selection granular_best needs --neighbours K";
         return false;
     }
-    if (f.structural_selection == StructuralSelection::FirstImprovingSample &&
+    // `auto` without a list runs first_improving, so the same rule holds there.
+    if (resolve_structural_selection(f.structural_selection, f.neighbours != 0) ==
+            StructuralSelection::FirstImprovingSample &&
         f.structural_sample_size != defaults.structural_sample_size) {
         error =
             "--structural-sample-size has no effect under --structural-selection "

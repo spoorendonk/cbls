@@ -190,6 +190,9 @@ bool parse_selection_flag(const std::string& arg, FlagValues& v, Options& opt) {
             fprintf(stderr, "unknown selection '%s'\n", name.c_str());
             v.ok = false;
         }
+        // `auto` is first_improving without a neighbour list; record it as the
+        // policy that runs, so one run has one name.
+        opt.selection = cbls::resolve_structural_selection(opt.selection, false);
         // No neighbour list here, so granular_best would be violation_guided
         // under a second name (#203).
         if (v.ok && opt.selection == cbls::StructuralSelection::GranularBest) {
