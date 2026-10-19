@@ -501,13 +501,29 @@ TEST_CASE("a shared tracer with no factory is refused", "[executor][parallel][tr
                                /*callback=*/nullptr, par_config),
                       std::invalid_argument);
 
-    // One worker has no peer to race with, so it is allowed through.
+    // One worker has no peer to race with, so it is allowed through. The run ends
+    // on the first feasible point, not on the clock: a 0.2 s budget on a loaded
+    // machine could expire before the worker found one (#229). The time limit is
+    // only a backstop the run never reaches.
+    struct StopOnFeasible : SolveCallback {
+        StopToken* token = nullptr;
+        void on_progress(const SolveProgress& p) override {
+            if (p.feasible) {
+                token->request();
+            }
+        }
+    };
+    StopToken token;
+    StopOnFeasible cb;
+    cb.token = &token;
     ParallelConfig single;
     single.n_threads = 1;
+    single.stop = token;
     ParallelSearch one(1);
     const SearchResult r =
-        one.solve([] { return quadratic_model(); }, /*time_limit=*/0.2, /*seed=*/47, config,
-                  /*hook_factory=*/nullptr, /*lns_factory=*/nullptr, /*callback=*/nullptr, single);
+        one.solve([] { return quadratic_model(); }, /*time_limit=*/60.0, /*seed=*/47, config,
+                  /*hook_factory=*/nullptr, /*lns_factory=*/nullptr, &cb, single);
+    REQUIRE(r.termination == TerminationReason::Cancelled);
     REQUIRE(r.feasible);
 }
 
