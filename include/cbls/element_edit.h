@@ -23,9 +23,10 @@ namespace cbls {
 /// back out again) per candidate SCORED, on the batch's hot path, for a move
 /// that touches two positions. "At least", because whether the generator's own
 /// `push_back` counts depends on how it builds the vector -- so the ledger is
-/// written as a floor here, in docs/architecture.md and in CLAUDE.md, and those
-/// three must agree. All but the swap and the tail exchange are `std::rotate`,
-/// `std::reverse` or a single insert/erase on the vector that is already there.
+/// written as a floor here, in docs/architecture.md and in
+/// docs/benchmarks/README.md, and those three must agree. All but the swap
+/// and the tail exchange are `std::rotate`, `std::reverse` or a single
+/// insert/erase on the vector that is already there.
 ///
 /// This is an allocation-count argument, not a micro-optimisation: it holds on
 /// any machine and for any n, and it is what makes a larger candidate sample

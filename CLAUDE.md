@@ -6,14 +6,32 @@
 <!-- wcp-declined: cf8d0fc1773f Type Conversions -->
 <!-- wcp-declined: 7e7de94f1273 Testing Bindings -->
 <!-- wcp-declined: 9070a09f6181 LSP -->
+<!-- wcp-declined: aa64ca55c171 Development Workflow -->
+<!-- wcp-declined: 2f2d1638a52b Hooks Are Files In This Repository -->
+<!-- wcp-declined: a66bab4a00b4 This Document Carries A Provenance Line -->
+<!-- wcp-declined: 527ae62c7a65 Running wcp -->
+<!-- wcp-declined: 2b4541d688e6 Commit Messages -->
 # Project: cbls
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+CBLS = constraint-based local search: ViolationLS (Davies et al., CPAIOR 2024)
+over an expression DAG. Generalised Feasibility Jump with GLS weights drives
+feasibility, the objective is folded in as `obj <= bound`, an inner solver
+polishes floats, perturbation/LNS diversify. C++17 core, nanobind bindings.
 
-# Standards
+This file holds what every session needs. The rest is read on demand:
 
-The rules below are the project's own. Where a generic house style would say
-otherwise, what is written here wins.
+| Read | When |
+|---|---|
+| `docs/architecture.md` (its **Source Map** first) | engine internals: pipeline, files, defaults, extension points, build targets |
+| `docs/git-hooks.md` | a hook refuses; editing a hook, `.clang-tidy` or the Python gate; review receipts; wcp's files |
+| `docs/development.md` | why the fences look as they do, venv setup, the test roster and its six pinned counts, git workflow, agent-team runs, writing issues |
+| `docs/measuring.md` | any timing, A/B, published number or table |
+| `docs/profiling.md` | heap/CPU profiling, sanitizers |
+| `docs/benchmarks/README.md` | benchmark layout, priority rationale, structured-variable evidence, benchmark workflow, retiring one |
+| `benchmarks/common/README.md` | shared runner headers and driver package |
+
+Issues, reviews, pushing, scratch and runs follow wcp's shared and group rules.
+Where this file is more specific, it wins.
 
 ## Communication Style
 
@@ -21,600 +39,176 @@ Be terse. No preamble. No filler.
 
 ## Code Navigation
 
-Prefer narrow queries over full-file reads:
-
-1. **LSP** for symbol questions. `goToDefinition`, `hover`, `documentSymbol`, `workspaceSymbol` answer "where is X / what's its signature" in a few tokens. Use before `Read`.
-2. **Grep with `head_limit` (small) + `-n`** to locate lines. Start with `head_limit: 20`; raise only if inconclusive.
-3. **Read with `offset`/`limit`** to fetch a slice around the hit. Full-file `Read` is fine for files under ~200 lines or when structure matters.
-
-Know the symbol → LSP. Know a string, not its location → Grep. Full-file Read is the last mile. This is a preference, not a prohibition: shelling out to `grep`/`rg` is fine when the built-in can't do the job (filtering a pipe like `git log | grep`, or a session without the `Grep` tool). What matters is bounding output, not which binary produces it.
+LSP (`goToDefinition`, `hover`, `documentSymbol`) for symbol questions; Grep
+with a small `head_limit` and `-n` for strings; `Read` with `offset`/`limit`
+for the slice. Bound the output, whichever tool produces it.
 
 ## C++
 
-- **C++17** (`CMAKE_CXX_STANDARD 17`). `std::expected`, concepts and ranges are *not* available here; don't reach for them.
-- Style: Google-based, enforced by `.clang-format` and `.clang-tidy` at the repo root. Both tools are **pinned PyPI wheels in `.venv/`** (`clang-format==22.1.8`, `clang-tidy==22.1.8`), not system packages — `uv sync --extra dev --extra benchmarks` (**Build & Test**) installs them, and the hooks prefer `.venv/bin` over `PATH`. The `benchmarks` extra is in that command because the gated test fence requires it. The exact pin keeps formatter and tidy output identical across checkouts.
-- Naming is **not** Google's default — `.clang-tidy` encodes what this codebase actually does:
-
-  | Kind | Style | Example |
-  |---|---|---|
-  | Functions (free and member) | `lower_case` | `full_evaluate`, `weighted_violation_delta` |
-  | Locals, parameters, `const` locals | `lower_case` | `total_violation`, `node_id` |
-  | Private members | trailing `_` | `out_`, `model_` |
-  | File-scope / static / class / `constexpr` constants | `k` + `CamelCase` | `kVersion`, `kEps`, `kMpsInf` |
-  | Classes | `CamelCase` | `Model`, `JumpTable` |
-  | Namespaces | `lower_case` | `cbls` |
-
-  Two exceptions: `Model::Bool/Int/Float/List/Set/Constant` stay CamelCase because they name the type they create (and `bool`/`int`/`float` cannot be lowercased without hitting a keyword), and `src/io/.clang-tidy` disables the naming check for that directory because `mps_reader.cpp` and `solu_reader.cpp` are vendored from `spoorendonk/mipx` and must stay diff-clean against upstream. The three native adapters there (`mps_to_model.cpp`, `nl_reader.cpp`, `nl_to_model.cpp`) lose naming coverage as a side effect — keep an eye on new code in that directory.
-
-  That directory config **must** carry `InheritParentConfig: true`. Without it clang-tidy *replaces* the root `Checks:` instead of appending to it, leaving only the always-on `clang-diagnostic-*` — the directory then runs no registered check at all and clang-tidy exits 1 with `Error: no checks enabled.` Verify any edit to **either** `.clang-tidy` with `cd src/io && ../../.venv/bin/clang-tidy --dump-config` and confirm the root's check list is actually present. This is the same verification **Git Hooks** below demands for the root file's folded-scalar hazard, and for the same reason: both failures fail open.
-- Use `#pragma once` for include guards.
-- Minimize includes in headers. Forward-declare where possible.
-
-### LSP
-
-Install `clangd-lsp@claude-plugins-official` plus `clangd` itself (`apt install clangd` or from LLVM). `.clangd` points at `build/compile_commands.json`, produced by `CMAKE_EXPORT_COMPILE_COMMANDS ON`. Prefer `LSP` tool queries (`goToDefinition`, `hover`, `documentSymbol`) over `Read` for symbol questions.
+- **C++17.** No `std::expected`, concepts or ranges.
+- Google-based style via `.clang-format` and `.clang-tidy`, both **pinned
+  wheels in `.venv/`** (`clang-format`/`clang-tidy` 22.1.8), not system tools.
+- Naming (encoded in `.clang-tidy`): functions, locals, parameters
+  `lower_case`; private members trailing `_`; constants `kCamelCase`; classes
+  `CamelCase`; namespaces `lower_case`. Exceptions: `Model::Bool/Int/Float/List/Set/Constant`;
+  `src/io/` disables the naming check because `mps_reader.cpp`/`solu_reader.cpp`
+  are vendored from `spoorendonk/mipx` and stay diff-clean (watch new code there).
+- `src/io/.clang-tidy` **must** keep `InheritParentConfig: true`. Verify any
+  edit to either `.clang-tidy` with `cd src/io && ../../.venv/bin/clang-tidy --dump-config`.
+  The root `Checks:` is a `>` folded scalar: `#` there is literal text that
+  corrupts the list. Both failures fail open.
+- `#pragma once`; minimal includes in headers, forward-declare.
+- New first-party target: call `cbls_enable_warnings()` (root `CMakeLists.txt`).
 
 ## Python
 
-- Style: enforced by `ruff` (format + lint) and `mypy --strict`, configured in `pyproject.toml`.
-- All functions must have full type annotations (mypy strict mode).
-- Use built-in generics (`list[int]`, `dict[str, Any]`) and `|` union syntax.
-- Pin dependencies with `>=` lower bounds in `pyproject.toml`. Use `uv` or `pip`.
-
-### Where that standard is actually enforced
-
-`pre-commit` runs `ruff format --check .`, `ruff check .` and `mypy .` (strict,
-from `pyproject.toml`) over **the whole tree** as a **hard block**. There is no
-exclusion beyond `[tool.mypy] exclude = ['^build/']`, which keeps mypy out of the
-vendored Python FetchContent unpacks under `build/_deps`; a tree that genuinely
-cannot be clean gets its own entry there, with the reason written beside it,
-never a silent widening. (Until the move to wcp's hooks this gate lived in
-`pre-push`, over every tracked `.py`, with a `PY_GATE_EXCLUDE` that was empty.)
-Because they block, `ruff` and `mypy` are **pinned exactly** in
-`pyproject.toml`, on the same argument the clang tools are: a floating version
-turns "these files are at zero" into "at zero on whichever version this checkout
-resolved".
-
-It was scoped narrower once. #154 gated everything except `benchmarks/`, because
-that tree carried 22 ruff findings, 5 unformatted files and 37 `mypy --strict`
-errors, plus an `__init__.py` inside the hyphenated `benchmarks/instances/uc-chped/`
-which made mypy abort the whole run on the package name before checking anything.
-#155 cleared all of it and emptied the exclusion. Two things are worth keeping
-from that episode:
-
-- **A partial exclusion was never the safety it looked like.** `mypy` follows
-  imports, so every benchmark module reachable from a gated test file was
-  hard-gated anyway. The tree was green only because the three files carrying
-  errors happened to be ones nothing gated imported — and one new test importing
-  any of them would have blocked a push on errors nobody in that push wrote.
-- **Two naming waivers survive, scoped per file and per rule** in
-  `pyproject.toml`'s `[tool.ruff.lint.per-file-ignores]`: `N803`/`N806` on
-  `benchmarks/chped/reference_solve.py` and `N806` on
-  `benchmarks/instances/uc-chped/data.py`. `P`, `A`, `T` and `base_T` are the
-  published unit-commitment formulation's own symbols, and those solvers exist to
-  be audited line-by-line against the paper whose numbers they reproduce. Same
-  argument, and the same shape, as `src/io/.clang-tidy` waiving the naming check
-  for the vendored readers. A third waiver needs the same standard.
-
-Both escape routes that let the five binding-test modules rot are closed, and
-both mattered: the pre-commit of the time linted only **staged** files — and its
-ruff step auto-fixed rather than blocked, so a non-fixable finding like `E741`
-survived staging however often the file was edited — while pre-push's other
-Python steps saw only the pushed file list and merely warned. That is how 139 `mypy --strict`
-errors and 9 ruff errors accumulated with every gate green throughout (#154).
-
-### LSP
-
-Install `pyright-lsp@claude-plugins-official`. Pyright reads `[tool.mypy]` and project layout from `pyproject.toml` — no extra config needed.
+- `ruff` (format + lint) and `mypy --strict`, configured and **pinned exactly**
+  in `pyproject.toml`; full annotations, `list[int]`, `X | None`.
+- Dependencies get `>=` lower bounds; use `uv`.
+- pre-commit gates the **whole tree**. The only mypy exclusion is `^build/`;
+  never widen it. Naming waivers are per file and per rule in
+  `[tool.ruff.lint.per-file-ignores]` (published-formulation symbols); a new
+  one needs the same justification. History: `docs/git-hooks.md`.
+- Never run `python`/`pytest`/`mypy` outside `.venv/bin/`; change the venv with
+  `uv sync`, not `pip`.
 
 ## nanobind Bindings
 
-- Bindings live in `python/bindings.cpp` — a single `NB_MODULE(_cbls_core, ...)` built by `nanobind_add_module` in `python/CMakeLists.txt`, gated on `CBLS_BUILD_PYTHON`. Keep binding glue out of `src/`; a new binding source must be added to that call or it is never compiled.
-- C++ `camelCase` methods → Python `snake_case` via nanobind. Use `nb::arg("name")` for Python-friendly parameter names.
-
-### Ownership and Lifetime
-
-- Default: nanobind manages ownership. Use `nb::rv_policy::reference` only when C++ retains ownership and guarantees the object outlives Python references.
-- Never return raw pointers without explicit lifetime annotation.
-- Prefer returning by value or `std::shared_ptr`. Document ownership on each binding that transfers or shares it.
-
-### Type Conversions
-
-- Use automatic conversions for standard types (`std::string` ↔ `str`, `std::vector` ↔ `list`).
-- Use `nb::ndarray` for NumPy interop — specify dtype and shape constraints.
-- **A `def_rw` on a vector the engine indexes unchecked is a segfault, and so is
-  a raw `int32_t` handle.** Python supplies both without a type system in the
-  way, and the hot paths index by constraint or variable id without bounds
-  tests. Three crashes of exactly this shape were found in one review pass
-  (#156): `ModelState.elements`, `ViolationManager.weights`, and child handles
-  into every builder. Validate where the caller hands the value over — a
-  `def_prop_rw` setter that checks the length, or a check at node creation —
-  rather than per read on a hot path, and pin it with a child-process test
-  (`tests/python/test_model_handles.py`), since the unguarded state crashes the
-  interpreter rather than failing a test.
-- **Never return `reference_internal` to an element of a container the owner
-  can grow.** `keep_alive` keeps the *owner* alive, not the element: before
-  `close()` every variable builder appends to the model's variable array and
-  can reallocate it,
-  so a `m.var_mut(i)` held across one writes into freed heap and the write is
-  silently lost (first found through the since-removed `Model.extend`, #167's
-  cold review). Return an
-  (owner, index) handle that resolves on every access — `VariableRef`, bound as
-  `cbls.Variable`, is the pattern — or a copy.
+- One `NB_MODULE(_cbls_core, ...)` in `python/bindings.cpp`, built by
+  `nanobind_add_module` in `python/CMakeLists.txt` under `CBLS_BUILD_PYTHON`.
+  No binding glue in `src/`; a new binding source must join that call.
+- Python names `snake_case`, `nb::arg("name")`. nanobind owns by default;
+  `rv_policy::reference` only when C++ owns and outlives; no raw pointers
+  without a lifetime annotation; prefer value or `shared_ptr`, document
+  ownership. `nb::ndarray` with dtype/shape for NumPy.
+- **A `def_rw` on a vector the engine indexes unchecked, or a raw `int32_t`
+  handle, is a segfault** (#156). Validate where Python hands it over (a
+  `def_prop_rw` setter, a check at node creation), and pin it with a
+  child-process test (`tests/python/test_model_handles.py`).
+- **Never `reference_internal` to an element of a growable container.**
+  `keep_alive` keeps the owner, not the element. Return an (owner, index)
+  handle that resolves on each access (`VariableRef`, bound as
+  `cbls.Variable`) or a copy (#167).
 
 ## Testing
 
-C++ tests use **Catch2** (not GoogleTest): files in `tests/`, registered in `tests/CMakeLists.txt`, run via `ctest` (the two shell tests pinning the git-hook gates, in the root `CMakeLists.txt`, are the only non-Catch2 ctest entries). Python tests use **pytest**: `test_<module>.py` under `tests/python/`, `conftest.py` for shared fixtures, `pytest.mark.parametrize` for data-driven cases.
-
-- Name tests descriptively — `returns_optimal_for_feasible_input`, `test_solver_returns_optimal_for_feasible_input`.
-- Test nanobind bindings from Python with pytest, not from C++ — the binding is an implementation detail. Include round-trip tests: create in Python → pass to C++ → get result back.
-- An `std::optional` guarded by `REQUIRE(o.has_value())` still trips `bugprone-unchecked-optional-access`, which is enabled: the check cannot see through Catch2's expression templates, and `.value()` reads the same way to it. Write `if (!o.has_value()) { FAIL("..."); return; }` instead — the `return` is what makes the flow analysis see the guard, even though `FAIL` throws. Do **not** reach for a `NOLINT` or add the check to `.clang-tidy`'s disabled list; both routes are closed (see **Git Hooks**).
-- A Python test that could **deadlock the interpreter** — anything handing a Python callable to C++ that spawns threads — must run its scenario in a **child process** under a wall-clock timeout. No in-process deadline can report it: `pytest-timeout`'s `thread` method runs its timer on a Python thread that needs the very GIL the test is starving, and its `signal` method only takes effect at the next bytecode in a main thread parked inside a C++ `join()`. `tests/python/test_pool.py` is the pattern — scenarios in a `__main__` block, `subprocess.run(..., timeout=...)` in the test.
-- A test that spawns `git` must not inherit a hook's `GIT_*` variables: pre-commit exports `GIT_DIR` and `GIT_INDEX_FILE`, and a `git init` in a tmp dir once re-initialised the real repository (`core.bare = true` for every worktree, #160). `tests/python/conftest.py` strips every `GIT_*` variable before each test; don't work around it.
-- Terse output is not configured anywhere — pass the flags. `ctest --progress` collapses the running list, `--tb=short -q` keeps pytest failures short, as the `## Build & Test` blocks below already do. `pyproject.toml` sets `testpaths`, ruff's rule set and `mypy strict`, but no `addopts`, `pretty` or `output-format`.
+- C++: **Catch2** in `tests/`, registered in `tests/CMakeLists.txt`, run via
+  `ctest`. Python: pytest, `tests/python/test_<module>.py`, `conftest.py`,
+  `parametrize`. Descriptive names (`returns_optimal_for_feasible_input`).
+- Bindings are tested from Python, with round trips, not from C++.
+- `bugprone-unchecked-optional-access` cannot see through `REQUIRE`: write
+  `if (!o.has_value()) { FAIL("..."); return; }`. No NOLINT, no disabling.
+- A Python test that could deadlock the interpreter (a Python callable handed
+  to C++ threads) runs in a **child process** under a timeout
+  (`tests/python/test_pool.py`).
+- Tests spawning `git` must not inherit hook `GIT_*` variables; `conftest.py`
+  strips them (#160). Don't work around it.
+- Pass terse flags yourself: `ctest --progress`, pytest `--tb=short -q`.
+- `ctest -LE slow` is the fast loop (run it before committing; no hook does);
+  `ctest` runs everything. Don't tag `[timing]` without a concrete reason.
+- **Test counts are hard-coded in six places** (`docs/development.md`, **Fast
+  vs. slow tests**). Any roster change updates all six in the same commit,
+  re-derived from `ctest -N` / `pytest --collect-only`.
 
 ## CMake
 
-- `set(CMAKE_EXPORT_COMPILE_COMMANDS ON)` for clang-tidy.
-- Use FetchContent for dependencies.
-- Targets live in the root `CMakeLists.txt` — library, CLI, examples and every benchmark runner. Only `tests/` and `python/` carry their own. Add new benchmark and example targets to the root file.
-
-## Development Workflow
-
-```
-plan (non-trivial) → implement → test → /review → push to main
-```
-
-Run tests locally before considering work done — don't skip the suite even on changes that look trivial. The pre-push hook is the final gate for build and tests, and it refuses a push whose tip carries no review receipt (**Self-Review**). The receipt records only that a review happened; doing the review (`/review`, or the cold reviewer in a team run) is still on you.
+`CMAKE_EXPORT_COMPILE_COMMANDS ON`; FetchContent for dependencies; every
+target (library, CLI, examples, benchmark runners) in the root
+`CMakeLists.txt` — only `tests/` and `python/` carry their own.
 
 ## Git Hooks
 
-The hooks live in **`.githooks/`, tracked in this repo** — that directory is the source, edit it there. Git runs them only once `core.hooksPath` points at that directory, and that setting is per-checkout local config which cannot be committed, so `cmake -B build` sets it (`CBLS_INSTALL_GIT_HOOKS`, default ON). Configuring the project once is all a fresh clone needs; to wire one up by hand, `git config core.hooksPath .githooks`. If `core.hooksPath` already points somewhere else, CMake warns rather than overwriting it.
+`.githooks/` (tracked; `cmake -B build` sets `core.hooksPath`). `pre-commit`
+checks, never rewrites: ruff, mypy, clang-format over the tree; runs no tests.
+`commit-msg`: Conventional Commits, subject ≤72, no `fixup!`/`squash!`.
+`pre-push`: no merge commits on main, review receipt required, then the
+`clean`/`build`/`test` fences below as local CI. Internals: `docs/git-hooks.md`.
 
-`core.hooksPath` is shared across every worktree of a checkout, but `.githooks/` is resolved from the working tree — so a branch that does not carry the directory runs **no hooks at all**, silently. Merge main into any long-lived branch before relying on the gates.
+**Checked by hand before every push**, because no hook enforces it now: zero
+clang-tidy warnings (`.venv/bin/clang-tidy -p build <changed files>`) and zero
+first-party compiler warnings in the build log.
 
-The three hooks are wcp's (see **Hooks Are Files In This Repository**); `gate-lib.sh`, `tidy-probe.sh`, `tidy-probe/` and `tests/` beside them are this project's own and are still exercised by ctest (`gate_lib_shell_test`, `clang_tidy_gate_probe`); `resolve-venv.sh` was used only by the old hooks and nothing calls it now.
-
-- `pre-commit` — **checks, never rewrites**: `ruff format --check .`, `ruff check .` and `mypy .` (strict, from `pyproject.toml`) over the whole tree, each through `uv run`, and `clang-format --dry-run -Werror` over every tracked C/C++ file, preferring the pinned tools in `.venv/bin`. Any finding blocks the commit; a tool that cannot run is reported on stderr and skipped. It runs **no tests**. A venv made by `uv sync` (**Build & Test**) is already locked and synced, so `uv run` uses it as it is. An older pip-made `.venv/` has no `uv.lock`, and there `uv run` would lock and sync it (writing `uv.lock` and rebuilding `cbls` into the venv) — commit with `UV_NO_SYNC=1` set to have it use the venv as it is.
-- `commit-msg` — Conventional Commits, subject at most 72 characters. Unlike the hook it replaced, it does **not** pass `fixup!`/`squash!`/`amend!` subjects, so `git commit --fixup` is refused.
-- `pre-push` — refuses a merge commit pushed to `main` and a tip without its review receipt, then runs the ```clean, ```build and ```test fences from `## Build & Test` below as a local CI in a fresh worktree outside the checkout (skipped for a documentation-only push), each step timed. `git config hooks.localCiCpus 0-3` pins it to fewer CPUs.
-
-**What the hooks before wcp's enforced and these do not** (replaced 2026-10-14; the old scripts are in git history): the `ctest -LE slow` / pytest run at commit; auto-formatting and safe clang-tidy fixes at commit; at push, the **clang-tidy hard block** over the changed files plus a canary per config directory, `tidy-probe.sh` whenever a `.clang-tidy`, a `CMakeLists.txt` or the probe changed, the **block on any first-party compiler warning** in the gated build's log (configured with `CBLS_GATE_PROBE_IN_ALL=1` as its control), the advisory ruff-complexity/shellcheck/mypy pass, and the **Python gate over every tracked `.py`** (now `pre-commit`'s, over the tree). Until those are restored — a ```lint fence under `## Build & Test` is where wcp's pre-push would run them — the clang-tidy and compiler-warning policy below is **policy you check by hand** before pushing (`.venv/bin/clang-tidy -p build <files>`, and the build log), not something a hook enforces.
-
-  clang-tidy blocks because the tree is held at **zero** warnings. Getting there
-  took a **ratchet** — a list in `.clang-tidy` of checks disabled by name, each
-  with its unfixed finding count — and **that list is now empty** (issue #121,
-  closed). Every `bugprone-*`/`modernize-*`/`performance-*`/`readability-*` check
-  is enabled except six structural exemptions, and each of those is off because
-  the *check* is wrong for this codebase, with the measurement that says so
-  written beside it in the file.
-
-  So a warning at push is new code's doing. **Fix it — do not add the check to
-  the disabled list.** There is no backlog list left to append to: putting a
-  name there now has to clear the same bar as the six, a structural cause plus a
-  measurement, which is a case to argue rather than a way to get a push through.
-  `.clang-tidy` is the source of truth and carries its own sweep recipe — read
-  the file rather than a count restated somewhere else.
-
-  In-tree suppression is **sanctioned only where the reason is written at the
-  site**, and the tree has exactly five, across two checks —
-  `grep -rn NOLINT src/ include/ benchmarks/ tests/ python/` should return
-  nothing else, and a sixth needs the same standard as `.clang-tidy`'s six
-  exemptions. That grep prints **six** lines, not five: one is `mps_reader.cpp`
-  naming the directive in prose in a comment, not applying it. Count the
-  directives, not the matches. Four are `readability-function-cognitive-complexity`: on
-  `src/dag.cpp`'s two 35-case `NodeOp` dispatch tables, where the score counts a
-  table a human reads as one unit and any split would have to stay inlinable on
-  the delta-evaluation and reverse-mode-AD hot paths; and on the two
-  `src/io/mps_reader.cpp` functions that the vendored port-the-diff-upstream
-  contract keeps whole. That is the route **Complexity** below describes — split
-  along real responsibilities, or record why the function is irreducibly complex
-  — and it is specific to that check, not a general licence. The fifth is
-  `bugprone-float-loop-counter` in `src/feasibility_jump.cpp`, on an
-  integer-valued enumeration whose `steppable` guard on the line above is
-  exactly what makes `v += 1.0` exact and the loop finite.
-
-  One **check option** is tuned, which is otherwise the same fail-open move as
-  disabling a check: `readability-function-cognitive-complexity.IgnoreMacros`.
-  It is there because clang-tidy names a Catch2 `TEST_CASE` body after the macro
-  that generates it and charges it for every `SECTION`'s `if` and every
-  `REQUIRE`'s `try`/`catch`. `.clang-tidy` carries the measurement and the probe
-  showing the check still fires on a genuinely convoluted test body. Tuning any
-  other option to make a finding go away is not open — see the
-  `bugprone-easily-swappable-parameters` note in the same file for why.
-
-  Note `.clang-tidy`'s `Checks:` is a YAML `>` folded scalar, where `#` is *not*
-  a comment — it is literal text that silently corrupts the check list, and a
-  trailing `# 25` on a check line swallows the line after it. Comments go above
-  the key. Verify any edit with `clang-tidy --dump-config`, because a corrupted
-  list fails open: checks silently stop running and the sweep goes green.
-
-  Because both config hazards fail open, the pre-push clang-tidy step matches
-  `(warning|error):` **case-insensitively** and treats any **nonzero clang-tidy
-  exit** as a finding: a misconfigured directory reports `Error: no checks
-  enabled.` with a capital E, which a lower-case-only pattern misses. It also
-  lints a canary translation unit per config directory whenever a `.clang-tidy`
-  is itself part of the push, since such a change otherwise touches no source
-  file and would skip the step that polices it.
-
-  A clean canary cannot tell a gate that sees compiler warnings from one that
-  does not, and for a long time this one did not (#171): clang-tidy prepends
-  `clang-diagnostic-*`, the leading `-*` switched it off, and no target compiled
-  with `-Wall`. Now `clang-diagnostic-*` is named **after** the wildcards, every
-  first-party target gets `-Wall -Wextra` through `cbls_enable_warnings()` in the
-  root `CMakeLists.txt` (a new target needs the call), and
-  **`.githooks/tidy-probe.sh`** proves it: it lints a deliberately dirty TU,
-  `.githooks/tidy-probe/incomplete_switch.cpp`, copied into every config
-  directory of a mirror of the configs (so clang-tidy's real directory lookup
-  applies, and a new config directory is probed automatically), and fails
-  unless its incomplete `enum class` switch, unused local and unused parameter
-  are all reported. It also fails on any first-party compile command missing
-  the flags or cancelling them — **any** `-Wno-*`, `-w` or `-Werror`: a
-  per-target suppression is a NOLINT without a written reason, so fix the code.
-  Flags from the environment (`CXXFLAGS`, which CMake seeds into the cache's
-  `CMAKE_CXX_FLAGS[_<CONFIG>]`) are exempt: the rule polices the project, not
-  the machine. That flag check needs no clang-tidy and always runs. The mirror
-  sits inside the checkout, so each probe copy's `--dump-config` must equal
-  the real directory's — otherwise a missing copy would let the lookup climb
-  into the real tree and pass on the wrong config. Pre-push runs the probe
-  (pinned clang-tidy only, and blocking if it cannot run) when a `.clang-tidy`,
-  a `CMakeLists.txt` or the probe changes; ctest runs it as
-  `clang_tidy_gate_probe` (Skipped, not Passed, without the pinned clang-tidy),
-  and `gate_lib_shell_test` tests the gates' text filters in
-  `.githooks/gate-lib.sh`. Never add a `default:` to a `NodeOp` switch — it is
-  what would hide the case.
-
-  **No `-Werror`**: with it in `compile_commands.json` every clang-diagnostic
-  finding becomes a compiler error and clang-tidy exits 1, which the step above
-  reports as a config fault. GCC — the build compiler — has warnings clang lacks
-  (two `-Wrange-loop-construct` at #171), so instead pre-push **blocks on any
-  compiler warning in first-party code in the gated build's output**, and
-  proves that scan can see: it configures with `CBLS_GATE_PROBE_IN_ALL=1`, which
-  puts the probe TU into the fenced build, and blocks unless the scan finds its
-  `-Wswitch` in that same log (colour codes, a translated `warning:`, an
-  unexpected path spelling or a fence that stops sending compiler output there
-  would otherwise make it match nothing). The three probe warnings in pre-push's
-  build output are that control, not findings. That gate
-  follows the local GCC version, so an upgrade can block a push; it cannot
-  break a user's build, which is what `-Werror` would.
-
-`pre-push` refuses a push whose tip has no review receipt, `refs/reviews/<sha>`, written by a line of plain git (**Self-Review**), so the check works in every checkout. It proves a review was recorded, not that it was done well; see **Agent Self-Review**.
-
-Gating lives in git hooks only — `.claude/settings.json` carries no `hooks` block, and none should be added. A `PostToolUse` formatter cannot see which file was edited, so it silently formats nothing; formatting belongs at commit time. Don't hand-tune formatting.
-
-Three conventions therefore rest on you rather than on a tool: branch only from main (**Git Workflow**), never invoke `python`/`pytest`/`mypy` outside `.venv/bin/` (a `uv sync` venv has no `pip`; change it with `uv sync`) (**Build & Test**), and prefer the `Grep` tool to shelling out (**Code Navigation**).
-
-`.claude/` is gitignored local agent tooling (settings, statusline, the `/review` command). Nothing in it is part of the repo.
-
-### Fast vs. slow tests
-
-The C++ suite is **821 ctest tests**: 819 Catch2 ones over **816 `TEST_CASE`s**
-— 811 registered by `catch_discover_tests` plus **8 registered by hand**, the 5
-`[timing]` cases and the three hang guards `hang_guard_iteration_only_portfolio`,
-`hang_guard_novelty_zero_move_batch` and `hang_guard_nonpositive_batch_iterations`,
-each hand-registered *as well as*
-discovered (a hang only reports through a `TIMEOUT`, but all three are cheap enough
-to belong in the fast set), so each of those `TEST_CASE`s accounts for two
-ctest tests — plus **2 shell tests that are not Catch2 at all**,
-`clang_tidy_gate_probe` and `gate_lib_shell_test`, registered in the root
-`CMakeLists.txt` (they pin the clang-tidy gate and the hook filters, #171). Of the 811,
-**6 carry the
-Catch2 `[slow]` tag** — the CHPED and UC-CHPED benchmark solves, ~46s of
-aggregate (summed per-test) time, which `-j$(nproc)` compresses to a ~25s
-wall-clock full run. `tests/CMakeLists.txt` discovers them in a second
-`catch_discover_tests` call with `LABELS "slow"`, so:
-
-- `ctest -LE slow` — the other 811 tests, ~12s with `-j`. The fast inner loop; run it yourself before committing (the hook no longer does).
-- `ctest` — everything. This is what **pre-push** and CI run.
-- `ctest -L timing` — 5 tests: `timing_structural_batch_deadline`, the three
-  `timing_throughput_*` floors added for #125, and
-  `timing_inner_solver_hook_deadline` (#191's budget contract). Each is
-  registered by an explicit `add_test` (naming its Catch2 test case) so it can carry a `TIMEOUT` and be
-  quarantined individually. Don't add tests to this class without a concrete
-  reason.
-
-**The Catch2 `[slow]` tag and the ctest `slow` label are not the same set here**,
-and both numbers appear above: 6 tests carry the *tag*, 10 carry the *label*
-(`ctest -N -L slow` says 10). The three throughput floors and #191's hook
-deadline test are tagged `[timing]`
-— which is what keeps them out of both `catch_discover_tests` calls, since the
-second spec is `[slow]~[timing]`; retagging one `[slow]` *instead of* `[timing]`
-would get it discovered *and* hand-registered, i.e. run twice (adding `[slow]`
-alongside `[timing]` changes nothing) —
-and are given `LABELS "timing;slow"` by hand so their wall-clock seconds stay
-out of the fast set. Derive each count with the matching command rather
-than by arithmetic: `ctest -N`, `ctest -N -L slow`, `ctest -N -LE slow`,
-`ctest -N -L timing`.
-
-These counts are hard-coded in **six** places and nothing checks that they
-agree:
-
-1. this section,
-2. the comment above `catch_discover_tests` in `tests/CMakeLists.txt`,
-3. the build section of `README.md`,
-4. the `.venv/bin/pytest` line in `README.md` for the Python side (1316 tests, 255
-   of them binding tests, echoed in prose by `pyproject.toml` and
-   `tests/python/conftest.py`),
-5. the `-LE slow` guidance and the ~25s/~490s figures in `docs/profiling.md`.
-   Note its "302/302 green" sanitizer line is a **dated record of one run at a
-   named commit**, not a current count — it says so inline. Leave it alone
-   apart from the parenthetical restating the current fast-set size.
-6. the binding count in **`## Build & Test`** below, in the paragraph explaining
-   why the gated build turns `CBLS_BUILD_PYTHON` on ("255 binding tests silently
-   unrun"). It is in this file, but not in this section, so a search that stops
-   at the enumeration above misses it.
-
-Update all six in the same commit as any change to the test roster, and
-re-derive every number from `ctest -N` / `pytest --collect-only` rather than
-incrementing the one you find.
-
-All timings here are **Release**, the build type `CMakeLists.txt` defaults to.
-The tag was re-derived at `-O3`: 16 tests that earned it at `-O0` no longer come
-close to the threshold, and carrying them cost pre-push a roster it did not need
-while hiding them from the inner loop. That move is what took pre-commit from
-~2s to ~8s — the fast set is no longer trivially fast, and the 6 that remain are
-the only ones where the split still pays.
-
-Measure both ways before tagging. These tests run under `-j$(nproc)`, and
-contention inflates a solve by 1.4-1.7x: `UC-CHPED 40-unit 1-period feasibility`
-is 9.95s alone and 17.1s under `-j12`. Tag if it exceeds ~10s on **either**
-basis. Don't tag one just to get a green commit — pre-push will still run it.
-
-**Never use `git push --no-verify` or `git commit --no-verify`** unless explicitly asked. A failing hook is a signal — fix the root cause.
+- A clang-tidy finding is new code's doing: **fix it**. Never add a check to
+  `.clang-tidy`'s disabled list or tune an option to silence it.
+- `NOLINT` only as `NOLINTNEXTLINE(readability-function-cognitive-complexity)`
+  with the reason at the site (see **Complexity**); the tree has five
+  sanctioned directives, listed in `docs/git-hooks.md`.
+- No `-Werror`, `-w` or `-Wno-*` on first-party targets. Never add `default:`
+  to a `NodeOp` switch.
+- **Never `--no-verify`** unless explicitly asked. Fix the cause.
+- No `hooks` block in `.claude/settings.json`; `.claude/` is local tooling.
 
 ## Git Workflow
 
-Trunk-based development with linear history on main. Commit directly to main and push when local gates pass. There are currently no other worktrees or long-lived branches.
+Trunk-based, linear history: commit to `main`, push when gates pass. A
+feature branch is optional, cut from an up-to-date `main`, short-lived, landed
+by rebase or squash. After a push, close each issue it resolved
+(`gh issue close N -c "..."`) and delete any branch used.
 
-Feature branches are optional for larger changes:
-- Always branch from main. Run `git checkout main && git pull` first.
-- Never branch from another feature branch, with one exception: serialized
-  issues under **Parallel Issue Workflow**, where the second issue's branch is
-  cut from the first's so the pair lands as one fast-forward.
-- Keep branches short-lived; rebase or squash merge — no merge commits on main.
-
-After a successful push:
-- **Close any gh issue the work resolved**: `gh issue close <num> -c "<one-line note>"`. Do this for every issue covered by the push.
-- **Delete the feature branch** if one was used: `git branch -d <branch>` locally, plus `git push origin --delete <branch>` if it was pushed. Don't leave stale branches behind.
-
-## Hooks Are Files In This Repository
-
-The git hooks live in `.githooks/` as ordinary shell scripts, committed like any other file. `wcp init` copies them there and points `core.hooksPath` at them; wcp installs no Claude Code hooks at all. The gate is those files and nothing else, so a clone without wcp installed is still gated — including the review receipt, which is a line of plain git the Self-Review section documents rather than anything wcp runs.
-
-- **They are yours to read, and yours to edit.** Each hook carries a `# wcp:` line recording the digest of the bytes wcp wrote. That is what lets `wcp doctor` tell an edit you made from a version wcp has moved past: an untouched hook is refreshed silently, an edited one is left alone, and one that moved on both sides is reported rather than overwritten. Edit them when the project needs something different — and say so upstream if the default was wrong for everyone.
-- **A clone is not gated until someone runs `wcp init` in it.** git clones neither a hooks directory nor local config, so the files arriving with the clone is not the same as git running them. `wcp doctor` reports an unset `core.hooksPath` as an error for exactly this reason.
-- **They call no wcp.** A hook that shelled out to a missing tool would exit 127, which git reads as a refusal — so a machine without wcp could not commit, and could not commit the fix either. What the hooks do call is the project's own toolchain, and there they fail open and say so on stderr.
-- **Never use `git push --no-verify` or `git commit --no-verify`** unless explicitly asked. A failing hook is a signal — fix the root cause, or change the hook deliberately and commit that.
-
-## This Document Carries A Provenance Line
-
-The comment at the top of this file is wcp's record of the bytes it wrote, in the same scheme the hooks use. `wcp doctor` reads it to tell an edit you made from a version wcp has moved past, and it is where this project's type is recorded — there is no `.wcp/` directory and no config file beside it.
-
-**The prose is yours.** wcp writes this document once and never rewrites it unasked; edit it freely. When wcp adds or changes a section you have not edited, `wcp doctor` names it and `wcp init --interactive` offers it, one section at a time; answering `n` declines that version for good. Leave the top line in place, and the tooling stays able to tell your changes from its own.
-
-## Running wcp
-
-wcp is a command-line tool installed once per machine, outside any repository. The hooks never call it, so a machine without it is still gated.
-
-```sh
-uv tool install git+https://github.com/spoorendonk/wcp   # once per machine; @vX.Y.Z for a release
-uv tool upgrade wcp                                       # to update an install without a tag
-uv tool install --force git+https://github.com/spoorendonk/wcp@vX.Y.Z   # to move a tagged one
-wcp --help                                                # the commands; `wcp <command> --help` for each one
-```
-
-- **Run `wcp doctor`** after pulling, after updating wcp, and before editing the hooks or this file. It changes nothing, and every finding names the command that fixes it. It exits 1 only when the gate does not work, e.g. `core.hooksPath` is unset, which is how every fresh clone starts until someone runs `wcp init` in it.
-- **Files wcp wrote carry a `wcp:` provenance line**: `# wcp:` in each hook, and the comment at the top of this file. Edit the files when the project needs to, but leave that line in place. It is how `wcp doctor` tells your edits apart from a newer wcp version.
-- **If `wcp` is not on PATH**, say so rather than installing it unasked. Installing it is a machine-wide change.
-
-## Issue Tracking
-
-GitHub Issues is the tracker. Use the `gh` CLI.
-
-- **Default to HTTPS** for GitHub remotes (`https://github.com/...`), not SSH.
-- **Read an issue** with `gh issue view <num> --json title,body,labels,state,comments`. Plain `gh issue view <num>` is deprecated for programmatic use.
-- Don't propose deferring work via a new gh issue unless it is substantial. Small follow-ups should be either fixed inline or left alone — don't open an issue just because you noticed something.
-
-### Writing Issues
-
-Issues get picked up later in fresh sessions, often by a different agent with no access to the author's machine. Write them to be picked up cold:
-
-- **Self-contained.** Body must carry all needed context: problem, motivation, acceptance criteria, repro steps. Don't assume the reader has the current conversation.
-- **No local references.** No local file paths, local repo paths, or machine-specific locations (`/home/user/...`, `~/code/foo/bar.py`, "see my other checkout"). Dead links in a fresh session.
-- **Prefer stable external links.** GitHub permalinks, paper URLs, RFCs, official docs.
-- **Be vague about local code context.** Describe the concept rather than the path; hint that the agent can search under `..`, `../..`, or `~/code/`.
-
-### Retiring a benchmark
-
-If a benchmark is ever retired, it is a tracker job as well as a tree job:
-
-- Grep **every** open issue body for the epic number *and* the benchmark slug — GitHub's sub-issue list is not the full set of issues that point at an epic, because many are body-linked with "Part of #N" instead. Grep for hard-coded test counts too; those go stale the same way.
-- Close the epic's sub-issues **explicitly** and as **not planned** — a closing keyword in a commit message closes the epic only, and the work was abandoned, not delivered. `gh issue close --reason` is silently a no-op on an already-closed issue; correct one after the fact with
-  `gh api --method PATCH /repos/:owner/:repo/issues/<num> -f state=closed -f state_reason=not_planned`.
-- The epic itself closes as **completed** — retiring it was the job.
-- An issue that is still valid and merely *cites* the retired code (a hook name, a file path, a list of affected benchmarks) needs its body **edited** to name a surviving example instead. Closing it would drop live work.
+Commits: Conventional Commits (`feat`, `fix`, `refactor`, `test`, `docs`,
+`style`, `perf`, `chore`, `build`, `ci`), subject ≤72, saying **why**.
 
 ## Working Through Issues
 
-A session's goal is often a list of issues (`wcp goal`). Work through them in the order given, one at a time:
+Follow wcp's rules for a goal's issues, one at a time: issue check (plan as an
+issue comment when unclear) → implement → gate (the full fences, even for a
+trivial-looking change) and commit → **one cold reviewer** (`/code-review` on
+unpushed commits), at most two rounds, fix between them → record the receipt
+on a clean tree, push, close. File only what has a concrete failure scenario
+or a missing acceptance criterion; fix or drop nits. Agent-team and parallel
+runs: `docs/development.md`.
 
-1. **Issue check.** Read the issue and what it links. If it is clear and implementable, say so in one line and go on; this should be fast. If not, write a plan as a comment on the issue (plans go on issues, never in git) and work from it. If a later issue's plan changes an earlier one, re-plan then.
-2. **Implement.**
-3. **Gate and commit.** Run the project's gate (`## Build & Test`) and commit: a review reads commits, never uncommitted changes (`## Self-Review`).
-4. **Review by one cold reviewer**: a fresh teammate or subagent running `/code-review` on the commits not yet pushed, never several reviewers in parallel. On findings, fix, gate, commit, and review again with a fresh reviewer. **At most two rounds**; the fix after the second is confirmed, not reviewed again (`## Self-Review`). Anything real left after that, or found out of scope, becomes its own issue. The bar for filing is a concrete failure scenario or a missing acceptance criterion; nits are fixed within the round or dropped.
-5. **Record, push, close.** Record the review on a clean tree, push it with the commit (`## Self-Review`), and close the issue.
-
-Without agent teams, implement in the session itself and review with a fresh subagent; the caps and the bar are the same.
-
-**A hygiene goal** (`/goal Hygiene round …`, set by `wcp hygiene`) is a task, not a list of issues: work it from its note. Its findings are edits to existing issues or new issues labelled `tech-debt`; nothing is fixed inside the round, one cold reviewer checks the findings (at most two rounds), and the task ends with the summary comment its note specifies, whose first line is the marker wcp looks for.
+A hygiene goal (`wcp hygiene`) is a task worked from its note: findings are
+edits to issues or new `tech-debt` issues, nothing is fixed in the round, one
+cold reviewer checks them (at most two rounds), and it ends with the summary
+comment the note specifies.
 
 ## Self-Review
 
-**Code you produced gets reviewed before it lands on main.** Run `/code-review`
-on your own changes and act on what it finds; the review is not a formality you
-report having done. The pre-push hook is the backstop, not the review.
-
-**Then record the review, and push it with the commit**, or `pre-push` will
-refuse the push:
+Review happens on **commits**, never uncommitted changes. Then, on a clean
+tree, record and push the receipt pre-push requires:
 
 ```sh
 git update-ref "refs/reviews/$(git rev-parse HEAD)" HEAD
 git push --atomic origin HEAD "refs/reviews/$(git rev-parse HEAD)"
 ```
 
-The receipt is a ref named by the reviewed commit, `refs/reviews/<sha>`, and it
-travels with the push, so a CI step can check every commit that reaches the
-trunk — including one pushed with `--no-verify`, or from a clone whose hooks
-never ran. wcp's README has the step to paste into the project's CI.
-`--atomic` lands the branch and its receipt together or not at all.
-
-Plain git, on purpose. No wcp, no harness, nothing installed — so a reviewer on
-any machine can write it, and a clone that has never heard of wcp is still able
-to record a review and push. Every worktree of a clone sees the same receipts,
-and each names one commit, so a review counts for that commit wherever it is
-checked out and for nothing else.
-
-**What it means, and what it does not.** It records that a review happened at
-this commit — not what was reviewed. It carries exactly the trust of whoever ran
-it, and it is a line anybody can write by hand; what it buys is that nobody can
-push work no one has looked at *without noticing they are doing it*.
-
-A later commit has no receipt, and the next push is refused again. That is
-deliberate: a new commit is work nobody reviewed, including the commit that
-fixes what the review found.
-
-**The fix after the last round.** Reviews stop after two rounds, so the commit
-that fixes the second round's findings gets no third review. That round's
-reviewer reads the fix commit alone (`git show <sha>`) against its own
-findings, and the receipt is recorded for the fix once it confirms they are
-addressed. It looks for nothing new. What it does not confirm is taken out of
-the fix, which makes a new commit: the same reviewer confirms that one before
-its receipt is recorded, and what was taken out becomes its own issue.
-
-**Record it only when the tree is clean.** With nothing new committed, a review
-falls back to reading uncommitted changes — so a record written then names a
-commit that does not contain what was read, and the push it clears is of work
-nobody reviewed. Commit first, then review, then record. Untracked scratch files
-do not matter; staged and unstaged changes to tracked files do.
-
-## Agent Self-Review
-
-**Code produced by any agent or agent team must be reviewed before it can merge to main** — solo work by `/review`, a team run by one cold reviewer per issue (below). No subagent returns unreviewed work; no orchestrator merges unreviewed work. This applies to every agent team, not just the parallel-issue workflow.
-
-**One reviewer per issue** (user decision, 2026-10-03). In a team run, each
-issue gets exactly **one** cold reviewer: a separate agent that did not write
-the code, reading the issue's acceptance criteria literally. That reviewer *is*
-the issue's review — the implementer does not also fan out `/review`'s three
-reviewers, and the orchestrator does not add a second reviewer per issue. The
-cold review runs **at most two rounds**: review, a fix round, re-review. A
-finding still open after round two goes to the orchestrator to fix or to file;
-it does not start a third round. The final combined review of the merged result
-(step 6 below) is a separate single pass over the whole batch, not a per-issue
-reviewer.
-
-## Parallel Issue Workflow
-
-When the user brings multiple gh issues to work on at once:
-
-1. **Propose parallelism first**, unless a goal already settled it. Offer it
-   explicitly and wait for confirmation — don't silently start serial work. A
-   `/goal` that names the issues and says how to take them has already answered
-   this; don't ask again.
-2. **Serialize issues that touch the same files or interfaces.** Two agents
-   editing one file, or one row schema, is a merge conflict dressed up as
-   parallelism. Decide this before spawning anything: name the shared files and
-   say which issue goes first and why. The second issue's branch is then cut
-   **from the first issue's branch**, not from main — that is the one sanctioned
-   exception to **Git Workflow**'s "always branch from main", and it is what
-   keeps the final merge a single fast-forward. Genuinely independent issues
-   still branch from main and run concurrently.
-3. **Orchestrator role.** Spawn one subagent per issue (Agent tool with
-   `isolation: "worktree"`). Pass each subagent its gh issue number, its
-   worktree path, and any plan file path.
-4. **One cold reviewer per issue**, at most two rounds, per the Agent
-   Self-Review rule above — a different agent from the implementer. Subagents
-   commit locally in their worktree and **do not push, merge, or touch another
-   branch** — worktrees share `.git`, so the orchestrator sees their commits via
-   `git log <branch>` with no network round-trip.
-5. **Merging and pushing are the orchestrator's own call when the work is part
-   of a stated goal.** A goal that names the issues to take *is* the
-   authorisation to land them; stopping to ask again mid-run breaks the "no
-   interruptions" half of the same instruction and buys nothing, because the
-   thing actually standing between a bad merge and main is the pre-push hook and
-   the cold review, not a second yes. **Outside a goal** — an ad-hoc "have a look
-   at these two issues" — ask before merging.
-6. **Final combined review, then push.** The orchestrator merges every approved
-   branch into local main, has **one** reviewer make a single pass over the merged
-   result (not `/review`'s three-agent fan-out), and only then
-   runs `git push origin main`. No pushes — of main or of a feature branch —
-   happen before that final review. Then close the issues the push resolved and
-   delete the branches and worktrees, per **Git Workflow**.
-
-If the harness denies the merge or the push, that is a permission layer, not a
-review finding: say so plainly, hand over the exact commands, and do not report
-the work as shipped. Committed-on-a-branch is not pushed, and the final report
-must not say otherwise.
-
-A subagent worktree may READ sibling worktrees to understand patterns, but must never WRITE to one or to its git branch. A fresh worktree has no `.venv`; see **Build & Test** for the symlink it needs before building or testing (a worktree only — a full clone makes its own).
-
-## Commit Messages
-
-Conventional Commits. The commit-msg hook enforces format.
-
-- `type: description` or `type(scope): description`
-- Types: `feat`, `fix`, `refactor`, `test`, `docs`, `style`, `perf`, `chore`, `build`, `ci`
-- Subject ≤72 chars. Focus on **why**, not what.
-
-## CLAUDE.md Discipline
-
-When Claude gets something wrong, fix CLAUDE.md in the same commit. It's a living document — update it whenever better instructions would have prevented the mistake.
-
-## Complexity
-
-When a complexity warning fires, don't extract methods mechanically. Ask: what are the independent responsibilities here? Split along those boundaries. If the function is genuinely complex because the domain is, say why in a comment directly above it and suppress that one warning with `NOLINTNEXTLINE(readability-function-cognitive-complexity)`.
-
-This is the **only** check a `NOLINT` is sanctioned for — plus one pre-existing `bugprone-float-loop-counter` — and only with the reason written at the site; **Git Hooks** above names all five in-tree examples. Every other clang-tidy finding gets fixed, not suppressed, and adding the check to `.clang-tidy`'s disabled list is not an option either.
+A new commit needs its own receipt. The fix after round two is confirmed by
+that round's reviewer (`git show <sha>` against its findings), not reviewed
+again. Meaning and limits: `docs/git-hooks.md`.
 
 ## Plan Adherence
 
-**Follow the agreed plan.** If you think a plan should change, stop and discuss — don't silently diverge. The same goes outside a written plan: if your current approach isn't working, say so out loud — don't quietly switch strategies. Implement everything specified; don't leave TODO placeholders or stub implementations unless explicitly asked.
+Follow the agreed plan. To change it, stop and say so; never diverge
+silently, and say out loud when an approach is not working. No TODOs or stubs
+unless asked.
 
 ## Reference Correctness
 
-When implementing from papers, pseudocode, or open-source references:
-- Match the reference algorithm exactly. No early exits, iteration limits, size caps, or "optimization" shortcuts that change behavior.
-- Only introduce heuristic approximations when explicitly asked.
-- Implement edge cases and special handling — don't simplify them away.
-- When in doubt, be faithful to the reference and let tests verify correctness.
+Implementing from a paper, pseudocode or reference code: match it exactly —
+no early exits, caps or shortcuts that change behaviour, no heuristic
+approximations unless asked, every edge case kept. When in doubt, be faithful
+and let tests decide.
+
+## Complexity
+
+On a complexity warning, split along real responsibilities, not mechanically.
+If the domain makes the function irreducibly complex, say why in a comment
+above it and add `NOLINTNEXTLINE(readability-function-cognitive-complexity)`.
 
 ## Common Mistakes
 
-- **Don't invent APIs — verify they exist.** Check that functions, flags, and methods actually exist before using them.
-- **Don't ignore type errors.** If mypy/clang-tidy flags something, fix the root cause — don't suppress. Silencing either — by disabling a clang-tidy check or by widening `[tool.mypy] exclude` — is the route explicitly closed (see **Git Hooks**).
-- **Don't use deprecated patterns.** Check current docs, not training data.
-- **Performance matters.** Most of our code is solvers — don't sacrifice perf
-  for "clean code". `docs/profiling.md` is how to measure: heap attribution, CPU
-  profiling and the sanitizer build, with a dated tool-availability table naming
-  the machine it was checked on. Numbers reached by subtracting two whole-program
-  timings are not measurements.
-
-  **Profile before MICRO-optimizing; a complexity win does not need permission.**
-  The two are different claims. Replacing an O(n²) dedup with an O(1) stamp, or
-  an O(|nodes|) scan with an O(d log d) sort, rests on a cost argument that holds
-  independently of any machine — make it in a comment at the site, stating the
-  regime it wins in *and* the regime it loses in, and land it. Guessing that a
-  hand-unrolled loop or a reordered branch is faster is the thing that needs a
-  profile first, because nothing but the profile decides it.
-
-  Measurement is still required for three things, and a plausible argument is
-  never a substitute: any number that goes into a doc, a README or a published
-  table; any choice of a *parameter*, which is never fitted on the instances it
-  is reported on (fit on one roster, report on a held-out one, as
-  `benchmarks/instances/minlplib/HELDOUT.md` does); and any claim that a change made something faster,
-  which means an A/B at one budget on one idle machine, not two runs at different
-  budgets compared to each other.
+- Don't invent APIs, flags or methods; verify they exist. Check current docs.
+- Don't suppress type errors or lint; fix the root cause.
+- **Performance matters** — these are solvers. A complexity win (O(n²) → O(1)
+  stamp) lands on a cost argument written at the site, naming the regime it
+  wins and loses in. A micro-optimisation needs a profile first.
 
 ## Build & Test
+
+Builds, ctest, clang-tidy and pushes run under the machine lock
+(`xk lock -- CMD`) with at most 4 jobs (group rules). The fences below are
+what pre-push runs; why they look this way: `docs/development.md`.
 
 ```clean
 rm -rf build
@@ -624,552 +218,70 @@ rm -rf build
 py="$PWD/.venv/bin/python"; [ -x "$py" ] || py=$(command -v python); cmake -B build -DCBLS_BUILD_PYTHON=ON -DPython_EXECUTABLE="$py" && cmake --build build -j$(nproc)
 ```
 
-**No `-DCMAKE_BUILD_TYPE` here on purpose.** `CMakeLists.txt` defaults it to
-Release when the caller sets none, so this fence, CI and a plain `cmake -B build`
-all gate the same binaries from one place. An explicit `-DCMAKE_BUILD_TYPE=Debug`
-still overrides it. The suite is mostly real solver runs, so the type is not
-cosmetic: the full `ctest` is ~490s at the old empty default and ~25s at
-Release (both re-measured 2026-09-26 at 566 tests, `-j12`, on an idle machine).
-
-`CMakeLists.txt` also picks up `ccache` as a compiler launcher when the machine
-has it (`apt install ccache`), which matters because pre-push's ```clean fence is
-`rm -rf build`. Rebuilding the same path with a warm cache is **0.9s** against
-**23s** cold. It is optional — a system package cannot be committed, so a machine
-without it just builds normally. pre-push builds in a worktree under
-`~/.cache/local-ci`, a different path for every push, so ccache only hits there
-with `base_dir` set (e.g. `ccache -o base_dir=$HOME`); without it each push is a
-cold build.
-
 ```test
 ctest --test-dir build --output-on-failure -j$(nproc) && (py="$PWD/.venv/bin/python"; [ -x "$py" ] || py=$(command -v python); CBLS_REQUIRE_BINDINGS=1 CBLS_REQUIRE_BENCHMARKS=1 "$py" -m pytest --tb=short -q || [ $? -eq 5 ])
 ```
 
-**Why the fences look for `python` on PATH when `.venv/` is missing.** `.githooks/pre-push`
-runs these fences (`clean`, `build`, `test`) as a local CI in a fresh worktree
-*outside* this checkout, which has no `.venv/` of its own; it puts this
-checkout's `.venv/bin` first on PATH instead. So each fence uses
-`$PWD/.venv/bin/python` when it exists (the checkout itself) and otherwise the
-`python` PATH resolves to (the hook's worktree), and runs pytest as
-`python -m pytest` from that interpreter. `|| [ $? -eq 5 ]` keeps pytest's
-"nothing collected" exit a pass, and is written that way because the hook
-evaluates each fence under `set -e`. Keep the fences runnable in both places.
-
-**The gated build turns the Python bindings on, and the gated test run requires
-them.** `CBLS_BUILD_PYTHON` defaults to `OFF` and `tests/python/conftest.py`
-skips every test that imports `_cbls_core` when the module is missing, so a build
-without the flag would leave 255 binding tests silently unrun.
-`CBLS_REQUIRE_BINDINGS=1` turns that skip into a hard error. Bindings cost ~2.4s
-of build and ~6s of pytest against a suite that already spends ~25s in `ctest` —
-always build them. The cost argument is the weaker one: the reason is that
-without the flag those binding tests do not run at all.
-
-**`CBLS_REQUIRE_BENCHMARKS=1` is the same rule for the `benchmarks` extra.**
-`ortools` and `pyscipopt` are not in `[dev]`, so a venv synced with
-`--extra dev` alone leaves every test of the CP-SAT
-baseline and of the independent solution verifier on a module-level
-`pytest.importorskip` — dozens of tests, including the one that is #138's whole
-acceptance criterion, disappearing into a green summary. Sync the extra
-(`uv sync --extra dev --extra benchmarks`); the flag makes the skip a hard
-error instead of a silent one.
-
-`pytest` is **only** in `.venv/` — a bare `pytest` is not on PATH and
-`python3 -m pytest` has no module, so always spell out `.venv/bin/pytest`.
-The build needs the venv too — the ```build fence locates nanobind through
-`$PWD/.venv/bin/python` (falling back to whatever `python` is on PATH, usually
-one without nanobind), so a checkout without one builds no bindings and the
-```test fence fails on `CBLS_REQUIRE_BINDINGS=1`.
-
-**A full clone — a `wcp session start` clone included — makes its own venv**,
-and never symlinks another checkout's:
-
-```bash
-uv sync --extra dev --extra benchmarks
-```
-
-`--extra benchmarks` is what the ```test fence requires; leave it out only for a
-clone that runs no gate. This builds `cbls` into `.venv` once (under the machine
-lock, like any C++ build) and writes an untracked `uv.lock`, which `.gitignore`
-ignores. Verified in a fresh clone (#227): the ```build and ```test fences then
-pass with the full roster. A symlink into another clone points outside the
-session's working directory, so every command touching `.venv` raises a
-permission prompt and the session stalls until a human answers; it also forces
-one set of extras on every clone that shares it (#226 needed `benchmarks` where
-the main checkout's env lacked it).
-
-**Only a subagent git worktree under this checkout** borrows the checkout's venv
-by symlink, since it has none and is torn down with the run:
-
-```bash
-ln -sfn /path/to/this/checkout/.venv .venv && .venv/bin/pytest --tb=short -q; rm -f .venv
-```
-
-Run a single C++ test by name (`catch_discover_tests` registers each `TEST_CASE` as its own ctest test, so `-R` matches the test-case name):
-```bash
-ctest --test-dir build -R "test_name_substring"
-```
-
-Run a single Python test:
-```bash
-.venv/bin/pytest tests/python/test_foo.py::test_specific -x
-```
+- No `-DCMAKE_BUILD_TYPE`: `CMakeLists.txt` defaults to Release. An existing
+  `build/` keeps its first build type and `CBLS_SANITIZE`/`CBLS_PROFILE`.
+- A full clone makes its own venv, never a symlink to another checkout's:
+  `uv sync --extra dev --extra benchmarks` (the `benchmarks` extra is required
+  by the test fence). Only a subagent worktree under this checkout symlinks
+  the checkout's `.venv`, and removes it after.
+- Single tests: `ctest --test-dir build -R "name_substring"`;
+  `.venv/bin/pytest tests/python/test_foo.py::test_bar -x`.
 
 ## Measuring and testing engine changes
 
-**A regression test must be shown to fail before the fix.** A plausible-looking
-test frequently passes on the unfixed code — LNS maps a NaN constraint to `+inf`
-and rolls back, for instance, so a NaN-poisoned repair can never win and a test
-written against that path is green either way. Verify by reverting *only* the
-production change in a throwaway copy (`git archive HEAD | tar -x -C /tmp/...`,
-then restore the changed files from `main`) and confirming the new test goes red.
-A test that cannot fail is not a regression test.
+Full rules: `docs/measuring.md`. The short list:
 
-**Benchmark comparisons are time-limited, so never run them concurrently.**
-Objective quality at a fixed wall-clock budget depends on how many iterations the
-process gets, so two runs sharing cores produce numbers that are not comparable
-to each other *or* to the committed tables. Run A/B comparisons serially, check
-`uptime` first, and re-run anything anomalous. A bare `cmake -B build` now
-configures Release, but an existing `build/` keeps whatever type it was first
-configured with — and the same goes for `CBLS_SANITIZE`/`CBLS_PROFILE`, which are
-cache entries too: a `build/` once configured with a sanitizer stays that way
-through every later flag-less `cmake -B build`. So
-for a timing comparison either check `CMAKE_BUILD_TYPE` and `CBLS_SANITIZE` in
-`build/CMakeCache.txt` or configure a fresh directory. The measurement recipes —
-heap attribution, CPU profiling, sanitizers — are in `docs/profiling.md`.
-
-**Read sub-second runs on CPU time, not wall time.** #188's MINLPLib timing
-check saw short runs land on a ~0.1 s wall-clock grid, attributed on one
-reproduction to the `timeout` wrapper. The grid turns small differences into
-whole steps (gear4 read as 1.50x) (`docs/benchmarks/incremental-sum-drift.md`).
-Take CPU time (`/usr/bin/time`) alongside wall, or drop the wrapper for short
-runs. And a per-iteration regression with unchanged work can be code shape, not
-cost: #188's walk lost 14% on eg_all_s with the same per-walk cycle counts, and
-got it back by keeping cold paths out of line with `[[gnu::noinline]]`.
-
-**A runner that writes a published table must not truncate it before it has
-results.** `std::ofstream out(path)` truncates on open, so a run started from
-the wrong directory replaces the table with a header and nothing else, at exit
-code 0 — this emptied the miplib-fj table once already. Load the roster first
-and refuse to write on an incomplete one, and write to a temp path then
-`std::filesystem::rename`, as `benchmarks/mipfeas/` and
-`benchmarks/uc-chped/` do. The rename also covers the job killed mid-write.
-Rows regenerated from the instance files — uc-chped's cited reference rows are
-— make this sharper, not softer: the rows most worth protecting are exactly the
-ones a missing instance file deletes.
-
-**When regenerating a `comparison.csv`, record the engine commit in it.**
-Search-trajectory changes silently invalidate published tables, and without the
-commit the next reader cannot tell drift from a bug. `minlplib`'s table carries a
-per-row `commit_sha` column; a header comment naming the commit does the job too.
-
-**Nothing checks this outside MINLPLib.** Only MINLPLib's tables are read by
-tests: `tests/python/test_minlplib_scip_baseline.py`, and
-`tests/python/test_minlplib_campaign_report.py`, which pins the README's
-generator-owned blocks and `campaign_summary.json` to the committed tables
-(#142). Every other committed table drifts silently and is caught only when
-someone re-measures. Prefer stating
-results in a benchmark README with the engine commit named in the text — the
-shape `benchmarks/instances/setcover/README.md` uses — unless a test is actually
-going to read the table.
-
-**A comparison table is an OUTPUT; the reference values are the artifact.**
-Distinguish the two, because only one of them is worth freezing:
-
-- **Best-known and optimal values** are derived ONCE, from the paper or the
-  benchmark library that publishes them, and pinned — `mipfeas` keeps them in
-  `roster.csv` with `references.csv` recording the hash and byte count of the
-  MIPLIB `.solu` file they came from, so a library revision cannot silently
-  redefine the yardstick. This is the thing to protect, and to re-derive only
-  when the upstream source itself changes.
-- **An engine-vs-engine comparison** is re-derived from result records whenever
-  the question is asked. It is a function of a results directory, a roster and a
-  budget, all of which are inputs the run already keeps — so checking one in as
-  a record buys nothing but a file that goes stale the next time the engine
-  moves. Score it into the results directory, quote it with the engine commit
-  and the machine record beside it, and regenerate rather than defend it.
-
-`mipfeas` follows this; the older tables predate it. Don't add machinery to
-protect a comparison table from being overwritten — the protection worth having
-is on the reference values and on the per-instance result records the table is
-computed from.
-
-## Architecture
-
-CBLS = constraint-based local search. ViolationLS (guided local search over single- and compound-variable jumps) on an expression DAG with penalty-method feasibility. Full details in `docs/architecture.md`.
-
-### Core pipeline
-
-1. **Model building** (`include/cbls/model.h`, `include/cbls/expr.h`) — Declare typed variables (Bool, Int, Float, List, Set), build expressions via operator overloading, add constraints, set objective, call `close()` which topologically sorts the DAG.
-
-2. **Expression DAG** (`include/cbls/dag.h`, `src/dag.cpp`, `src/dag_ops.cpp`) — Variables use negative handles `-(id+1)`, nodes use non-negative `id`. 35 `NodeOp` operation types. Two evaluation modes:
-   - `full_evaluate`: evaluate all nodes in topo order (initialization)
-   - `delta_evaluate`: BFS dirty-marking from changed variables, recompute only affected nodes (moves). On an FJ commit an incremental Sum (#188, a row read only by top-level comparisons) is moved by its changed terms instead of re-summed, so inside a batch its value may sit within a tracked drift bound of a re-sum; every verdict re-grounds first. A bit-exact delta-vs-full test must allow for that on fractional data. Details in `docs/architecture.md`
-   - Reverse-mode AD via `compute_all_partials` for the continuous (Newton) jump-value engine
-
-3. **Search** (`src/search.cpp`) — ViolationLS batch outer loop (Davies et al. CPAIOR 2024, Algorithm 6). The objective is folded into the constraints as `obj <= bound`; each batch is a Feasibility Jump, Novelty Jump, or STRUCTURAL batch (selected by config probabilities). The objective bound is tightened on each new real-feasible solution; on stagnation the assignment is perturbed or diversified via LNS. CP-SAT's restart randomisation (`restart_randomization`) and Luby schedule (`luby_restart_unit`) are kept as arms, default **off**: neither separated from the stall trigger in #239's smoke A/B.
-
-4. **Feasibility Jump** (`src/feasibility_jump.cpp`) — Generalised Feasibility Jump: a `JumpTable` of cached per-variable best jumps (score = `-W·δ_G`), best-of-N scan-set sampling, GLS weight dynamics (bump violated + ρ-decay), and Novelty Jump compound moves (Algorithms 4–5). Float jump values come from Newton-toward-violated-root candidates via reverse-mode AD. A candidate over rows that are all linear (affine comparisons, or affine bare bodies `expr <= 0` since #190) is scored in closed form by `LinearJumpScorer` (`src/linear_jump.cpp`) rather than by a DAG probe; any other column falls back to `weighted_violation_delta`. With `SearchConfig::fj_exact_int_jump` on (default **off**, #216) an Int column over all-linear rows skips the candidates and takes the exact argmin, `LinearJumpScorer::int_argmin` (OR-Tools' `ComputeLinearJump`); it regresses #208's repro, and stays off by #208 (closed not planned) / #216. `SearchConfig::perturb_near_value` (default **off**, #217) makes the diversification kick OR-Tools' (`random_near_value`: p = 0.05, near the current value); it stays off by #219 / #226. Both are kept as arms faithful to their OR-Tools originals. `fj_objective_tie_break` (default **on** in `solve()` since #226, #218; a bare `GFJConfig` keeps it off) carries OR-Tools' use of an affine objective before the first feasible point: a lexicographic objective tie-break plus an objective-improving scan. #218's objective-favourable start, #221's exact quadratic roots and #222's equality-balance moves were measured in #226's smoke A/B, found neutral or worse, and removed. A variable that reaches a `Ceil`/`Floor`/`Round`/`Element` node additionally gets that node's breakpoints — plateau edges and index values, mapped back through the argument's slope — as candidates (#186), since those ops' derivative is 0.
-
-5. **Moves** (`src/moves.cpp`) — typed move generators by variable type (bool flip, int ±1/rand, float perturb, list swap/2opt/relocate/or-opt/insert/exchange/remove, set add/remove/swap), plus the inter-list moves of a `ListPartition` (relocate/swap/2-opt\*, and insert/remove under `Cover::AtMostOnce`). Scalar moves are subsumed by FJ's jump values; the list/set moves feed the STRUCTURAL batch. A structured change is a **positional `ElementEdit`** on the variable's `elements`, not the whole vector — the batch restores the sample's starting assignment before each candidate so an edit lands where it was built. `StructuralSelection::GranularBest` (#203, needs a neighbour list; the default `Auto` selection runs it whenever the config has one, `FirstImprovingSample` otherwise) replaces a partition's sampled moves with the granular complete neighbourhood of one element (every relocate/swap/2-opt/2-opt\* with each of its k nearest neighbours) and commits the best; on the CVRP smoke it beat `ViolationGuided` 15/15.
-
-6. **Inner solver** (`src/inner_solver.cpp`) — `FloatIntensifyHook`: coordinate descent over float variables using Newton steps on violated constraints + backtracking line search on objective. Triggered on each new feasible solution.
-
-7. **LNS** (`src/lns.cpp`) — Every `ListPartition` is ruined and recreated (SISR's string removal and greedy insertion with blinks, #202); every other variable keeps the original pair, destroy 30% and repair via FJ. Fires every N diversification kicks. Accepts on a lexicographic (real-violation, objective) key.
-
-8. **Violation & penalty** (`src/violation.cpp`) — `total_violation = Σ W[c]·max(0, viol_c)` with per-constraint GLS weights `W`. `weighted_violation_delta` is the no-commit counterfactual δ_G. `augmented_objective() = obj + total_violation()` is the penalty-method metric the inner solver descends.
-
-9. **Parallel search** (`src/pool.cpp`) — `SolutionPool` + `ParallelSearch`: a cooperative portfolio. Workers share incumbents through the mutex-guarded pool as they find them, tighten their `obj <= bound` row to the pool's best feasible objective at each batch boundary (#179, `ParallelConfig::share_objective_bound`), restart from the pool on stagnation, are restarted rather than left idle while budget remains, and stop each other once one has solved a pure-feasibility model. All of it reaches the engine through `cbls::solve()`'s trailing `SearchCoordination*`, which is null everywhere else. Nondeterministic by construction; `--threads 1` is the reproducible run (on the same hardware under the same load — it is still wall-clock bounded).
-
-   **Workers share the model's immutable structure** (#157). `ParallelSearch::solve`
-   has two entry shapes: the `Model&` **master** overload freezes the model on
-   the calling thread and hands each worker a copy, which takes the DAG by
-   reference and duplicates only what a search writes; the
-   `std::function<Model()>` **factory** overloads share exactly what the
-   factory's models share — nothing for freshly built ones, the structure for
-   copies of a frozen model. Python binds both: `ParallelSearch.solve_master` is
-   the master overload, `solve_parallel` the factory one. Prefer the master
-   overload.
-   Measured on `neos-5114902-kasavu` (710k columns, 4.30M nodes), before at
-   `0dc826b` and after at `06eb3e5`: peak RSS at 8 workers fell from 6.04 to
-   3.15 GiB, the marginal worker from ~0.75-0.86 to ~0.34-0.39 GiB, at identical
-   single-threaded throughput (257 iterations in 30s either way). The per-worker
-   constant is not zero and will not become zero — the variables, the node values,
-   three `Model::State` snapshots and FJ's tables are all genuinely per worker —
-   and it is a floor rather than a bound, since its largest term scales with the
-   column count. Size a run against "1-worker + N x a measured per-worker
-   constant". `docs/architecture.md` carries the table with its commit.
-
-   Three callers drive it: `src/cli.cpp`, which loads the model once and passes it
-   as the master; Python's `ParallelSearch.solve_master`, likewise; and
-   `benchmarks/mipfeas/` at `--threads > 1`, through the factory overload over
-   pre-built copies of its frozen master (the other three
-   runners are still single-threaded, so their trajectories are unchanged). The
-   runner freezes the model and replicates it once per worker **before** the solve
-   bracket opens, and reports the cost as `replicate_seconds`. That has to stay
-   outside the bracket for two reasons: inside it the copies come out of the
-   search's own deadline, and a `bad_alloc` there is parked by `ParallelSearch`,
-   which returns the survivors' result. A worker that dies later, inside the
-   bracket, is not silent either (#170): `SearchResult::workers_completed` and
-   `worker_failures` report it, the runner publishes them per row, and the scorer
-   refuses a row with fewer completed workers than `threads`. It still
-   grows with `--threads`, but with the per-worker mutable side rather than a whole
-   DAG — 0.60s at eight workers against ~1.6s before. Its driver
-   refuses `--cbls-threads != --cpsat-workers` without `--allow-asymmetric-cpu`:
-   CP-SAT at N workers runs N `fj` and N `ls` subsolvers, so an asymmetric split
-   is an N-fold CPU advantage that the table would report as an implementation
-   gap.
-
-   A `SolveCallback` handed to `ParallelSearch` sees the **portfolio's** stream,
-   not worker 0's: every worker reports through one mutex-guarded wrapper that
-   rewrites `time_seconds` onto the portfolio clock (a worker's own solve times
-   from its own start, and a restart starts a second one) and carries the global
-   incumbent in `objective`. Worker 0 additionally keeps the periodic
-   no-new-best tick, so the CLI's liveness row survives.
-
-10. **I/O** (`src/io.cpp`, `src/io/`) — JSONL `.cbls` model format in `src/io.cpp`; `src/io/` holds the MPS reader (`mps_reader.cpp` + `mps_to_model.cpp`, gzip via zlib, optional bzip2), the AMPL `.nl` reader (`nl_reader.cpp` + `nl_to_model.cpp`) and the MIPLIB `.solu` reader. CLI in `src/cli.cpp`.
-
-### Key extension points
-
-- **`InnerSolverHook`** — subclass to provide domain-specific continuous optimization. The reference implementation is the built-in `FloatIntensifyHook` (`include/cbls/inner_solver.h`, `src/inner_solver.cpp`); no benchmark currently ships a custom one. `solve()` is handed a `StopRef stop` (#191) that turns true at the search's deadline, a peer's stop or a host cancel: the call is synchronous and cannot be pre-empted, so a hook whose work can outlast the budget **must** poll `stop` and return promptly, leaving the model consistent — an unpolled hook runs the solve past its budget.
-- **New operations** — add to `NodeOp` enum in `dag.h`, implement `evaluate()` in `dag.cpp`, `local_derivative()` for AD, `delta_evaluate` support in `dag_ops.cpp`
-- **`CustomInvariant`** (`include/cbls/custom_invariant.h`, #166) — user code
-  *inside* the DAG, for the cases that do not deserve a core op: a black-box or
-  simulation value, sequence state, an aggregate the op set lacks.
-  `Model::custom(inputs, std::move(inv), name)` gives an ordinary node with an
-  optional incremental `delta`, and a `commit`/`rollback` bracket on the
-  per-candidate scalar probe so that probe costs one delta rather than two. The
-  instance is **per-model** and `clone()`d per portfolio worker — unlike
-  `lambda_funcs`, which every replica invokes concurrently and which therefore
-  cannot carry state. A model holding one cannot be written to `.cbls`, and it
-  is **not** exposed to Python (that waits on #132). `docs/architecture.md`
-  carries the contract table and names the **three** apply-then-revert sites
-  deliberately left unbracketed (the inner solver's is only its multi-variable
-  step since #207). `in.edits(i)` (#172) says *where* a List/Set
-  input moved, as positional edits since the last committed state, so a delta
-  over a List can be O(edits) — but only the structural batch supplies them, only
-  for an invariant that opts in (`wants_positional_edits()`), and on every other
-  path a moved List/Set input reports `available() == false`: re-read then.
-  This is engine capability, not evidence about List performance.
-
-### Build targets
-
-| Target | Source | Description |
-|--------|--------|-------------|
-| `cbls_lib` | `src/*.cpp`, `src/io/*.cpp` | Core library (static) |
-| `cbls_cli` | `src/cli.cpp` | CLI executable (output name `cbls`) |
-| `cbls_tests` | `tests/*.cpp` | Catch2 test suite |
-| `cbls_simple` | `examples/simple.cpp` | Minimal modeling example |
-| `cbls_chped` | `examples/chped.cpp` | CHPED modeling example over `benchmarks/chped/` |
-| `cbls_uc_chped` | `benchmarks/uc-chped/` | UC-CHPED benchmark runner |
-| `cbls_mipfeas` | `benchmarks/mipfeas/` | MIPfeas runner (one instance per process) |
-| `cbls_minlplib` | `benchmarks/minlplib/` | MINLPLib benchmark runner |
-| `cbls_minlplib_portfolio` | `benchmarks/minlplib/portfolio_ab.cpp` | MINLPLib portfolio A/B harness (shared-bound on/off, #179) |
-| `cbls_setcover` | `benchmarks/setcover/` | OR-Library set-covering runner (the `Set`-variable example) |
-| `cbls_cvrp` | `benchmarks/cvrp/` | CVRPLIB X-set CVRP runner (the `List`-variable example, one instance per process) |
-
-Examples, tests, benchmarks and bindings are each behind an option:
-`CBLS_BUILD_EXAMPLES`/`CBLS_BUILD_TESTS`/`CBLS_BUILD_BENCHMARKS` default ON,
-`CBLS_BUILD_PYTHON` defaults OFF (but the gated build turns it on).
-
-### Dependencies
-
-- **zlib** — required (`find_package(ZLIB REQUIRED)`), gzip-compressed MPS input
-- **bzip2** — optional, `-DCBLS_USE_BZIP2=ON`, adds `.bz2` MPS support
-- **nlohmann/json** v3.11.3 — JSONL I/O (FetchContent)
-- **Catch2** v3.5.2 — C++ tests (FetchContent)
-- **nanobind** — Python bindings (optional, via scikit-build-core)
+- **A regression test must be shown red before the fix**: revert only the
+  production change in a throwaway copy and watch it fail.
+- **Never run time-limited comparisons concurrently.** Serial A/B, one budget,
+  idle machine (`uptime`), Release, no sanitizer. Sub-second runs: read CPU
+  time, not wall.
+- Measurement is required for any number in a doc or table, for any
+  **parameter choice** (fit on one roster, report on a held-out one), and for
+  any "faster" claim. Subtracted whole-program timings are not measurements.
+- A runner writing a published table loads its roster first, refuses an
+  incomplete one, and writes to a temp path then renames.
+- **A search-trajectory change invalidates the published tables** of the three
+  comparative benchmarks (`mipfeas`, `minlplib`, `uc-chped`): record the engine
+  commit with any regenerated result. Only MINLPLib's tables are test-checked.
+- Reference values (best-known, optimal) are derived once and pinned; an
+  engine-vs-engine comparison is an output, regenerated, not defended.
 
 ## Benchmarks
 
-Each benchmark follows the same pattern:
-- `data.h` — C++ data structures + constexpr data arrays
-- `*_model.h` — model builder function
-- `*.cpp` — runner executable
-- `reference_solve.py` — SCIP/PySCIPOpt baseline
-- `verify_*.h` — solution correctness checker
+Detail: `docs/benchmarks/README.md`. Comparative benchmarks, worked top down:
 
-Not every benchmark carries every file: `minlplib` and `mipfeas` read instances
-from disk rather than from a `data.h`, and no benchmark ships a custom
-`InnerSolverHook`. `benchmarks/chped/` is header-only — a model pattern consumed
-by `examples/chped.cpp` and `tests/test_chped.cpp`, with no runner of its own.
+| # | Benchmark | Compared against | Purpose |
+|---|---|---|---|
+| 1 | `mipfeas` | CP-SAT `num_violation_ls` worker **only** | same-algorithm implementation check (#87, #106) |
+| 2 | `minlplib` | SCIP (nonlinear) | non-convex MINLP, beyond CP-SAT's LS (#87) |
+| 3 | `uc-chped` | Pedroso 2014 | published unit-commitment formulation (#25, #92, #131) |
 
-`benchmarks/common/` is **not** a benchmark. It holds what runners and drivers
-share: two C++ headers for the runners, `runner_args.h` and
-`search_config_flags.h`, and a Python package for the drivers (#160).
+- Priority 1 is **not a MIP shootout**: never compare against CP-SAT's full
+  portfolio, Xpress, Gurobi or CPLEX (#87).
+- A comparative quality claim needs terms CP-SAT cannot express (transcendental
+  or non-convex continuous). Nothing outside the table is comparative.
+- Worked examples per structured type, not comparative: `Set` → `setcover`
+  (measured, negative; don't build another `Set` benchmark), `List` → CVRP
+  (epic #182; unpublished until #204).
+- **Never write that `List` is validated on a published formulation**: there
+  is no `List` evidence until #204. List engine work is filed against measured
+  CVRP data; don't reopen #183-#185, #187, #189.
+- Generic features go in `include/cbls/` and `src/`, never benchmark hacks.
 
-`runner_args.h` holds three things. First the flag-value *reporting policy* (a
-bad double reports and returns NaN for a later positivity guard to turn into
-exit 2; a bad integer reports and exits 2), layered over the pure parsing *rule*
-in `include/cbls/arg_parse.h`. Second `ArgCursor`, the value-flag matching rule:
-a flag that takes a value matches only when a value actually follows it, so a
-trailing `--budget` falls through to the runner's unknown-argument path instead
-of reading past `argv` or silently keeping a default that a published table would
-then be built on. Third `same_file`, the published-table guard's path
-comparison — canonicalised where the file exists, so that naming the published
-table explicitly (which the documented commands do) is held to the same rule as
-defaulting into it. `mipfeas`, `minlplib` and `uc-chped` share the first two;
-`setcover` deliberately does not, and says why at its own `parse_args`. The
-policy split is deliberate: the rule is a library concern, the policy writes to
-stderr and calls `std::exit` and is pinned by
-`tests/python/test_run_benchmark.py`, so it lives next to the programs those
-tests run.
+## Issue Tracking
 
-`search_config_flags.h` is the per-arm search configuration (#136): the flag
-table, its parse, its validation, its application onto `cbls::SearchConfig` and
-`solve()`'s arguments, and the canonical `search_config` cell every row carries.
-`minlplib` and `uc-chped` share it. Two rules it exists to enforce: **a flag
-whose field the engine ignores must not ship** (the header names the two
-rejected — the GLS ρ and `use_fj`, whose argument `solve()` opens by discarding),
-and **a non-default arm may never write a published comparison table**, which is
-why `first_non_default_search_flag` feeds both runners' `resolve_out_csv`. Every
-flag has a behavioural probe in `tests/test_bench_flags.cpp`; add one with the
-next flag, and check it fails when the apply step is neutered.
+GitHub Issues via `gh`; HTTPS remotes. Read with
+`gh issue view N --json title,body,labels,state,comments`. Write issues to be
+picked up cold: self-contained, no local paths, stable links. Don't file small
+follow-ups; fix them inline or leave them.
 
-Whether the engine reads a flag depends on the model too, so every flag belongs
-to a **family** (common, scalar, structural, neighbour; #198) and every runner
-declares the families its models can use: `minlplib` and `uc-chped` declare
-`kScalarRunnerSearchFlags`, a List runner the common, structural and — when it
-supplies the cost — neighbour families. A flag outside the declared set is
-refused by `validate_search_flags`, and the `search_config` cell and `--help`
-carry the declared families only, which keeps a scalar runner's cell
-byte-identical to its committed tables. `--neighbours K` carries only K; the
-runner hands its cost to `neighbours_argument`. `setcover` keeps its own parser
-(one invocation spans a Set and a Bool model, which no per-runner mask can
-describe) but uses the table's spellings and value rules for its three
-structural flags.
+## CLAUDE.md Discipline
 
-Neither header has a CMake target — runners reach them through the
-`target_include_directories(<target> PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})` line
-each already carries, so a new runner target that omits that line will not
-compile `<benchmarks/common/...>`. `cbls_tests` carries the same line for
-`${CMAKE_SOURCE_DIR}`, which is what lets a Catch2 test include them without a
-runner `main()`.
-
-The Python package is the driver mechanics every benchmark shares: `jobs.py`
-runs one solver process (timeout, address-space cap, own session, log) and a
-plan (bounded workers, serial tail); `records.py` writes and reads the files a
-run leaves behind so that a kill leaves the old file or the new one, and lists
-where each benchmark's record schema is declared; `provenance.py` is the commit,
-the build-dir refusals and the machine record; `pins.py` hashes downloaded files
-against a committed pin table (the `mipfeas` and `cvrp` downloaders). What it deliberately does **not**
-hold is any benchmark's resume rule or record shape — `mipfeas`, the MINLPLib
-re-run and the ablation campaign resume on three different keys for reasons of
-measurement, and a single loop with per-benchmark hooks would only relocate
-them. The MINLPLib runner's contract (columns, exit status, note vocabulary) is
-declared once in `benchmarks/minlplib/runner.py`. The mechanics are pinned in
-`tests/python/test_benchmark_common.py`; don't re-test the mechanics per driver,
-but do pin each driver's use of them — which jobs go in the tail, what a killed
-job records, which timeout a call carries — since that wiring is what a
-refactor silently drops. Drivers run as scripts reach the package through a
-`sys.path` shim on the repository root, as `run_ablation.py` always did.
-
-### Benchmark priority
-
-Three benchmarks carry the comparative story, in this order. Work the list top
-down; do not start lower-priority benchmark work while a higher one is open.
-
-**The criterion for carrying a comparative quality claim**: the model contains
-terms CP-SAT cannot express at all — transcendental or non-convex over
-continuous variables. A benchmark whose faithful formulation is a MILP cannot
-carry such a claim however interesting the application is, because CP-SAT, CPLEX
-and Gurobi own that regime and epic #87 already rejects competing there.
-
-Row 1 is deliberately exempt, on a different rationale: `mipfeas` is pure MILP
-and CP-SAT expresses every instance natively. It earns its place as an
-*implementation* check — same algorithm, two implementations, identical
-formulation — not as a claim that this engine is better there. Read the two
-admission grounds as separate: expressiveness (rows 2-3) or same-algorithm
-head-to-head (row 1). Nothing else qualifies.
-
-| # | Benchmark | Compared against | Purpose | Tracking |
-|---|-----------|------------------|---------|----------|
-| 1 | `mipfeas` | OR-Tools CP-SAT `num_violation_ls` worker **only** | head-to-head correctness *and* performance against the reference implementation of the same jump-based algorithm | #87, #106 |
-| 2 | `minlplib` | SCIP (nonlinear) | performance on non-convex MINLP — the regime CP-SAT's LS worker cannot express | #87 |
-| 3 | `uc-chped` | Pedroso 2014 | a good result on a published unit-commitment formulation | #25, #92, #131 |
-
-**Priority 1 is deliberately not a MIP shootout.** Compare only against CP-SAT's
-`num_violation_ls` worker (same algorithm, different implementation). Do **not**
-compare against CP-SAT's default full portfolio, Xpress, Gurobi or CPLEX — see
-epic #87 for why that framing is rejected.
-
-Nothing outside this table is a comparative benchmark. Beside it sit **one
-worked example per structured variable type** (user decision, 2026-10-03). Their
-job is to exercise and measure that type on real instances, not to carry a
-comparative claim, so the table's ordering rule does not gate them:
-
-- **`Set` → `setcover`.** Ten small OR-Library set-covering instances, run under
-  both a `Set` and a Bool encoding, whose result is a documented limitation
-  (see `benchmarks/instances/setcover/README.md`). Keep it as the `Set` example;
-  don't grow it into an epic.
-- **`List` → CVRP** (CVRPLIB X set, Hexaly's List encoding, scored as gap to
-  the pinned best-known values, with PyVRP at equal budget and threads as
-  context). Tracked under epic #182 (#196-#204). **In the tree, unpublished**:
-  `cbls_cvrp`, its driver, verifier, scorer and PyVRP baseline landed in
-  #196-#200, but until #204 publishes results `List` still has no evidence (next
-  section), and the single-seed smoke numbers quoted in #201-#203 are not
-  results.
-
-Engine-wide (cross-cutting) work is tracked under epic #24.
-
-### Structured variables: the claim is currently unsupported
-
-Do not write, in docs or issues or commit messages, that List variables are
-validated on a published formulation. The evidence position is:
-
-- **`Set`** — measured and **negative**. The `Set` encoding lands at
-  3.4-5.1x the proven optimum where the same data in Bools is within 4-9%
-  (engine `35ec07c`, after #201; it was 8.6-11.0x against 9-20% at `adc8ee4`).
-  `35ec07c` predates two defaults that act on the Bool encoding, compound moves
-  (on since 2026-10-07) and the FJ objective tie-break (on since #226, and
-  setcover's Bool objective is affine); the Bool figure was measured without
-  either.
-- **`List`** — **no evidence either way.** No `List` result is published yet;
-  CVRP (#204) will be the first.
-
-The mechanical cause of the `Set` result is generic and applies to `List`
-equally, and it has **two independent halves** — fixing either alone changes
-nothing:
-
-1. `FeasibilityJump::jumpable` (`src/feasibility_jump.cpp`) is a deliberate
-   Bool/Int/Float whitelist, so no structured variable ever gets a jump-table
-   entry regardless of its derivative. Its comment says the whitelist is
-   intentional.
-2. `local_derivative` (`src/dag.cpp`) returns `0.0` for *every* structural op —
-   `At`, `Count`, `Lambda`, `PairLambda`, `LambdaExtra`, `PairLambdaExtra` — so there is no AD signal to build a
-   jump value from either. (`setcover`'s `Set` model reads through `Lambda`.)
-
-What is left, for a `Set` or `List` searched without a neighbour list (every
-model `setcover` runs), is `set_moves`/`list_moves` drawing uniformly at random
-under the default `FirstImprovingSample` hill climber, where the scalar path has
-FJ's jump table and best-of-N scan-set sampling to steer it. Note the contrast
-is between the two *paths*, not the individual generators — `int_rand` and
-`float_perturb` are themselves uniform.
-
-Two things have since changed for a `ListPartition`. With a neighbour list
-(`SearchConfig::structural_neighbours`) the default `Auto` selection runs
-`GranularBest` (#203): one element's granular complete neighbourhood, best
-improving move committed. And whenever LNS is on (opt-in in `solve()` and the
-CLI's `--lns`, on by default in the cvrp, mipfeas, minlplib and uc-chped
-runners) it ruins and recreates every `ListPartition` with SISR, neighbour list
-or not (#202). Both change how a `List` is searched; neither is evidence, and
-the claim rule above stands until #204. (A `Set`, or a `List` outside any
-partition, given a neighbour list is sampled as under `ViolationGuided`.)
-
-**Cost-aware structural move selection was the stated prerequisite** for any
-renewed structured-variable claim. #165 built it — registrable `MoveGenerator`s,
-granular neighbour lists, and `BestOfSample` / `ViolationGuided` selection
-policies — and `setcover` was its ready-made A/B harness.
-
-**It has now been measured twice, and it is still not established.** The
-confounder is gone: #164 landed the position-based move representation, so a
-structured candidate carries positional `ElementEdit`s and scoring one costs an
-allocation-free `assign` per variable its predecessor changed, where it used to
-cost at least two heap allocations and three O(|elements|) copies. (Not "no
-allocation at all": an `EditKind::Replace` allocates by construction, and the
-per-call membership scans still do.)
-
-Measured under that representation, at engine commit `8dc906b`, **20 seeds per
-arm** at a 10s budget, paired per seed: on the weighted instances
-`ViolationGuided` is **−76.2** against `FirstImprovingSample` on a base of ~2900
-(−2.6%), 95% CI **[−161.4, +9.0]** — 1.75 SE from zero, crossing it, 60/100
-paired wins. Unicost is −0.18 on ~6.7 (2.07 SE, 34/100 with 45 ties). Table and
-caveats in `benchmarks/instances/setcover/README.md`.
-
-**The methodological point is worth more than the number.** A five-seed run of
-the same comparison put the weighted difference at −131.9 (−4.5%); quadrupling
-the data moved it to −76.2 with the interval still spanning zero. Regression
-toward the mean, on a roster where per-seed spread (±8-11%) exceeds the effect
-being looked for. So: do not read a five-seed structural A/B on this roster as a
-result in either direction, and do not pick the one-sided framing because it
-clears 0.05 when the two-sided one does not.
-
-So the prerequisite is **implemented, measured, and not demonstrably better**,
-and for `Set` the guidance stands: **don't build another `Set` benchmark.**
-(`List`'s example is CVRP; see **Benchmark priority**.) What would settle the
-`Set` reading, in order: a longer per-run budget (attacks the noise at source),
-then more seeds (~740 paired runs for a 3-SE reading), then a harder roster. None of that is worth doing without a reason to care about
-`Set`-encoded set covering specifically.
-
-Note also that #164 generalised `List` itself — a variable-length ordered subset
-of a universe, with an optional partition across several Lists whose cover the
-moves maintain. That is **new capability, not new evidence**: until CVRP
-publishes (#204) there is no measured `List` result, the evidence position above
-stands, and nothing in the tree may claim otherwise.
-
-**Epic #182 (compact route-network models) is where List work lives, and it has
-resumed with CVRP as the `List` example** (2026-10-03). Its first sub-issues —
-the CVRP benchmark #183, guided List search #184, expensive-invariant screening
-#185, repeated List elements #187 and O(edits) lambda deltas #189 — were closed
-as not planned in the 2026-09-30 triage, because each was speculative with no
-benchmark to measure it against. That rule still holds: the CVRP benchmark comes
-first (#196, #198, #197, #199), and List engine work is filed against measured
-CVRP data, not ahead of it. #201-#203 cite smoke runs and qualify; #201 is a
-prerequisite of the campaign (#204). Don't reopen the closed ones.
-
-### Benchmark workflow
-
-Each benchmark session must follow these steps in order:
-
-0. **Plan first** — Read the benchmark's epic (linked above) and its open sub-issues, plus `docs/architecture.md` (solver internals). Investigate what already exists for your benchmark (data, reference solver, model code). Propose an approach and wait for approval before implementing. This is the Plan phase — do not skip it.
-
-1. **Download/prepare instance data** — Write a download/generation script into `benchmarks/instances/{name}/`. Follow the pattern of `benchmarks/instances/uc-chped/` (Python data definitions + JSONL serialization). Source data from public benchmark libraries, competition archives, or papers.
-
-2. **Find a reference solver** — Implement a reference solver in `benchmarks/{name}/reference_solve.py` using SCIP (PySCIPOpt) or another open-source solver if SCIP can't handle the formulation. Follow the pattern in `benchmarks/chped/reference_solve.py`.
-
-3. **Collect best-known results** — Find published results from papers/competitions. Record them per **Measuring and testing engine changes** above: a README with the engine commit named in the text, or a `comparison.csv` (columns: instance, method, objective, gap, source) if a test will read it.
-
-4. **Implement CBLS model** — Create `benchmarks/{name}/data.h` (C++ data structs + loaders) and `benchmarks/{name}/{name}_model.h` (model builder). Follow the pattern of `benchmarks/chped/chped_model.h`. **Critical rules:**
-   - Implement features generically in `include/cbls/` and `src/` — not benchmark-specific hacks
-   - If the solver needs new ops, moves, or hooks — implement them in the core library so all benchmarks benefit
-   - Add a runner executable in `benchmarks/{name}/{name}.cpp`
-   - Add Catch2 tests in `tests/test_{name}.cpp`
-   - Update the root `CMakeLists.txt` and `tests/CMakeLists.txt` for new executables and tests
-
-5. **Run comparison** — Compare CBLS vs reference solver vs best-known results. Report objective, gap %, and solve time.
-
-6. **Verify correctness** — Check CBLS solutions against best-known solutions. Feasibility must be verified (all constraints satisfied). Objective should be within reasonable gap of BKS.
-
-7. **Commit often** — Commit after each meaningful step. Use descriptive commit messages.
-
-8. **Self-review loop** — After each commit, review your own changes for issues/nits. Fix and commit again. Repeat until clean.
-
-9. **Do not interrupt the user** — No exceptions. Keep going until the benchmark is fully implemented, running, and producing correct results. Only stop if you hit a fundamental blocker that requires API/architecture changes.
+When a better instruction would have prevented a mistake, fix this file in the
+same commit. Keep it under ~15 KB: reference material goes to `docs/`, with a
+pointer here. Leave the provenance lines at the top in place.

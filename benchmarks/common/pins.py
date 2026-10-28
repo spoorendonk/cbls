@@ -2,8 +2,8 @@
 
 A benchmark's reference values are derived once from the library that publishes
 them and pinned, so a library revision cannot silently redefine the yardstick
-(CLAUDE.md, "A comparison table is an OUTPUT; the reference values are the
-artifact"). A pin table is a CSV of `<key>,sha256,bytes`; these are the four
+(docs/measuring.md, "A comparison table is an OUTPUT; the reference values
+are the artifact"). A pin table is a CSV of `<key>,sha256,bytes`; these are the four
 operations every downloader that pins needs: hash, read, write, compare.
 """
 

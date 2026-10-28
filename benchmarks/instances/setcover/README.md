@@ -177,7 +177,7 @@ quote `adc8ee4` or `8dc906b` numbers describe the engine at those commits.
 
 ## Cost-aware structural selection (#165) — measured twice, still not established
 
-CLAUDE.md has long named **cost-aware structural move selection** as the
+CLAUDE.md (now `docs/benchmarks/README.md`) has long named **cost-aware structural move selection** as the
 prerequisite for any renewed structured-variable claim, and #165 built it:
 registrable move generators, granular neighbour lists, and a
 `StructuralSelection` policy with a violation-guided arm. This roster is its A/B

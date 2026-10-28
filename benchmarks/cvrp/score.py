@@ -1,6 +1,6 @@
 """Score a CVRP results directory: gap to BKS, size bands, paired A/B (#199).
 
-A table here is an OUTPUT (CLAUDE.md, "A comparison table is an OUTPUT"): it is
+A table here is an OUTPUT (docs/measuring.md, "A comparison table is an OUTPUT"): it is
 a function of a results directory, a roster and a budget, and is re-derived from
 the per-job records whenever the question is asked. The reference values are the
 pinned BKS in the roster tables of `benchmarks/instances/cvrp/`.

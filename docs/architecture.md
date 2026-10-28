@@ -12,6 +12,7 @@ large-neighborhood-search diversification.
 ## Table of Contents
 
 1. [Overview](#overview)
+   - [Source Map](#source-map)
 2. [Expression DAG](#expression-dag)
 3. [Model](#model)
 4. [Violation & GLS Weights](#violation--gls-weights)
@@ -67,6 +68,134 @@ weights `W`, and progress is greedy on weighted violation. The penalty-method
 metric `obj + total_violation()` survives only as the *inner solver's* local
 descent objective (`ViolationManager::augmented_objective`), not as the search's
 acceptance rule.
+
+---
+
+## Source Map
+
+A one-screen map of the pipeline, its files and defaults, the extension points, build targets and dependencies (moved from CLAUDE.md, #242). The sections after it are the full account.
+
+### Core pipeline
+
+1. **Model building** (`include/cbls/model.h`, `include/cbls/expr.h`) — Declare typed variables (Bool, Int, Float, List, Set), build expressions via operator overloading, add constraints, set objective, call `close()` which topologically sorts the DAG.
+
+2. **Expression DAG** (`include/cbls/dag.h`, `src/dag.cpp`, `src/dag_ops.cpp`) — Variables use negative handles `-(id+1)`, nodes use non-negative `id`. 35 `NodeOp` operation types. Two evaluation modes:
+   - `full_evaluate`: evaluate all nodes in topo order (initialization)
+   - `delta_evaluate`: BFS dirty-marking from changed variables, recompute only affected nodes (moves). On an FJ commit an incremental Sum (#188, a row read only by top-level comparisons) is moved by its changed terms instead of re-summed, so inside a batch its value may sit within a tracked drift bound of a re-sum; every verdict re-grounds first. A bit-exact delta-vs-full test must allow for that on fractional data. Details under **Evaluation Modes** below
+   - Reverse-mode AD via `compute_all_partials` for the continuous (Newton) jump-value engine
+
+3. **Search** (`src/search.cpp`) — ViolationLS batch outer loop (Davies et al. CPAIOR 2024, Algorithm 6). The objective is folded into the constraints as `obj <= bound`; each batch is a Feasibility Jump, Novelty Jump, or STRUCTURAL batch (selected by config probabilities). The objective bound is tightened on each new real-feasible solution; on stagnation the assignment is perturbed or diversified via LNS. CP-SAT's restart randomisation (`restart_randomization`) and Luby schedule (`luby_restart_unit`) are kept as arms, default **off**: neither separated from the stall trigger in #239's smoke A/B.
+
+4. **Feasibility Jump** (`src/feasibility_jump.cpp`) — Generalised Feasibility Jump: a `JumpTable` of cached per-variable best jumps (score = `-W·δ_G`), best-of-N scan-set sampling, GLS weight dynamics (bump violated + ρ-decay), and Novelty Jump compound moves (Algorithms 4–5). Float jump values come from Newton-toward-violated-root candidates via reverse-mode AD. A candidate over rows that are all linear (affine comparisons, or affine bare bodies `expr <= 0` since #190) is scored in closed form by `LinearJumpScorer` (`src/linear_jump.cpp`) rather than by a DAG probe; any other column falls back to `weighted_violation_delta`. With `SearchConfig::fj_exact_int_jump` on (default **off**, #216) an Int column over all-linear rows skips the candidates and takes the exact argmin, `LinearJumpScorer::int_argmin` (OR-Tools' `ComputeLinearJump`); it regresses #208's repro, and stays off by #208 (closed not planned) / #216. `SearchConfig::perturb_near_value` (default **off**, #217) makes the diversification kick OR-Tools' (`random_near_value`: p = 0.05, near the current value); it stays off by #219 / #226. Both are kept as arms faithful to their OR-Tools originals. `fj_objective_tie_break` (default **on** in `solve()` since #226, #218; a bare `GFJConfig` keeps it off) carries OR-Tools' use of an affine objective before the first feasible point: a lexicographic objective tie-break plus an objective-improving scan. #218's objective-favourable start, #221's exact quadratic roots and #222's equality-balance moves were measured in #226's smoke A/B, found neutral or worse, and removed. A variable that reaches a `Ceil`/`Floor`/`Round`/`Element` node additionally gets that node's breakpoints — plateau edges and index values, mapped back through the argument's slope — as candidates (#186), since those ops' derivative is 0.
+
+5. **Moves** (`src/moves.cpp`) — typed move generators by variable type (bool flip, int ±1/rand, float perturb, list swap/2opt/relocate/or-opt/insert/exchange/remove, set add/remove/swap), plus the inter-list moves of a `ListPartition` (relocate/swap/2-opt\*, and insert/remove under `Cover::AtMostOnce`). Scalar moves are subsumed by FJ's jump values; the list/set moves feed the STRUCTURAL batch. A structured change is a **positional `ElementEdit`** on the variable's `elements`, not the whole vector — the batch restores the sample's starting assignment before each candidate so an edit lands where it was built. `StructuralSelection::GranularBest` (#203, needs a neighbour list; the default `Auto` selection runs it whenever the config has one, `FirstImprovingSample` otherwise) replaces a partition's sampled moves with the granular complete neighbourhood of one element (every relocate/swap/2-opt/2-opt\* with each of its k nearest neighbours) and commits the best; on the CVRP smoke it beat `ViolationGuided` 15/15.
+
+6. **Inner solver** (`src/inner_solver.cpp`) — `FloatIntensifyHook`: coordinate descent over float variables using Newton steps on violated constraints + backtracking line search on objective. Triggered on each new feasible solution.
+
+7. **LNS** (`src/lns.cpp`) — Every `ListPartition` is ruined and recreated (SISR's string removal and greedy insertion with blinks, #202); every other variable keeps the original pair, destroy 30% and repair via FJ. Fires every N diversification kicks. Accepts on a lexicographic (real-violation, objective) key.
+
+8. **Violation & penalty** (`src/violation.cpp`) — `total_violation = Σ W[c]·max(0, viol_c)` with per-constraint GLS weights `W`. `weighted_violation_delta` is the no-commit counterfactual δ_G. `augmented_objective() = obj + total_violation()` is the penalty-method metric the inner solver descends.
+
+9. **Parallel search** (`src/pool.cpp`) — `SolutionPool` + `ParallelSearch`: a cooperative portfolio. Workers share incumbents through the mutex-guarded pool as they find them, tighten their `obj <= bound` row to the pool's best feasible objective at each batch boundary (#179, `ParallelConfig::share_objective_bound`), restart from the pool on stagnation, are restarted rather than left idle while budget remains, and stop each other once one has solved a pure-feasibility model. All of it reaches the engine through `cbls::solve()`'s trailing `SearchCoordination*`, which is null everywhere else. Nondeterministic by construction; `--threads 1` is the reproducible run (on the same hardware under the same load — it is still wall-clock bounded).
+
+   **Workers share the model's immutable structure** (#157). `ParallelSearch::solve`
+   has two entry shapes: the `Model&` **master** overload freezes the model on
+   the calling thread and hands each worker a copy, which takes the DAG by
+   reference and duplicates only what a search writes; the
+   `std::function<Model()>` **factory** overloads share exactly what the
+   factory's models share — nothing for freshly built ones, the structure for
+   copies of a frozen model. Python binds both: `ParallelSearch.solve_master` is
+   the master overload, `solve_parallel` the factory one. Prefer the master
+   overload.
+   Measured on `neos-5114902-kasavu` (710k columns, 4.30M nodes), before at
+   `0dc826b` and after at `06eb3e5`: peak RSS at 8 workers fell from 6.04 to
+   3.15 GiB, the marginal worker from ~0.75-0.86 to ~0.34-0.39 GiB, at identical
+   single-threaded throughput (257 iterations in 30s either way). The per-worker
+   constant is not zero and will not become zero — the variables, the node values,
+   three `Model::State` snapshots and FJ's tables are all genuinely per worker —
+   and it is a floor rather than a bound, since its largest term scales with the
+   column count. Size a run against "1-worker + N x a measured per-worker
+   constant". **Parallel Search** below carries the table with its commit.
+
+   Three callers drive it: `src/cli.cpp`, which loads the model once and passes it
+   as the master; Python's `ParallelSearch.solve_master`, likewise; and
+   `benchmarks/mipfeas/` at `--threads > 1`, through the factory overload over
+   pre-built copies of its frozen master (the other three
+   runners are still single-threaded, so their trajectories are unchanged). The
+   runner freezes the model and replicates it once per worker **before** the solve
+   bracket opens, and reports the cost as `replicate_seconds`. That has to stay
+   outside the bracket for two reasons: inside it the copies come out of the
+   search's own deadline, and a `bad_alloc` there is parked by `ParallelSearch`,
+   which returns the survivors' result. A worker that dies later, inside the
+   bracket, is not silent either (#170): `SearchResult::workers_completed` and
+   `worker_failures` report it, the runner publishes them per row, and the scorer
+   refuses a row with fewer completed workers than `threads`. It still
+   grows with `--threads`, but with the per-worker mutable side rather than a whole
+   DAG — 0.60s at eight workers against ~1.6s before. Its driver
+   refuses `--cbls-threads != --cpsat-workers` without `--allow-asymmetric-cpu`:
+   CP-SAT at N workers runs N `fj` and N `ls` subsolvers, so an asymmetric split
+   is an N-fold CPU advantage that the table would report as an implementation
+   gap.
+
+   A `SolveCallback` handed to `ParallelSearch` sees the **portfolio's** stream,
+   not worker 0's: every worker reports through one mutex-guarded wrapper that
+   rewrites `time_seconds` onto the portfolio clock (a worker's own solve times
+   from its own start, and a restart starts a second one) and carries the global
+   incumbent in `objective`. Worker 0 additionally keeps the periodic
+   no-new-best tick, so the CLI's liveness row survives.
+
+10. **I/O** (`src/io.cpp`, `src/io/`) — JSONL `.cbls` model format in `src/io.cpp`; `src/io/` holds the MPS reader (`mps_reader.cpp` + `mps_to_model.cpp`, gzip via zlib, optional bzip2), the AMPL `.nl` reader (`nl_reader.cpp` + `nl_to_model.cpp`) and the MIPLIB `.solu` reader. CLI in `src/cli.cpp`.
+
+### Key extension points
+
+- **`InnerSolverHook`** — subclass to provide domain-specific continuous optimization. The reference implementation is the built-in `FloatIntensifyHook` (`include/cbls/inner_solver.h`, `src/inner_solver.cpp`); no benchmark currently ships a custom one. `solve()` is handed a `StopRef stop` (#191) that turns true at the search's deadline, a peer's stop or a host cancel: the call is synchronous and cannot be pre-empted, so a hook whose work can outlast the budget **must** poll `stop` and return promptly, leaving the model consistent — an unpolled hook runs the solve past its budget.
+- **New operations** — add to `NodeOp` enum in `dag.h`, implement `evaluate()` in `dag.cpp`, `local_derivative()` for AD, `delta_evaluate` support in `dag_ops.cpp`
+- **`CustomInvariant`** (`include/cbls/custom_invariant.h`, #166) — user code
+  *inside* the DAG, for the cases that do not deserve a core op: a black-box or
+  simulation value, sequence state, an aggregate the op set lacks.
+  `Model::custom(inputs, std::move(inv), name)` gives an ordinary node with an
+  optional incremental `delta`, and a `commit`/`rollback` bracket on the
+  per-candidate scalar probe so that probe costs one delta rather than two. The
+  instance is **per-model** and `clone()`d per portfolio worker — unlike
+  `lambda_funcs`, which every replica invokes concurrently and which therefore
+  cannot carry state. A model holding one cannot be written to `.cbls`, and it
+  is **not** exposed to Python (that waits on #132). The sections below
+  carry the contract table and names the **three** apply-then-revert sites
+  deliberately left unbracketed (the inner solver's is only its multi-variable
+  step since #207). `in.edits(i)` (#172) says *where* a List/Set
+  input moved, as positional edits since the last committed state, so a delta
+  over a List can be O(edits) — but only the structural batch supplies them, only
+  for an invariant that opts in (`wants_positional_edits()`), and on every other
+  path a moved List/Set input reports `available() == false`: re-read then.
+  This is engine capability, not evidence about List performance.
+
+### Build targets
+
+| Target | Source | Description |
+|--------|--------|-------------|
+| `cbls_lib` | `src/*.cpp`, `src/io/*.cpp` | Core library (static) |
+| `cbls_cli` | `src/cli.cpp` | CLI executable (output name `cbls`) |
+| `cbls_tests` | `tests/*.cpp` | Catch2 test suite |
+| `cbls_simple` | `examples/simple.cpp` | Minimal modeling example |
+| `cbls_chped` | `examples/chped.cpp` | CHPED modeling example over `benchmarks/chped/` |
+| `cbls_uc_chped` | `benchmarks/uc-chped/` | UC-CHPED benchmark runner |
+| `cbls_mipfeas` | `benchmarks/mipfeas/` | MIPfeas runner (one instance per process) |
+| `cbls_minlplib` | `benchmarks/minlplib/` | MINLPLib benchmark runner |
+| `cbls_minlplib_portfolio` | `benchmarks/minlplib/portfolio_ab.cpp` | MINLPLib portfolio A/B harness (shared-bound on/off, #179) |
+| `cbls_setcover` | `benchmarks/setcover/` | OR-Library set-covering runner (the `Set`-variable example) |
+| `cbls_cvrp` | `benchmarks/cvrp/` | CVRPLIB X-set CVRP runner (the `List`-variable example, one instance per process) |
+
+Examples, tests, benchmarks and bindings are each behind an option:
+`CBLS_BUILD_EXAMPLES`/`CBLS_BUILD_TESTS`/`CBLS_BUILD_BENCHMARKS` default ON,
+`CBLS_BUILD_PYTHON` defaults OFF (but the gated build turns it on).
+
+### Dependencies
+
+- **zlib** — required (`find_package(ZLIB REQUIRED)`), gzip-compressed MPS input
+- **bzip2** — optional, `-DCBLS_USE_BZIP2=ON`, adds `.bz2` MPS support
+- **nlohmann/json** v3.11.3 — JSONL I/O (FetchContent)
+- **Catch2** v3.5.2 — C++ tests (FetchContent)
+- **nanobind** — Python bindings (optional, via scikit-build-core)
 
 ---
 
@@ -983,7 +1112,7 @@ on 2 / 1 (the largest move, kall_ellipsoids_tc02b seed 2, 52.17 -> 77.78, is
 matched by a 52.07 -> 50.48 improvement on seed 1). Two seeds cannot separate
 that from trajectory noise. **This change moves FJ trajectories, so every
 published table recorded before `d424dbd` is at an older engine** (see
-"Measuring and testing engine changes" in CLAUDE.md).
+`docs/measuring.md`).
 
 After a new best feasible solution, the search resets all weights to `1.0`
 (`FeasibilityJump::reset_weights`) — a fresh penalty landscape per the paper.

@@ -1583,7 +1583,7 @@ worst-violated NL row and its sense.
 ## Defaults fitted on this roster (#233)
 
 A parameter is fitted on one roster and reported on another
-([CLAUDE.md](../../../CLAUDE.md), "Common Mistakes"). Several of the engine's
+([docs/measuring.md](../../../docs/measuring.md), "Performance and measurement"). Several of the engine's
 current defaults were not: they were chosen by measurement on these fifty
 instances, so a table published on them is in-sample for each one.
 

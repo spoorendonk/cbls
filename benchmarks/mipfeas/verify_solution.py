@@ -1,6 +1,6 @@
 """Independent feasibility check of a MIPfeas solution against its instance file.
 
-MIPfeas is this repo's correctness benchmark (CLAUDE.md, "Benchmark priority"),
+MIPfeas is this repo's correctness benchmark (docs/benchmarks/README.md, "Benchmark priority"),
 so the one thing it must not do is take a reported solution on trust. Every check
 either engine runs on itself is downstream of its own MPS reader: CBLS's
 residual, integrality and objective-drift checks all run against the model

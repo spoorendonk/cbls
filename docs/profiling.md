@@ -421,7 +421,7 @@ is worth doing for the timing assumptions it flushes out, not only for races.
 
 ## Recording what a profile found
 
-Per CLAUDE.md's rule that measurements go stale silently:
+Per `docs/measuring.md`'s rule that measurements go stale silently:
 
 - **Name the engine commit** next to any number you publish. `git rev-parse
   --short HEAD` at the time of the run, in the prose or in a `commit_sha`
