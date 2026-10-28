@@ -280,7 +280,18 @@ row. The search configuration is the engine's defaults with compound moves
 (Novelty Jump) **off** (`published_search_flags()` in the runner): the engine
 turned them on by default on 2026-10-07, but a single-seed smoke at `b8f52f4`
 found them worse on 16 of the 19 rows that differed here, so `--compound-moves`
-is an ablation arm the runner refuses to write onto the published table:
+is an ablation arm the runner refuses to write onto the published table.
+
+That choice was measured on the same instances the table publishes, so on
+them it is in-sample (#233); there is no held-out UC-CHPED roster. The
+objective tie-break, on by default since `9e1cce9` (#220), needs an affine
+objective and does nothing here, because the valve-point term is not affine.
+The `search_config` cell records it only when off, so a default row reads the
+same before and after `9e1cce9` either way. When #131 regenerates the measured
+rows, the text quoting them names the engine commit (also on every row as
+`commit_sha`) and says the tie-break is inert on this objective.
+
+The command that writes it:
 
 ```bash
 set -o pipefail

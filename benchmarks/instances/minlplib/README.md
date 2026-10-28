@@ -1580,6 +1580,38 @@ near-miss is distinguishable from a search that never reached the feasible
 region: `max_violation` holds the residual, and the `note` column names the
 worst-violated NL row and its sense.
 
+## Defaults fitted on this roster (#233)
+
+A parameter is fitted on one roster and reported on another
+([CLAUDE.md](../../../CLAUDE.md), "Common Mistakes"). Several of the engine's
+current defaults were not: they were chosen by measurement on these fifty
+instances, so a table published on them is in-sample for each one.
+
+| Default | Chosen by | Measurement on this roster |
+|---|---|---|
+| unproductive-batch exit at 300 iterations | #102 | a grid {100, 300, 1000} over the fifty, one seed at 2s; #145 checked the transfer at 10s only (HELDOUT.md) |
+| compound moves (Novelty Jump) on | `79a694a` | one seed at 5s at `b8f52f4`: 16 instances better, 7 worse |
+| near-value kick off | #226 Run B, #219 | 3 seeds at 5s: gap ratio 1.225, `nvs01` lost on seed 1 |
+| quadratic roots and equality balance removed | #226 Run B, #223, #224 | 3 seeds at 5s: neutral or worse |
+
+The objective tie-break (on since `9e1cce9`, #220) was decided on MIPfeas's
+smoke roster (#226 Run A), not on this one. #211's changes to the FJ tolerance,
+`sample_size_general` and the weight carry-over were correctness fixes or moves
+to the reference algorithm's values, not fitted.
+
+The held-out roster in `heldout/` was drawn before any of these were measured on
+it and none was fitted to it (HELDOUT.md). The next regeneration (#228) runs it
+at the same budget and seeds and reports its aggregates beside this roster's, so
+an in-sample advantage shows as a gap between the two.
+
+**The tie-break and the `search_config` cell.** The cell records
+`objective_tie_break` only when it is off (see "Ablation arms"), so a default
+row's cell is the same before and after `9e1cce9`. The committed tables are at
+`4524460`, before the flip, and ran the tie-break **off**. A table regenerated
+after it runs the tie-break **on** with an unchanged cell; only the engine
+commit, recorded per row as `commit_sha`, tells the two apart. Any text quoting
+a table names its engine commit and the tie-break's state.
+
 ## Caveats
 
 - CBLS is a primal heuristic; large gap-to-BKS on hard multimodal instances is

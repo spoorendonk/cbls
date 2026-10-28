@@ -596,6 +596,31 @@ bounded by the deadline. The Primal Integral is unaffected — it integrates ove
 [0, budget] whatever the wall clock does — but the run takes longer than the
 budget times the job count implies.
 
+## Choices tuned on the smoke roster (#233)
+
+All 11 instances in `smoke.csv` — `enlight_hard`, `markshare2`, `gen-ip054`,
+`gen-ip002`, `pk1`, `mas76`, `neos5`, `mad`, `binkar10_1`, `atlanta-ip` and
+`neos-5114902-kasavu` — are also in `roster.csv`, the roster a full run
+publishes. Several defaults were chosen by measurement on exactly those 11, so
+on them a published row is in-sample:
+
+| Choice | Decided by | Shipped in |
+|---|---|---|
+| Novelty Jump on, and the `1e7` clamp | the A/B table under "What the wiring check found" | the runner's flags |
+| FJ-or-Novelty redrawn every batch | #209's pre-registered A/B, 10 seeds at 30s (`docs/architecture.md`, Novelty Jump) | `143c8da` |
+| objective tie-break on | #226 Run A, 5 seeds at 10s; gap at first feasible 0.748 | `9e1cce9` (#220) |
+| near-value kick off | #226 Run A (and Run B on MINLPLib) | default kept (#219) |
+
+`docs/architecture.md` and #226 carry the numbers. The other 222 instances were
+never tuned on. With 11 of 233 the effect on a roster-wide aggregate is small,
+but it is not zero, so a published table names these 11 when it quotes one.
+
+Every CBLS result record carries the tie-break's state as `objective_tie_break`
+(a record from before `9e1cce9` has no such key and ran it off), and the scorer
+puts `objective_tie_break=True` into the configuration cell, so an on row never
+scores together with an off one. A published table names its engine commit and
+states whether the tie-break was on.
+
 ## Configuration, and what is recorded
 
 Both engines are run at a stated configuration, recorded per result rather than
