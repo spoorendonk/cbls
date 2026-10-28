@@ -156,8 +156,6 @@ contention inflates a solve by 1.4-1.7x: `UC-CHPED 40-unit 1-period feasibility`
 is 9.95s alone and 17.1s under `-j12`. Tag if it exceeds ~10s on **either**
 basis. Don't tag one just to get a green commit — pre-push will still run it.
 
-**Never use `git push --no-verify` or `git commit --no-verify`** unless explicitly asked. A failing hook is a signal — fix the root cause.
-
 ## LSP
 
 ### C++
@@ -277,7 +275,7 @@ CLAUDE.md states these rules in short form; this is the original text, with the 
 - Style: enforced by `ruff` (format + lint) and `mypy --strict`, configured in `pyproject.toml`.
 - All functions must have full type annotations (mypy strict mode).
 - Use built-in generics (`list[int]`, `dict[str, Any]`) and `|` union syntax.
-- Pin dependencies with `>=` lower bounds in `pyproject.toml`. Use `uv` or `pip`.
+- Pin dependencies with `>=` lower bounds in `pyproject.toml`. Use `uv`; change the venv with `uv sync`, never `pip`.
 
 ### nanobind Bindings
 

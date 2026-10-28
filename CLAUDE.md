@@ -154,9 +154,12 @@ Follow wcp's rules for a goal's issues, one at a time: issue check (plan as an
 issue comment when unclear) → implement → gate (the full fences, even for a
 trivial-looking change) and commit → **one cold reviewer** (`/code-review` on
 unpushed commits), at most two rounds, fix between them → record the receipt
-on a clean tree, push, close. File only what has a concrete failure scenario
+on a clean tree, push, close. A real finding left after round two, or out of
+scope, becomes its own issue. File only what has a concrete failure scenario
 or a missing acceptance criterion; fix or drop nits. Agent-team and parallel
-runs: `docs/development.md`.
+runs: `docs/development.md`; no subagent returns unreviewed work and no
+orchestrator merges it (`docs/git-hooks.md`, **Agent Self-Review**). If `wcp`
+is not on PATH, say so; don't install it unasked.
 
 A hygiene goal (`wcp hygiene`) is a task worked from its note: findings are
 edits to issues or new `tech-debt` issues, nothing is fixed in the round, one
@@ -208,7 +211,9 @@ above it and add `NOLINTNEXTLINE(readability-function-cognitive-complexity)`.
 
 Builds, ctest, clang-tidy and pushes run under the machine lock
 (`xk lock -- CMD`) with at most 4 jobs (group rules). The fences below are
-what pre-push runs; why they look this way: `docs/development.md`.
+what pre-push runs, pinned to `git config hooks.localCiCpus` (`0-3`) so
+`$(nproc)` is 4; by hand, run them as `xk lock -- taskset -c 0-3 sh -c '…'`.
+Why they look this way: `docs/development.md`.
 
 ```clean
 rm -rf build
@@ -245,9 +250,9 @@ Full rules: `docs/measuring.md`. The short list:
   any "faster" claim. Subtracted whole-program timings are not measurements.
 - A runner writing a published table loads its roster first, refuses an
   incomplete one, and writes to a temp path then renames.
-- **A search-trajectory change invalidates the published tables** of the three
-  comparative benchmarks (`mipfeas`, `minlplib`, `uc-chped`): record the engine
-  commit with any regenerated result. Only MINLPLib's tables are test-checked.
+- **A search-trajectory change invalidates every published table**: record the
+  engine commit with any regenerated result. Only MINLPLib's tables are
+  test-checked.
 - Reference values (best-known, optimal) are derived once and pinned; an
   engine-vs-engine comparison is an output, regenerated, not defended.
 
