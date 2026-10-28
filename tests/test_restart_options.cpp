@@ -136,24 +136,55 @@ namespace {
 // on a [0, 10] domain: never violated, so never bumped, and decay scales every
 // row alike -- with W reset to 1 they stay equal, and only a random fill can
 // part them. The hook runs on real-feasible batches with W materialised.
+//
+// Each of the three draw sites is told apart by what came last before a hook
+// call. A new best runs the hook and THEN resets W, so with no LNS and no pool
+// the last reset before a call is the kick's whenever a kick fell since the
+// previous call, and the new best's otherwise.
 constexpr int kGuards = 8;
 
 struct GuardWeightProbe : InnerSolverHook {
+    const KickLog* kicks = nullptr;
+    size_t kicks_seen = 0;
     int calls = 0;
     bool parted = false;
+    bool parted_last_call = false;
+    bool parted_after_new_best = false;
+    bool parted_after_restart = false;
+    bool parted_after_perturb = false;
     void solve(Model& /*model*/, ViolationManager& vm,
                const std::vector<int32_t>& /*last_changed_vars*/, StopRef /*stop*/) override {
-        ++calls;
+        const bool first = calls++ == 0;
+        const size_t kicked = kicks->kinds.size();
+        const bool after_kick = kicked > kicks_seen;
+        const KickKind last = after_kick ? kicks->kinds.back() : KickKind::Perturb;
+        kicks_seen = kicked;
         if (vm.weights.size() <= static_cast<size_t>(kGuards)) {
             return;
         }
+        bool now = false;
         for (int i = 2; i <= kGuards; ++i) {
-            parted = parted || vm.weights[static_cast<size_t>(i)] != vm.weights[1];
+            now = now || vm.weights[static_cast<size_t>(i)] != vm.weights[1];
+        }
+        parted = parted || now;
+        const bool was_parted = parted_last_call;
+        parted_last_call = now;
+        if (!now || first) {
+            return;
+        }
+        if (!after_kick) {
+            // Equal last call, parted now, no kick between: the only reset in
+            // between is the new best's that followed the last call.
+            parted_after_new_best = parted_after_new_best || !was_parted;
+        } else if (last == KickKind::Restart) {
+            parted_after_restart = true;
+        } else if (last == KickKind::Perturb) {
+            parted_after_perturb = true;
         }
     }
 };
 
-GuardWeightProbe solve_guarded(bool restart_randomization, uint64_t seed) {
+GuardWeightProbe solve_guarded(bool restart_randomization, uint64_t seed, KickLog& log) {
     Model m;
     std::vector<int32_t> xs;
     std::vector<int32_t> cost;
@@ -167,10 +198,16 @@ GuardWeightProbe solve_guarded(bool restart_randomization, uint64_t seed) {
     }
     m.minimize(m.sum(cost));
     m.close();
+    // Short batches and a short period, so kicks fall while the run is
+    // feasible and the hook sees what each one left.
     SearchConfig config;
-    config.max_iterations = 20'000;
+    config.batch_iterations = 100;
+    config.perturbation_period = 3;
+    config.max_iterations = 40'000;
     config.restart_randomization = restart_randomization;
+    config.tracer = &log;
     GuardWeightProbe probe;
+    probe.kicks = &log;
     solve(m, /*time_limit=*/0.0, seed, true, &probe, nullptr, 3, nullptr, config);
     return probe;
 }
@@ -178,16 +215,27 @@ GuardWeightProbe solve_guarded(bool restart_randomization, uint64_t seed) {
 }  // namespace
 
 TEST_CASE("restart_randomization's weight fill reaches solve() (#239)", "[restart]") {
-    bool parted_on = false;
+    bool new_best = false;
+    bool restart = false;
+    bool perturb = false;
     for (const uint64_t seed : {1, 2, 3, 4, 5}) {
-        const GuardWeightProbe off = solve_guarded(false, seed);
-        CAPTURE(seed, off.calls);
+        KickLog off_log;
+        const GuardWeightProbe off = solve_guarded(false, seed, off_log);
+        CAPTURE(seed, off.calls, off_log.kinds.size());
         REQUIRE(off.calls > 1);
+        REQUIRE_FALSE(off_log.kinds.empty());
         REQUIRE_FALSE(off.parted);
-        const GuardWeightProbe on = solve_guarded(true, seed);
-        parted_on = parted_on || on.parted;
+        KickLog on_log;
+        const GuardWeightProbe on = solve_guarded(true, seed, on_log);
+        new_best = new_best || on.parted_after_new_best;
+        restart = restart || on.parted_after_restart;
+        perturb = perturb || on.parted_after_perturb;
     }
-    REQUIRE(parted_on);
+    // Each site on its own: the new best's reset, the restore-only kick's, and
+    // the perturb kick's.
+    CHECK(new_best);
+    CHECK(restart);
+    CHECK(perturb);
 }
 
 TEST_CASE("luby_restart_unit kicks on the Luby schedule (#239)", "[restart]") {
