@@ -343,35 +343,48 @@ constexpr double kEscapeArmFraction = 0.25;
 constexpr int kUnproductiveArmDivisor = 20;
 
 // The objective bound a feasible objective `obj` earns: strictly below it. One
-// rule for every writer -- record_best, an adoption's re-grounding and the
-// shared bound (#179) -- because "never loosen" across them rests on it: the
-// bound must be strictly increasing in `obj`, so a better objective always gives
-// a tighter bound, whichever of the three writers derived it. Both branches are
-// (slope 1, and 1 +- 1e-3):
+// rule for every writer -- record_best, an adoption's re-grounding, the shared
+// bound (#179) and the stall re-grounding below -- because "never loosen" across
+// them rests on it: at any one `rel_step` the bound must be strictly increasing
+// in `obj`, so a better objective always gives a tighter bound, whichever writer
+// derived it. Both branches are (slope 1, and 1 +- rel_step):
 //
 //  - An INTEGRAL objective (Model::is_integral) takes `obj - 1`, as CP-SAT
 //    tightens one to best - 1: the next integer below is the only improvement
-//    there is, and it is exactly reachable (#211). The relative step below
-//    hid every improvement under 0.1% -- at obj = 1e4, the integer objectives
+//    there is, and it is exactly reachable (#211). A relative step hid every
+//    improvement under it -- at obj = 1e4 and 1e-3, the integer objectives
 //    9,990-9,999 kept the objective row violated.
-//  - Any other takes `obj - 1e-3 * (|obj| + 1)`, and that has the same
-//    consequence, stated here because it is one: an improvement smaller than
-//    ~0.1% of |obj| + 1 is never asked for, so a continuous objective is only
-//    resolved to that granularity (the search can still land on a finer one,
-//    but nothing pulls it there). It is kept because the step is also the
-//    descent's pace -- FJ's Newton candidate on the objective row lands on the
-//    bound, so each incumbent improves by about one step: eg_all_s walks from
-//    1e9 to 14.4 in 15,892 of them (benchmarks/instances/minlplib/README.md),
-//    and a 1e-6 step would need ~1000x as many. Whether a smaller or adaptive
-//    step pays is for #228's regenerated MINLPLib table to answer (#238).
-double objective_bound_below(double obj, bool integral) {
+//  - Any other takes `obj - rel_step * (|obj| + 1)`. The step is a trade-off:
+//    an improvement smaller than it is never asked for, so a continuous
+//    objective is only pulled to that resolution; and it is the descent's pace
+//    -- FJ's Newton candidate on the objective row lands on the bound, so each
+//    incumbent improves by about one step: eg_all_s walks from 1e9 to 14.4 in
+//    15,892 of them (benchmarks/instances/minlplib/README.md), and a 1e-6 step
+//    would need ~1000x as many. So the loop ADAPTS it (#241): it starts at
+//    kObjStepMax, a full perturbation_period stall with an incumbent divides it
+//    by kObjStepShrink down to kObjStepMin and re-grounds the bound on the
+//    incumbent, and each new best multiplies it by kObjStepGrow back up to
+//    kObjStepMax. That keeps the 1e-3 pace far from the optimum and resolves to
+//    1e-6 near it. #241's held-out A/B (10 s, 3 seeds, 50 instances): the
+//    adaptive step was better than a fixed 1e-3 on 2 instances beyond the
+//    noise floor and worse on none (raw means 17 better / 5 worse), where a
+//    fixed 1e-4 was worse on 10 and a fixed 1e-6 on 16 -- the descents stall.
+double objective_bound_below(double obj, bool integral, double rel_step) {
     if (integral) {
         // nextafter keeps the bound strictly below obj past 2^53, where obj - 1
         // rounds back to obj.
         return std::min(obj - 1.0, std::nextafter(obj, -std::numeric_limits<double>::infinity()));
     }
-    return obj - (1e-3 * (std::abs(obj) + 1.0));
+    return obj - (rel_step * (std::abs(obj) + 1.0));
 }
+
+// The continuous objective step's range and its two moves; see
+// objective_bound_below. Chosen before #241's A/B and fitted on nothing: the
+// range is the two fixed steps #241 weighed, the factors the A/B's only setting.
+constexpr double kObjStepMax = 1e-3;
+constexpr double kObjStepMin = 1e-6;
+constexpr double kObjStepShrink = 10.0;
+constexpr double kObjStepGrow = 2.0;
 
 // The ViolationLS outer loop: its state, and the steps of one pass over it. Every
 // member below was a local of solve(), most of them closed over by one of its
@@ -500,10 +513,13 @@ private:
     // when sharing is off or there is nothing to share. Every writer of the bound
     // takes the min with it, which is what keeps a shared tightening from being
     // undone by the worker's own later, worse incumbent (see record_best).
-    // objective_bound_below for this model.
+    // objective_bound_below for this model, at the current step.
     [[nodiscard]] double bound_below(double obj) const {
-        return objective_bound_below(obj, obj_integral_);
+        return objective_bound_below(obj, obj_integral_, obj_step_);
     }
+    // On a full-period stall: shrink the continuous step and re-ground the bound
+    // on the incumbent (#241). See the definition.
+    void shrink_objective_step();
     [[nodiscard]] double shared_bound_cap() const {
         const double global = global_best();
         return coord_ != nullptr && coord_->share_objective_bound && std::isfinite(global)
@@ -640,6 +656,9 @@ private:
     const bool has_obj_;
     // Whether the objective is integral, which sets objective_bound_below's step.
     const bool obj_integral_;
+    // The continuous objective's relative bound step, adapted between
+    // kObjStepMin and kObjStepMax (#241). Unused on an integral objective.
+    double obj_step_ = kObjStepMax;
     const int32_t obj_ci_;
     const std::vector<int32_t>& cids_;
     // The structural batch has work and FJ/Novelty batches have none (#201);
@@ -961,6 +980,10 @@ bool ViolationLSLoop::record_best() {
         const double next = std::min(own, cap);
         bound_moved = next < previous;
         model_.set_objective_bound(next);
+        // A new best is the step's success: grow it back toward the descent's
+        // pace (#241). After the bound is set, so this best is bounded at the
+        // step that found it.
+        obj_step_ = std::min(kObjStepMax, obj_step_ * kObjStepGrow);
     }
     share(obj);
     emit_progress(/*new_best=*/true);
@@ -1042,7 +1065,8 @@ void ViolationLSLoop::share(double objective) {
 //    under, and set_objective_bound's precondition is has_obj_, tested first.
 //
 // Never loosens: the test is `target < bound`, strictly, and every other writer
-// of the bound takes the min with shared_bound_cap().
+// of the bound takes the min with shared_bound_cap() -- shrink_objective_step's
+// deliberate loosening included, so it never undoes a shared tightening.
 void ViolationLSLoop::sync_shared_bound() {
     batch_behind_global_ = false;
     if (!has_obj_) {
@@ -1106,6 +1130,27 @@ bool ViolationLSLoop::holds_assignment(const Model::State& state) const {
     return true;
 }
 
+// #241's adaptive step, at a full perturbation_period stall: the bound asked for
+// an improvement of one step and a whole period did not find it, so ask for a
+// tenth of that. The bound is re-grounded on the incumbent at the new step --
+// the one writer that LOOSENS it, on purpose: the bound stays strictly below
+// best_feasible_obj_, and the shared cap still bounds it, so it never gives back
+// an improvement anyone found; what it gives up is a demand that went unmet for
+// a period. A no-op at kObjStepMin, without an incumbent and on an integral
+// objective, whose step is not relative. Cost: one resync per stall that
+// shrinks, at most log10(kObjStepMax / kObjStepMin) = 3 before a new best.
+void ViolationLSLoop::shrink_objective_step() {
+    if (!has_obj_ || obj_integral_ || !have_feasible_ || !std::isfinite(best_feasible_obj_) ||
+        obj_step_ <= kObjStepMin) {
+        return;
+    }
+    obj_step_ = std::max(kObjStepMin, obj_step_ / kObjStepShrink);
+    model_.set_objective_bound(std::min(bound_below(best_feasible_obj_), shared_bound_cap()));
+    // The row's node value changed under FJ's violated set and jump table; see
+    // sync_shared_bound. Keeps the GLS weights, as that tightening does.
+    fj_.resync();
+}
+
 // The objective-bound half of an adoption, lifted out of adopt_from_pool: it is
 // a self-contained responsibility with its own rule, and leaving it inline put
 // that function over the cognitive-complexity threshold once the kick-origin
@@ -1115,10 +1160,10 @@ void ViolationLSLoop::reground_objective_bound_after_adoption(bool feasible_here
     if (!has_obj_) {
         return;
     }
-    // Never LOOSEN it. record_best is the only other writer and it rewrites
-    // the bound only on a STRICT improvement over best_feasible_obj_ (it
-    // returns early otherwise), so a bound loosened here can never tighten
-    // back until this worker beats its own all-time best -- and the draw
+    // Never LOOSEN it. record_best rewrites the bound only on a STRICT
+    // improvement over best_feasible_obj_ (it returns early otherwise), and
+    // shrink_objective_step only ever loosens it, so a bound loosened here can
+    // never tighten back until this worker beats its own all-time best -- and the draw
     // that got us here is frequently one of our own earlier, worse
     // incumbents. Loosening on every such kick would leave the worker
     // searching with the objective row satisfied and no pressure at all.
@@ -1765,6 +1810,8 @@ void ViolationLSLoop::maybe_diversify(BatchKind kind, bool improved) {
         // the search re-converges to the same point. Disarmed again on the next
         // improvement, so a productive search never pays for it.
         fj_.set_escape_probe(true);
+        // Before the kick, so an adoption re-grounds at the shrunk step too.
+        shrink_objective_step();
         // Under ParallelSearch, restarting from a PEER's incumbent is MEANT to
         // be a better use of a full-period kick than re-perturbing our own
         // assignment: the pool holds points this worker has not seen, drawn

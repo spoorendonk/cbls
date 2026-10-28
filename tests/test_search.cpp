@@ -2164,8 +2164,8 @@ TEST_CASE("the objective bound steps by one on an integral objective", "[search]
     // The bound a new incumbent earns used to be obj - 1e-3 (|obj| + 1) for every
     // objective, so on an integral one every improvement under 0.1% kept the
     // objective row violated (#211). An integral objective now steps to obj - 1,
-    // as CP-SAT does. A continuous one keeps the relative step, whose
-    // consequence objective_bound_below documents.
+    // as CP-SAT does. A continuous one keeps the relative step, at its starting
+    // 1e-3: three batches cannot reach the stall that shrinks it (#241).
     const bool integral = GENERATE(true, false);
     Model m;
     const int32_t x = integral ? m.int_var(0, 20000) : m.float_var(0.0, 20000.0);
@@ -2183,6 +2183,72 @@ TEST_CASE("the objective bound steps by one on an integral objective", "[search]
     for (const auto& [obj, bound] : ledger.pairs) {
         CAPTURE(integral, obj, bound);
         REQUIRE(bound == (integral ? obj - 1.0 : obj - (1e-3 * (std::abs(obj) + 1.0))));
+    }
+}
+
+namespace {
+
+// The bound's gap below the incumbent at the end of every batch after the
+// last new best, as a multiple of (|best| + 1) on a continuous objective and
+// absolute on an integral one.
+class StepLedger : public Tracer {
+public:
+    StepLedger(const Model& model, bool integral) : model_(model), integral_(integral) {}
+    void new_best(double objective, double /*seconds*/) override {
+        best_ = objective;
+        have_best_ = true;
+        gaps.clear();
+    }
+    void batch_end(BatchKind /*kind*/, int64_t /*iterations*/, bool /*improved*/) override {
+        if (have_best_) {
+            const double gap = best_ - model_.objective_bound();
+            gaps.push_back(integral_ ? gap : gap / (std::abs(best_) + 1.0));
+        }
+    }
+    std::vector<double> gaps;
+
+private:
+    const Model& model_;
+    const bool integral_;
+    double best_ = 0.0;
+    bool have_best_ = false;
+};
+
+}  // namespace
+
+TEST_CASE("a stall shrinks a continuous objective's bound step to 1e-6", "[search][objective]") {
+    // A fixed step of 1e-3 (|obj| + 1) never asked for an improvement smaller
+    // than that, so a continuous objective was only pulled to 0.1% (#241). The
+    // step now shrinks tenfold at each full perturbation_period stall, re-grounding
+    // the bound on the incumbent, down to 1e-6. This model sits at its optimum
+    // within a few batches and then stalls for the rest of the budget, so the
+    // bound's gap below the incumbent must walk 1e-3 -> 1e-6 and stay strictly
+    // positive. An integral objective's step is not relative and stays at 1.
+    const bool integral = GENERATE(true, false);
+    Model m;
+    const int32_t x = integral ? m.int_var(0, 20000) : m.float_var(0.0, 20000.0);
+    m.add_constraint(m.geq(x, m.constant(9995.5)));
+    m.minimize(m.sum({x}));
+    m.close();
+    StepLedger ledger(m, integral);
+    SearchConfig config;
+    config.max_iterations = 450000;  // 450 batches: three full stalls and spare
+    config.tracer = &ledger;
+    const SearchResult r =
+        solve(m, /*time_limit=*/0.0, 42, true, nullptr, nullptr, 0, nullptr, config);
+    REQUIRE(r.feasible);
+    REQUIRE(ledger.gaps.size() > 3U * static_cast<size_t>(config.perturbation_period));
+    const double first = integral ? 1.0 : 1e-3;
+    const double last = integral ? 1.0 : 1e-6;
+    CAPTURE(integral, ledger.gaps.front(), ledger.gaps.back());
+    REQUIRE_THAT(ledger.gaps.front(), Catch::Matchers::WithinRel(first, 1e-6));
+    REQUIRE_THAT(ledger.gaps.back(), Catch::Matchers::WithinRel(last, 1e-6));
+    for (size_t i = 0; i < ledger.gaps.size(); ++i) {
+        CAPTURE(i);
+        REQUIRE(ledger.gaps[i] > 0.0);
+        if (i > 0) {
+            REQUIRE(ledger.gaps[i] <= ledger.gaps[i - 1]);
+        }
     }
 }
 

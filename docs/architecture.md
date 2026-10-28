@@ -2206,9 +2206,12 @@ While time and `max_iterations` remain, each pass:
    `best_feasible_obj`, snapshots the state, and tightens the objective bound to
    the min of `obj - eps` and, in a portfolio, the shared cap (#179)
    (`eps = 1` on an integral objective, as CP-SAT's best - 1 (#211), else
-   `eps = 1e-3*(|obj|+1)`; the step doubles as the Newton step size
-   for hook-less continuous descent, which is why the continuous one is not
-   smaller -- see `objective_bound_below`). For pure-feasibility models (no objective)
+   `eps = step*(|obj|+1)` with an **adaptive** relative `step` in
+   `[1e-6, 1e-3]` (#241): it starts at 1e-3, doubles on each new best, and is
+   divided by 10 at a full-period stall (step 8). The step doubles as the
+   Newton step size for hook-less continuous descent, so a large one keeps the
+   pace far from the optimum and a small one resolves near it -- see
+   `objective_bound_below`). For pure-feasibility models (no objective)
    the first feasible solution ends the search.
 5. **On a new best**, reset GLS weights to 1, resample `rho`, and **disarm the
    Float escape probe** — the latch `SearchResult::escape_probe_armed` reports.
@@ -2221,8 +2224,12 @@ While time and `max_iterations` remain, each pass:
 8. **Diversify**, by either of two routes. Both restore `kick_origin()` first
    once there is one — the incumbent, or the state `adopt_from_pool` installed
    (#158, see [Diversification](#diversification)).
-   - **`stagnation >= perturbation_period`** — the ordinary one. Diversify
-     (below) and reset the stagnation counter.
+   - **`stagnation >= perturbation_period`** — the ordinary one. On a
+     continuous objective with an incumbent, first shrink the bound step
+     tenfold (floor 1e-6) and re-ground the bound on the incumbent at it,
+     capped by the shared bound (#241): the one deliberate loosening, giving
+     up a demand a whole period did not meet. Then diversify (below) and reset
+     the stagnation counter.
    - **an unproductive Feasibility-Jump batch** (#102) — the batch reported that
      it stopped reducing the REAL rows' violation
      (`GFJConfig::unproductive_iterations`, default 300 iterations), and the
@@ -3612,7 +3619,8 @@ solve(model, time_limit, seed, use_fj, hook, lns, lns_interval, callback, config
     │     below is unreachable when a batch costs seconds
     │
     ├── if stagnation >= perturbation_period:
-    │     arm the Float escape probe, then EITHER
+    │     arm the Float escape probe; shrink the continuous bound step and
+    │     re-ground the bound on the incumbent (#241), then EITHER
     │       [not an lns_interval-th kick, and coord->pool holds a usable state]
     │       adopt_from_pool():
     │         restore_state; full_evaluate; re-derive the objective bound;
@@ -3661,7 +3669,7 @@ solve(model, time_limit, seed, use_fj, hook, lns, lns_interval, callback, config
 | `kCompoundDiscount` | 1/1024 | `feasibility_jump.cpp` | Novelty-weight discount on satisfied constraints |
 | `kNoveltyWorkBudget` | 256 | `feasibility_jump.cpp` | max moves per `apply_novelty_jump` |
 | `kEscapeArmFraction` | 0.25 | `search.cpp` `solve` | fraction of the wall-clock budget without a new best that arms the Float escape probe (#117). Not a `SearchConfig` knob |
-| `objective_bound_eps` | 1 (integral objective) / 1e-3·(|obj|+1) | `search.cpp` `objective_bound_below` | bound tightening / hook Newton step |
+| `objective_bound_eps` | 1 (integral objective) / step·(|obj|+1), step adaptive in [1e-6, 1e-3] (#241) | `search.cpp` `objective_bound_below`, `kObjStep*` | bound tightening / hook Newton step |
 | `destroy_fraction` | 0.3 | `LNS` ctor | fraction of variables/sequences destroyed |
 | `repair_time_limit` | 2.0 s | `LNS::destroy_repair` | FJ repair budget; `<= 0` = iteration-bounded only |
 | `feasibility_tolerance` | 1e-6 | `SearchConfig` / `kDefaultFeasibilityTolerance` | violation below which a constraint counts as satisfied |
