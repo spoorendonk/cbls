@@ -130,6 +130,66 @@ TEST_CASE("restart_randomization reaches solve()'s kicks (#239)", "[restart]") {
     }
 }
 
+namespace {
+
+// A feasible model with an objective, whose rows 1..kGuards are `x_i <= 10`
+// on a [0, 10] domain: never violated, so never bumped, and decay scales every
+// row alike -- with W reset to 1 they stay equal, and only a random fill can
+// part them. The hook runs on real-feasible batches with W materialised.
+constexpr int kGuards = 8;
+
+struct GuardWeightProbe : InnerSolverHook {
+    int calls = 0;
+    bool parted = false;
+    void solve(Model& /*model*/, ViolationManager& vm,
+               const std::vector<int32_t>& /*last_changed_vars*/, StopRef /*stop*/) override {
+        ++calls;
+        if (vm.weights.size() <= static_cast<size_t>(kGuards)) {
+            return;
+        }
+        for (int i = 2; i <= kGuards; ++i) {
+            parted = parted || vm.weights[static_cast<size_t>(i)] != vm.weights[1];
+        }
+    }
+};
+
+GuardWeightProbe solve_guarded(bool restart_randomization, uint64_t seed) {
+    Model m;
+    std::vector<int32_t> xs;
+    std::vector<int32_t> cost;
+    for (int i = 0; i < kGuards; ++i) {
+        xs.push_back(m.int_var(0, 10));
+        cost.push_back(m.prod(m.constant(1.0 + i), xs.back()));
+    }
+    m.add_constraint(m.geq(m.sum(xs), m.constant(25.0)));
+    for (const int32_t x : xs) {
+        m.add_constraint(m.leq(x, m.constant(10.0)));
+    }
+    m.minimize(m.sum(cost));
+    m.close();
+    SearchConfig config;
+    config.max_iterations = 20'000;
+    config.restart_randomization = restart_randomization;
+    GuardWeightProbe probe;
+    solve(m, /*time_limit=*/0.0, seed, true, &probe, nullptr, 3, nullptr, config);
+    return probe;
+}
+
+}  // namespace
+
+TEST_CASE("restart_randomization's weight fill reaches solve() (#239)", "[restart]") {
+    bool parted_on = false;
+    for (const uint64_t seed : {1, 2, 3, 4, 5}) {
+        const GuardWeightProbe off = solve_guarded(false, seed);
+        CAPTURE(seed, off.calls);
+        REQUIRE(off.calls > 1);
+        REQUIRE_FALSE(off.parted);
+        const GuardWeightProbe on = solve_guarded(true, seed);
+        parted_on = parted_on || on.parted;
+    }
+    REQUIRE(parted_on);
+}
+
 TEST_CASE("luby_restart_unit kicks on the Luby schedule (#239)", "[restart]") {
     // With no new best the schedule never resets, so the gaps between kicks,
     // in counted non-improving batches, are unit * 1, 1, 2, 1, 1, 2, 4, ... up
