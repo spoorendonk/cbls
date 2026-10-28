@@ -2207,8 +2207,9 @@ While time and `max_iterations` remain, each pass:
    the min of `obj - eps` and, in a portfolio, the shared cap (#179)
    (`eps = 1` on an integral objective, as CP-SAT's best - 1 (#211), else
    `eps = step*(|obj|+1)` with an **adaptive** relative `step` in
-   `[1e-6, 1e-3]` (#241): it starts at 1e-3, doubles on each new best, and is
-   divided by 10 at a full-period stall (step 8). The step doubles as the
+   `[1e-6, 1e-3]` (#241): it starts at 1e-3, doubles on each incumbent
+   `record_best` records (twice in a batch whose float hook improves on FJ's
+   point), and is divided by 10 at a full-period stall (step 8). The step doubles as the
    Newton step size for hook-less continuous descent, so a large one keeps the
    pace far from the optimum and a small one resolves near it -- see
    `objective_bound_below`). For pure-feasibility models (no objective)
@@ -2228,8 +2229,8 @@ While time and `max_iterations` remain, each pass:
      continuous objective with an incumbent, first shrink the bound step
      tenfold (floor 1e-6) and re-ground the bound on the incumbent at it,
      capped by the shared bound (#241): the one deliberate loosening, giving
-     up a demand a whole period did not meet. Then diversify (below) and reset
-     the stagnation counter.
+     up a demand a whole period did not meet (the kick that follows rebuilds
+     FJ's tables). Then diversify (below) and reset the stagnation counter.
    - **an unproductive Feasibility-Jump batch** (#102) — the batch reported that
      it stopped reducing the REAL rows' violation
      (`GFJConfig::unproductive_iterations`, default 300 iterations), and the

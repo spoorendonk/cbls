@@ -25,6 +25,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 using namespace cbls;
@@ -1499,8 +1500,9 @@ double bound_below(double obj) {
 // unit-coefficient model, not of the bound; it does not arise here.
 //
 // Iteration-budgeted, the single-threaded search reaches 95 at seed 5 on this
-// model, from a first incumbent near 177.
-Model cover_model() {
+// model, from a first incumbent near 177. `continuous` makes the columns floats
+// in [0, 10], so the objective is continuous and its bound step adapts (#241).
+Model cover_model_of(bool continuous) {
     constexpr int kCols = 40;
     constexpr int kRows = 10;
     uint32_t state = 12345;
@@ -1512,7 +1514,7 @@ Model cover_model() {
     std::vector<int32_t> xs;
     xs.reserve(kCols);
     for (int j = 0; j < kCols; ++j) {
-        xs.push_back(m.int_var(0, 10));
+        xs.push_back(continuous ? m.float_var(0.0, 10.0) : m.int_var(0, 10));
     }
     for (int i = 0; i < kRows; ++i) {
         std::vector<int32_t> row{m.constant(60.0)};
@@ -1532,6 +1534,10 @@ Model cover_model() {
     m.minimize(m.sum(cost));
     m.close();
     return m;
+}
+
+Model cover_model() {
+    return cover_model_of(/*continuous=*/false);
 }
 
 // A peer's submission, by objective. No adoptable state -- an empty one, which
@@ -1782,6 +1788,72 @@ TEST_CASE("a lone worker's own incumbents leave its trajectory unchanged",
     REQUIRE(on.counters.shared_bound_tightenings == 0);
     REQUIRE(on.counters.own_best_behind_global == 0);
     REQUIRE(on.counters.bound_behind_global_batches == 0);
+}
+
+// Watches #241's adaptive step from outside: whether some batch ended with the
+// bound closer below the incumbent than the 1e-3 step puts it -- a stall shrank
+// the step -- and a new best came after it.
+class ShrinkThenBest : public Tracer {
+public:
+    explicit ShrinkThenBest(const Model& model) : model_(model) {}
+
+    void new_best(double objective, double /*seconds*/) override {
+        best_ = objective;
+        seen = seen || shrunk_;
+    }
+
+    void batch_end(BatchKind /*kind*/, int64_t /*iterations*/, bool /*improved*/) override {
+        const double gap = best_ - model_.objective_bound();
+        shrunk_ = shrunk_ || (std::isfinite(best_) && gap < 0.5e-3 * (std::abs(best_) + 1.0));
+    }
+
+    bool seen = false;
+
+private:
+    const Model& model_;
+    double best_ = std::numeric_limits<double>::infinity();
+    bool shrunk_ = false;
+};
+
+TEST_CASE("a lone worker's own incumbents leave a continuous objective's trajectory unchanged",
+          "[parallel][coord][shared_bound]") {
+    // The same claim on a continuous objective, whose bound step adapts (#241).
+    // A new best after a stall is bounded at the shrunk step and then grows it,
+    // so the bound sits closer below the global best -- this worker's own --
+    // than bound_below(global) at the grown step. The sync must not read that as
+    // a peer to tighten towards: sharing on and off stay bit-identical.
+    auto run = [](bool share) {
+        SolutionPool pool(10);
+        SearchCoordination coord;
+        coord.pool = &pool;
+        coord.share_objective_bound = share;
+        Model m = cover_model_of(/*continuous=*/true);
+        ShrinkThenBest watch(m);
+        SearchConfig config;
+        // 200 batches: at kSharedBoundIterations no best follows a shrink at
+        // this seed. The continuous model runs them in ~0.1 s.
+        config.max_iterations = 20000;
+        config.batch_iterations = 100;
+        config.perturbation_period = 2;
+        config.tracer = &watch;
+        SearchResult r = solve(m, /*time_limit=*/0.0, /*seed=*/17, true, nullptr, nullptr, 3,
+                               nullptr, config, &coord);
+        return std::make_pair(r, watch.seen);
+    };
+    const auto [on, on_seen] = run(true);
+    const auto [off, off_seen] = run(false);
+    REQUIRE(on.feasible);
+    // The event happened -- otherwise this proves nothing.
+    REQUIRE(off_seen);
+    REQUIRE(on_seen == off_seen);
+    REQUIRE(on.iterations == off.iterations);
+    REQUIRE(on.objective == off.objective);
+    REQUIRE(on.best_state.values == off.best_state.values);
+    REQUIRE(on.perturbations == off.perturbations);
+    REQUIRE(on.counters.shared_bound_tightenings == 0);
+    REQUIRE(on.counters.own_best_behind_global == 0);
+    REQUIRE(on.counters.bound_behind_global_batches == 0);
+    REQUIRE(off.counters.bound_behind_global_batches == 0);
 }
 
 TEST_CASE("the pool's global best counts only feasible finite objectives", "[pool][shared_bound]") {
