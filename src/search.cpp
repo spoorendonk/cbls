@@ -362,8 +362,8 @@ constexpr int kUnproductiveArmDivisor = 20;
 //    descent's pace -- FJ's Newton candidate on the objective row lands on the
 //    bound, so each incumbent improves by about one step: eg_all_s walks from
 //    1e9 to 14.4 in 15,892 of them (benchmarks/instances/minlplib/README.md),
-//    and a 1e-6 step would need ~1000x as many. A smaller or adaptive step is
-//    open on #211 pending a measurement.
+//    and a 1e-6 step would need ~1000x as many. Whether a smaller or adaptive
+//    step pays is for #228's regenerated MINLPLib table to answer (#238).
 double objective_bound_below(double obj, bool integral) {
     if (integral) {
         // nextafter keeps the bound strictly below obj past 2^53, where obj - 1

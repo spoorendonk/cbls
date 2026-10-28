@@ -255,8 +255,8 @@ struct GFJConfig {
     // the enumeration / grid candidates. Off by default, which is today's path
     // bit for bit. Off because it regresses #208's own repro (x + y == 1e7 - 1,
     // |x - y| <= 1 as two rows: 261k-836k iterations to feasible against 19-72);
-    // whether to turn it on is #208's timed A/B. solve() sets it from
-    // SearchConfig::fj_exact_int_jump.
+    // decided off by #208 (closed not planned) and #216, and kept as a
+    // CP-SAT-faithful arm. solve() sets it from SearchConfig::fj_exact_int_jump.
     bool exact_int_jump = false;
     // Opt-in OR-Tools-style kick (#217), off by default: perturb() redraws each
     // jumpable variable with probability `perturb_near_value_probability`
@@ -272,15 +272,18 @@ struct GFJConfig {
     // state 15); its restart states redraw near zero or the objective bound
     // instead. The mipfeas head-to-head's CP-SAT arm, below 16 workers on one
     // state set, therefore never takes this path (#234). Off is today's kick,
-    // draw for draw. solve() sets it from SearchConfig::perturb_near_value;
-    // whether to turn it on is a needs-benchmark follow-up.
+    // draw for draw. solve() sets it from SearchConfig::perturb_near_value,
+    // which stays off by #219 / #226's smoke A/B; it is kept as a
+    // CP-SAT-faithful arm.
     bool perturb_near_value = false;
     double perturb_near_value_probability = 0.05;
     double perturb_range_ratio = 0.2;
-    // OR-Tools' use of the objective before the first feasible solution (#218),
-    // both off by default and off meaning today's path bit for bit. Both need
-    // an AFFINE objective, whose coefficients FJ reads once at construction; on
-    // any other objective, or none, they do nothing.
+    // OR-Tools' use of the objective before the first feasible solution (#218).
+    // Off in a bare GFJConfig, where off is the pre-#218 path bit for bit; on in
+    // solve() since #226, which sets it from SearchConfig::fj_objective_tie_break
+    // (default true). #218's other knob, the objective-favourable start, was
+    // removed by #226. Needs an AFFINE objective, whose coefficients FJ reads
+    // once at construction; on any other objective, or none, it does nothing.
     //
     // objective_tie_break: OR-Tools' ComputeScore epsilon and ShouldScan's
     // HasBetterObjectiveValue, together because neither does anything alone.
