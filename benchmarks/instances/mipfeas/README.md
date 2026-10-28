@@ -712,6 +712,29 @@ against a 600s budget — under 1%, but it favours CBLS. Since #139 both runners
 measure it and the table carries it as `setup_seconds`, so it is a number a
 reader can check per row rather than a caveat taken on trust.
 
+A second difference is in the algorithm itself, so "same algorithm, two
+implementations" holds for the jump and the weighting, not for what happens on
+stagnation (#234; OR-Tools cited at
+[`4336f9f`](https://github.com/google/or-tools/tree/4336f9f3aeedd5462ee0008116b1a2a1e7d633ef),
+`ortools/sat/feasibility_jump.{h,cc}`):
+
+* **CP-SAT restarts.** Each subsolver interleaves a set of LS states (8 to
+  start, one more only when all are taken). At a batch boundary after a new
+  best, or when a state's batch allowance runs out, the state re-randomises its
+  options (`LsOptions::Randomize`: decay, compound moves, objective use) and
+  resets its weights. A restart state then restarts on a shared Luby schedule:
+  `ls` from a pool solution, `fj` by redrawing values near zero or the objective
+  bound (`ResetCurrentSolution`). Only a no-restart state perturbs near the
+  current value (`PerturbateCurrentSolution`), and the first one is state 15
+  (`use_restart = index % 16 != 15`), so at the `num_workers` this benchmark
+  runs, below 16 on one state set, the CP-SAT arm never takes that path.
+* **CBLS kicks.** One search state, fixed options, no Luby schedule and no reset
+  to zero or the bound. On stagnation it perturbs from `kick_origin()`: the
+  incumbent once one exists, an adopted pool solution in a portfolio, in place
+  before the first feasible point. Portfolio workers restart from the pool.
+  `docs/architecture.md` records Luby as a rejected alternative; which restart
+  rule is best for this engine, regardless of parity, is #239.
+
 ## Provenance
 
 - Instances and reference values: MIPLIB 2017, <https://miplib.zib.de/>

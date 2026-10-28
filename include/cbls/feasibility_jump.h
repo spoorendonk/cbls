@@ -267,9 +267,13 @@ struct GFJConfig {
     // whole domain -- which under a 1e7 inf-clamp throws a column anywhere in
     // [-1e7, 1e7]. A binary then flips w.p. 0.05 * 0.2 = 1% where today's kick
     // flips 5%. The List/Set half of the kick keeps the caller's probability.
-    // Off is today's kick, draw for draw. solve() sets it from
-    // SearchConfig::perturb_near_value; whether to turn it on is a
-    // needs-benchmark follow-up.
+    // It ports PerturbateCurrentSolution, which OR-Tools runs only in a
+    // no-restart LS state (use_restart = index % 16 != 15, so the first is
+    // state 15); its restart states redraw near zero or the objective bound
+    // instead. The mipfeas head-to-head's CP-SAT arm, below 16 workers on one
+    // state set, therefore never takes this path (#234). Off is today's kick,
+    // draw for draw. solve() sets it from SearchConfig::perturb_near_value;
+    // whether to turn it on is a needs-benchmark follow-up.
     bool perturb_near_value = false;
     double perturb_near_value_probability = 0.05;
     double perturb_range_ratio = 0.2;

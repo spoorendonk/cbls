@@ -1364,7 +1364,11 @@ The ViolationLS outer loop owns the iteration clock and calls:
   `RandomValueNearValue` — a side of the value chosen by size, then a
   log-uniform offset within 20% of that side — so a binary flips ~1% where the
   default flips 5%, and a column under a 1e7 inf-clamp moves near where it was
-  instead of anywhere in the box. The List/Set half is unchanged.
+  instead of anywhere in the box. The List/Set half is unchanged. That is
+  OR-Tools' no-restart path (`PerturbateCurrentSolution`); its restart states
+  redraw near zero or the objective bound, and below 16 workers on one state
+  set it runs no no-restart state, so the mipfeas head-to-head's CP-SAT arm
+  never takes it (#234).
 
 **The objective before the first feasible point (#218), on by default.**
 Without help FJ ignores the objective until the first feasible point: the
