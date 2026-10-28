@@ -609,14 +609,15 @@ on them a published row is in-sample:
 | Novelty Jump on, and the `1e7` clamp | the A/B table under "What the wiring check found" | the runner's flags |
 | FJ-or-Novelty redrawn every batch | #209's pre-registered A/B, 10 seeds at 30s (`docs/architecture.md`, Novelty Jump) | `143c8da` |
 | objective tie-break on | #226 Run A, 5 seeds at 10s; gap at first feasible 0.748 | `9e1cce9` (#220) |
-| near-value kick off | #226 Run A (and Run B on MINLPLib) | default kept (#219) |
+| near-value kick off | #226 Run B on MINLPLib; Run A on this roster passed it | default kept since #217 (#219) |
 
 `docs/architecture.md` and #226 carry the numbers. The other 222 instances were
 never tuned on. With 11 of 233 the effect on a roster-wide aggregate is small,
 but it is not zero, so a published table names these 11 when it quotes one.
 
 Every CBLS result record carries the tie-break's state as `objective_tie_break`
-(a record from before `9e1cce9` has no such key and ran it off), and the scorer
+(a record from before `6492993`, #218, has no such key, and one from before
+`9e1cce9` either lacks it or carries `false`; both ran it off), and the scorer
 puts `objective_tie_break=True` into the configuration cell, so an on row never
 scores together with an off one. A published table names its engine commit and
 states whether the tie-break was on.
