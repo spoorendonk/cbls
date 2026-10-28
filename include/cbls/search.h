@@ -146,7 +146,10 @@ struct SearchConfig {
     int structural_sample_size = 8;
     // Optional granular neighbourhood handed to the BUILT-IN generators, making
     // a move's target one of the moved element's nearest neighbours instead of a
-    // uniform draw (Toth & Vigo 2003). Null -- the default -- keeps the uniform
+    // uniform draw (after Toth & Vigo 2003, with k nearest neighbours in place
+    // of their cost threshold and depot edges, and one element's neighbourhood
+    // per call in place of the whole one; see
+    // generate_granular_partition_moves). Null -- the default -- keeps the uniform
     // draw and therefore the pre-#165 trajectory. Setting it also turns the
     // default selection (Auto) into GranularBest (#203). Shared, not cloned: it is
     // immutable, and copying a k-nearest list per worker is the cost sharing the

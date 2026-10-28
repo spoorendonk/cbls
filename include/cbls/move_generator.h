@@ -129,7 +129,8 @@ enum class StructuralSelection : std::uint8_t {
     /// COMPLETE neighbourhood of one element per `generate` call instead of a
     /// sampled move (#203; Toth & Vigo 2003): one random element, every relocate
     /// / swap / 2-opt / 2-opt* pairing it with each of its k nearest neighbours,
-    /// and a move into each empty list (`generate_granular_partition_moves`).
+    /// and a move into each empty list (`generate_granular_partition_moves`,
+    /// which says how this differs from the paper's threshold graph).
     /// The best improving candidate is committed. A call that yields fewer than
     /// `structural_sample_size` is topped up like any other, i.e. with a further
     /// element's neighbourhood.

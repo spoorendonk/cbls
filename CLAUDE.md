@@ -1042,9 +1042,11 @@ comparative claim, so the table's ordering rule does not gate them:
   don't grow it into an epic.
 - **`List` → CVRP** (CVRPLIB X set, Hexaly's List encoding, scored as gap to
   the pinned best-known values, with PyVRP at equal budget and threads as
-  context). Tracked under epic #182 (#196-#204). **Not in the tree yet**; until
-  #204 publishes results `List` still has no evidence (next section), and the
-  single-seed smoke numbers quoted in #201-#203 are not results.
+  context). Tracked under epic #182 (#196-#204). **In the tree, unpublished**:
+  `cbls_cvrp`, its driver, verifier, scorer and PyVRP baseline landed in
+  #196-#200, but until #204 publishes results `List` still has no evidence (next
+  section), and the single-seed smoke numbers quoted in #201-#203 are not
+  results.
 
 Engine-wide (cross-cutting) work is tracked under epic #24.
 
@@ -1056,6 +1058,10 @@ validated on a published formulation. The evidence position is:
 - **`Set`** — measured and **negative**. The `Set` encoding lands at
   3.4-5.1x the proven optimum where the same data in Bools is within 4-9%
   (engine `35ec07c`, after #201; it was 8.6-11.0x against 9-20% at `adc8ee4`).
+  `35ec07c` predates two defaults that act on the Bool encoding, compound moves
+  (on since 2026-10-07) and the FJ objective tie-break (on since #226, and
+  setcover's Bool objective is affine); the Bool figure was measured without
+  either.
 - **`List`** — **no evidence either way.** No `List` result is published yet;
   CVRP (#204) will be the first.
 
@@ -1071,8 +1077,15 @@ nothing:
    `At`, `Count`, `Lambda`, `PairLambda`, `LambdaExtra`, `PairLambdaExtra` — so there is no AD signal to build a
    jump value from either. (`setcover`'s `Set` model reads through `Lambda`.)
 
-What is left is `set_moves`/`list_moves` drawing uniformly at random, where the
-scalar path has FJ's jump table and best-of-N scan-set sampling to steer it.
+What is left, for a `Set` and for a `List` without a neighbour list, is
+`set_moves`/`list_moves` drawing uniformly at random under the default
+`FirstImprovingSample` hill climber, where the scalar path has FJ's jump table
+and best-of-N scan-set sampling to steer it. A `ListPartition` searched with a
+neighbour list (`SearchConfig::structural_neighbours`) is no longer on that
+path: since #203 the default `Auto` selection runs `GranularBest` there (one
+element's granular complete neighbourhood, best improving move committed), and
+since #202 LNS ruins and recreates every `ListPartition` with SISR. That is
+guidance, not evidence; the claim rule above stands until #204.
 Note the contrast is between the two *paths*, not the individual generators —
 `int_rand` and `float_perturb` are themselves uniform. **Cost-aware
 structural move selection was the stated prerequisite** for any renewed
