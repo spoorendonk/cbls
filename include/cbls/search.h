@@ -275,14 +275,15 @@ struct SearchConfig {
     // both are today's search, draw for draw. #239 carries the survey and the
     // smoke A/B that decided their defaults.
     //
-    // restart_randomization: at every kick (a portfolio adoption included) and
+    // restart_randomization: at every non-LNS kick, a portfolio adoption and
     // every new best's weight reset, the GLS weights restart at Uniform(1, 2)
     // with probability 1/2, else at 1
-    // (`start_with_random_weights`); and at a kick, with probability 1/2 nothing
-    // is perturbed -- kick_origin() is restored and re-weighted only, which is
-    // what an OR-Tools `ls` restart from a pool solution does. Before the first
-    // feasible point there is no origin, and that kick only re-weights in place.
-    // The kick's LNS slots are untouched.
+    // (`start_with_random_weights`); and at a non-LNS kick, with probability 1/2
+    // nothing is perturbed -- kick_origin() is restored and re-weighted only,
+    // which is what an OR-Tools `ls` restart from a pool solution does. Before
+    // the first feasible point there is no origin, and that kick only re-weights
+    // in place. An LNS kick is untouched: its slots are drawn as before and it
+    // still resets the weights to 1.
     bool restart_randomization = false;
     // luby_restart_unit > 0 replaces #102's unproductive-batch kick with a Luby
     // schedule: a kick after unit * luby(k) non-improving batches (1, 1, 2, 1, 1,

@@ -191,6 +191,37 @@ int parse_luby_restart_unit(const char* text) {
     return static_cast<int>(unit);
 }
 
+/// The search-behaviour arms: the flags that set an engine option rather than
+/// the run (instance, budget, output). True when the current argument was one.
+bool parse_search_flag(cbls::bench::ArgCursor& c, Args& a) {
+    const std::string s = c.arg();
+    const char* v = nullptr;
+    if (s == "--compound-moves") {
+        a.compound_moves = true;
+    } else if (s == "--no-compound-moves") {
+        a.compound_moves = false;
+    } else if (s == "--exact-int-jump") {
+        a.exact_int_jump = true;
+    } else if (s == "--perturb-near-value") {
+        a.perturb_near_value = true;
+    } else if (s == "--objective-tie-break") {
+        a.objective_tie_break = true;
+    } else if (s == "--no-objective-tie-break") {
+        a.objective_tie_break = false;
+    } else if (s == "--restart-randomization") {
+        a.restart_randomization = true;
+    } else if (c.value_flag("--luby-restart-unit", v)) {
+        a.luby_restart_unit = parse_luby_restart_unit(v);
+    } else if (s == "--share-bound") {
+        a.share_objective_bound = true;
+    } else if (s == "--no-share-bound") {
+        a.share_objective_bound = false;
+    } else {
+        return false;
+    }
+    return true;
+}
+
 Args parse_args(int argc, char** argv) {
     Args a;
     cbls::bench::ArgCursor c(argc, argv);
@@ -215,26 +246,8 @@ Args parse_args(int argc, char** argv) {
             a.propagate_bounds = false;
         } else if (c.value_flag("--max-propagation-passes", v)) {
             a.max_propagation_passes = parse_propagation_passes(v);
-        } else if (s == "--compound-moves") {
-            a.compound_moves = true;
-        } else if (s == "--no-compound-moves") {
-            a.compound_moves = false;
-        } else if (s == "--exact-int-jump") {
-            a.exact_int_jump = true;
-        } else if (s == "--perturb-near-value") {
-            a.perturb_near_value = true;
-        } else if (s == "--objective-tie-break") {
-            a.objective_tie_break = true;
-        } else if (s == "--no-objective-tie-break") {
-            a.objective_tie_break = false;
-        } else if (s == "--restart-randomization") {
-            a.restart_randomization = true;
-        } else if (c.value_flag("--luby-restart-unit", v)) {
-            a.luby_restart_unit = parse_luby_restart_unit(v);
-        } else if (s == "--share-bound") {
-            a.share_objective_bound = true;
-        } else if (s == "--no-share-bound") {
-            a.share_objective_bound = false;
+        } else if (parse_search_flag(c, a)) {
+            continue;
         } else if (c.value_flag("--threads", v)) {
             a.threads = parse_thread_count(v);
         } else if (c.value_flag("--solution-dir", v)) {

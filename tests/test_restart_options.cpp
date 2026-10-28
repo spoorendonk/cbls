@@ -170,7 +170,7 @@ TEST_CASE("luby_restart_unit changes the kick count against #102's kick (#239)",
         KickLog luby_log;
         solve_infeasible(config, seed, luby_log);
         CAPTURE(seed, base.kinds.size(), luby_log.kinds.size());
-        REQUIRE(luby_log.kinds.size() > 0);
+        REQUIRE_FALSE(luby_log.kinds.empty());
         REQUIRE(base.kinds.size() != luby_log.kinds.size());
     }
 }
