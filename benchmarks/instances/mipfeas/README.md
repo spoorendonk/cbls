@@ -715,7 +715,7 @@ reader can check per row rather than a caveat taken on trust.
 
 ### Restart versus kick: an algorithmic difference (#234)
 
-A second difference is in the algorithm itself, so "the same algorithm" holds
+Besides the setup-time asymmetry above, a second difference is in the algorithm itself, so "the same algorithm" holds
 for the jump and the weighting, not for what happens on stagnation (OR-Tools
 cited at
 [`4336f9f`](https://github.com/google/or-tools/tree/4336f9f3aeedd5462ee0008116b1a2a1e7d633ef),
@@ -728,8 +728,8 @@ cited at
   use and the perturbation probability) and resets its weights. A restart state
   then restarts on a shared Luby schedule: `ls` from a pool solution, `fj` by
   `ResetCurrentSolution`, which sets each column to its smallest value or, at
-  the perturbation probability, near zero, and objective columns to the bound
-  their coefficient favours. Only a no-restart state perturbs near the
+  the perturbation probability, near zero, and, when the state uses the
+  objective, objective columns to the bound their coefficient favours. Only a no-restart state perturbs near the
   current value (`PerturbateCurrentSolution`), and the first one is state 15
   (`use_restart = index % 16 != 15`), so at the `num_workers` this benchmark
   runs, below 16 on one state set, the CP-SAT arm never takes that path.
