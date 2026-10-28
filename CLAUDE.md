@@ -131,8 +131,8 @@ first-party compiler warnings in the build log.
 - A clang-tidy finding is new code's doing: **fix it**. Never add a check to
   `.clang-tidy`'s disabled list or tune an option to silence it.
 - `NOLINT` only as `NOLINTNEXTLINE(readability-function-cognitive-complexity)`
-  with the reason at the site (see **Complexity**); the tree has five
-  sanctioned directives, listed in `docs/git-hooks.md`.
+  with the reason at the site (see **Complexity**), plus one pre-existing
+  `bugprone-float-loop-counter`; all five are listed in `docs/git-hooks.md`.
 - No `-Werror`, `-w` or `-Wno-*` on first-party targets. Never add `default:`
   to a `NodeOp` switch.
 - **Never `--no-verify`** unless explicitly asked. Fix the cause.
@@ -141,8 +141,9 @@ first-party compiler warnings in the build log.
 ## Git Workflow
 
 Trunk-based, linear history: commit to `main`, push when gates pass. A
-feature branch is optional, cut from an up-to-date `main`, short-lived, landed
-by rebase or squash. After a push, close each issue it resolved
+feature branch is optional, cut from an up-to-date `main` (never from another
+feature branch, except serialized parallel issues: `docs/development.md`),
+short-lived, landed by rebase or squash. After a push, close each issue it resolved
 (`gh issue close N -c "..."`) and delete any branch used.
 
 Commits: Conventional Commits (`feat`, `fix`, `refactor`, `test`, `docs`,
@@ -151,10 +152,11 @@ Commits: Conventional Commits (`feat`, `fix`, `refactor`, `test`, `docs`,
 ## Working Through Issues
 
 Follow wcp's rules for a goal's issues, one at a time: issue check (plan as an
-issue comment when unclear) → implement → gate (the full fences, even for a
-trivial-looking change) and commit → **one cold reviewer** (`/code-review` on
-unpushed commits), at most two rounds, fix between them → record the receipt
-on a clean tree, push, close. A real finding left after round two, or out of
+issue comment when unclear; re-plan if a later issue's plan changes it) →
+implement → gate (the full fences, even for a trivial-looking change) and
+commit → **one cold reviewer** (a fresh subagent running `/code-review` on
+unpushed commits; a fresh one again for round two), at most two rounds, fix
+between them → record the receipt on a clean tree, push, close. A real finding left after round two, or out of
 scope, becomes its own issue. File only what has a concrete failure scenario
 or a missing acceptance criterion; fix or drop nits. Agent-team and parallel
 runs: `docs/development.md`; no subagent returns unreviewed work and no
@@ -164,7 +166,7 @@ is not on PATH, say so; don't install it unasked.
 A hygiene goal (`wcp hygiene`) is a task worked from its note: findings are
 edits to issues or new `tech-debt` issues, nothing is fixed in the round, one
 cold reviewer checks them (at most two rounds), and it ends with the summary
-comment the note specifies.
+comment the note specifies, whose first line is the marker wcp looks for.
 
 ## Self-Review
 
@@ -211,8 +213,9 @@ above it and add `NOLINTNEXTLINE(readability-function-cognitive-complexity)`.
 
 Builds, ctest, clang-tidy and pushes run under the machine lock
 (`xk lock -- CMD`) with at most 4 jobs (group rules). The fences below are
-what pre-push runs, pinned to `git config hooks.localCiCpus` (`0-3`) so
-`$(nproc)` is 4; by hand, run them as `xk lock -- taskset -c 0-3 sh -c '…'`.
+what pre-push runs, pinned to `git config hooks.localCiCpus` so `$(nproc)` is
+4: a new clone sets it (`git config hooks.localCiCpus 0-3`) before its first
+push. By hand, run them as `xk lock -- taskset -c 0-3 sh -c '…'`.
 Why they look this way: `docs/development.md`.
 
 ```clean

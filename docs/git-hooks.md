@@ -117,7 +117,7 @@ The three hooks are wcp's (see **Hooks Are Files In This Repository**); `gate-li
 
 Gating lives in git hooks only — `.claude/settings.json` carries no `hooks` block, and none should be added. A `PostToolUse` formatter cannot see which file was edited, so it silently formats nothing; formatting belongs at commit time. Don't hand-tune formatting.
 
-Three conventions therefore rest on you rather than on a tool: branch only from main (**Git Workflow** in `docs/development.md`), never invoke `python`/`pytest`/`mypy` outside `.venv/bin/` (a `uv sync` venv has no `pip`; change it with `uv sync`) (CLAUDE.md's **Build & Test**), and prefer the `Grep` tool to shelling out (CLAUDE.md's **Code Navigation**).
+Three conventions therefore rest on you rather than on a tool: branch only from main (**Git Workflow** in `docs/development.md`), never invoke `python`/`pytest`/`mypy` outside `.venv/bin/` (a `uv sync` venv has no `pip`; change it with `uv sync`) (CLAUDE.md's **Build & Test**), and prefer the `Grep` tool to shelling out (**Code Navigation** in `docs/development.md`).
 
 `.claude/` is gitignored local agent tooling (settings, statusline, the `/review` command). Nothing in it is part of the repo.
 

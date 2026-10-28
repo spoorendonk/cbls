@@ -106,16 +106,12 @@ A one-screen map of the pipeline, its files and defaults, the extension points, 
    factory's models share — nothing for freshly built ones, the structure for
    copies of a frozen model. Python binds both: `ParallelSearch.solve_master` is
    the master overload, `solve_parallel` the factory one. Prefer the master
-   overload.
-   Measured on `neos-5114902-kasavu` (710k columns, 4.30M nodes), before at
-   `0dc826b` and after at `06eb3e5`: peak RSS at 8 workers fell from 6.04 to
-   3.15 GiB, the marginal worker from ~0.75-0.86 to ~0.34-0.39 GiB, at identical
-   single-threaded throughput (257 iterations in 30s either way). The per-worker
-   constant is not zero and will not become zero — the variables, the node values,
-   three `Model::State` snapshots and FJ's tables are all genuinely per worker —
-   and it is a floor rather than a bound, since its largest term scales with the
-   column count. Size a run against "1-worker + N x a measured per-worker
-   constant". **Parallel Search** below carries the table with its commit.
+   overload. The per-worker memory constant is not zero and will not become
+   zero — the variables, the node values, three `Model::State` snapshots and
+   FJ's tables are all genuinely per worker — and it is a floor rather than a
+   bound, since its largest term scales with the column count. Size a run
+   against "1-worker + N x a measured per-worker constant". **Solution Pool &
+   Parallel Search** below carries the measurements with their commits.
 
    Three callers drive it: `src/cli.cpp`, which loads the model once and passes it
    as the master; Python's `ParallelSearch.solve_master`, likewise; and
