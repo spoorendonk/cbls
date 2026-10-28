@@ -273,8 +273,8 @@ struct GFJConfig {
     // instead. The mipfeas head-to-head's CP-SAT arm, below 16 workers on one
     // state set, therefore never takes this path (#234). Off is today's kick,
     // draw for draw. solve() sets it from SearchConfig::perturb_near_value,
-    // which stays off by #219 / #226's smoke A/B; it is kept as a
-    // CP-SAT-faithful arm.
+    // which stays off by #219 / #226's smoke A/B; it is kept as an arm
+    // faithful to OR-Tools' no-restart kick.
     bool perturb_near_value = false;
     double perturb_near_value_probability = 0.05;
     double perturb_range_ratio = 0.2;

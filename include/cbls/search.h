@@ -238,7 +238,7 @@ struct SearchConfig {
     // The exact Int jump (#208, #216), off by default: forwarded to
     // GFJConfig::exact_int_jump for the batch FJ and to LNS's repair FJ. Off is
     // today's candidate path, bit for bit; GFJConfig's comment says why it is
-    // off and what decides whether it turns on.
+    // off and what decided it.
     bool fj_exact_int_jump = false;
 
     // OR-Tools' diversification kick (#217), off by default: forwarded to
