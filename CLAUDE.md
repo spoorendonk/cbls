@@ -1077,17 +1077,24 @@ nothing:
    `At`, `Count`, `Lambda`, `PairLambda`, `LambdaExtra`, `PairLambdaExtra` — so there is no AD signal to build a
    jump value from either. (`setcover`'s `Set` model reads through `Lambda`.)
 
-What is left, for a `Set` and for a `List` without a neighbour list, is
-`set_moves`/`list_moves` drawing uniformly at random under the default
-`FirstImprovingSample` hill climber, where the scalar path has FJ's jump table
-and best-of-N scan-set sampling to steer it. A `ListPartition` searched with a
-neighbour list (`SearchConfig::structural_neighbours`) is no longer on that
-path: since #203 the default `Auto` selection runs `GranularBest` there (one
-element's granular complete neighbourhood, best improving move committed), and
-since #202 LNS ruins and recreates every `ListPartition` with SISR. That is
-guidance, not evidence; the claim rule above stands until #204.
-Note the contrast is between the two *paths*, not the individual generators —
-`int_rand` and `float_perturb` are themselves uniform. **Cost-aware
+What is left, for a `Set` or `List` searched without a neighbour list (every
+model `setcover` runs), is `set_moves`/`list_moves` drawing uniformly at random
+under the default `FirstImprovingSample` hill climber, where the scalar path has
+FJ's jump table and best-of-N scan-set sampling to steer it. Note the contrast
+is between the two *paths*, not the individual generators — `int_rand` and
+`float_perturb` are themselves uniform.
+
+Two things have since changed for a `ListPartition`. With a neighbour list
+(`SearchConfig::structural_neighbours`) the default `Auto` selection runs
+`GranularBest` (#203): one element's granular complete neighbourhood, best
+improving move committed. A `Set`, or a `List` outside any partition, given a
+neighbour list gets `ViolationGuided`'s sampling under the same setting. And
+whenever LNS is on (opt-in in `solve()` and the CLI's `--lns`, on by default in
+the benchmark runners) it ruins and recreates every `ListPartition` with SISR,
+neighbour list or not (#202). Both change how a `List` is searched; neither is
+evidence, and the claim rule above stands until #204.
+
+**Cost-aware
 structural move selection was the stated prerequisite** for any renewed
 structured-variable claim. #165 built it — registrable `MoveGenerator`s,
 granular neighbour lists, and `BestOfSample` / `ViolationGuided` selection

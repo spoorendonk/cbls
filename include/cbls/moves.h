@@ -194,9 +194,9 @@ void generate_partition_moves(const Model& model, int partition, int32_t anchor,
 ///
 /// Two differences from Toth & Vigo, both the form #203 specified: the sparse
 /// graph is each element's k NEAREST neighbours, not the paper's edges below a
-/// cost threshold nu = beta * (average edge cost) plus every depot edge; and
-/// one call scores the neighbourhood of ONE randomly drawn element, not the
-/// whole granular neighbourhood.
+/// cost threshold nu = beta * z / (n + K), a heuristic solution's average edge
+/// cost, plus every depot edge; and one call generates the neighbourhood of ONE
+/// randomly drawn element, not the whole granular neighbourhood.
 ///
 /// SEVERAL CANDIDATES PER CALL, unlike `generate_partition_moves`: it is meant
 /// for a policy that commits at most one of them (take-best). Every candidate is

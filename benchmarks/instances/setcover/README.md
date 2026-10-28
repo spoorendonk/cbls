@@ -101,7 +101,11 @@ changes FJ trajectories and so the `bool` column, but not the `set` column, whic
 benchmark lock, 1-minute load 1.02-1.49 at the start of every run. The
 `set (before #201)` column is engine `1304c43`, the commit #201 branched from,
 run interleaved with the `set` column (old then new, per instance and seed) so
-the two see the same machine state. Re-derive the per-seed form with the
+the two see the same machine state. The `bool` column also predates two
+defaults that act on it: compound moves (on since 2026-10-07) and the FJ
+objective tie-break (on since #226; the Bool objective is affine). A re-run at
+today's defaults may move it; the `set` column runs no FJ batch and takes
+neither. Re-derive the per-seed form with the
 runner's `--csv` output. No summary table is committed; the table below is the
 record.
 

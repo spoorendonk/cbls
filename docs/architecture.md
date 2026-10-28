@@ -103,7 +103,9 @@ Bool, Int and Float are *scalar* (jumpable by GFJ). List and Set are
 > [structure-only models](#structure-only-models-what-the-structural-batch-is-and-is-not)
 > and `benchmarks/instances/setcover/README.md`. Treat "generalises to
 > structured variables" as a claim about modelling reach only, for both types —
-> beyond that `Set` is measured and negative, and `List` is unbenchmarked.
+> beyond that `Set` is measured and negative, and `List` has no published
+> result: the CVRP benchmark (`benchmarks/cvrp/`) is in the tree, and #204's
+> campaign will be its first evidence.
 
 ### Handle Encoding
 
