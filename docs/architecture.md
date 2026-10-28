@@ -3350,14 +3350,24 @@ bit-identical to what it was before the parameter existed:
    -- tightens to it, then `fj.resync()`. Without it
    a worker behind a peer kept searching for points the portfolio had already
    beaten until it stagnated long enough to adopt. The rules:
-   - **never loosen within a solve.** The batch-boundary test is strict, and
-     every other writer of the bound during a solve -- `record_best` and the
-     adoption re-grounding; the witness sentinel writes only over `+inf` --
-     takes the min with the shared cap. That matters for `record_best`: a worker
-     behind the global best still records its own improvements (below), and
-     `obj - eps` from one of them would otherwise raise a bound the pool had
-     tightened. (`solve()` itself opens at `+inf`, so a portfolio restart
-     re-tightens at its first boundary.)
+   - **never loosen past the shared cap.** The batch-boundary test is strict,
+     and every other writer of the bound during a solve -- `record_best`, the
+     adoption re-grounding and the stall re-grounding (#241); the witness
+     sentinel writes only over `+inf` -- takes the min with the shared cap at
+     the current step. That matters for `record_best`: a worker behind the
+     global best still records its own improvements (below), and `obj - eps`
+     from one of them would otherwise raise a bound the pool had tightened. The
+     one deliberate loosening is the stall re-grounding on a continuous
+     objective, which re-derives the cap at the shrunk step: it gives up the
+     part of a tightening that was the step, never a peer's improvement.
+     (`solve()` itself opens at `+inf`, so a portfolio restart re-tightens at
+     its first boundary.)
+   - **only a peer moving tightens.** Each writer records the `G` its cap came
+     from; the boundary tightens (and counts in `shared_bound_tightenings`)
+     only for a `G` below it, and never for a `G` that is the worker's own
+     best. On a continuous objective the step grows after each recorded
+     incumbent (#241), so `G - eps(G)` at the grown step sits under a bound
+     derived from the same `G`: that gap is the step, not a peer.
    - **the bound moves, nothing else does.** Not the assignment -- the worker
      is now violating a tighter row, ViolationLS's normal state after any new
      best. Not `best_feasible_obj` or `best_state`, since the worker did not

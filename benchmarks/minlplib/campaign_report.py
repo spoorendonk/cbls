@@ -2532,7 +2532,9 @@ def _readme_improvement(r: CampaignReport) -> str:
         text += (
             "\n\nBut the incumbent trace cannot be read as pure search progress: "
             "`record_best` tightens the objective bound by `1e-3·(|obj|+1)` per accepted "
-            "solution, so improvements are *floored* at roughly 0.1% steps. The measured "
+            "solution — the relative step was fixed at 1e-3 until #241, which shrinks it "
+            "toward 1e-6 only at a stall — so improvements are *floored* at roughly 0.1% "
+            "steps. The measured "
             f"median consecutive-incumbent ratio on `{it.most_steps_instance}` (the instance "
             f"with the most improvements) is {it.most_steps_median_ratio:.7f} — "
             f"1 − {1 - it.most_steps_median_ratio:.4g}, against the bound step's 1 − 1e-3 — "

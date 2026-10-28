@@ -1856,6 +1856,87 @@ TEST_CASE("a lone worker's own incumbents leave a continuous objective's traject
     REQUIRE(off.counters.bound_behind_global_batches == 0);
 }
 
+TEST_CASE("one peer improvement is one shared tightening on a continuous objective",
+          "[parallel][coord][shared_bound]") {
+    // A peer far ahead, submitted once. Every own best after it is behind the
+    // peer and is bounded at the shared cap, then grows the step (#241), so the
+    // cap at the grown step sits under the bound. That is no peer moving the
+    // bound: neither the sync nor record_best may tighten or count on it.
+    auto run = [](SolutionPool& pool, Tracer* tracer) {
+        SearchCoordination coord;
+        coord.pool = &pool;
+        Model m = cover_model_of(/*continuous=*/true);
+        SearchConfig config;
+        config.max_iterations = 20000;  // as in the lone-worker test above
+        config.batch_iterations = 100;
+        config.perturbation_period = 2;
+        config.tracer = tracer;
+        return solve(m, /*time_limit=*/0.0, /*seed=*/17, true, nullptr, nullptr, 3, nullptr, config,
+                     &coord);
+    };
+    SolutionPool lone_pool(10);
+    const SearchResult lone = run(lone_pool, nullptr);
+    REQUIRE(lone.feasible);
+    // Below anything the worker found alone, so it stays behind the peer.
+    const double peer = lone.objective - 1.0;
+    SolutionPool pool(10);
+    Model sample = cover_model_of(/*continuous=*/true);  // only the gift is read
+    PeerAtBatch gift(sample, pool, peer_solution(peer), /*submit_after=*/1);
+    const SearchResult r = run(pool, &gift);
+    REQUIRE(r.feasible);
+    CAPTURE(peer, r.objective);
+    // The event happened -- otherwise this proves nothing.
+    REQUIRE(r.counters.own_best_behind_global > 1);
+    REQUIRE(r.perturbations > 0);
+    REQUIRE(r.counters.shared_bound_tightenings == 1);
+}
+
+// Each new best's bound gap, relative: (obj - bound) / (|obj| + 1), read when
+// record_best reports it -- the bound it set, at the step that found it.
+class BestSteps : public Tracer {
+public:
+    explicit BestSteps(const Model& model) : model_(model) {}
+
+    void new_best(double objective, double /*seconds*/) override {
+        steps.push_back((objective - model_.objective_bound()) / (std::abs(objective) + 1.0));
+    }
+
+    std::vector<double> steps;
+
+private:
+    const Model& model_;
+};
+
+TEST_CASE("a new best doubles a shrunk continuous step up to 1e-3", "[search][objective]") {
+    // #241's growth half: a stall divides the step by 10, each recorded
+    // incumbent doubles it, capped at 1e-3. So consecutive bests' steps never
+    // more than double, never pass 1e-3, and some best after a stall is bounded
+    // at twice the step of the one before.
+    Model m = cover_model_of(/*continuous=*/true);
+    BestSteps watch(m);
+    SearchConfig config;
+    config.max_iterations = 20000;
+    config.batch_iterations = 100;
+    config.perturbation_period = 2;
+    config.tracer = &watch;
+    const SearchResult r =
+        solve(m, /*time_limit=*/0.0, /*seed=*/17, true, nullptr, nullptr, 3, nullptr, config);
+    REQUIRE(r.feasible);
+    REQUIRE(watch.steps.size() > 1);
+    bool doubled = false;
+    for (size_t i = 0; i < watch.steps.size(); ++i) {
+        CAPTURE(i, watch.steps[i]);
+        REQUIRE(watch.steps[i] <= 1e-3 * (1.0 + 1e-6));
+        if (i > 0) {
+            REQUIRE(watch.steps[i] <= 2.0 * watch.steps[i - 1] * (1.0 + 1e-6));
+            doubled = doubled || (watch.steps[i - 1] < 0.9e-3 &&
+                                  std::abs(watch.steps[i] - (2.0 * watch.steps[i - 1])) <=
+                                      1e-6 * watch.steps[i]);
+        }
+    }
+    REQUIRE(doubled);
+}
+
 TEST_CASE("the pool's global best counts only feasible finite objectives", "[pool][shared_bound]") {
     SolutionPool pool(2);
     REQUIRE(std::isinf(pool.best_feasible_objective()));

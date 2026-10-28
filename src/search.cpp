@@ -513,10 +513,6 @@ private:
                    ? coord_->pool->best_feasible_objective()
                    : std::numeric_limits<double>::infinity();
     }
-    // The tightest bound the shared global best entitles this worker to, or +inf
-    // when sharing is off or there is nothing to share. Every writer of the bound
-    // takes the min with it, which is what keeps a shared tightening from being
-    // undone by the worker's own later, worse incumbent (see record_best).
     // objective_bound_below for this model, at the current step.
     [[nodiscard]] double bound_below(double obj) const {
         return objective_bound_below(obj, obj_integral_, obj_step_);
@@ -524,8 +520,13 @@ private:
     // On a full-period stall: shrink the continuous step and re-ground the bound
     // on the incumbent (#241). See the definition.
     void shrink_objective_step();
-    [[nodiscard]] double shared_bound_cap() const {
-        const double global = global_best();
+    // The tightest bound the shared global best `global` (a global_best() read)
+    // entitles this worker to, or +inf when sharing is off or there is nothing
+    // to share. Every writer of the bound takes the min with it, which is what
+    // keeps a shared tightening from being undone by the worker's own later,
+    // worse incumbent (see record_best), and records `global` in bound_global_
+    // with the bound.
+    [[nodiscard]] double shared_bound_cap(double global) const {
         return coord_ != nullptr && coord_->share_objective_bound && std::isfinite(global)
                    ? bound_below(global)
                    : std::numeric_limits<double>::infinity();
@@ -663,6 +664,12 @@ private:
     // The continuous objective's relative bound step, adapted between
     // kObjStepMin and kObjStepMax (#241). Unused on an integral objective.
     double obj_step_ = kObjStepMax;
+    // The global best the live bound last took its shared cap from. Every writer
+    // of the bound sets it. A shared tightening is made (sync_shared_bound) and
+    // counted (there and in record_best) only past it: a step change re-derives
+    // the cap from the same global best, and that is no peer moving the bound
+    // (#241). +inf until the first write.
+    double bound_global_ = std::numeric_limits<double>::infinity();
     const int32_t obj_ci_;
     const std::vector<int32_t>& cids_;
     // The structural batch has work and FJ/Novelty batches have none (#201);
@@ -974,16 +981,19 @@ bool ViolationLSLoop::record_best() {
         // is +inf without a pool or with sharing off, and min(x, +inf) is x for
         // the finite x here, so those runs set exactly what they always did.
         const double own = bound_below(obj);
-        const double cap = shared_bound_cap();
+        const double global = global_best();
+        const double cap = shared_bound_cap(global);
         const double previous = model_.objective_bound();
         // Counted only when the cap MOVED the bound -- a peer improved since
-        // this worker's last sync -- not when the sync had already put it there.
-        if (cap < own && cap < previous) {
+        // this worker's last sync -- not when the sync had already put it there,
+        // nor when only the step changed since the bound took its cap.
+        if (cap < own && cap < previous && global < bound_global_) {
             ++counters_.shared_bound_tightenings;
         }
         const double next = std::min(own, cap);
         bound_moved = next < previous;
         model_.set_objective_bound(next);
+        bound_global_ = global;
         // A recorded incumbent is the step's success: grow it back toward the
         // descent's pace (#241), on every recording -- see objective_bound_below.
         // After the bound is set, so this best is bounded at the step that
@@ -1097,7 +1107,13 @@ void ViolationLSLoop::sync_shared_bound() {
         return;  // already at least as tight: our own best, or an earlier sync
     }
     if (coord_->share_objective_bound) {
+        // No peer improved since the bound took its cap: the gap is the step
+        // record_best grew after that write (#241), not a tightening to make.
+        if (!(global < bound_global_)) {
+            return;
+        }
         model_.set_objective_bound(target);
+        bound_global_ = global;
         // set_objective_bound rewrites the row's node value in place, and FJ's
         // violated set and jump table were computed against the old one. That
         // matters most where the row was SATISFIED before -- a worker with no
@@ -1170,8 +1186,12 @@ void ViolationLSLoop::shrink_objective_step() {
         obj_step_ <= kObjStepMin) {
         return;
     }
+    // 1e-3 / 10^3 rounds to just above kObjStepMin, so the floor takes a fourth
+    // shrink, which moves the bound by ~1e-22 relative. Left as measured.
     obj_step_ = std::max(kObjStepMin, obj_step_ / kObjStepShrink);
-    model_.set_objective_bound(std::min(bound_below(best_feasible_obj_), shared_bound_cap()));
+    const double global = global_best();
+    model_.set_objective_bound(std::min(bound_below(best_feasible_obj_), shared_bound_cap(global)));
+    bound_global_ = global;
 }
 
 // The objective-bound half of an adoption, lifted out of adopt_from_pool: it is
@@ -1206,11 +1226,13 @@ void ViolationLSLoop::reground_objective_bound_after_adoption(bool feasible_here
     // The shared cap (#179), for the same reason record_best takes it: `target`
     // is this worker's view, and a bound the pool had tightened past it must not
     // be loosened by re-grounding on it. +inf with sharing off.
+    const double global = global_best();
     const double bound = std::min(
         std::isfinite(target) ? bound_below(target) : std::numeric_limits<double>::infinity(),
-        shared_bound_cap());
+        shared_bound_cap(global));
     if (std::isfinite(bound)) {
         model_.set_objective_bound(bound);
+        bound_global_ = global;
     } else if (!std::isfinite(model_.objective_bound())) {
         // No usable objective anywhere yet -- an infeasible or non-finite
         // adopted point with no incumbent of our own. Install the finite
