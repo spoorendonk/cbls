@@ -3365,9 +3365,12 @@ bit-identical to what it was before the parameter existed:
    - **only a peer moving tightens.** Each writer records the `G` its cap came
      from; the boundary tightens (and counts in `shared_bound_tightenings`)
      only for a `G` below it, and never for a `G` that is the worker's own
-     best. On a continuous objective the step grows after each recorded
-     incumbent (#241), so `G - eps(G)` at the grown step sits under a bound
-     derived from the same `G`: that gap is the step, not a peer.
+     best; `record_best` lets the cap move the bound only then too, so a
+     behind own best under an unchanged `G` moves nothing and is no
+     improvement (below). On a continuous objective the step grows after
+     each recorded incumbent (#241), so `G - eps(G)` at the grown step sits
+     under a bound derived from the same `G`: that gap is the step, not a
+     peer.
    - **the bound moves, nothing else does.** Not the assignment -- the worker
      is now violating a tighter row, ViolationLS's normal state after any new
      best. Not `best_feasible_obj` or `best_state`, since the worker did not

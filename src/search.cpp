@@ -987,10 +987,18 @@ bool ViolationLSLoop::record_best() {
         // Counted only when the cap MOVED the bound -- a peer improved since
         // this worker's last sync -- not when the sync had already put it there,
         // nor when only the step changed since the bound took its cap.
-        if (cap < own && cap < previous && global < bound_global_) {
+        const bool peer_moved = global < bound_global_;
+        if (cap < own && cap < previous && peer_moved) {
             ++counters_.shared_bound_tightenings;
         }
-        const double next = std::min(own, cap);
+        // No peer improved since the bound took its cap: a cap below `previous`
+        // is the step record_best grew after that write (#241), not a peer's
+        // tightening, so it must not move the bound -- or a behind own best
+        // would return true below on a step change. Our own best still moves
+        // it through `own`. Without a pool or with sharing off the cap is +inf
+        // and this is min(own, +inf) as before; on an integral objective the
+        // cap does not depend on the step, so it is unchanged there too.
+        const double next = std::min(own, peer_moved ? cap : std::max(cap, previous));
         bound_moved = next < previous;
         model_.set_objective_bound(next);
         bound_global_ = global;

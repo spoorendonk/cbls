@@ -1577,6 +1577,25 @@ private:
     size_t submit_after_;
 };
 
+// Per batch: the objectives record_best recorded, and whether the loop counted
+// the batch as an improvement.
+class BatchLedger : public PeerAtBatch {
+public:
+    using PeerAtBatch::PeerAtBatch;
+    void new_best(double objective, double /*seconds*/) override { pending_.push_back(objective); }
+    void batch_end(BatchKind kind, int64_t iterations, bool improved) override {
+        recorded.push_back(pending_);
+        pending_.clear();
+        improved_flags.push_back(improved);
+        PeerAtBatch::batch_end(kind, iterations, improved);
+    }
+    std::vector<std::vector<double>> recorded;
+    std::vector<bool> improved_flags;
+
+private:
+    std::vector<double> pending_;
+};
+
 struct SharedBoundRun {
     SearchResult result;
     std::vector<double> bounds;
@@ -1861,7 +1880,9 @@ TEST_CASE("one peer improvement is one shared tightening on a continuous objecti
     // A peer far ahead, submitted once. Every own best after it is behind the
     // peer and is bounded at the shared cap, then grows the step (#241), so the
     // cap at the grown step sits under the bound. That is no peer moving the
-    // bound: neither the sync nor record_best may tighten or count on it.
+    // bound: neither the sync nor record_best may tighten or count on it, and
+    // record_best may not report such a best as an improvement either (#179's
+    // rule, as in "an own best behind the shared bound is not an improvement").
     auto run = [](SolutionPool& pool, Tracer* tracer) {
         SearchCoordination coord;
         coord.pool = &pool;
@@ -1881,7 +1902,7 @@ TEST_CASE("one peer improvement is one shared tightening on a continuous objecti
     const double peer = lone.objective - 1.0;
     SolutionPool pool(10);
     Model sample = cover_model_of(/*continuous=*/true);  // only the gift is read
-    PeerAtBatch gift(sample, pool, peer_solution(peer), /*submit_after=*/1);
+    BatchLedger gift(sample, pool, peer_solution(peer), /*submit_after=*/1);
     const SearchResult r = run(pool, &gift);
     REQUIRE(r.feasible);
     CAPTURE(peer, r.objective);
@@ -1889,6 +1910,20 @@ TEST_CASE("one peer improvement is one shared tightening on a continuous objecti
     REQUIRE(r.counters.own_best_behind_global > 1);
     REQUIRE(r.perturbations > 0);
     REQUIRE(r.counters.shared_bound_tightenings == 1);
+    // From batch 2 on the bound took its cap from the peer, so a batch whose
+    // every record is behind it moved nothing.
+    int behind_batches = 0;
+    for (size_t i = 1; i < gift.recorded.size(); ++i) {
+        const auto& objs = gift.recorded[i];
+        if (objs.empty() ||
+            !std::all_of(objs.begin(), objs.end(), [peer](double o) { return o > peer; })) {
+            continue;
+        }
+        ++behind_batches;
+        INFO("batch " << i + 1 << " recorded only behind-global own bests");
+        REQUIRE_FALSE(gift.improved_flags[i]);
+    }
+    REQUIRE(behind_batches > 1);  // a second one grew the step: the case under test
 }
 
 // Each new best's bound gap, relative: (obj - bound) / (|obj| + 1), read when
@@ -2010,25 +2045,6 @@ public:
             full_evaluate(model);
         }
     }
-};
-
-// Per batch: the objectives record_best recorded, and whether the loop counted
-// the batch as an improvement.
-class BatchLedger : public PeerAtBatch {
-public:
-    using PeerAtBatch::PeerAtBatch;
-    void new_best(double objective, double /*seconds*/) override { pending_.push_back(objective); }
-    void batch_end(BatchKind kind, int64_t iterations, bool improved) override {
-        recorded.push_back(pending_);
-        pending_.clear();
-        improved_flags.push_back(improved);
-        PeerAtBatch::batch_end(kind, iterations, improved);
-    }
-    std::vector<std::vector<double>> recorded;
-    std::vector<bool> improved_flags;
-
-private:
-    std::vector<double> pending_;
 };
 
 // Samples the bound the moment an adoption has re-grounded it.
