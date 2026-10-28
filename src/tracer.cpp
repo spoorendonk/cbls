@@ -12,6 +12,8 @@ const char* kick_kind_name(KickKind kind) {
             return "lns";
         case KickKind::Adopt:
             return "adopt";
+        case KickKind::Restart:
+            return "restart";
     }
     // Unreachable for any value of the enum; keeps the function total so a caller
     // can print the kind unconditionally, exactly as batch_kind_name does.

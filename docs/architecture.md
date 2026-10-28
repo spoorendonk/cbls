@@ -2558,6 +2558,39 @@ origin, so a rejection *moves* the search back to the origin and perturbs
 nothing: not free, and not a diversification either, since FJ re-descends from a
 point it has already converged on.
 
+**Restart options, both off (#239).** Two CP-SAT ViolationLS restart features
+are kept as `SearchConfig` arms, faithful to OR-Tools main at `266f518`:
+
+- `restart_randomization` is the part of `LsOptions::Randomize` that cbls
+  lacked. At a kick, an adoption or a new best's weight reset, the weights
+  restart at Uniform(1, 2) with probability ½, else at 1. With probability ½ a
+  kick also takes the restore-only `KickKind::Restart`, which re-weights
+  `kick_origin()` and moves nothing.
+- `luby_restart_unit` replaces #102's unproductive-batch trigger with a
+  `unit × luby(k)` schedule of non-improving batches, and resets `k` on each
+  new best.
+
+The rest of `Randomize` is already here. ρ is redrawn at each kick and new
+best, and compound moves at each batch (#209).
+
+The published algorithm (Davies et al., Algorithm 6) has no Luby schedule: it
+restarts after 100 batches without a new solution. FJ has no restart at all.
+
+Survey and A/B are on #239:
+
+- **Setup.** 11 mipfeas smoke instances × 5 seeds, 10 s, 1 thread, engine
+  `e5a9a54`, paired per seed, on a laptop shared at load ~3.
+- **`restart_randomization` alone is neutral.** Primal integral moves by
+  −0.0006, 95% CI [−0.0043, +0.0031]. Its gap-at-budget gain (gmean 0.87) on
+  three instances does not reach the integral.
+- **Luby on top of it is worse on the mean.** The primal integral rises by
+  +0.027 [−0.006, +0.060]. Time to first feasible is gmean ×1.17, up to ×3.1,
+  and binkar10_1's integral doubles.
+
+Neither result separates, so the defaults stay off. Note that #102's trigger
+already restarts adaptively, at a median of 2 batches, and that is what a
+fixed schedule only approximates.
+
 #### What admits it, and what it costs (#158)
 
 The two arms below are **before = `97d9d4d`** (the merge base on `main`) and
@@ -3403,7 +3436,9 @@ the workers of a `ParallelSearch` -- a stalled worker resumes from a peer's
 incumbent. A single-threaded `solve()` has no pool, but since #158 it is not
 without a warm restart: every diversification kick restores its own incumbent
 first, which is the single-threaded form of the same idea (see
-[Diversification](#diversification)).
+[Diversification](#diversification)). Luby is available as the opt-in
+`SearchConfig::luby_restart_unit`, but the smoke A/B (#239) found it no better
+than #102's stall trigger and slower to a first feasible point, so it stays off.
 
 ---
 

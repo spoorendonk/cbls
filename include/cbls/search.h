@@ -265,6 +265,36 @@ struct SearchConfig {
     // default stays off; only solve() turns it on.)
     bool fj_objective_tie_break = true;
 
+    // ---- restarts (#239): two arms after OR-Tools' ViolationLS, both off ------
+    //
+    // OR-Tools' `ls` worker restarts on a Luby schedule and, at every restart,
+    // redraws its LsOptions (ortools/sat/feasibility_jump.{h,cc},
+    // LsOptions::Randomize, SharedLsStates::ConfigureNextLubyRestart). Two of
+    // those draws were already here -- rho at every kick and new best, compound
+    // moves at every batch (#209) -- and these two fields add what was not. Off,
+    // both are today's search, draw for draw. #239 carries the survey and the
+    // smoke A/B that decided their defaults.
+    //
+    // restart_randomization: at every kick (a portfolio adoption included) and
+    // every new best's weight reset, the GLS weights restart at Uniform(1, 2)
+    // with probability 1/2, else at 1
+    // (`start_with_random_weights`); and at a kick, with probability 1/2 nothing
+    // is perturbed -- kick_origin() is restored and re-weighted only, which is
+    // what an OR-Tools `ls` restart from a pool solution does. Before the first
+    // feasible point there is no origin, and that kick only re-weights in place.
+    // The kick's LNS slots are untouched.
+    bool restart_randomization = false;
+    // luby_restart_unit > 0 replaces #102's unproductive-batch kick with a Luby
+    // schedule: a kick after unit * luby(k) non-improving batches (1, 1, 2, 1, 1,
+    // 2, 4, ...), k counting the kicks since the last new best, which resets it
+    // as OR-Tools' ResetLubyCounter does. Batches then run their full
+    // batch_iterations: the unproductive early exit is #102's trigger, not this
+    // one. The perturbation_period route -- the probe, LNS after the first
+    // feasible point, pool adoption -- is unchanged, and the stagnation count it
+    // reads is carried across a Luby kick as across #102's. 0 (default) is off;
+    // OR-Tools' restart_factor is 1. Must be >= 0.
+    int luby_restart_unit = 0;
+
     // ---- host integration (#169): cancellation and tracing ------------------
     //
     // Both are NON-OWNING views of objects the CALLER keeps alive for the whole
@@ -668,6 +698,11 @@ int64_t fj_nl_initialize(Model& model, ViolationManager& vm, int max_iterations 
                          double tolerance = kDefaultFeasibilityTolerance,
                          bool exact_int_jump = false);
 
+/// The i-th term (1-based) of the Luby sequence 1, 1, 2, 1, 1, 2, 4, 1, 1, 2,
+/// ... -- OR-Tools' `SUniv`, the schedule `SearchConfig::luby_restart_unit`
+/// scales. Requires `i >= 1`.
+int64_t luby(int64_t i);
+
 /// `time_limit <= 0` disables the wall clock entirely: the run is then bounded by
 /// `config.max_iterations` alone and is fully deterministic for a given seed
 /// (what the tests rely on). With neither budget set the call returns immediately
@@ -682,11 +717,12 @@ int64_t fj_nl_initialize(Model& model, ViolationManager& vm, int max_iterations 
 /// figure was measured on and the one that keeps the same-algorithm comparison
 /// about the engine rather than about the portfolio.
 /// Throws `std::invalid_argument` on a `SearchConfig` the search cannot run:
-/// today, `batch_iterations <= 0`. Every batch loop counts its work against
-/// that budget, and at <= 0 a loop whose only exit is the counter would ignore
-/// the time limit (#211). `solve()` and `ParallelSearch` both call it on entry
-/// -- the latter before any worker exists, so the error reaches the caller
-/// rather than being parked as N identical worker failures.
+/// today, `batch_iterations <= 0` or `luby_restart_unit < 0`. Every batch loop
+/// counts its work against that budget, and at <= 0 a loop whose only exit is
+/// the counter would ignore the time limit (#211). `solve()` and
+/// `ParallelSearch` both call it on entry -- the latter before any worker
+/// exists, so the error reaches the caller rather than being parked as N
+/// identical worker failures.
 void validate_search_config(const SearchConfig& config);
 
 SearchResult solve(Model& model, double time_limit = 10.0, uint64_t seed = 42, bool use_fj = true,

@@ -17,9 +17,14 @@ enum class KickKind : std::uint8_t {
     /// perturbing its own. Portfolio-only: `adopt_from_pool` returns false at
     /// once without a pool.
     Adopt,
+    /// The kick origin was restored and re-weighted with nothing perturbed.
+    /// Only under `SearchConfig::restart_randomization` (#239), on half its
+    /// perturb kicks.
+    Restart,
 };
 
-/// Stable snake_case token for a `KickKind` ("perturb", "lns", "adopt").
+/// Stable snake_case token for a `KickKind` ("perturb", "lns", "adopt",
+/// "restart").
 /// Returns a static string; never null.
 const char* kick_kind_name(KickKind kind);
 

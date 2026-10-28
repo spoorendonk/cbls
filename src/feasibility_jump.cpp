@@ -2687,9 +2687,15 @@ bool FeasibilityJump::batch(int64_t batch_iterations) {
     return gls_loop(config_.sample_size_general, batch_iterations) == GFJStatus::Feasible;
 }
 
-void FeasibilityJump::reset_weights() {
+void FeasibilityJump::reset_weights(bool random) {
     require_tables_in_step();
-    std::fill(vm_.weights.begin(), vm_.weights.end(), 1.0);
+    if (random) {
+        for (double& w : vm_.weights) {
+            w = rng_.uniform(1.0, 2.0);
+        }
+    } else {
+        std::fill(vm_.weights.begin(), vm_.weights.end(), 1.0);
+    }
     vm_.invalidate_cache();
     rebuild_violated_and_scan_set();
 }
@@ -2895,7 +2901,7 @@ bool FeasibilityJump::force_structural_move() {
     return false;  // every structure is a dead end
 }
 
-void FeasibilityJump::perturb(double probability) {
+void FeasibilityJump::perturb(double probability, bool random_weights) {
     require_tables_in_step();
     // Randomise each jumpable variable independently, then make sure the kick
     // actually moved something. Independent draws alone leave the assignment
@@ -2955,7 +2961,7 @@ void FeasibilityJump::perturb(double probability) {
         }
     }
     full_evaluate(model_);
-    reset_weights();
+    reset_weights(random_weights);
 }
 
 bool FeasibilityJump::all_satisfied() const {

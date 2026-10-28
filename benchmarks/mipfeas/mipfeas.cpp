@@ -79,6 +79,10 @@ struct Args {
     // OR-Tools' objective tie-break/scan (#218), on as the engine's default is
     // since #226, and recorded on every row likewise.
     bool objective_tie_break = true;
+    // #239's two restart arms, off as the engine's defaults are, and recorded on
+    // every row likewise.
+    bool restart_randomization = false;
+    int luby_restart_unit = 0;
     // CBLS variables need finite bounds. Implied bounds supply most of them
     // (#120); this is the fallback for a column no constraint bounds. 1e7 rather
     // than the engine's 1e9 because it measured better on the smoke roster — NOT
@@ -125,6 +129,7 @@ void print_usage() {
         "                    [--max-propagation-passes N]\n"
         "                    [--no-compound-moves] [--exact-int-jump]\n"
         "                    [--perturb-near-value] [--no-objective-tie-break]\n"
+        "                    [--restart-randomization] [--luby-restart-unit N]\n"
         "                    [--threads N]\n"
         "                    [--share-bound | --no-share-bound]\n"
         "                    [--solution-dir DIR]\n"
@@ -174,6 +179,18 @@ int parse_thread_count(const char* text) {
     return static_cast<int>(threads);
 }
 
+/// SearchConfig::luby_restart_unit's range (#239): 0 is off, and the field is
+/// an int, so a value past INT_MAX is refused rather than narrowed.
+int parse_luby_restart_unit(const char* text) {
+    const int64_t unit = parse_int64("--luby-restart-unit", text);
+    if (unit < 0 || unit > std::numeric_limits<int>::max()) {
+        std::fprintf(stderr, "--luby-restart-unit must be in [0, %d]\n",
+                     std::numeric_limits<int>::max());
+        std::exit(2);
+    }
+    return static_cast<int>(unit);
+}
+
 Args parse_args(int argc, char** argv) {
     Args a;
     cbls::bench::ArgCursor c(argc, argv);
@@ -210,6 +227,10 @@ Args parse_args(int argc, char** argv) {
             a.objective_tie_break = true;
         } else if (s == "--no-objective-tie-break") {
             a.objective_tie_break = false;
+        } else if (s == "--restart-randomization") {
+            a.restart_randomization = true;
+        } else if (c.value_flag("--luby-restart-unit", v)) {
+            a.luby_restart_unit = parse_luby_restart_unit(v);
         } else if (s == "--share-bound") {
             a.share_objective_bound = true;
         } else if (s == "--no-share-bound") {
@@ -422,6 +443,8 @@ void write_result(const Args& args, const nlohmann::json& extra) {
     j["exact_int_jump"] = args.exact_int_jump;
     j["perturb_near_value"] = args.perturb_near_value;
     j["objective_tie_break"] = args.objective_tie_break;
+    j["restart_randomization"] = args.restart_randomization;
+    j["luby_restart_unit"] = args.luby_restart_unit;
     j["inf_clamp"] = args.inf_clamp;
     j["propagate_bounds"] = args.propagate_bounds;
     j["max_propagation_passes"] = args.max_propagation_passes;
@@ -702,6 +725,8 @@ int run_benchmark(int argc, char** argv) {
     cfg.fj_exact_int_jump = args.exact_int_jump;
     cfg.perturb_near_value = args.perturb_near_value;
     cfg.fj_objective_tie_break = args.objective_tie_break;
+    cfg.restart_randomization = args.restart_randomization;
+    cfg.luby_restart_unit = args.luby_restart_unit;
     cfg.lns_interval = kLnsInterval;
 
     // One model per portfolio worker, replicated BEFORE the solve bracket opens.

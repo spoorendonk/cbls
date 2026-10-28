@@ -125,6 +125,8 @@ CONFIG_KEYS = (
     "exact_int_jump",
     "perturb_near_value",
     "objective_tie_break",
+    "restart_randomization",
+    "luby_restart_unit",
     "inf_clamp",
     "propagate_bounds",
     "max_propagation_passes",
@@ -137,8 +139,9 @@ def config_string(result: dict[str, object]) -> str:
     """The `config` cell: every CONFIG_KEYS entry the result carries.
 
     One key is back-filled, and the opt-in engine flags (`exact_int_jump`,
-    #216; `perturb_near_value`, #217; `objective_tie_break`, #218) dropped
-    when off; see their lines.
+    #216; `perturb_near_value`, #217; `objective_tie_break`, #218;
+    `restart_randomization` and `luby_restart_unit`, #239) dropped when off;
+    see their lines.
     `share_objective_bound` (#179) did not exist before
     the shared bound, and at one thread it names no behaviour at all -- a single
     `solve()` has no pool -- so a pre-#179 single-threaded row IS the default
@@ -160,9 +163,12 @@ def config_string(result: dict[str, object]) -> str:
     # #226, so a new default row carries `objective_tie_break=True` and does
     # not match a table scored before it -- which is the point: that table was
     # measured on the old default and must be regenerated, not averaged in.
-    for opt_in in ("perturb_near_value", "objective_tie_break"):
+    for opt_in in ("perturb_near_value", "objective_tie_break", "restart_randomization"):
         if cells.get(opt_in) is False:
             del cells[opt_in]
+    # #239's Luby schedule, whose off arm is a unit of 0 rather than False.
+    if cells.get("luby_restart_unit") == 0:
+        del cells["luby_restart_unit"]
     return ";".join(f"{k}={cells[k]}" for k in CONFIG_KEYS if k in cells)
 
 

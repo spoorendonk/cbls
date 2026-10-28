@@ -636,11 +636,15 @@ const std::vector<Arm>& arms() {
         {"fj_exact_int_jump", [](SearchConfig& c) { c.fj_exact_int_jump = true; }},
         {"perturb_near_value", [](SearchConfig& c) { c.perturb_near_value = true; }},
         {"no_fj_objective_tie_break", [](SearchConfig& c) { c.fj_objective_tie_break = false; }},
+        {"restart_randomization", [](SearchConfig& c) { c.restart_randomization = true; }},
+        {"luby_restart_unit", [](SearchConfig& c) { c.luby_restart_unit = 1; }},
         {"all_opt_in",
          [](SearchConfig& c) {
              c.fj_exact_int_jump = true;
              c.perturb_near_value = true;
              c.fj_objective_tie_break = true;
+             c.restart_randomization = true;
+             c.luby_restart_unit = 1;
          }},
     };
     return kArms;

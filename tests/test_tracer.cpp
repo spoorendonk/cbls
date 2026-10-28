@@ -533,7 +533,8 @@ TEST_CASE("a throwing tracer propagates, and a portfolio absorbs it", "[tracer][
 }
 
 TEST_CASE("KickKind has a distinct stable token", "[tracer]") {
-    const std::vector<KickKind> all = {KickKind::Perturb, KickKind::LNS, KickKind::Adopt};
+    const std::vector<KickKind> all = {KickKind::Perturb, KickKind::LNS, KickKind::Adopt,
+                                       KickKind::Restart};
     std::set<std::string> tokens;
     for (KickKind k : all) {
         REQUIRE(kick_kind_name(k) != nullptr);
@@ -543,6 +544,7 @@ TEST_CASE("KickKind has a distinct stable token", "[tracer]") {
     REQUIRE(std::string(kick_kind_name(KickKind::Perturb)) == "perturb");
     REQUIRE(std::string(kick_kind_name(KickKind::LNS)) == "lns");
     REQUIRE(std::string(kick_kind_name(KickKind::Adopt)) == "adopt");
+    REQUIRE(std::string(kick_kind_name(KickKind::Restart)) == "restart");
 }
 
 TEST_CASE("a declining factory does not fall back to the shared tracer", "[tracer][parallel]") {

@@ -361,18 +361,34 @@ def test_a_row_without_the_shared_bound_key_scores_only_where_it_is_equivalent(
             check_uniform_configuration(rows)
 
 
-@pytest.mark.parametrize("key", ["exact_int_jump", "perturb_near_value", "objective_tie_break"])
+@pytest.mark.parametrize(
+    ("key", "off_value", "on_value"),
+    [
+        ("exact_int_jump", False, True),
+        ("perturb_near_value", False, True),
+        ("objective_tie_break", False, True),
+        ("restart_randomization", False, True),
+        ("luby_restart_unit", 0, 1),
+    ],
+    ids=[
+        "exact_int_jump",
+        "perturb_near_value",
+        "objective_tie_break",
+        "restart_randomization",
+        "luby_restart_unit",
+    ],
+)
 @pytest.mark.parametrize(
     ("on", "match"),
-    # Before the flag (#216, #217, #218) every CBLS row ran its off arm.
+    # Before the flag (#216, #217, #218, #239) every CBLS row ran its off arm.
     [(False, None), (True, "span 2 configurations")],
     ids=["old-row-is-the-off-arm", "on-arm-refused"],
 )
 def test_a_row_without_an_opt_in_engine_key_is_the_off_arm(
-    tmp_path: Path, key: str, on: bool, match: str | None
+    tmp_path: Path, key: str, off_value: object, on_value: object, on: bool, match: str | None
 ) -> None:
     old: dict[str, object] = {"compound_moves": True}
-    new: dict[str, object] = {"compound_moves": True, key: on}
+    new: dict[str, object] = {"compound_moves": True, key: on_value if on else off_value}
     for instance, extra in (("a", old), ("b", new)):
         _write_result(
             tmp_path,

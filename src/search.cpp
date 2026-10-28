@@ -445,6 +445,20 @@ private:
 
     // ---- the incumbent, and the kicks that leave it ----
     void sample_rho() { fj_.set_rho(rng_.random() < 0.5 ? 0.95 : 1.0); }
+    // SearchConfig::restart_randomization's weight draw (#239): whether the
+    // next weight reset fills Uniform(1, 2) instead of 1. Draws nothing with the
+    // option off, so the default RNG stream is untouched.
+    [[nodiscard]] bool draw_random_weights() {
+        return config_.restart_randomization && rng_.random() < 0.5;
+    }
+    [[nodiscard]] bool luby_on() const { return config_.luby_restart_unit > 0; }
+    // Re-arm the Luby countdown (#239): from the sequence's start after a new
+    // best -- OR-Tools' ResetLubyCounter -- else at its next term, after a kick
+    // of either route. Draws nothing; a no-op count with the schedule off.
+    void restart_luby(bool after_new_best) {
+        luby_index_ = after_new_best ? 0 : luby_index_ + 1;
+        batches_to_restart_ = config_.luby_restart_unit * luby(luby_index_ + 1);
+    }
     void emit_progress(bool new_best);
     // Record the current (real-feasible) assignment if it improves the best and
     // tighten the objective bound. Returns true on a new best.
@@ -671,6 +685,11 @@ private:
     // cadence depend on how often the unproductive one fired.
     int lns_slot_ = 0;
     int stagnation_ = 0;
+    // SearchConfig::luby_restart_unit's schedule (#239), unused at 0: kicks
+    // since the last new best, and the non-improving batches left before the
+    // next Luby kick. See restart_luby().
+    int64_t luby_index_ = 0;
+    int64_t batches_to_restart_ = 0;
     int64_t batches_ = 0;
     // Where the run spent its work (#169). Observational only: no field here is
     // ever read back by the loop, so a run that fills it takes the trajectory it
@@ -730,6 +749,7 @@ ViolationLSLoop::ViolationLSLoop(Model& model, ViolationManager& vm, RNG& rng, F
       last_callback_(budget.start),
       last_improvement_(budget.start) {
     sample_rho();
+    restart_luby(/*after_new_best=*/true);
 }
 
 double ViolationLSLoop::max_real_violation() const {
@@ -1267,8 +1287,9 @@ bool ViolationLSLoop::adopt_from_pool() {
     // basin we are leaving, and this is the "state mutated outside GFJ" case
     // the LNS call site uses reset_weights for. NOT fj_.begin() -- that zeroes
     // iterations() (breaking the iteration budget and the reported count) and
-    // re-arms a full fresh wall clock past solve()'s own deadline.
-    fj_.reset_weights();
+    // re-arms a full fresh wall clock past solve()'s own deadline. An adoption
+    // is a kick, so restart_randomization's weight draw applies (#239).
+    fj_.reset_weights(draw_random_weights());
     // The caller armed the Float escape probe just before calling us, on the
     // diagnosis that some variable sits at a stationary point of every violated
     // constraint. That diagnosis was about the assignment we have just left; it
@@ -1445,9 +1466,20 @@ void ViolationLSLoop::diversify(bool allow_lns) {
             tracer_->lns(accepted);
         }
         fj_.reset_weights();  // LNS mutated state outside GFJ
+    } else if (config_.restart_randomization && rng_.random() < 0.5) {
+        // #239: OR-Tools' `ls` restart -- the origin as it is, nothing
+        // perturbed, the diversity coming from the weights and rho alone.
+        // restore_state left the nodes on the old assignment, and with no
+        // perturb() to re-evaluate them this branch is the reader that needs the
+        // sweep. Without an origin nothing moved, and the nodes are current.
+        trace_kick(KickKind::Restart);
+        if (origin != nullptr) {
+            full_evaluate(model_);
+        }
+        fj_.reset_weights(draw_random_weights());  // invalidates vm_'s cache
     } else {
         trace_kick(KickKind::Perturb);
-        fj_.perturb(config_.perturbation_probability);  // self-resyncs
+        fj_.perturb(config_.perturbation_probability, draw_random_weights());  // self-resyncs
     }
     sample_rho();
     ++perturbations_;
@@ -1624,6 +1656,7 @@ bool ViolationLSLoop::apply_batch_outcome(bool improved, bool resync, bool count
     if (!improved) {
         if (count_stagnation) {
             ++stagnation_;
+            --batches_to_restart_;
         }
         if (resync) {
             fj_.resync();  // re-sync after hook/structural mutation, keep GLS weights
@@ -1639,9 +1672,12 @@ bool ViolationLSLoop::apply_batch_outcome(bool improved, bool resync, bool count
         last_improvement_ = std::chrono::steady_clock::now();
     }
     stagnation_ = 0;
+    restart_luby(/*after_new_best=*/true);
     // Making progress: the Float escape probe is not needed and is not free.
     fj_.set_escape_probe(false);
-    fj_.reset_weights();  // new best: fresh GLS weights (paper) + new rho
+    // new best: fresh GLS weights (paper; Uniform(1, 2) on half of them under
+    // restart_randomization, #239) + new rho
+    fj_.reset_weights(draw_random_weights());
     sample_rho();
     if (!has_obj_) {
         // Pure feasibility: first solution is the answer.
@@ -1711,9 +1747,18 @@ void ViolationLSLoop::maybe_diversify(BatchKind kind, bool improved) {
     // schedules no FJ batch on such a model -- and constant false on any model
     // FJ has work in, or that has no structure, so those keep their
     // trajectories.
-    const bool unproductive_kick =
-        kind == BatchKind::FeasibilityJump && !improved && fj_.batch_stuck() && !fj_idle_;
+    //
+    // Under SearchConfig::luby_restart_unit (#239) the Luby countdown takes that
+    // route's place: run() disarms the unproductive exit, so batch_stuck() is
+    // false anyway, and the kick is due once unit * luby(k) counted
+    // non-improving batches have passed -- of any kind, as OR-Tools counts them.
+    // apply_batch_outcome counts down and re-arms on a new best; a kick of
+    // either route here moves the schedule to its next term.
+    const bool early_kick = luby_on() ? batches_to_restart_ <= 0
+                                      : kind == BatchKind::FeasibilityJump && !improved &&
+                                            fj_.batch_stuck() && !fj_idle_;
     if (stagnation_ >= config_.perturbation_period && !past_deadline()) {
+        restart_luby(/*after_new_best=*/false);
         // Genuinely stuck. Arm the Float escape probe: a variable sitting at a
         // stationary point of every violated constraint has no other candidate
         // that can move it, and diversification alone cannot rescue it because
@@ -1764,9 +1809,10 @@ void ViolationLSLoop::maybe_diversify(BatchKind kind, bool improved) {
             // adopt_from_pool returns false at once without a pool.
             trace_kick(KickKind::Adopt);
         }
-    } else if (unproductive_kick && !past_deadline()) {
+    } else if (early_kick && !past_deadline()) {
         // Kick early, but do NOT arm the escape probe and do NOT reset the
-        // stagnation counter.
+        // stagnation counter. Both reasons below hold for a Luby kick as well,
+        // which recurs every batch at the sequence's 1s.
         //
         // Not the probe: this route fires on an ITERATION count, so on a
         // model with no reachable feasible point the very first batch trips
@@ -1788,6 +1834,7 @@ void ViolationLSLoop::maybe_diversify(BatchKind kind, bool improved) {
         const int carried = stagnation_;
         diversify(/*allow_lns=*/!have_feasible_);
         stagnation_ = carried;
+        restart_luby(/*after_new_best=*/false);
     }
 }
 
@@ -1886,7 +1933,10 @@ SearchResult ViolationLSLoop::run() {
         // improvement or a full-period diversify resets it. That is a DELAY on
         // the first misfire, not a cap on the rate; what makes the misfire cheap
         // is that the kick drops its LNS half once a feasible solution exists.
-        fj_.set_watch_progress(stagnation_ >= unproductive_arm_stagnation_);
+        //
+        // Under luby_restart_unit (#239) never: the schedule is the early kick
+        // then, and its batches run their full batch_iterations.
+        fj_.set_watch_progress(!luby_on() && stagnation_ >= unproductive_arm_stagnation_);
 
         // A no-op without a pool, so a single-threaded solve is untouched. After
         // pick_batch_kind so the kind is drawn from the RNG exactly as before
@@ -1966,6 +2016,28 @@ void validate_search_config(const SearchConfig& config) {
     if (config.batch_iterations <= 0) {
         throw std::invalid_argument("SearchConfig::batch_iterations must be positive, got " +
                                     std::to_string(config.batch_iterations));
+    }
+    if (config.luby_restart_unit < 0) {
+        throw std::invalid_argument("SearchConfig::luby_restart_unit must be >= 0, got " +
+                                    std::to_string(config.luby_restart_unit));
+    }
+}
+
+int64_t luby(int64_t i) {
+    if (i < 1) {
+        throw std::invalid_argument("luby() is 1-based, got " + std::to_string(i));
+    }
+    // t_i = 2^(k-1) when i = 2^k - 1, else t_{i - 2^(k-1) + 1} for the k with
+    // 2^(k-1) <= i < 2^k - 1 (Luby, Sinclair & Zuckerman 1993).
+    for (;;) {
+        int k = 1;
+        while ((int64_t{1} << k) - 1 < i) {
+            ++k;
+        }
+        if (i == (int64_t{1} << k) - 1) {
+            return int64_t{1} << (k - 1);
+        }
+        i -= (int64_t{1} << (k - 1)) - 1;
     }
 }
 
