@@ -1771,9 +1771,11 @@ nonetheless total on an out-of-range element, which is what keeps the type safe
 to expose to Python (#156).
 
 `structural_sample_size` defaults to 8. That is a **neutral placeholder, not a
-measured choice**, and nothing in this repo is derived from it: the two policies
-it feeds are opt-in and off by default. `benchmarks/setcover/ab_selection.sh`
-A/Bs the **policies** on the set-covering roster at that default; it takes no
+measured choice**, and no published result is derived from it. It feeds the
+opt-in `BestOfSample` and `ViolationGuided`, and `GranularBest` — the `Auto`
+default when a neighbour list is set (#203) — as the floor its one-element
+neighbourhoods are topped up to; #203's CVRP smoke ran at the default.
+`benchmarks/setcover/ab_selection.sh` A/Bs the **policies** on the set-covering roster at that default; it takes no
 `--structural-sample-size`, so sweeping the size itself means driving
 `cbls_setcover --structural-sample-size` directly.
 

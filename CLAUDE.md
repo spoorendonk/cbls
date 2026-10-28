@@ -1087,16 +1087,15 @@ is between the two *paths*, not the individual generators — `int_rand` and
 Two things have since changed for a `ListPartition`. With a neighbour list
 (`SearchConfig::structural_neighbours`) the default `Auto` selection runs
 `GranularBest` (#203): one element's granular complete neighbourhood, best
-improving move committed. A `Set`, or a `List` outside any partition, given a
-neighbour list gets `ViolationGuided`'s sampling under the same setting. And
-whenever LNS is on (opt-in in `solve()` and the CLI's `--lns`, on by default in
-the benchmark runners) it ruins and recreates every `ListPartition` with SISR,
-neighbour list or not (#202). Both change how a `List` is searched; neither is
-evidence, and the claim rule above stands until #204.
+improving move committed. And whenever LNS is on (opt-in in `solve()` and the
+CLI's `--lns`, on by default in the cvrp, mipfeas, minlplib and uc-chped
+runners) it ruins and recreates every `ListPartition` with SISR, neighbour list
+or not (#202). Both change how a `List` is searched; neither is evidence, and
+the claim rule above stands until #204. (A `Set`, or a `List` outside any
+partition, given a neighbour list is sampled as under `ViolationGuided`.)
 
-**Cost-aware
-structural move selection was the stated prerequisite** for any renewed
-structured-variable claim. #165 built it — registrable `MoveGenerator`s,
+**Cost-aware structural move selection was the stated prerequisite** for any
+renewed structured-variable claim. #165 built it — registrable `MoveGenerator`s,
 granular neighbour lists, and `BestOfSample` / `ViolationGuided` selection
 policies — and `setcover` was its ready-made A/B harness.
 

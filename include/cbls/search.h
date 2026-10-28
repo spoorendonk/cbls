@@ -134,11 +134,14 @@ struct SearchConfig {
     // Auto, is GranularBest when `structural_neighbours` is set and otherwise
     // bit-for-bit the pre-#165 rule (#203); see StructuralSelection.
     StructuralSelection structural_selection = StructuralSelection::Auto;
-    // Candidates scored per generator under BestOfSample / ViolationGuided.
-    // Inert under the default policy, which takes exactly one generate() call.
+    // Candidates scored per generator under BestOfSample / ViolationGuided /
+    // GranularBest. Inert under FirstImprovingSample, which takes exactly one
+    // generate() call -- the Auto default without a neighbour list; with one,
+    // Auto is GranularBest (#203), which tops its one-element neighbourhoods up
+    // to this floor.
     //
-    // 8 is a NEUTRAL PLACEHOLDER, not a measured choice, and no result in this
-    // repo is derived from it: the two policies it feeds are opt-in and off by
+    // 8 is a NEUTRAL PLACEHOLDER, not a measured choice, and no published
+    // result in this repo is derived from it; #203's CVRP smoke ran at this
     // default. A caller that cares should sweep it on its own instances:
     // benchmarks/setcover/ab_selection.sh A/Bs the POLICIES at this default and
     // has no --structural-sample-size flag of its own, so sweeping the size
