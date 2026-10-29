@@ -31,6 +31,8 @@ def test_ortools_costs_the_arcs_the_verifier_scores_with() -> None:
     routing = ort.build_routing(inst, fleet=2)
     dist = distance_matrix(inst)
     manager, model = routing.manager, routing.model
+    # Arc costs are only readable from a closed model (an open one segfaults).
+    model.CloseModel()
     for a, b in [(0, 1), (1, 0), (5, 77), (100, 3), (42, 42)]:
         cost = model.GetArcCostForVehicle(manager.NodeToIndex(a), manager.NodeToIndex(b), 0)
         assert cost == dist[a][b]

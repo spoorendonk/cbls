@@ -27,11 +27,14 @@ changes nothing, and the spread across seeds is timing alone.
 THREADS. The routing search is single-threaded, so `--threads` must be 1, as
 for PyVRP, and its rows pair only with `cbls_cvrp --threads 1`.
 
-THE CLOCK. Budget and `time_to_first_feasible` run from before the model is
-built, as `cbls_cvrp`'s cover its whole search: the routing time limit is what
-is left of the budget once the model exists. Every solution the routing search
-reports satisfies the capacity dimension, so the first one is the first
-feasible.
+THE CLOCK. Budget and `time_to_first_feasible` run from the
+`SolveWithParameters` call, as PyVRP's run from `solve()` and `cbls_cvrp`'s from
+the start of its search: reading the instance and building the routing model
+sit outside, recorded as `build_seconds` as `cbls_cvrp` records its model
+build. The first-solution heuristic runs inside the time limit, as PyVRP's
+construction does not, so the first solution is charged to the budget. Every
+solution the routing search reports satisfies the capacity dimension, so the
+first one is the first feasible.
 
 THE CLI AND THE RECORD mirror `reference_solve.py`'s, so `run_benchmark.py`
 runs it as the `ortools` arm and `score.py` scores it alike; `engine` is
@@ -127,20 +130,16 @@ def routes_of(routing: Routing, solution: pywrapcp.Assignment, fleet: int) -> li
     return routes
 
 
-def run(args: argparse.Namespace) -> int:
+def run(args: argparse.Namespace, fleet: int) -> int:
     inst = read_vrp_file(args.inst_dir / "X" / f"{args.instance}.vrp")
-    k = name_k(args.instance)
-    if k is None:
-        print(f"{args.instance}: the name carries no k", file=sys.stderr)
-        return 2
-    fleet = default_fleet(k)
-    started = time.monotonic()
+    build_started = time.monotonic()
     routing = build_routing(inst, fleet)
     # Seconds from `started` of every solution the search reports.
     found: list[float] = []
+    started = time.monotonic()
+    build_seconds = started - build_started
     routing.model.AddAtSolutionCallback(lambda: found.append(time.monotonic() - started))
-    remaining = args.budget - (time.monotonic() - started)
-    solution = routing.model.SolveWithParameters(search_parameters(remaining))
+    solution = routing.model.SolveWithParameters(search_parameters(args.budget))
     wall = time.monotonic() - started
     feasible = solution is not None
     routes = routes_of(routing, solution, fleet) if feasible else []
@@ -171,6 +170,7 @@ def run(args: argparse.Namespace) -> int:
         "seed": args.seed,
         "threads": 1,
         "wall_seconds": wall,
+        "build_seconds": build_seconds,
         "time_to_first_feasible": found[0] if feasible and found else None,
         "solutions_found": len(found),
         "routing_status": int(routing.model.status()),
@@ -216,11 +216,15 @@ def main(argv: list[str] | None = None) -> int:
     if not args.budget > 0:
         print("--budget must be a positive number of seconds", file=sys.stderr)
         return 2
+    k = name_k(args.instance)
+    if k is None:
+        print(f"{args.instance}: the name carries no k", file=sys.stderr)
+        return 2
     # As cbls_cvrp does: a previous run's files must not be read as this one's.
     for path in (args.out, args.solution_out):
         if path is not None:
             path.unlink(missing_ok=True)
-    return run(args)
+    return run(args, default_fleet(k))
 
 
 if __name__ == "__main__":

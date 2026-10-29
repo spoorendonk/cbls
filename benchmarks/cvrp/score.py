@@ -101,9 +101,10 @@ PUBLISHED_TABLE = REPO_ROOT / "benchmarks" / "instances" / "cvrp" / "results.md"
 #: The (engine, arm) pairs a published table may carry. `cbls/default` is the
 #: engine's own configuration over the runner's neighbour list; #204 decides
 #: which arm it publishes and edits this.
-#: `pyvrp/pyvrp` is the reference baseline of #200, published beside it.
+#: `pyvrp/pyvrp` is the reference baseline of #200 and `ortools/ortools` the
+#: second baseline of #204, both published beside it.
 PUBLISHABLE_GROUPS: frozenset[tuple[str, str]] = frozenset(
-    {("cbls", "default"), ("pyvrp", "pyvrp")}
+    {("cbls", "default"), ("pyvrp", "pyvrp"), ("ortools", "ortools")}
 )
 
 #: The rosters a published table may be scored on: results are reported on
