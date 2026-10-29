@@ -1577,8 +1577,9 @@ private:
     size_t submit_after_;
 };
 
-// Per batch: the objectives record_best recorded, and whether the loop counted
-// the batch as an improvement.
+// Per batch: the objectives record_best recorded, whether the loop counted the
+// batch as an improvement, and whether a kick followed it (a kick fires after
+// batch_end; every full-period step shrink comes right before one).
 class BatchLedger : public PeerAtBatch {
 public:
     using PeerAtBatch::PeerAtBatch;
@@ -1587,10 +1588,17 @@ public:
         recorded.push_back(pending_);
         pending_.clear();
         improved_flags.push_back(improved);
+        kicked_after.push_back(false);
         PeerAtBatch::batch_end(kind, iterations, improved);
+    }
+    void kick(KickKind /*kind*/) override {
+        if (!kicked_after.empty()) {
+            kicked_after.back() = true;
+        }
     }
     std::vector<std::vector<double>> recorded;
     std::vector<bool> improved_flags;
+    std::vector<bool> kicked_after;
 
 private:
     std::vector<double> pending_;
@@ -1883,10 +1891,9 @@ TEST_CASE("one peer improvement is one shared tightening on a continuous objecti
     // bound: neither the sync nor record_best may tighten or count on it, and
     // record_best may not report such a best as an improvement either (#179's
     // rule, as in "an own best behind the shared bound is not an improvement").
-    auto run = [](SolutionPool& pool, Tracer* tracer) {
+    auto run = [](Model& m, SolutionPool& pool, Tracer* tracer) {
         SearchCoordination coord;
         coord.pool = &pool;
-        Model m = cover_model_of(/*continuous=*/true);
         SearchConfig config;
         config.max_iterations = 20000;  // as in the lone-worker test above
         config.batch_iterations = 100;
@@ -1896,14 +1903,15 @@ TEST_CASE("one peer improvement is one shared tightening on a continuous objecti
                      &coord);
     };
     SolutionPool lone_pool(10);
-    const SearchResult lone = run(lone_pool, nullptr);
+    Model lone_model = cover_model_of(/*continuous=*/true);
+    const SearchResult lone = run(lone_model, lone_pool, nullptr);
     REQUIRE(lone.feasible);
     // Below anything the worker found alone, so it stays behind the peer.
     const double peer = lone.objective - 1.0;
     SolutionPool pool(10);
-    Model sample = cover_model_of(/*continuous=*/true);  // only the gift is read
-    BatchLedger gift(sample, pool, peer_solution(peer), /*submit_after=*/1);
-    const SearchResult r = run(pool, &gift);
+    Model m = cover_model_of(/*continuous=*/true);
+    BatchLedger gift(m, pool, peer_solution(peer), /*submit_after=*/1);
+    const SearchResult r = run(m, pool, &gift);
     REQUIRE(r.feasible);
     CAPTURE(peer, r.objective);
     // The event happened -- otherwise this proves nothing.
@@ -1912,18 +1920,30 @@ TEST_CASE("one peer improvement is one shared tightening on a continuous objecti
     REQUIRE(r.counters.shared_bound_tightenings == 1);
     // From batch 2 on the bound took its cap from the peer, so a batch whose
     // every record is behind it moved nothing.
-    int behind_batches = 0;
+    bool grown = false;
     for (size_t i = 1; i < gift.recorded.size(); ++i) {
         const auto& objs = gift.recorded[i];
         if (objs.empty() ||
             !std::all_of(objs.begin(), objs.end(), [peer](double o) { return o > peer; })) {
             continue;
         }
-        ++behind_batches;
         INFO("batch " << i + 1 << " recorded only behind-global own bests");
         REQUIRE_FALSE(gift.improved_flags[i]);
+        // The case under test: the batch before recorded, so the step has grown
+        // since the bound was written; the bound sits under the peer by less
+        // than the 1e-3 step puts it, so it was written at a shrunk step (and
+        // after the gift: batch 1's sample precedes it); and nothing rewrote it
+        // between that sample and this batch -- the full-period shrink or an
+        // adoption's re-grounding comes after batch_end and would reset the
+        // step, always with a kick, and a shrink can write back the same value
+        // (at the 1e-6 floor), so the kick is checked, not just the bound.
+        // There the cap at the grown step sits under the bound.
+        const double before = gift.bounds[i - 1];
+        grown =
+            grown || (!gift.recorded[i - 1].empty() && !gift.kicked_after[i - 1] && before < peer &&
+                      peer - before < 0.9e-3 * (std::abs(peer) + 1.0) && gift.bounds[i] == before);
     }
-    REQUIRE(behind_batches > 1);  // a second one grew the step: the case under test
+    REQUIRE(grown);
 }
 
 // Each new best's bound gap, relative: (obj - bound) / (|obj| + 1), read when
