@@ -472,7 +472,14 @@ def score(args: argparse.Namespace) -> str:
     machine = read_json_object(results / MACHINE_NAME) or {}
     host = machine.get("machine")
     cpu = host.get("cpu_model") if isinstance(host, dict) else None
-    versions = sorted({str(r.record["pyvrp_version"]) for r in runs if "pyvrp_version" in r.record})
+    versions = sorted(
+        {
+            f"{label} {r.record[key]}"
+            for r in runs
+            for key, label in (("pyvrp_version", "PyVRP"), ("ortools_version", "OR-Tools"))
+            if key in r.record
+        }
+    )
     lines = [
         f"# CVRP results: {results.name}",
         "",
@@ -480,7 +487,7 @@ def score(args: argparse.Namespace) -> str:
         *([""] if banners else []),
         f"Budget {budget:g} s; roster `{args.roster}` ({len(instances)} instances); "
         f"commit(s) {', '.join(commits)}; machine {cpu or 'unrecorded'}"
-        + "".join(f"; PyVRP {v}" for v in versions)
+        + "".join(f"; {v}" for v in versions)
         + ".",
         "",
         "## Per instance",

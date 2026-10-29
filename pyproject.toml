@@ -127,11 +127,13 @@ exclude = ['^build/']
 
 # `data` is imported by bare module name because reference_solve.py is run from
 # inside its own directory (`cd benchmarks/chped && python reference_solve.py`),
-# and `scipy`/`pyscipopt` ship no type stubs. Scoped per module rather than set
-# globally, on the same argument as the _cbls_core override below: a blanket
-# ignore_missing_imports would hide a genuinely mistyped import anywhere.
+# and `scipy`/`pyscipopt` ship no type stubs, nor does ortools' SWIG-wrapped
+# `constraint_solver` (the routing library; its `linear_solver.python` is
+# typed). Scoped per module rather than set globally, on the same argument as
+# the _cbls_core override below: a blanket ignore_missing_imports would hide a
+# genuinely mistyped import anywhere.
 [[tool.mypy.overrides]]
-module = ["data", "scipy.*", "pyscipopt"]
+module = ["data", "scipy.*", "pyscipopt", "ortools.constraint_solver"]
 ignore_missing_imports = true
 
 # _cbls_core is a compiled nanobind extension with no stubs, so mypy cannot

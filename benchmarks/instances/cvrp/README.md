@@ -105,14 +105,18 @@ The reference baseline is PyVRP (#200, `benchmarks/cvrp/reference_solve.py`,
 pinned in the `benchmarks` extra), run by the driver as the `pyvrp` arm on the
 same machine, budget and seeds, over the distance matrix the verifier scores
 with. It is single-threaded, so it runs at `--threads 1` and is paired only with
-`cbls_cvrp --threads 1`. Hexaly is quoted, not re-run: its published X-set
+`cbls_cvrp --threads 1`. OR-Tools' routing library is the second baseline
+(`benchmarks/cvrp/ortools_solve.py`, the `ortools` arm): path-cheapest-arc
+start, guided local search, the same matrix, budget and fleet as `cbls_cvrp`,
+also single-threaded and paired only at `--threads 1`. Its search takes no
+seed, so its seeds differ only in timing. Hexaly is quoted, not re-run: its published X-set
 figures (60 s, AMD Ryzen 7 7700, 8 cores; 0.7% average, 0.1 / 0.5 / 0.6 / 0.8 /
 0.9% per size band) are different hardware and threads, and `score.py` prints
 them labelled so beside its per-band table.
 
 ```sh
 .venv/bin/python benchmarks/cvrp/run_benchmark.py --roster smoke --budget 10 \
-    --arms guided pyvrp --results /tmp/cvrp-smoke
+    --arms guided pyvrp ortools --results /tmp/cvrp-smoke
 .venv/bin/python benchmarks/cvrp/score.py /tmp/cvrp-smoke --roster smoke \
     --ab cbls/guided pyvrp
 ```

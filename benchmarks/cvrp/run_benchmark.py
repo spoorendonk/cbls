@@ -74,8 +74,12 @@ from benchmarks.instances.cvrp.download import read_roster  # noqa: E402
 DEFAULT_INST_DIR = REPO_ROOT / "benchmarks" / "instances" / "cvrp"
 DEFAULT_BUILD_DIR = REPO_ROOT / "build"
 BINARY_NAME = "cbls_cvrp"
-#: The PyVRP baseline (#200). Same CLI as `cbls_cvrp`, run by this interpreter.
-REFERENCE_SCRIPT = Path(__file__).resolve().parent / "reference_solve.py"
+#: The baselines, by engine: PyVRP (#200) and OR-Tools routing (#204). Same CLI
+#: as `cbls_cvrp`, run by this interpreter, both single-threaded.
+BASELINE_SCRIPTS: dict[str, Path] = {
+    "pyvrp": Path(__file__).resolve().parent / "reference_solve.py",
+    "ortools": Path(__file__).resolve().parent / "ortools_solve.py",
+}
 
 #: `--roster` names and the table each reads.
 ROSTERS: dict[str, str] = {
@@ -118,8 +122,9 @@ class Arm:
 #: (`score.PUBLISHABLE_GROUPS`): with a list the engine's default selection is
 #: granular best improvement (#203, option (c)). `guided` is the comparison arm,
 #: `violation_guided` over the same list. #204's dev and full runs use `default`.
-#: `pyvrp` is the reference baseline (#200, `reference_solve.py`): single-
-#: threaded, so it runs at `--threads 1` only and is compared only against
+#: `pyvrp` is the reference baseline (#200, `reference_solve.py`) and `ortools`
+#: the OR-Tools routing one (#204, `ortools_solve.py`): both single-threaded, so
+#: they run at `--threads 1` only and are compared only against
 #: `cbls_cvrp --threads 1`.
 ARMS: dict[str, Arm] = {
     arm.name: arm
@@ -127,6 +132,7 @@ ARMS: dict[str, Arm] = {
         Arm("default", ("--neighbours", "20")),
         Arm("guided", ("--structural-selection", "violation_guided", "--neighbours", "20")),
         Arm("pyvrp", (), engine="pyvrp"),
+        Arm("ortools", (), engine="ortools"),
     )
 }
 
@@ -229,11 +235,11 @@ def needs_run(job: Job, results: Path, *, force: bool, retry_failed: bool) -> bo
 
 
 def build_command(job: Job, binary: Path, inst_dir: Path, results: Path, sha: str) -> list[str]:
-    """The job's argv: `cbls_cvrp`, or for the `pyvrp` engine the reference
-    script, which takes the same flags."""
+    """The job's argv: `cbls_cvrp`, or for a baseline engine its script, which
+    takes the same flags."""
     program = [str(binary)]
-    if job.arm.engine == "pyvrp":
-        program = [sys.executable, str(REFERENCE_SCRIPT)]
+    if job.arm.engine in BASELINE_SCRIPTS:
+        program = [sys.executable, str(BASELINE_SCRIPTS[job.arm.engine])]
     return [
         *program,
         "--instance",
@@ -367,7 +373,7 @@ def check_arguments(args: argparse.Namespace) -> str | None:
     unknown = [a for a in args.arms if a not in ARMS]
     if unknown:
         return f"unknown arm(s) {unknown}; known: {sorted(ARMS)}"
-    single = [a for a in args.arms if ARMS[a].engine == "pyvrp"]
+    single = [a for a in args.arms if ARMS[a].engine in BASELINE_SCRIPTS]
     if single and args.threads != [1]:
         return f"arm(s) {single} are single-threaded; run them with --threads 1 alone"
     return None

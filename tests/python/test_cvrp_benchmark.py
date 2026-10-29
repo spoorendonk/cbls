@@ -320,18 +320,25 @@ def test_a_job_killed_by_its_timeout_leaves_a_timeout_record_and_no_old_files(
     assert not stale.exists()
 
 
-def test_the_pyvrp_arm_runs_the_reference_script_with_the_same_flags(tmp_path: Path) -> None:
-    job = _job(arm=rb.ARMS["pyvrp"])
+@pytest.mark.parametrize(
+    ("arm", "script"), [("pyvrp", "reference_solve.py"), ("ortools", "ortools_solve.py")]
+)
+def test_a_baseline_arm_runs_its_script_with_the_same_flags(
+    tmp_path: Path, arm: str, script: str
+) -> None:
+    job = _job(arm=rb.ARMS[arm])
     command = rb.build_command(job, Path("/bin/cbls_cvrp"), INST_DIR, tmp_path, "abc1234")
-    assert command[:2] == [sys.executable, str(rb.REFERENCE_SCRIPT)]
+    assert command[0] == sys.executable
+    assert Path(command[1]).name == script
     assert command[command.index("--threads") + 1] == "1"
-    assert rb.record_path(job, tmp_path).parts[-5:-3] == ("pyvrp", "pyvrp")
+    assert rb.record_path(job, tmp_path).parts[-5:-3] == (arm, arm)
 
 
-def test_the_pyvrp_arm_is_single_threaded_only(tmp_path: Path) -> None:
-    complaint = rb.check_arguments(_args(tmp_path, arms=["pyvrp", "default"], threads=[1, 4]))
+@pytest.mark.parametrize("arm", ["pyvrp", "ortools"])
+def test_a_baseline_arm_is_single_threaded_only(tmp_path: Path, arm: str) -> None:
+    complaint = rb.check_arguments(_args(tmp_path, arms=[arm, "default"], threads=[1, 4]))
     assert complaint is not None and "single-threaded" in complaint
-    assert rb.check_arguments(_args(tmp_path, arms=["pyvrp", "default"], threads=[1])) is None
+    assert rb.check_arguments(_args(tmp_path, arms=[arm, "default"], threads=[1])) is None
 
 
 @pytest.mark.parametrize(
