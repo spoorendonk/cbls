@@ -956,6 +956,7 @@ bool ViolationLSLoop::record_best() {
     // Read before share() below, which would fold `obj` itself into it. +inf
     // without a pool, so the comparison is false on a single-threaded run.
     const bool behind_global = obj > global_best();
+    const bool sharing = coord_ != nullptr && coord_->share_objective_bound;
     if (behind_global) {
         ++counters_.own_best_behind_global;
     }
@@ -991,14 +992,19 @@ bool ViolationLSLoop::record_best() {
         if (cap < own && cap < previous && peer_moved) {
             ++counters_.shared_bound_tightenings;
         }
-        // No peer improved since the bound took its cap: a cap below `previous`
-        // is the step record_best grew after that write (#241), not a peer's
-        // tightening, so it must not move the bound -- or a behind own best
-        // would return true below on a step change. Our own best still moves
-        // it through `own`. Without a pool or with sharing off the cap is +inf
-        // and this is min(own, +inf) as before; on an integral objective the
-        // cap does not depend on the step, so it is unchanged there too.
-        const double next = std::min(own, peer_moved ? cap : std::max(cap, previous));
+        // A behind own best with sharing on, and no peer improved since the
+        // bound took its cap from G: it leaves the bound where it is. Both
+        // `own` and `cap` are taken at the step record_best grew after that
+        // write (#241), so either can sit below `previous` -- `cap` whenever
+        // it grew, `own` for a best within about one old step of G -- and
+        // moving there would be a step change, not a peer's tightening,
+        // returning true below. Everywhere else the min as before: sharing off and without a
+        // pool the cap is +inf; an own best at or ahead of G moves it through
+        // `own`. On an integral objective, whose step is fixed, the min is the
+        // cap and every writer left `previous` at or under it, so this differs
+        // only where an adoption re-grounded below the cap -- and there the min
+        // would have loosened the bound.
+        const double next = behind_global && sharing && !peer_moved ? previous : std::min(own, cap);
         bound_moved = next < previous;
         model_.set_objective_bound(next);
         bound_global_ = global;
@@ -1032,7 +1038,6 @@ bool ViolationLSLoop::record_best() {
     //    improved mid-batch and the cap moved the bound here. That true is
     //    load-bearing rather than incidental: apply_batch_outcome's
     //    reset_weights is then the only FJ rebuild after the bound moved.
-    const bool sharing = coord_ != nullptr && coord_->share_objective_bound;
     return !behind_global || bound_moved || !sharing;
 }
 
