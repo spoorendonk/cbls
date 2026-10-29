@@ -36,9 +36,12 @@ def test_ortools_costs_the_arcs_the_verifier_scores_with() -> None:
     for a, b in [(0, 1), (1, 0), (5, 77), (100, 3), (42, 42)]:
         cost = model.GetArcCostForVehicle(manager.NodeToIndex(a), manager.NodeToIndex(b), 0)
         assert cost == dist[a][b]
-    # Node c is CVRPLIB customer c, with its demand.
+    # Node c is CVRPLIB customer c, with its demand, under the capacity.
     load = model.GetDimensionOrDie("load")
-    assert load.GetUnaryTransitEvaluator(0) is not None
+    for c in (0, 1, 50, 100):
+        index = manager.NodeToIndex(c)
+        assert load.GetTransitValue(index, manager.NodeToIndex(0), 0) == inst.demands[c]
+    assert load.CumulVar(model.End(0)).Max() == inst.capacity
     assert model.vehicles() == 2
 
 
