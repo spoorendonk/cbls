@@ -73,7 +73,7 @@ With Python bindings (the venv first, which also builds the package into it):
 uv sync --extra dev
 cmake -B build -DCBLS_BUILD_PYTHON=ON -DPython_EXECUTABLE="$PWD/.venv/bin/python"
 cmake --build build
-.venv/bin/pytest          # 1346 tests, 255 of them for the bindings
+.venv/bin/pytest          # 1355 tests, 255 of them for the bindings
 ```
 
 Tests of the benchmark baselines skip themselves when `ortools` or `pyscipopt` is

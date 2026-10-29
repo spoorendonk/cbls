@@ -13,6 +13,7 @@ import csv
 import gzip
 import hashlib
 import json
+import shutil
 import subprocess
 import sys
 import threading
@@ -218,6 +219,7 @@ def _driver_args(**overrides: object) -> argparse.Namespace:
         "large_bytes": 5_000_000,
         "cpuset": None,
         "allow_asymmetric_cpu": False,
+        "engines": ["cbls", "cpsat"],
     }
     return argparse.Namespace(**{**defaults, **overrides})
 
@@ -519,21 +521,41 @@ def test_a_resume_left_with_a_lost_worker_row_is_not_a_clean_run(
     assert "LOST WORKERS: 1 row(s)" in err, err
 
 
+@pytest.mark.parametrize(
+    ("old", "solution"),
+    [
+        (
+            {
+                "status": "feasible",
+                "threads": 2,
+                "workers_completed": 1,
+                "worker_loss_attempts": 1,
+            },
+            True,
+        ),
+        ({"status": "solution_write_error", "threads": 1}, False),
+        ({"status": "feasible", "threads": 1}, False),
+    ],
+    ids=["lost-workers", "solution-write-error", "feasible-without-solution"],
+)
 def test_a_rerun_killed_before_it_writes_records_the_kill_not_the_old_row(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    old: dict[str, object],
+    solution: bool,
 ) -> None:
-    """A re-run of a lost-worker row that dies without writing leaves `killed` (#170).
+    """A re-run that dies without writing leaves `killed` (#170, #240).
 
     The runner is killed (the OOM killer, say) before it writes anything. Were the
-    old row still on disk, `_run_solver` would not record the kill -- it writes
+    old row still on disk, `_judge_solve` would not record the kill -- it writes
     `killed` only when no result exists -- and the stale row would be stamped as
-    this attempt, with its old solution still beside it.
+    this attempt, worker-loss count and measured usage included, with its old
+    solution still beside it.
     """
-    job = _row(tmp_path, "feasible", solution=True)
-    lost = {"status": "feasible", "objective": 1.0, "wall_seconds": 1.0, "threads": 2}
-    job.result_path(tmp_path).write_text(
-        json.dumps({**lost, "workers_completed": 1, "worker_loss_attempts": 1})
-    )
+    job = _row(tmp_path, "feasible", solution=solution)
+    row_fields = {"objective": 1.0, "wall_seconds": 1.0}
+    job.result_path(tmp_path).write_text(json.dumps({**row_fields, **old}))
+    assert needs_solve(job, tmp_path, verify=True)
     monkeypatch.setattr(
         run_benchmark,
         "run_process",
@@ -614,8 +636,26 @@ def test_every_solve_that_leaves_a_row_carries_what_the_driver_measured(
         ({"jobs": 2}, [], "--jobs 1"),
         ({"cbls_threads": 2, "cpsat_workers": 2}, [], "one core per thread"),
         ({}, ["CPU 0 shares a physical core with [1]"], "shares a physical core"),
+        # An engine the run leaves out has no threads to pin.
+        (
+            {"engines": ["cbls"], "cpsat_workers": 1, "allow_asymmetric_cpu": True},
+            [],
+            None,
+        ),
+        (
+            {"engines": ["cpsat"], "cpsat_workers": 2, "allow_asymmetric_cpu": True},
+            [],
+            "--cpsat-workers is 2",
+        ),
     ],
-    ids=["accepted", "concurrent-jobs", "size-mismatch", "smt-siblings"],
+    ids=[
+        "accepted",
+        "concurrent-jobs",
+        "size-mismatch",
+        "smt-siblings",
+        "unused-engine-ignored",
+        "used-engine-checked",
+    ],
 )
 def test_a_cpuset_that_would_not_give_each_thread_a_core_is_refused(
     monkeypatch: pytest.MonkeyPatch,
@@ -625,11 +665,54 @@ def test_a_cpuset_that_would_not_give_each_thread_a_core_is_refused(
     refused: str | None,
 ) -> None:
     monkeypatch.setattr(run_benchmark, "cpuset_problems", lambda _cpus: problems)
+    monkeypatch.setattr(shutil, "which", lambda _name: "/usr/bin/taskset")
     threads: dict[str, object] = {"cbls_threads": 4, "cpsat_workers": 4}
     args = _driver_args(cpuset=[0, 2, 4, 6], **{**threads, **overrides})
     assert run_benchmark.check_arguments(args) == (None if refused is None else 2)
     if refused is not None:
         assert refused in capsys.readouterr().err
+
+
+def test_a_cpuset_without_taskset_is_refused(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Without it every solve fails to start and is recorded `killed` for good."""
+    monkeypatch.setattr(run_benchmark, "cpuset_problems", lambda _cpus: [])
+    monkeypatch.setattr(shutil, "which", lambda _name: None)
+    args = _driver_args(cpuset=[0, 2, 4, 6], cbls_threads=4, cpsat_workers=4)
+    assert run_benchmark.check_arguments(args) == 2
+    assert "taskset" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("recorded", "asked", "refused"),
+    [
+        ([0, 2, 4, 6], [0, 2, 4, 6], False),
+        (None, [0, 2, 4, 6], True),
+        ([0, 2, 4, 6], None, True),
+        ("absent", [0, 2, 4, 6], False),
+    ],
+    ids=["same", "unpinned-rows", "pinned-rows", "predates-measurement"],
+)
+def test_resume_refuses_rows_pinned_differently(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    recorded: object,
+    asked: list[int] | None,
+    refused: bool,
+) -> None:
+    """The scorer never reads the pinning, so mixed rows would score as one table."""
+    job = Job("cbls", "inst")
+    job.result_path(tmp_path).parent.mkdir(parents=True)
+    row: dict[str, object] = {"status": "feasible", "threads": 4, "objective_tie_break": True}
+    if recorded != "absent":
+        row["driver_measured"] = {"cpuset": recorded}
+    job.result_path(tmp_path).write_text(json.dumps(row))
+    args = _driver_args(cpuset=asked, cbls_threads=4)
+    rc = run_benchmark.check_resume_configuration([job], tmp_path, args)
+    assert rc == (2 if refused else None)
+    if refused:
+        assert "cpuset=" in capsys.readouterr().err
 
 
 def test_a_malformed_cpuset_is_an_argument_error() -> None:

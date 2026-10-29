@@ -38,6 +38,7 @@ import contextlib
 import csv
 import hashlib
 import platform
+import shutil
 import subprocess
 import sys
 import time
@@ -614,15 +615,15 @@ def _run_job(job: Job, args: argparse.Namespace, results_dir: Path) -> str:
         # workers (#170) is written and exits 1 -- and the old verdict must not
         # survive beside it.
         job.verification_path(results_dir).unlink(missing_ok=True)
-        if lost_workers(previous) is not None:
-            # A re-run of a row that lost workers (#170) replaces that row, so the
-            # old one goes first. Left in place, a runner killed before it writes
-            # (the OOM killer, SIGKILL) would leave the previous row on disk --
-            # `_run_solver` records `killed` only when no result exists -- and
-            # `record_worker_loss` would stamp it as this attempt. Its attempt count
-            # is already in `previous_losses`, which is all that is carried over.
-            job.result_path(results_dir).unlink(missing_ok=True)
-            job.solution_path(results_dir).unlink(missing_ok=True)
+        # A re-run replaces the old row (lost workers #170, a solution write error,
+        # a feasible row without its solution), so the old one goes first. Left in
+        # place, a runner killed before it writes (the OOM killer, SIGKILL) would
+        # leave the previous row on disk -- `_judge_solve` records `killed` only
+        # when no result exists -- and `record_worker_loss` and `record_measured`
+        # would stamp it as this attempt. Its worker-loss count is already in
+        # `previous_losses`, which is all that is carried over.
+        job.result_path(results_dir).unlink(missing_ok=True)
+        job.solution_path(results_dir).unlink(missing_ok=True)
         line, solved = _run_solver(job, args, results_dir)
         record_worker_loss(job, results_dir, previous_losses)
         if not solved:
@@ -980,6 +981,19 @@ def check_resume_configuration(
         result = read_json_object(job.result_path(results_dir))
         if result is None:
             continue
+        # The pinning (#240) too: the scorer never reads it, so a pinned run
+        # resumed onto unpinned rows would score as a pinned table. A row without
+        # `driver_measured` predates it and is left alone.
+        measured = result.get("driver_measured")
+        if isinstance(measured, dict) and measured.get("cpuset") != args.cpuset:
+            print(
+                f"{results_dir} already holds {job.engine} results pinned to "
+                f"cpuset={measured.get('cpuset')}, but this run asks for "
+                f"{args.cpuset} (first seen on {job.instance}). Score them where "
+                f"they are, re-run with --force, or choose a different --results-dir.",
+                file=sys.stderr,
+            )
+            return 2
         # A row the driver wrote for a killed job keeps its arm apart.
         nested = result.get("driver_arm")
         if isinstance(nested, dict):
@@ -1141,14 +1155,24 @@ def check_cpuset(args: argparse.Namespace) -> int | None:
         # Concurrent jobs would share the one set, halving each solve's cores.
         print(f"--cpuset needs --jobs 1 (got {args.jobs}).", file=sys.stderr)
         return 2
-    if len(cpuset) != args.cbls_threads or len(cpuset) != args.cpsat_workers:
-        print(
-            f"--cpuset names {len(cpuset)} CPUs but --cbls-threads is "
-            f"{args.cbls_threads} and --cpsat-workers {args.cpsat_workers}: pin each "
-            f"thread to a core of its own, one core per thread.",
-            file=sys.stderr,
-        )
+    if shutil.which("taskset") is None:
+        # Every solve would fail to start and be recorded `killed`, which resume
+        # then treats as done.
+        print("--cpuset needs taskset (util-linux) on PATH.", file=sys.stderr)
         return 2
+    threads = {
+        "cbls": ("--cbls-threads", args.cbls_threads),
+        "cpsat": ("--cpsat-workers", args.cpsat_workers),
+    }
+    for engine in args.engines:  # an engine the run leaves out has no threads to pin
+        flag, count = threads[engine]
+        if len(cpuset) != count:
+            print(
+                f"--cpuset names {len(cpuset)} CPUs but {flag} is {count}: pin "
+                f"each thread to a core of its own, one core per thread.",
+                file=sys.stderr,
+            )
+            return 2
     if problems := cpuset_problems(cpuset):
         print("--cpuset " + "; ".join(problems) + ".", file=sys.stderr)
         return 2

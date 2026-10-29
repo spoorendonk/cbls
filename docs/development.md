@@ -128,7 +128,7 @@ agree:
 1. this section,
 2. the comment above `catch_discover_tests` in `tests/CMakeLists.txt`,
 3. the build section of `README.md`,
-4. the `.venv/bin/pytest` line in `README.md` for the Python side (1346 tests, 255
+4. the `.venv/bin/pytest` line in `README.md` for the Python side (1355 tests, 255
    of them binding tests, echoed in prose by `pyproject.toml` and
    `tests/python/conftest.py`),
 5. the `-LE slow` guidance and the ~25s/~490s figures in `docs/profiling.md`.
