@@ -122,7 +122,8 @@ target (library, CLI, examples, benchmark runners) in the root
 checks, never rewrites: ruff, mypy, clang-format over the tree; runs no tests.
 `commit-msg`: Conventional Commits, subject ≤72, no `fixup!`/`squash!`.
 `pre-push`: no merge commits on main, review receipt required, then the
-`clean`/`build`/`test` fences below as local CI. Internals: `docs/git-hooks.md`.
+`clean`/`build`/`test` fences below as local CI. Local CI is the only gate: the
+repo has no GitHub Actions workflow. Internals: `docs/git-hooks.md`.
 
 **Checked by hand before every push**, because no hook enforces it now: zero
 clang-tidy warnings (`.venv/bin/clang-tidy -p build <changed files>`) and zero
