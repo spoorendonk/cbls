@@ -22,7 +22,7 @@
 #      pre-push gates GCC's warnings separately.)
 #
 # Check A (flags) reads only the compile database, so it runs even where there
-# is no clang-tidy: CI and a checkout without .venv still get it.
+# is no clang-tidy: a checkout without .venv still gets it.
 #
 # Check B (diagnostics) puts a copy of .githooks/tidy-probe/incomplete_switch.cpp
 # into EVERY directory that holds a .clang-tidy, inside a scratch mirror of the

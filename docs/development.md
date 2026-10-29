@@ -7,8 +7,8 @@ What CLAUDE.md points at for building, testing and working in this repository: t
 The fences themselves stay in CLAUDE.md's `## Build & Test`, because `.githooks/pre-push` reads them from there. This is why they look the way they do.
 
 **No `-DCMAKE_BUILD_TYPE` here on purpose.** `CMakeLists.txt` defaults it to
-Release when the caller sets none, so the ```build fence, CI and a plain `cmake -B build`
-all gate the same binaries from one place. An explicit `-DCMAKE_BUILD_TYPE=Debug`
+Release when the caller sets none, so the ```build fence (pre-push's local CI) and a plain `cmake -B build`
+both gate the same binaries from one place. An explicit `-DCMAKE_BUILD_TYPE=Debug`
 still overrides it. The suite is mostly real solver runs, so the type is not
 cosmetic: the full `ctest` is ~490s at the old empty default and ~25s at
 Release (both re-measured 2026-09-26 at 566 tests, `-j12`, on an idle machine).
@@ -101,7 +101,7 @@ wall-clock full run. `tests/CMakeLists.txt` discovers them in a second
 `catch_discover_tests` call with `LABELS "slow"`, so:
 
 - `ctest -LE slow` — the other 815 tests, ~12s with `-j`. The fast inner loop; run it yourself before committing (the hook no longer does).
-- `ctest` — everything. This is what **pre-push** and CI run.
+- `ctest` — everything. This is what **pre-push**'s local CI runs.
 - `ctest -L timing` — 5 tests: `timing_structural_batch_deadline`, the three
   `timing_throughput_*` floors added for #125, and
   `timing_inner_solver_hook_deadline` (#191's budget contract). Each is
