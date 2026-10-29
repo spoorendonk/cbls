@@ -19,9 +19,12 @@ import pytest
 from benchmarks.common import jobs
 from benchmarks.common.jobs import (
     LockHeldError,
+    cpuset_problems,
+    parse_cpu_list,
     run_jobs,
     run_process,
     wallclock_lock,
+    with_cpuset,
     with_memory_limit,
 )
 from benchmarks.common.provenance import (
@@ -60,32 +63,144 @@ def test_with_memory_limit_preserves_arguments_containing_spaces() -> None:
     assert outcome.stdout.rstrip("\n") == "two words --flag=a b"
 
 
-def test_a_timeout_is_an_outcome_not_an_exception(tmp_path: Path) -> None:
+#: Both ways `run_process` reaps a child must keep the same contract.
+REAPERS = pytest.mark.parametrize("measure", [False, True], ids=["plain", "measured"])
+
+
+@REAPERS
+def test_a_timeout_is_an_outcome_not_an_exception(tmp_path: Path, measure: bool) -> None:
     """The caller branches on it to write the record a killed job needs; an
     exception would be one a new caller could forget to catch."""
-    outcome = run_process(["/bin/sleep", "10"], timeout=0.2, log=tmp_path / "job.log")
+    outcome = run_process(
+        ["/bin/sleep", "10"], timeout=0.2, log=tmp_path / "job.log", measure=measure
+    )
     assert outcome.timed_out
     assert outcome.returncode == -9
     assert outcome.elapsed < 5.0
     assert (tmp_path / "job.log").read_text() == ""
 
 
-def test_a_failed_process_still_leaves_its_log(tmp_path: Path) -> None:
+@REAPERS
+def test_a_failed_process_still_leaves_its_log(tmp_path: Path, measure: bool) -> None:
     """The failed run is the one whose log gets read."""
     log = tmp_path / "job.log"
-    outcome = run_process(["/bin/sh", "-c", "echo out; echo err >&2; exit 3"], log=log)
+    command = ["/bin/sh", "-c", "echo out; echo err >&2; exit 3"]
+    outcome = run_process(command, log=log, measure=measure)
     assert outcome.returncode == 3
     assert not outcome.timed_out
     assert log.read_text() == "out\nerr\n"
 
 
+@REAPERS
+def test_a_signalled_child_reports_the_signal_as_a_negative_returncode(measure: bool) -> None:
+    outcome = run_process(["/bin/sh", "-c", "kill -9 $$"], measure=measure)
+    assert outcome.returncode == -9
+    assert not outcome.timed_out
+
+
+@REAPERS
 @pytest.mark.parametrize("own_session", [True, False])
-def test_own_session_is_what_keeps_a_ctrl_c_off_the_child(own_session: bool) -> None:
+def test_own_session_is_what_keeps_a_ctrl_c_off_the_child(own_session: bool, measure: bool) -> None:
     """Without its own session a Ctrl-C at the driver reaches every in-flight
     child, and each leaves a failure record resume then treats as done."""
     probe = "import os; print(os.getsid(0))"
-    outcome = run_process([sys.executable, "-c", probe], own_session=own_session)
+    outcome = run_process([sys.executable, "-c", probe], own_session=own_session, measure=measure)
     assert (int(outcome.stdout) != os.getsid(0)) is own_session
+
+
+def test_cpu_seconds_counts_what_the_child_burned_not_its_wall_time() -> None:
+    """CPU over wall is the number of cores a run used (#240); a sleeping child
+    with the same wall time must not read as a busy one."""
+    spin = "import time\nend = time.process_time() + 0.3\nwhile time.process_time() < end: pass"
+    busy = run_process([sys.executable, "-c", spin], measure=True)
+    idle = run_process([sys.executable, "-c", "import time; time.sleep(0.3)"], measure=True)
+    assert busy.cpu_seconds is not None and idle.cpu_seconds is not None
+    assert busy.cpu_seconds >= 0.3
+    assert idle.cpu_seconds < busy.cpu_seconds - 0.2
+
+
+def test_cpu_seconds_includes_the_grandchildren_a_wrapper_reaped() -> None:
+    """A solver behind a wrapper (the memory cap's shell) burns its CPU in a
+    grandchild; `wait4` folds it in once the wrapper has waited for it."""
+    spin = "import time\nend = time.process_time() + 0.3\nwhile time.process_time() < end: pass"
+    outcome = run_process(
+        ["/bin/sh", "-c", f'"{sys.executable}" -c "$1"; true', "sh", spin],
+        mem_limit_gb=4.0,
+        measure=True,
+    )
+    assert outcome.cpu_seconds is not None
+    assert outcome.cpu_seconds >= 0.3
+
+
+def test_peak_rss_is_the_childs_own_high_water_mark() -> None:
+    touch = "b = bytearray(64 * 1024 * 1024)\nfor i in range(0, len(b), 4096): b[i] = 1"
+    outcome = run_process([sys.executable, "-c", touch], measure=True)
+    assert outcome.peak_rss_kib is not None
+    assert outcome.peak_rss_kib >= 64 * 1024
+
+
+def test_with_cpuset_is_a_no_op_without_a_set() -> None:
+    assert with_cpuset(["prog", "--flag"], None) == ["prog", "--flag"]
+    assert with_cpuset(["prog"], []) == ["prog"]
+
+
+def test_cpuset_pins_the_child_to_exactly_that_set() -> None:
+    """Asked of the child, as for the memory cap: the wrapper's shape would pass
+    even if `taskset` never ran."""
+    cpu = min(os.sched_getaffinity(0))
+    probe = "import os; print(sorted(os.sched_getaffinity(0)))"
+    outcome = run_process([sys.executable, "-c", probe], cpuset=[cpu], mem_limit_gb=4.0)
+    assert outcome.returncode == 0, outcome.stderr
+    assert outcome.stdout.strip() == f"[{cpu}]"
+
+
+@pytest.mark.parametrize(
+    ("text", "cpus"),
+    [("0", [0]), ("0,2,4,6", [0, 2, 4, 6]), ("0-1\n", [0, 1]), ("1,4-6", [1, 4, 5, 6])],
+)
+def test_parse_cpu_list_reads_the_kernel_format(text: str, cpus: list[int]) -> None:
+    assert parse_cpu_list(text) == cpus
+
+
+@pytest.mark.parametrize("text", ["", "a", "3-1", "-1", "0,0", "0-2,1"])
+def test_parse_cpu_list_refuses_what_would_pin_fewer_cores_than_named(text: str) -> None:
+    with pytest.raises(ValueError):
+        parse_cpu_list(text)
+
+
+def _machine(sys_cpu: Path, siblings: dict[int, str]) -> Path:
+    """A made-up `/sys/devices/system/cpu`: each CPU's thread_siblings_list."""
+    for cpu, listed in siblings.items():
+        topology = sys_cpu / f"cpu{cpu}" / "topology"
+        topology.mkdir(parents=True)
+        (topology / "thread_siblings_list").write_text(listed + "\n")
+    return sys_cpu
+
+
+def test_cpuset_problems_names_smt_siblings_and_unreadable_topology(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(os, "sched_getaffinity", lambda _pid: {0, 1, 2, 3})
+    sys_cpu = _machine(tmp_path, {0: "0-1", 1: "0-1", 2: "2-3", 3: "2-3"})
+    assert cpuset_problems([0, 2], sys_cpu) == []
+    assert cpuset_problems([0, 1], sys_cpu) == [
+        "CPU 0 shares a physical core with [1]",
+        "CPU 1 shares a physical core with [0]",
+    ]
+    (sys_cpu / "cpu2" / "topology" / "thread_siblings_list").unlink()
+    [problem] = cpuset_problems([0, 2], sys_cpu)
+    assert problem.startswith("cannot read CPU 2's SMT siblings")
+
+
+def test_cpuset_problems_refuses_cpus_outside_this_process_affinity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`taskset` would fail on them only once the first job ran."""
+    monkeypatch.setattr(os, "sched_getaffinity", lambda _pid: {0, 1})
+    sys_cpu = _machine(tmp_path, {0: "0", 4: "4"})
+    assert cpuset_problems([0, 4], sys_cpu) == [
+        "CPUs [4] are not in this process's affinity [0, 1]"
+    ]
 
 
 # --- jobs: a plan ---------------------------------------------------------------

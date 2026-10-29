@@ -51,7 +51,13 @@ from pathlib import Path
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from benchmarks.common.jobs import run_jobs, run_process  # noqa: E402
+from benchmarks.common.jobs import (  # noqa: E402
+    Outcome,
+    cpuset_problems,
+    parse_cpu_list,
+    run_jobs,
+    run_process,
+)
 from benchmarks.common.provenance import (  # noqa: E402
     REPO_ROOT,
     commit_sha,
@@ -287,6 +293,8 @@ def build_run_record(
             # the two is what a run actually asks of the machine.
             "cbls_threads": args.cbls_threads,
             "mem_limit_gb": args.mem_limit_gb,
+            # The physical cores every solve was pinned to, or None if unpinned.
+            "cpuset": args.cpuset,
         },
         "budget_seconds": args.budget,
         "run": {
@@ -705,7 +713,57 @@ def _run_solver(job: Job, args: argparse.Namespace, results_dir: Path) -> tuple[
         # each of which then leaves a "killed" result that resume treats as done
         # -- permanently converting those instances to a Primal Integral of 2.
         own_session=True,
+        cpuset=args.cpuset,
+        measure=True,
     )
+    line, solved = _judge_solve(job, args, results_dir, completed)
+    record_measured(job, results_dir, completed, args.cpuset)
+    return line, solved
+
+
+def cpu_wall_ratio(completed: Outcome) -> float | None:
+    """The number of cores the solve actually used: the check that "N threads
+    each" was N threads each, which neither solver's own report can make."""
+    if completed.cpu_seconds is None or completed.elapsed <= 0:
+        return None
+    return completed.cpu_seconds / completed.elapsed
+
+
+def measured_usage(completed: Outcome, cpuset: list[int] | None) -> dict[str, object]:
+    """What the driver measured of one solve from outside it (#240).
+
+    Wall is the driver's, so it includes model read and build, and so does the
+    CPU/wall ratio: a solve that spends most of its budget reading reads low.
+    """
+    return {
+        "wall_seconds": completed.elapsed,
+        "cpu_seconds": completed.cpu_seconds,
+        "cpu_wall_ratio": cpu_wall_ratio(completed),
+        "peak_rss_kib": completed.peak_rss_kib,
+        "cpuset": cpuset,
+    }
+
+
+def record_measured(
+    job: Job, results_dir: Path, completed: Outcome, cpuset: list[int] | None
+) -> None:
+    """Add `measured_usage` to the job's result, whoever wrote it.
+
+    Nested under `driver_measured`, as `driver_arm` is, so the scorer's
+    `config_string` never reads it as configuration. A solve that left no result
+    has nothing to carry it.
+    """
+    result = read_json_object(job.result_path(results_dir))
+    if result is None:
+        return
+    result["driver_measured"] = measured_usage(completed, cpuset)
+    write_json(job.result_path(results_dir), result)
+
+
+def _judge_solve(
+    job: Job, args: argparse.Namespace, results_dir: Path, completed: Outcome
+) -> tuple[str, bool]:
+    """The job's log line, and whether its solve finished cleanly."""
     if completed.timed_out:
         write_failure_result(
             job,
@@ -736,9 +794,11 @@ def _run_solver(job: Job, args: argparse.Namespace, results_dir: Path) -> tuple[
             f"{completed.stderr.strip()[:200]}",
             False,
         )
+    ratio = cpu_wall_ratio(completed)
+    cores = "" if ratio is None else f", {ratio:.2f} cores"
     return (
         f"{job.engine}/{job.instance}: {completed.stdout.strip() or 'done'} "
-        f"[{completed.elapsed:.1f}s]",
+        f"[{completed.elapsed:.1f}s{cores}]",
         True,
     )
 
@@ -1069,7 +1129,37 @@ def check_arguments(args: argparse.Namespace) -> int | None:
             file=sys.stderr,
         )
         return 2
+    if args.cpuset is not None:
+        return check_cpuset(args)
     return None
+
+
+def check_cpuset(args: argparse.Namespace) -> int | None:
+    """Refuse a `--cpuset` that would not give each solver N cores of its own (#240)."""
+    cpuset: list[int] = args.cpuset
+    if args.jobs != 1:
+        # Concurrent jobs would share the one set, halving each solve's cores.
+        print(f"--cpuset needs --jobs 1 (got {args.jobs}).", file=sys.stderr)
+        return 2
+    if len(cpuset) != args.cbls_threads or len(cpuset) != args.cpsat_workers:
+        print(
+            f"--cpuset names {len(cpuset)} CPUs but --cbls-threads is "
+            f"{args.cbls_threads} and --cpsat-workers {args.cpsat_workers}: pin each "
+            f"thread to a core of its own, one core per thread.",
+            file=sys.stderr,
+        )
+        return 2
+    if problems := cpuset_problems(cpuset):
+        print("--cpuset " + "; ".join(problems) + ".", file=sys.stderr)
+        return 2
+    return None
+
+
+def cpuset_argument(text: str) -> list[int]:
+    try:
+        return parse_cpu_list(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
 def report_defects(results_dir: Path, rejected: int, unchecked: int, lost: int) -> None:
@@ -1133,6 +1223,14 @@ def main() -> int:
         "in this (each worker owns a copy of the model), so size it against "
         "--mem-limit-gb and the peak_rss_kib of a single-threaded run, not against "
         "the core count",
+    )
+    parser.add_argument(
+        "--cpuset",
+        type=cpuset_argument,
+        default=None,
+        help="pin every solve to these CPUs (a list like 0,2,4,6), one per thread: "
+        "as many as --cbls-threads, no two SMT siblings, and --jobs 1. Each result "
+        "then records the CPU/wall ratio that shows the threads were used (#240)",
     )
     parser.add_argument(
         "--allow-asymmetric-cpu",

@@ -482,6 +482,19 @@ stays the operator's, and is called out below rather than implied away:
   thread count, which is the case the scorer cannot see (resume skips jobs that
   already have a result, so the mixture never forms).
 
+"N threads each" is a flag until it is measured (#240). `--cpuset 0,2,4,6` pins
+every solve to those CPUs with `taskset`; the driver refuses a set whose size is
+not the thread count, two CPUs that are SMT siblings of one core (read from
+`/sys/devices/system/cpu/cpu*/topology/thread_siblings_list`), a CPU outside its
+own affinity, and `--jobs` above 1, since concurrent solves would share the set.
+The set is recorded in `run_record.json`. Pinned or not, every solve's result
+then carries a nested `driver_measured` key, read by the driver with `wait4`:
+`wall_seconds` (the driver's clock, so model read and build are in it),
+`cpu_seconds` (user plus system, the solver and every process it reaped),
+`cpu_wall_ratio` (the cores the solve actually used) and `peak_rss_kib`. A
+solver that uses fewer than N threads shows it in the ratio. The key is nested,
+like `driver_arm`, so the scorer never reads it as configuration.
+
 The replication itself is charged to setup, not to the search: the runner freezes
 the built model and copies it once per worker before the solve bracket opens, and
 reports `replicate_seconds` beside `read_seconds` and `build_seconds`. Since #157

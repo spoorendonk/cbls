@@ -28,6 +28,7 @@ from benchmarks.mipfeas.primal_integral import (
     MAX_WORKER_LOSS_ATTEMPTS,
     NO_SOLUTION_GAP,
     check_uniform_configuration,
+    config_string,
     score_instance,
     summarize,
 )
@@ -215,6 +216,8 @@ def _driver_args(**overrides: object) -> argparse.Namespace:
         "mem_limit_gb": None,
         "force": False,
         "large_bytes": 5_000_000,
+        "cpuset": None,
+        "allow_asymmetric_cpu": False,
     }
     return argparse.Namespace(**{**defaults, **overrides})
 
@@ -571,6 +574,70 @@ def test_a_rerun_that_loses_workers_again_drops_the_old_verdict_and_counts(
     assert needs_solve(job, tmp_path, verify=True) is False  # spent: left refused
 
 
+@pytest.mark.parametrize("returncode", [0, -9], ids=["finished", "killed"])
+def test_every_solve_that_leaves_a_row_carries_what_the_driver_measured(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, returncode: int
+) -> None:
+    """CPU over wall is the evidence that N threads were N threads (#240). Nested,
+    so the scorer's uniformity check does not read it as configuration."""
+    job = Job("cbls", "inst")
+    job.result_path(tmp_path).parent.mkdir(parents=True)
+    written = {"status": "feasible", "objective": 1.0, "threads": 4}
+    seen: dict[str, object] = {}
+
+    def solve(command: list[str], **kwargs: object) -> Outcome:
+        seen.update(kwargs)
+        if returncode == 0:
+            job.result_path(tmp_path).write_text(json.dumps(written))
+        return Outcome(returncode, "", "", 10.0, cpu_seconds=38.0, peak_rss_kib=1024)
+
+    monkeypatch.setattr(run_benchmark, "run_process", solve)
+    run_benchmark._run_solver(job, _driver_args(cpuset=[0, 2, 4, 6]), tmp_path)
+
+    assert seen["cpuset"] == [0, 2, 4, 6]
+    row = json.loads(job.result_path(tmp_path).read_text())
+    assert row["driver_measured"] == {
+        "wall_seconds": 10.0,
+        "cpu_seconds": 38.0,
+        "cpu_wall_ratio": pytest.approx(3.8),
+        "peak_rss_kib": 1024,
+        "cpuset": [0, 2, 4, 6],
+    }
+    if returncode == 0:
+        assert config_string(row) == config_string(written)
+
+
+@pytest.mark.parametrize(
+    ("overrides", "problems", "refused"),
+    [
+        ({}, [], None),
+        ({"jobs": 2}, [], "--jobs 1"),
+        ({"cbls_threads": 2, "cpsat_workers": 2}, [], "one core per thread"),
+        ({}, ["CPU 0 shares a physical core with [1]"], "shares a physical core"),
+    ],
+    ids=["accepted", "concurrent-jobs", "size-mismatch", "smt-siblings"],
+)
+def test_a_cpuset_that_would_not_give_each_thread_a_core_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    overrides: dict[str, object],
+    problems: list[str],
+    refused: str | None,
+) -> None:
+    monkeypatch.setattr(run_benchmark, "cpuset_problems", lambda _cpus: problems)
+    threads: dict[str, object] = {"cbls_threads": 4, "cpsat_workers": 4}
+    args = _driver_args(cpuset=[0, 2, 4, 6], **{**threads, **overrides})
+    assert run_benchmark.check_arguments(args) == (None if refused is None else 2)
+    if refused is not None:
+        assert refused in capsys.readouterr().err
+
+
+def test_a_malformed_cpuset_is_an_argument_error() -> None:
+    with pytest.raises(argparse.ArgumentTypeError):
+        run_benchmark.cpuset_argument("0,0")
+    assert run_benchmark.cpuset_argument("0,2,4-6") == [0, 2, 4, 5, 6]
+
+
 def _driver_verdict(attempts: int | None) -> dict[str, object]:
     verdict: dict[str, object] = {"verdict": "error", "reason": "verifier_died"}
     return verdict if attempts is None else {**verdict, "attempts": attempts}
@@ -770,20 +837,20 @@ def test_every_job_process_is_bounded_capped_and_in_its_own_session(
     # large model takes the machine from its neighbours. And without its own
     # session a Ctrl-C at the driver reaches every in-flight child, each of which
     # leaves a "killed" result that resume treats as done.
+    # Faked at `run_process`, whose own tests pin that these arguments do what they
+    # say: the solve step reaps its child with `wait4`, not `subprocess.run`.
     seen: dict[str, object] = {}
 
-    def run(command: list[str], **kwargs: object) -> _FakeRun:
-        seen.update(kwargs, command=command)
-        return _FakeRun(0, None)
+    def run(command: list[str], **kwargs: object) -> Outcome:
+        seen.update(kwargs)
+        return Outcome(0, "", "", 1.0)
 
-    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(run_benchmark, "run_process", run)
     getattr(run_benchmark, step)(Job("cbls", "inst"), _driver_args(mem_limit_gb=2.0), tmp_path)
 
     assert seen["timeout"] == timeout
-    assert seen["start_new_session"] is True
-    command = seen["command"]
-    assert isinstance(command, list)
-    assert command[:2] == ["/bin/sh", "-c"] and "ulimit -v 2097152" in command[2]
+    assert seen["own_session"] is True
+    assert seen["mem_limit_gb"] == 2.0
 
 
 @pytest.mark.parametrize(
@@ -800,7 +867,9 @@ def test_a_solve_the_driver_saw_die_leaves_a_killed_record(
 ) -> None:
     # Without the record the job reads as never scheduled, and without its budget
     # a resume at another budget skips it and the scorer's budget guard never fires.
-    monkeypatch.setattr(subprocess, "run", _FakeRun(returncode, None))
+    timed_out = returncode == TIMED_OUT
+    died = Outcome(-9 if timed_out else returncode, "", "err", 1.0, timed_out=timed_out)
+    monkeypatch.setattr(run_benchmark, "run_process", lambda *_args, **_kwargs: died)
     job = Job("cbls", "inst")
     reported, solved = run_benchmark._run_solver(job, _driver_args(), tmp_path)
     assert not solved and line in reported
@@ -943,6 +1012,12 @@ def test_the_driver_verifies_what_it_ran(tmp_path: Path) -> None:
     assert scored.verification == "pass"
     assert not scored.withheld
     assert scored.objective is not None
+
+    # The driver's own measurement of the solve rides along (#240), unpinned here.
+    measured = json.loads((results_dir / "cbls" / "tiny.json").read_text())["driver_measured"]
+    assert measured["cpu_seconds"] > 0
+    assert measured["peak_rss_kib"] > 0
+    assert measured["cpuset"] is None
 
 
 @pytest.mark.parametrize("threads", [1, 2])
@@ -1219,7 +1294,9 @@ def test_the_run_record_states_what_a_wall_clock_result_cannot_be_read_without(
         # Per-solve CPU, the other half of what the machine was asked for.
         "cbls_threads": 1,
         "mem_limit_gb": 6.0,
+        "cpuset": None,
     }
+    assert _record(tmp_path, jobs=1, cpuset=[0, 2])["concurrency"]["cpuset"] == [0, 2]  # type: ignore[index]
     machine = record["machine"]
     assert isinstance(machine, dict)
     assert machine["host"]

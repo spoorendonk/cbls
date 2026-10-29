@@ -23,6 +23,7 @@ import os
 import signal
 import socket
 import subprocess
+import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -112,6 +113,77 @@ class Outcome:
     #: Whether the timeout, rather than the process itself, ended it. Checked
     #: before `returncode` by any caller that set a timeout.
     timed_out: bool = False
+    #: User plus system CPU seconds of the child and every descendant it reaped,
+    #: from `wait4`. Divided by `elapsed` it is the number of cores the job
+    #: actually used (#240). None only for an `Outcome` built by hand.
+    cpu_seconds: float | None = None
+    #: The child's peak resident set in KiB (`ru_maxrss`, which Linux reports in
+    #: KiB). None only for an `Outcome` built by hand.
+    peak_rss_kib: int | None = None
+
+
+def with_cpuset(command: Sequence[str], cpuset: Sequence[int] | None) -> list[str]:
+    """Wrap a command so it runs pinned to `cpuset`, via `taskset`, which execs it.
+
+    Not `os.sched_setaffinity` in a `preexec_fn`, for the same fork-safety reason
+    as `with_memory_limit`. Affinity is inherited, so every thread the solver
+    starts stays on the set.
+    """
+    if not cpuset:
+        return list(command)
+    return ["taskset", "-c", ",".join(str(cpu) for cpu in cpuset), *command]
+
+
+def parse_cpu_list(text: str) -> list[int]:
+    """Read a kernel CPU list (`0,2,4-6`), the format `taskset -c` and sysfs use.
+
+    Raises ValueError on a malformed entry, a descending range or a repeated CPU:
+    a set named twice would pin fewer cores than it claims to.
+    """
+    cpus: list[int] = []
+    for part in text.strip().split(","):
+        low, _, high = part.partition("-")
+        first, last = int(low), int(high or low)
+        if first < 0 or last < first:
+            raise ValueError(f"bad CPU range {part!r} in {text!r}")
+        cpus.extend(range(first, last + 1))
+    if len(set(cpus)) != len(cpus):
+        raise ValueError(f"CPU list {text!r} names a CPU twice")
+    return cpus
+
+
+#: Where the kernel publishes CPU topology. A parameter of `cpuset_problems` only
+#: so a test can hand it a made-up machine.
+SYS_CPU = Path("/sys/devices/system/cpu")
+
+
+def cpuset_problems(cpus: Sequence[int], sys_cpu: Path = SYS_CPU) -> list[str]:
+    """Why `cpus` is not a set of distinct physical cores this process may use.
+
+    Two SMT siblings are one core's execution units shared by two threads, so an
+    N-thread run pinned to them gets less than N cores, and its CPU/wall ratio
+    would still read N (#240). Topology that cannot be read is a problem too: the
+    claim cannot be checked.
+    """
+    problems: list[str] = []
+    allowed = os.sched_getaffinity(0)
+    if outside := sorted(set(cpus) - allowed):
+        problems.append(f"CPUs {outside} are not in this process's affinity {sorted(allowed)}")
+    for cpu in cpus:
+        path = sys_cpu / f"cpu{cpu}" / "topology" / "thread_siblings_list"
+        try:
+            siblings = set(parse_cpu_list(path.read_text()))
+        except (OSError, ValueError) as exc:
+            problems.append(f"cannot read CPU {cpu}'s SMT siblings: {exc}")
+            continue
+        if shared := sorted((siblings - {cpu}) & set(cpus)):
+            problems.append(f"CPU {cpu} shares a physical core with {shared}")
+    return problems
+
+
+#: How often `run_process` polls for the child's exit. The cost is at most this
+#: much added to a job's wall time, against budgets of seconds to minutes.
+_POLL_SECONDS = 0.01
 
 
 def run_process(
@@ -121,6 +193,8 @@ def run_process(
     mem_limit_gb: float | None = None,
     own_session: bool = False,
     log: Path | None = None,
+    cpuset: Sequence[int] | None = None,
+    measure: bool = False,
 ) -> Outcome:
     """Run one job's process to completion or to its timeout.
 
@@ -130,11 +204,24 @@ def run_process(
 
     `log`, when given, receives stdout then stderr -- written whatever the exit
     status, because the failed run is the one whose log gets read.
+
+    `cpuset` pins the child (`with_cpuset`). `measure` fills the `Outcome`'s CPU
+    seconds and peak RSS (`_run_measured`); off, the child runs under plain
+    `subprocess.run`, which is the seam the drivers' tests fake.
     """
+    argv = with_cpuset(with_memory_limit(command, mem_limit_gb), cpuset)
+    run = _run_measured if measure else _run_plain
+    outcome = run(argv, timeout, own_session)
+    if log is not None:
+        log.write_text(outcome.stdout + outcome.stderr)
+    return outcome
+
+
+def _run_plain(argv: list[str], timeout: float | None, own_session: bool) -> Outcome:
     started = time.monotonic()
     try:
         completed = subprocess.run(
-            with_memory_limit(command, mem_limit_gb),
+            argv,
             capture_output=True,
             text=True,
             check=False,
@@ -142,14 +229,59 @@ def run_process(
             start_new_session=own_session,
         )
     except subprocess.TimeoutExpired:
-        outcome = Outcome(-signal.SIGKILL, "", "", time.monotonic() - started, timed_out=True)
-    else:
-        outcome = Outcome(
-            completed.returncode, completed.stdout, completed.stderr, time.monotonic() - started
-        )
-    if log is not None:
-        log.write_text(outcome.stdout + outcome.stderr)
-    return outcome
+        return Outcome(-signal.SIGKILL, "", "", time.monotonic() - started, timed_out=True)
+    return Outcome(
+        completed.returncode, completed.stdout, completed.stderr, time.monotonic() - started
+    )
+
+
+def _run_measured(argv: list[str], timeout: float | None, own_session: bool) -> Outcome:
+    """`_run_plain`, reaping the child with `wait4` for its resource usage.
+
+    `wait4` is the only call that returns one child's usage: `RUSAGE_CHILDREN`
+    sums every child this process ever reaped, which concurrent jobs share, and
+    its peak RSS is the largest of them. Output goes to temporary files so the
+    poll can never stall on a full pipe.
+    """
+    started = time.monotonic()
+    deadline = None if timeout is None else started + timeout
+    with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
+        process = subprocess.Popen(argv, stdout=out, stderr=err, start_new_session=own_session)
+        timed_out = False
+        try:
+            while True:
+                pid, status, usage = os.wait4(process.pid, os.WNOHANG)
+                if pid:
+                    break
+                if deadline is not None and time.monotonic() >= deadline:
+                    timed_out = True
+                    process.kill()
+                    _, status, usage = os.wait4(process.pid, 0)
+                    break
+                time.sleep(_POLL_SECONDS)
+        except BaseException:
+            process.kill()
+            process.wait()
+            raise
+        elapsed = time.monotonic() - started
+        # Reaped here, so `Popen` must not try to wait for the pid again.
+        process.returncode = os.waitstatus_to_exitcode(status)
+        out.seek(0)
+        err.seek(0)
+        stdout = out.read().decode(errors="replace")
+        stderr = err.read().decode(errors="replace")
+    if timed_out:
+        # The output of a killed job is dropped, as `subprocess.run` drops it.
+        process.returncode, stdout, stderr = -signal.SIGKILL, "", ""
+    return Outcome(
+        process.returncode,
+        stdout,
+        stderr,
+        elapsed,
+        timed_out=timed_out,
+        cpu_seconds=usage.ru_utime + usage.ru_stime,
+        peak_rss_kib=usage.ru_maxrss,
+    )
 
 
 def run_jobs[J, R](
