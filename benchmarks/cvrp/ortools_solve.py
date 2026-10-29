@@ -16,7 +16,13 @@ THE FLEET. `cbls_cvrp`'s own default, `R = k + max(3, ceil(0.1 k))`
 fleet of `n`; OR-Tools allocates per-vehicle state, so a fleet of 1000 on the
 largest X instances is a different model size, not a looser constraint, and
 `R` is the fleet the engine under test solves with. Unused vehicles cost
-nothing, so `R` binds only where it binds for `cbls_cvrp` too.
+nothing. `R` can still bind harder here than for `cbls_cvrp`: that searches
+through capacity-infeasible states, while OR-Tools' greedy construction must
+place every customer within `R` routes, and if it cannot, the solve fails
+before any search (`routing_status` ROUTING_FAIL, a row with
+`feasible=false`). Instances with few customers per route and a tight `k` are
+the likeliest, so read `routing_status` on a roster before publishing its
+OR-Tools rows.
 
 THE SEARCH. First solution `PATH_CHEAPEST_ARC`, then `GUIDED_LOCAL_SEARCH`,
 both OR-Tools' documented CVRP defaults; every other parameter is the library
@@ -29,8 +35,8 @@ for PyVRP, and its rows pair only with `cbls_cvrp --threads 1`.
 
 THE CLOCK. Budget and `time_to_first_feasible` run from the
 `SolveWithParameters` call, as PyVRP's run from `solve()` and `cbls_cvrp`'s from
-the start of its search: reading the instance and building the routing model
-sit outside, recorded as `build_seconds` as `cbls_cvrp` records its model
+the start of its search: reading the instance and building and closing the
+routing model sit outside, recorded as `build_seconds` as `cbls_cvrp` records its model
 build. The first-solution heuristic runs inside the time limit, as PyVRP's
 construction does not, so the first solution is charged to the budget. Every
 solution the routing search reports satisfies the capacity dimension, so the
@@ -136,10 +142,16 @@ def run(args: argparse.Namespace, fleet: int) -> int:
     routing = build_routing(inst, fleet)
     # Seconds from `started` of every solution the search reports.
     found: list[float] = []
+    started: float  # set below, before the search can call back
+    routing.model.AddAtSolutionCallback(lambda: found.append(time.monotonic() - started))
+    params = search_parameters(args.budget)
+    # Closing builds the search's own structures (vehicle classes, filters,
+    # neighbourhoods): model build, so outside the clock. Solve would close it
+    # on the clock otherwise.
+    routing.model.CloseModelWithParameters(params)
     started = time.monotonic()
     build_seconds = started - build_started
-    routing.model.AddAtSolutionCallback(lambda: found.append(time.monotonic() - started))
-    solution = routing.model.SolveWithParameters(search_parameters(args.budget))
+    solution = routing.model.SolveWithParameters(params)
     wall = time.monotonic() - started
     feasible = solution is not None
     routes = routes_of(routing, solution, fleet) if feasible else []

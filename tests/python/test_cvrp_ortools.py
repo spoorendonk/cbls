@@ -13,6 +13,9 @@ from typing import TYPE_CHECKING
 import pytest
 
 pytest.importorskip("ortools")
+# ortools_solve shares `bks_of`/`solution_text` with reference_solve, which
+# imports pyvrp.
+pytest.importorskip("pyvrp")
 
 from benchmarks.common import jobs  # noqa: E402
 from benchmarks.cvrp import ortools_solve as ort  # noqa: E402

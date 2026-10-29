@@ -55,10 +55,10 @@ comparative claim, so the table's ordering rule does not gate them:
   (see `benchmarks/instances/setcover/README.md`). Keep it as the `Set` example;
   don't grow it into an epic.
 - **`List` → CVRP** (CVRPLIB X set, Hexaly's List encoding, scored as gap to
-  the pinned best-known values, with PyVRP at equal budget and threads as
-  context). Tracked under epic #182 (#196-#204). **In the tree, unpublished**:
-  `cbls_cvrp`, its driver, verifier, scorer and PyVRP baseline landed in
-  #196-#200, but until #204 publishes results `List` still has no evidence (next
+  the pinned best-known values, with PyVRP and OR-Tools' routing library at
+  equal budget and threads as context). Tracked under epic #182 (#196-#204).
+  **In the tree, unpublished**: `cbls_cvrp`, its driver, verifier, scorer and
+  PyVRP baseline landed in #196-#200, the OR-Tools baseline in #204, but until #204 publishes results `List` still has no evidence (next
   section), and the single-seed smoke numbers quoted in #201-#203 are not
   results.
 
