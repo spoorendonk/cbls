@@ -255,7 +255,11 @@ def _run_measured(argv: list[str], timeout: float | None, own_session: bool) -> 
                     break
                 if deadline is not None and time.monotonic() >= deadline:
                     timed_out = True
-                    process.kill()
+                    # Not `process.kill()`: it polls first, and a child that
+                    # exited since the `wait4` above would be reaped there,
+                    # losing its usage and failing the `wait4` below. Unreaped,
+                    # the pid is still ours, so the signal cannot hit a reuse.
+                    os.kill(process.pid, signal.SIGKILL)
                     _, status, usage = os.wait4(process.pid, 0)
                     break
                 time.sleep(_POLL_SECONDS)
