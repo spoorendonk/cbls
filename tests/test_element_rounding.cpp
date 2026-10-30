@@ -1164,6 +1164,27 @@ TEST_CASE("FJ walks to a breakpoint through a nonlinear op", "[fj][rounding]") {
     REQUIRE(r.jump_value <= std::log(3.0));
 }
 
+TEST_CASE("FJ maps a breakpoint past an overflowing operand a Min does not select",
+          "[fj][rounding]") {
+    // ceil(x + min(1, exp(exp(x)))) == 13 needs x in (11, 12]. At x = 10 the slope
+    // of exp(exp(x)) is inf and the Min's edge to it is 0; multiplied, not skipped,
+    // that read NaN, the argument's slope with it, and the ceil offered nothing.
+    Model m;
+    const int32_t x = m.float_var(0, 20, "x");
+    const int32_t big = m.exp_expr(m.exp_expr(x));  // exp(exp(10)) overflows to inf
+    const int32_t fleet = m.ceil_expr(m.sum({x, m.min_expr({m.constant(1.0), big})}));
+    m.add_constraint(m.geq(fleet, m.constant(13.0)));
+    m.add_constraint(m.leq(fleet, m.constant(13.0)));
+    m.close();
+    m.var_mut(vid(x)).value = 10.0;
+    full_evaluate(m);
+    ViolationManager vm(m);
+    const JumpResult r = compute_var_jump(m, vm.weights, vid(x));
+    REQUIRE(r.score == 2.0);
+    REQUIRE(r.jump_value > 11.0);
+    REQUIRE(r.jump_value <= 12.0);
+}
+
 TEST_CASE("an element index reaches a middle-ranked value past 32 distinct values",
           "[fj][element]") {
     // 1000 distinct values (table[k] = k): past the representative cap, so the
