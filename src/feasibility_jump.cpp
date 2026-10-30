@@ -691,7 +691,7 @@ private:
                 }
                 // A zero edge (an untaken If branch, a Min's unselected operand) is
                 // skipped, not multiplied: an infinite `s` times 0 would read NaN
-                // where the edge carries nothing, as in `UpConePartials::build`.
+                // where the edge carries nothing, as in `UpConePartials::sweep`.
                 const double d = edge_derivative(model, pn, ref);
                 if (d != 0.0) {
                     slope_[static_cast<size_t>(parent)] += d * s;
