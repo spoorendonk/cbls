@@ -40,7 +40,7 @@ void HumanFormatter::print_header(const std::string& model_path, const Model& mo
     maximizing_ = model.objective_id() >= 0 && model.is_maximizing();
     out_ << "cbls " << kVersion << " — Constraint-Based Local Search\n";
     out_ << "Model: " << model_path << " | " << model.num_vars() << " vars"
-         << " | " << model.constraint_ids().size() << " constraints"
+         << " | " << model.num_user_constraints() << " constraints"
          << " | " << objective_label << "\n";
     out_ << "Seed: " << seed << " | Time limit: " << std::fixed << std::setprecision(1)
          << time_limit << "s\n\n";
@@ -120,7 +120,7 @@ void JsonlFormatter::print_header(const std::string& model_path, const Model& mo
     j["version"] = kVersion;
     j["model"] = model_path;
     j["vars"] = model.num_vars();
-    j["constraints"] = model.constraint_ids().size();
+    j["constraints"] = model.num_user_constraints();
     j["has_objective"] = model.objective_id() >= 0;
     j["seed"] = seed;
     j["time_limit"] = time_limit;

@@ -1407,8 +1407,9 @@ namespace {
 // `Log` (whose argument must be at least kLogDomainFloor), a `Sqrt`, or a `Pow`
 // whose exponent is a finite non-integer Const (whose argument must be at least
 // 0). These are the ops that evaluate to NaN outside their domain (#205). A
-// `Pow` with a variable exponent is left alone: no constant says whether a
-// negative base is in its domain.
+// negative such exponent also has a pole at 0, +inf, which reads as flat as a
+// NaN, so its floor is the `Log` one. A `Pow` with a variable exponent is left
+// alone: no constant says whether a negative base is in its domain.
 double domain_floor(const Model& m, const ExprNode& nd) {
     constexpr double kNone = std::numeric_limits<double>::quiet_NaN();
     if (nd.op == NodeOp::Log) {
@@ -1425,7 +1426,10 @@ double domain_floor(const Model& m, const ExprNode& nd) {
         return kNone;
     }
     const double p = m.nodes()[e.id].const_value;
-    return (std::isfinite(p) && std::floor(p) != p) ? 0.0 : kNone;
+    if (!std::isfinite(p) || std::floor(p) == p) {
+        return kNone;
+    }
+    return p < 0.0 ? kLogDomainFloor : 0.0;
 }
 
 // Which nodes the model's rows or its objective read (1) and which nothing
@@ -1525,12 +1529,17 @@ void Model::append_domain_rows() {
     const std::vector<DomainRow> rows = domain_rows_needed(*this);
     st.num_user_constraints = static_cast<int64_t>(st.constraint_ids.size());
     st.domain_node_begin = static_cast<int32_t>(st.nodes.size());
+    // The RHS is the floor plus the feasibility tolerance: a row counts as
+    // satisfied up to that tolerance, so `arg >= floor` written plainly would
+    // read satisfied at arg = 0 under a `Log`, where the op is still -inf or
+    // NaN. With it the row holds exactly when the argument meets the floor,
+    // at the default tolerance; a looser one reopens a band below the floor.
     int32_t log_floor = -1;
     int32_t zero_floor = -1;
     for (const DomainRow& r : rows) {
         int32_t& rhs = r.floor > 0.0 ? log_floor : zero_floor;
         if (rhs < 0) {
-            rhs = push_constant(r.floor);
+            rhs = push_constant(r.floor + kDefaultFeasibilityTolerance);
         }
         ChildRef rhs_ref;
         rhs_ref.id = rhs;

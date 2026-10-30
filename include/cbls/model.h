@@ -92,6 +92,10 @@ inline int32_t handle_to_var_id(int32_t handle) {
     return -(handle + 1);
 }
 
+/// The floor of a `Log` argument's implicit domain row (#248): SCIP's
+/// `expr/log/minzerodistance` default, which cuts off (0, 1e-9) as SCIP does.
+inline constexpr double kLogDomainFloor = 1e-9;
+
 /// Everything about a model that no search writes: the DAG's nodes and edges,
 /// the derived indices over them, the constraint list, the lambda tables and the
 /// variable sequences.
@@ -113,10 +117,6 @@ inline int32_t handle_to_var_id(int32_t handle) {
 /// `is_maximizing_`, the three objective-row node ids, `closed_` -- stay in
 /// `Model` too: they are immutable after `freeze()` as well, but twenty bytes per
 /// worker is not worth an indirection on the paths that read them.
-/// The floor of a `Log` argument's implicit domain row (#248): SCIP's
-/// `expr/log/minzerodistance` default, which cuts off (0, 1e-9) as SCIP does.
-inline constexpr double kLogDomainFloor = 1e-9;
-
 struct ModelStructure {
     std::vector<ExprNode> nodes;
     // The DAG's edges, flat (#156). Per-node and per-variable vectors made model
@@ -763,8 +763,11 @@ public:
                                            : static_cast<size_t>(st.num_user_constraints);
     }
     /// How many implicit domain rows `close()` appended after the modeller's
-    /// (#248): `arg >= kLogDomainFloor` under a `Log`, `arg >= 0` under a `Sqrt`
-    /// or a `Pow` with a constant non-integer exponent. 0 before `close()`.
+    /// (#248): `arg >= kLogDomainFloor` under a `Log` or a `Pow` with a constant
+    /// negative non-integer exponent, `arg >= 0` under a `Sqrt` or a `Pow` with
+    /// a constant positive non-integer one. Each row's RHS carries the default
+    /// feasibility tolerance on top, so it holds exactly when the argument meets
+    /// its floor. 0 before `close()`.
     [[nodiscard]] int32_t num_domain_rows() const noexcept { return s().num_domain_rows; }
     /// Whether node `id` is one `close()` made for a domain row: what
     /// `save_model` leaves out, since a reload's `close()` makes them again.

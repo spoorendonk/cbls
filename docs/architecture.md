@@ -313,7 +313,10 @@ dropped a NaN anywhere but first), `Neq`, an `If` condition, and an `At` or
 point outside the domain, so it gives the search no way back in. `close()`
 therefore appends a hidden row `arg >= 1e-9` (`kLogDomainFloor`, SCIP's
 `expr/log/minzerodistance`) per `Log` argument and `arg >= 0` per `Sqrt` and per
-`Pow` with a constant non-integer exponent (`Model::append_domain_rows`). They
+`Pow` with a constant non-integer exponent (`Model::append_domain_rows`); a
+negative such exponent has a pole at 0, so it gets the `Log` floor. Each RHS is
+the floor plus `kDefaultFeasibilityTolerance`, since a row within the tolerance
+counts as satisfied and `x >= 1e-9` would otherwise hold at `x = 0`. They
 sit after the modeller's rows in `constraint_ids()` and before the objective
 row (`num_user_constraints()`, `num_domain_rows()`), count in `verify_model`
 and the feasibility test, and are left out by `save_model`. None is made for an

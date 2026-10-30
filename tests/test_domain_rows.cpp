@@ -11,10 +11,12 @@
 #include "test_helpers.h"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 #include <cbls/cbls.h>
 #include <cmath>
 #include <limits>
 #include <sstream>
+#include <utility>
 
 using namespace cbls;
 
@@ -46,13 +48,51 @@ TEST_CASE("a log of a free variable gets a hidden row at SCIP's floor", "[domain
     REQUIRE(at_minus_three > at_minus_one);
     REQUIRE_FALSE(verify_model(m).ok);
 
-    // Inside (0, kLogDomainFloor) is cut off, as SCIP cuts it off.
-    m.var_mut(vid(x)).value = kLogDomainFloor / 2.0;
+    // Violated beyond the feasibility tolerance, which is what the engine
+    // reads, at 0 and inside (0, kLogDomainFloor), as SCIP cuts it off...
+    const int32_t row = m.constraint_ids()[1];
+    for (const double v : {0.0, kLogDomainFloor / 2.0}) {
+        m.var_mut(vid(x)).value = v;
+        full_evaluate(m);
+        CAPTURE(v);
+        REQUIRE(m.node_value(row) > kDefaultFeasibilityTolerance);
+    }
+    // ...and satisfied just above the floor (at it, within a rounding).
+    m.var_mut(vid(x)).value = 2.0 * kLogDomainFloor;
     full_evaluate(m);
-    REQUIRE(m.node_value(m.constraint_ids()[1]) > 0.0);
-    m.var_mut(vid(x)).value = 1.0;
+    REQUIRE(m.node_value(row) <= kDefaultFeasibilityTolerance);
+}
+
+TEST_CASE("a sqrt's row reads every negative argument as violated past the tolerance",
+          "[domain-rows]") {
+    Model m;
+    const int32_t x = m.float_var(-kInf, kInf, "x");
+    m.minimize(m.sqrt_expr(x));
+    m.close();
+    REQUIRE(m.num_domain_rows() == 1);
+    const int32_t row = m.constraint_ids()[0];
+
+    m.var_mut(vid(x)).value = -kDefaultFeasibilityTolerance / 2.0;
     full_evaluate(m);
-    REQUIRE(m.node_value(m.constraint_ids()[1]) <= 0.0);
+    REQUIRE(m.node_value(row) > kDefaultFeasibilityTolerance);
+    m.var_mut(vid(x)).value = 0.0;
+    full_evaluate(m);
+    REQUIRE(m.node_value(row) <= kDefaultFeasibilityTolerance);
+}
+
+TEST_CASE("a negative fractional exponent's pole at 0 is cut off as a log's", "[domain-rows]") {
+    Model m;
+    const int32_t x = m.float_var(-kInf, kInf, "x");
+    m.minimize(m.pow_expr(x, m.constant(-0.5)));
+    m.close();
+    REQUIRE(m.num_domain_rows() == 1);
+
+    m.var_mut(vid(x)).value = 0.0;
+    full_evaluate(m);
+    REQUIRE(m.node_value(m.constraint_ids()[0]) > kDefaultFeasibilityTolerance);
+    m.var_mut(vid(x)).value = 2.0 * kLogDomainFloor;
+    full_evaluate(m);
+    REQUIRE(m.node_value(m.constraint_ids()[0]) <= kDefaultFeasibilityTolerance);
 }
 
 TEST_CASE("the objective row comes after the domain rows", "[domain-rows]") {
@@ -129,18 +169,24 @@ TEST_CASE("save_model leaves the domain rows to the reload's close", "[domain-ro
 TEST_CASE("a feasible start outside a log's domain reaches a finite objective",
           "[domain-rows][nonfinite-objective]") {
     // x + y = 1 over free variables, minimise x log x + y log y: optimum
-    // -log 2 at x = y = 1/2. The start (1.5, -0.5) satisfies the row, and the
-    // objective there is NaN. Diversification is off, as in
-    // test_nonfinite_guard.cpp, so a random kick cannot rescue the search: the
-    // only route back into the domain is a row that says which way it is.
+    // -log 2 at x = y = 1/2. Both starts satisfy the row with an objective that
+    // is not a number: (1.5, -0.5) well outside the domain, and (1, 0) at its
+    // edge, where ex8_5_6's seed 2 ended (0 log 0 is NaN) and where a floor
+    // inside the feasibility tolerance would read as met. Diversification is
+    // off, as in test_nonfinite_guard.cpp, so a random kick cannot rescue the
+    // search: the only route back into the domain is a row that says which way
+    // it is.
+    const auto [x0, y0] =
+        GENERATE(std::pair<double, double>{1.5, -0.5}, std::pair<double, double>{1.0, 0.0});
+    CAPTURE(x0, y0);
     Model m;
     const int32_t x = m.float_var(-kInf, kInf, "x");
     const int32_t y = m.float_var(-kInf, kInf, "y");
     m.add_constraint(m.eq_expr(m.sum({x, y}), m.constant(1.0)));
     m.minimize(m.sum({m.prod(x, m.log_expr(x)), m.prod(y, m.log_expr(y))}));
     m.close();
-    m.var_mut(vid(x)).value = 1.5;
-    m.var_mut(vid(y)).value = -0.5;
+    m.var_mut(vid(x)).value = x0;
+    m.var_mut(vid(y)).value = y0;
     full_evaluate(m);
     REQUIRE(std::isnan(m.node_value(m.objective_id())));
 
