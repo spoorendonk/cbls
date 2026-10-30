@@ -168,8 +168,9 @@ inline double delta_evaluate(Model& model, std::initializer_list<int32_t> change
 /// One chain-rule step along a DAG edge: `acc += edge * carried`, `edge` being
 /// the edge's local derivative and `carried` the adjoint (reverse mode) or slope
 /// (forward mode) brought to it. Every propagation pass takes its edges through
-/// here: the reverse sweep and the three forward up-cone passes
-/// (`UpConePartials`, FJ's breakpoint slopes, the inner solver's slopes; #260).
+/// here: the reverse sweep and the two forward up-cone passes (`UpConePartials`,
+/// behind FJ's row slopes and the inner solver's, and FJ's pruned breakpoint
+/// slopes; #260).
 ///
 /// A zero edge -- an untaken If branch, a Min's unselected operand -- is skipped,
 /// not multiplied: an infinite or NaN `carried` times 0 would read NaN where the
@@ -203,7 +204,9 @@ double compute_partial(const Model& model, int32_t expr_id, int32_t var_id);
 /// (`add_chain_term`), so an overflow on either side of one (an untaken If
 /// branch, a Min's unselected operand) reads 0 in both and leaves the row's
 /// finite paths alone. Where infinite paths meet, the modes can still differ:
-/// they sum the paths at different nodes, and inf meeting -inf reads NaN.
+/// they sum the paths at different nodes, and inf meeting -inf reads NaN. That
+/// includes a parent naming one child twice (`z / z`): this pass sums the two
+/// operand derivatives before the zero test, the reverse sweep tests each.
 ///
 /// COST: O(u log u) for an up-cone of u nodes, plus their parent edges, and it
 /// gives the partial of EVERY node above the variable at once. `compute_partial`
