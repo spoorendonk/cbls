@@ -113,6 +113,10 @@ inline int32_t handle_to_var_id(int32_t handle) {
 /// `is_maximizing_`, the three objective-row node ids, `closed_` -- stay in
 /// `Model` too: they are immutable after `freeze()` as well, but twenty bytes per
 /// worker is not worth an indirection on the paths that read them.
+/// The floor of a `Log` argument's implicit domain row (#248): SCIP's
+/// `expr/log/minzerodistance` default, which cuts off (0, 1e-9) as SCIP does.
+inline constexpr double kLogDomainFloor = 1e-9;
+
 struct ModelStructure {
     std::vector<ExprNode> nodes;
     // The DAG's edges, flat (#156). Per-node and per-variable vectors made model
@@ -142,6 +146,15 @@ struct ModelStructure {
     /// and only ever read through `Model::topo_position`.
     std::vector<int32_t> topo_pos;
     std::vector<int32_t> constraint_ids;
+    /// The implicit domain rows (#248), set once by `Model::append_domain_rows`:
+    /// the modeller's rows are `constraint_ids[0 .. num_user_constraints)`, the
+    /// domain rows the next `num_domain_rows`, and the objective row, if any,
+    /// comes after them. The domain rows' nodes are the ids
+    /// `[domain_node_begin, domain_node_end)`. -1 until the rows are appended.
+    int64_t num_user_constraints = -1;
+    int32_t num_domain_rows = 0;
+    int32_t domain_node_begin = -1;
+    int32_t domain_node_end = -1;
     // var_id -> constraint indices (G_v), CSR like the back-references above: a
     // per-variable vector here was the largest allocation site left once those
     // were flat. Empty until close(), and then sized for the variables that
@@ -736,8 +749,27 @@ public:
     }
     [[nodiscard]] int32_t objective_id() const noexcept { return objective_id_; }
     [[nodiscard]] bool is_maximizing() const noexcept { return is_maximizing_; }
+    /// Every row the engine scores: the modeller's, then the implicit domain
+    /// rows `close()` appends (#248), then the objective row. What the search,
+    /// the weights, `verify_model` and the feasibility test index.
     [[nodiscard]] const std::vector<int32_t>& constraint_ids() const noexcept {
         return s().constraint_ids;
+    }
+    /// How many of `constraint_ids()` the modeller added: they are its first
+    /// entries. Every row before `close()`.
+    [[nodiscard]] size_t num_user_constraints() const noexcept {
+        const ModelStructure& st = s();
+        return st.num_user_constraints < 0 ? st.constraint_ids.size()
+                                           : static_cast<size_t>(st.num_user_constraints);
+    }
+    /// How many implicit domain rows `close()` appended after the modeller's
+    /// (#248): `arg >= kLogDomainFloor` under a `Log`, `arg >= 0` under a `Sqrt`
+    /// or a `Pow` with a constant non-integer exponent. 0 before `close()`.
+    [[nodiscard]] int32_t num_domain_rows() const noexcept { return s().num_domain_rows; }
+    /// Whether node `id` is one `close()` made for a domain row: what
+    /// `save_model` leaves out, since a reload's `close()` makes them again.
+    [[nodiscard]] bool is_domain_node(int32_t id) const noexcept {
+        return id >= s().domain_node_begin && id < s().domain_node_end;
     }
     /// Size the variable, node and child-reference arrays up front, when the
     /// caller already knows how big the model will be. `n_child_refs` is the
@@ -1004,6 +1036,7 @@ private:
     /// `set_objective_bound`, `restore_state`) are not builders and stay open.
     void require_buildable(const char* method) const;
 
+    void append_domain_rows();
     void build_var_constraints();
     void rebuild_back_references();
     void rebuild_topo_positions();

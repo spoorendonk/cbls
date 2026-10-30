@@ -816,10 +816,17 @@ void save_model(const Model& model, std::ostream& out) {
         if (model.is_maximizing() && nid == model.objective_id()) {
             continue;
         }
+        // The implicit domain rows (#248): a reload's close() makes them again.
+        if (model.is_domain_node(nid)) {
+            continue;
+        }
         out << node_record(model, model.node(nid), var_names, node_names).dump() << '\n';
     }
 
     for (int32_t cid : model.constraint_ids()) {
+        if (model.is_domain_node(cid)) {
+            continue;
+        }
         json j;
         j["constraint"] = node_names[cid];
         out << j.dump() << '\n';

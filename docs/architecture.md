@@ -309,6 +309,17 @@ instead of turning it back into a defined value: `Min`/`Max` (whose `std::min`
 dropped a NaN anywhere but first), `Neq`, an `If` condition, and an `At` or
 `Element` index (out of range still reads `0.0`).
 
+**Implicit domain rows (#248).** A NaN reads as the same flat violation at every
+point outside the domain, so it gives the search no way back in. `close()`
+therefore appends a hidden row `arg >= 1e-9` (`kLogDomainFloor`, SCIP's
+`expr/log/minzerodistance`) per `Log` argument and `arg >= 0` per `Sqrt` and per
+`Pow` with a constant non-integer exponent (`Model::append_domain_rows`). They
+sit after the modeller's rows in `constraint_ids()` and before the objective
+row (`num_user_constraints()`, `num_domain_rows()`), count in `verify_model`
+and the feasibility test, and are left out by `save_model`. None is made for an
+op no row or objective reads, for one read only through an `If` branch, for a
+Const argument, or for a variable whose lower bound already meets the floor.
+
 ### Evaluation Modes
 
 **Full evaluation** (`full_evaluate`): evaluates all nodes in topological

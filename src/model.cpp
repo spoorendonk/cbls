@@ -1401,9 +1401,150 @@ void Model::classify_incremental_sums() {
     }
 }
 
+namespace {
+
+// The floor of node `nd`'s implicit domain row, or NaN when it needs none: a
+// `Log` (whose argument must be at least kLogDomainFloor), a `Sqrt`, or a `Pow`
+// whose exponent is a finite non-integer Const (whose argument must be at least
+// 0). These are the ops that evaluate to NaN outside their domain (#205). A
+// `Pow` with a variable exponent is left alone: no constant says whether a
+// negative base is in its domain.
+double domain_floor(const Model& m, const ExprNode& nd) {
+    constexpr double kNone = std::numeric_limits<double>::quiet_NaN();
+    if (nd.op == NodeOp::Log) {
+        return kLogDomainFloor;
+    }
+    if (nd.op == NodeOp::Sqrt) {
+        return 0.0;
+    }
+    if (nd.op != NodeOp::Pow) {
+        return kNone;
+    }
+    const ChildRef& e = m.children(nd)[1];
+    if (e.is_var || m.nodes()[e.id].op != NodeOp::Const) {
+        return kNone;
+    }
+    const double p = m.nodes()[e.id].const_value;
+    return (std::isfinite(p) && std::floor(p) != p) ? 0.0 : kNone;
+}
+
+// Which nodes the model's rows or its objective read (1) and which nothing
+// does (0). An `If` reads its condition only, as far as a domain row is
+// concerned: it evaluates just the branch the condition selects. Nodes are
+// created after their children (`wrap` refuses a forward handle), so one sweep
+// down the ids reaches every node.
+std::vector<uint8_t> nodes_read(const Model& m) {
+    std::vector<uint8_t> reached(m.num_nodes(), 0);
+    for (const int32_t cid : m.constraint_ids()) {
+        reached[static_cast<size_t>(cid)] = 1;
+    }
+    if (m.objective_id() >= 0) {
+        reached[static_cast<size_t>(m.objective_id())] = 1;
+    }
+    for (size_t i = reached.size(); i-- > 0;) {
+        if (reached[i] == 0) {
+            continue;
+        }
+        const ExprNode& nd = m.nodes()[i];
+        const ConstSpan<ChildRef> kids = m.children(nd);
+        const size_t n_kids = nd.op == NodeOp::If ? 1 : kids.size();
+        for (size_t k = 0; k < n_kids; ++k) {
+            if (!kids[k].is_var) {
+                reached[static_cast<size_t>(kids[k].id)] = 1;
+            }
+        }
+    }
+    return reached;
+}
+
+struct DomainRow {
+    ChildRef arg;
+    double floor;
+};
+
+// The domain rows the read nodes need, one per (argument, floor), leaving out
+// a Const argument and a variable whose lower bound already meets the floor.
+std::vector<DomainRow> domain_rows_needed(const Model& m) {
+    const std::vector<uint8_t> reached = nodes_read(m);
+    std::vector<DomainRow> rows;
+    // Bit 1: a row at kLogDomainFloor exists for this argument; bit 2: at 0.
+    std::vector<uint8_t> node_seen(m.num_nodes(), 0);
+    std::vector<uint8_t> var_seen(m.num_vars(), 0);
+    for (size_t i = 0; i < reached.size(); ++i) {
+        const double floor = reached[i] != 0 ? domain_floor(m, m.nodes()[i])
+                                             : std::numeric_limits<double>::quiet_NaN();
+        if (std::isnan(floor)) {
+            continue;
+        }
+        const ChildRef arg = m.children(m.nodes()[i])[0];
+        if (arg.is_var ? m.var(arg.id).lb >= floor : m.nodes()[arg.id].op == NodeOp::Const) {
+            continue;
+        }
+        const uint8_t bit = floor > 0.0 ? 1 : 2;
+        uint8_t& seen = arg.is_var ? var_seen[arg.id] : node_seen[arg.id];
+        if ((seen & bit) == 0) {
+            seen |= bit;
+            rows.push_back({arg, floor});
+        }
+    }
+    return rows;
+}
+
+}  // namespace
+
+// #248. Every domain-restricted op (`domain_floor`) the model's rows or its
+// objective read gets a hidden row `arg >= floor`, as SCIP enforces `log`'s
+// argument at `expr/log/minzerodistance`. Without it a point outside the domain
+// reads NaN, which a row scores as violated at a flat 1e30 everywhere: no Newton
+// step, no direction back in (ex8_5_6, all of whose variables are free and
+// whose signs only the logs' domains fix). The row's violation is graded, so FJ
+// gets that direction.
+//
+// Costs: it cuts off (0, 1e-9) under a `Log`, and it adds rows the modeller did
+// not write. They come after the modeller's in constraint_ids (see
+// `num_user_constraints`), so they count in `verify_model` and the feasibility
+// test but not in the modeller's row count, and `save_model` leaves them out.
+//
+// Not added:
+//  - for an op nothing reads, or one read only through an `If` branch: an `If`
+//    evaluates only the branch its condition selects, so `if(x > 0, log(x), 0)`
+//    is defined at x <= 0, and a row would cut off what the model allows;
+//  - for a Const argument, where no move can change the row;
+//  - for a variable argument whose lower bound already meets the floor, which
+//    is most of MINLPLib's, so their models keep their rows and trajectories.
+// One row per (argument, floor), however many ops share it.
+//
+// Runs once: the first `close()` or `add_objective_soft_constraint()`.
+void Model::append_domain_rows() {
+    ModelStructure& st = mut();
+    if (st.num_user_constraints >= 0) {
+        return;
+    }
+    // Collected before any node is made: alloc_node grows the arrays the
+    // collection reads.
+    const std::vector<DomainRow> rows = domain_rows_needed(*this);
+    st.num_user_constraints = static_cast<int64_t>(st.constraint_ids.size());
+    st.domain_node_begin = static_cast<int32_t>(st.nodes.size());
+    int32_t log_floor = -1;
+    int32_t zero_floor = -1;
+    for (const DomainRow& r : rows) {
+        int32_t& rhs = r.floor > 0.0 ? log_floor : zero_floor;
+        if (rhs < 0) {
+            rhs = push_constant(r.floor);
+        }
+        ChildRef rhs_ref;
+        rhs_ref.id = rhs;
+        rhs_ref.is_var = false;
+        st.constraint_ids.push_back(alloc_node(NodeOp::Geq, {r.arg, rhs_ref}));
+    }
+    st.num_domain_rows = static_cast<int32_t>(rows.size());
+    st.domain_node_end = static_cast<int32_t>(st.nodes.size());
+}
+
 void Model::close() {
     require_open("close");
     ModelStructure& st = mut();
+    append_domain_rows();
     rebuild_back_references();
     st.topo_order = detail::compute_topo_order(*this);
     rebuild_topo_positions();
@@ -1426,6 +1567,8 @@ void Model::add_objective_soft_constraint() {
     }
     require_open("add_objective_soft_constraint");
     ModelStructure& st = mut();
+    // On a model never closed, so the domain rows still come before this one.
+    append_domain_rows();
 
     // Exactly the room the row takes -- two nodes, two child refs, two node
     // values, one constraint. A copied vector's capacity is its size, so without
