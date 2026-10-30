@@ -48,11 +48,14 @@ void check_variables(const Model& model, double tol, VerifyResult& result) {
     }
 }
 
-// 2. Constraint feasibility: each constraint node value <= tol.
+// 2. Constraint feasibility: each constraint node value <= tol. A domain row
+// (#248) reads > 0 exactly when its argument is below its floor, whatever
+// tolerance its margin was set at (#258), so it is held to 0 rather than to a
+// `tol` that may exceed that margin.
 void check_constraints(const Model& model, double tol, VerifyResult& result) {
     for (int32_t cid : model.constraint_ids()) {
         double val = model.node_value(cid);
-        if (val > tol) {
+        if (val > (model.is_domain_node(cid) ? 0.0 : tol)) {
             std::string name = "constraint[" + std::to_string(cid) + "]";
             result.add_error(
                 {VerifyError::Kind::ConstraintViolation, name, 0.0, val, "constraint violated"});

@@ -2127,6 +2127,9 @@ void validate_search_config(const SearchConfig& config) {
         throw std::invalid_argument("SearchConfig::luby_restart_unit must be >= 0, got " +
                                     std::to_string(config.luby_restart_unit));
     }
+    if (!(config.feasibility_tolerance >= 0.0) || !std::isfinite(config.feasibility_tolerance)) {
+        throw std::invalid_argument("SearchConfig::feasibility_tolerance must be finite and >= 0");
+    }
 }
 
 int64_t luby(int64_t i) {
@@ -2170,6 +2173,9 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
         }
         model.set_objective_bound(std::numeric_limits<double>::infinity());  // reset for re-solves
     }
+    // Before anything reads a row: a domain row's step is set from this solve's
+    // tolerance, not the one the model was closed or last solved at (#258).
+    model.set_domain_tolerance(config.feasibility_tolerance);
     ViolationManager vm(model);
 
     const Budget budget = make_budget(time_limit);

@@ -502,6 +502,37 @@ TEST_CASE("a row clamped to kInfPenalty cancels exactly in the closed form (#100
     REQUIRE(sc.delta(2.0) == m.weighted_violation_delta(vid(x), 2.0, w));
 }
 
+TEST_CASE("a domain row's step at its floor scores as the DAG reads it (#258)",
+          "[fj][linear_jump]") {
+    // `x >= 0` under a sqrt reads x's shortfall plus the domain margin below 0
+    // and nothing at or above it. A margin far above the default makes a
+    // closed form that left the step out miss by a visible amount.
+    constexpr double kInf = std::numeric_limits<double>::infinity();
+    Model m;
+    const int32_t x = m.float_var(-kInf, kInf, "x");
+    m.add_constraint(m.leq(m.sqrt_expr(x), m.constant(3.0)));
+    m.add_constraint(m.leq(x, m.constant(5.0)));
+    m.close();
+    m.set_domain_tolerance(0.25);
+    // The sqrt row, x <= 5, the domain row. The sqrt row's side is not affine,
+    // so it carries no weight and the closed form applies to the other two.
+    const std::vector<double> w = {0.0, 2.0, 0.5};
+
+    for (const double x0 : {-2.0, 0.0, 1.0}) {
+        m.var_mut(vid(x)).value = x0;
+        full_evaluate(m);
+        LinearJumpScorer sc(m);
+        mark_all_rows(m, sc);
+        REQUIRE(sc.prepare(vid(x), w));
+        // Dyadic offsets around the floor: `x0 + (j - x0)` is then exactly j, so
+        // the two paths agree to the bit.
+        for (const double j : {-3.0, -1.0, -0x1p-20, 0.0, 0x1p-20, 2.0, 6.0}) {
+            CAPTURE(x0, j);
+            REQUIRE(sc.delta(j) == m.weighted_violation_delta(vid(x), j, w));
+        }
+    }
+}
+
 TEST_CASE("the linear scorer declines rows it cannot model", "[fj][linear_jump]") {
     Model m;
     const int32_t x = m.float_var(-2.0, 2.0);

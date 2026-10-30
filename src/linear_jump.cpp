@@ -322,7 +322,8 @@ bool LinearJumpScorer::prepare(int32_t var_id, const std::vector<double>& weight
                               p, q, r, p_literal, q_literal, (row.flags & kAbs) != 0,
                               (row.flags & kStrict) != 0
                                   ? model_.nodes()[static_cast<size_t>(cids[c])].const_value
-                                  : 0.0});
+                                  : 0.0,
+                              model_.is_domain_node(cids[c]) ? model_.domain_margin() : 0.0});
     }
     if (!ok) {
         terms_.clear();
@@ -350,6 +351,9 @@ double LinearJumpScorer::delta(double j) const {
         } else {
             // + 0.0 on a non-strict row, which leaves every residual unchanged.
             residual = comparison_residual(p, q, t.p_literal, t.q_literal) + t.strict_margin;
+            if (residual > 0.0) {
+                residual += t.domain_step;  // + 0.0 off a domain row
+            }
         }
         sum += t.weight * (clamped_node_violation(residual) - t.old_viol);
     }
@@ -421,6 +425,11 @@ bool LinearJumpScorer::argmin_applies(double lo, double hi) const {
     const double d_lo = lo - x0_;
     const double d_hi = hi - x0_;
     return std::all_of(terms_.begin(), terms_.end(), [d_lo, d_hi](const Term& t) {
+        // A domain row's step at its floor is not convex, which the minimum
+        // search below assumes of every term.
+        if (t.domain_step != 0.0) {
+            return false;
+        }
         if (std::isinf(t.p) || std::isinf(t.q)) {
             return true;  // constant in j: an infinite literal side absorbs any step
         }

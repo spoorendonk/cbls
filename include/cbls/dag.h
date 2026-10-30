@@ -11,6 +11,17 @@
 
 namespace cbls {
 
+/// Default tolerance below which a constraint counts as satisfied.
+///
+/// Applied to the constraint node's violation value, which is an *absolute*
+/// residual (for an equality row, the raw |lhs - rhs|). 1e-6 matches SCIP's
+/// `numerics/feastol` default and `verify_model`'s tolerance. A far tighter
+/// value is not meaningful on continuous/nonlinear models: on a row whose body
+/// is of magnitude 1e4 it would demand ~13 significant digits, which double
+/// precision cannot deliver. Here rather than in violation.h because `Model`
+/// defaults its domain rows' margin from it (`Model::set_domain_tolerance`).
+inline constexpr double kDefaultFeasibilityTolerance = 1e-6;
+
 enum class VarType : uint8_t { Bool, Int, Float, List, Set };
 
 /// True for the types that carry an `elements` permutation/subset rather than a

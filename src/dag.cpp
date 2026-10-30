@@ -434,11 +434,15 @@ double evaluate(const ExprNode& node, const Model& model) {
             // |child0 - child1| (= 0 when equal)
             return std::abs(child_val(children[0], model) - child_val(children[1], model));
 
-        case NodeOp::Geq:
+        case NodeOp::Geq: {
             // b - a (≤ 0 when a ≥ b)
-            return comparison_residual(child_val(children[1], model), child_val(children[0], model),
-                                       child_is_const(children[1], model),
-                                       child_is_const(children[0], model));
+            const double r = comparison_residual(
+                child_val(children[1], model), child_val(children[0], model),
+                child_is_const(children[1], model), child_is_const(children[0], model));
+            // A violated domain row (#248) steps past the solve's tolerance; one
+            // whose argument meets its floor keeps r (#258, Model::domain_margin).
+            return r > 0.0 && model.is_domain_node(node.id) ? r + model.domain_margin() : r;
+        }
 
         case NodeOp::Neq:
             // 1 when equal (violated), 0 when not equal (satisfied). Written as

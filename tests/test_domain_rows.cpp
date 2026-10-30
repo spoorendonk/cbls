@@ -57,10 +57,97 @@ TEST_CASE("a log of a free variable gets a hidden row at SCIP's floor", "[domain
         CAPTURE(v);
         REQUIRE(m.node_value(row) > kDefaultFeasibilityTolerance);
     }
-    // ...and satisfied just above the floor (at it, within a rounding).
+    // ...and satisfied just above the floor.
     m.var_mut(vid(x)).value = 2.0 * kLogDomainFloor;
     full_evaluate(m);
     REQUIRE(m.node_value(row) <= kDefaultFeasibilityTolerance);
+}
+
+TEST_CASE("an argument exactly at its floor adds no violation", "[domain-rows]") {
+    // #258: with the tolerance folded into the RHS, `sqrt(x^2 + y^2)` at the
+    // origin read 1e-6 on its row, and the weighted sums charged it.
+    Model m;
+    const int32_t x = m.float_var(-kInf, kInf, "x");
+    const int32_t y = m.float_var(-kInf, kInf, "y");
+    const int32_t z = m.float_var(-kInf, kInf, "z");
+    const int32_t two = m.constant(2.0);
+    m.add_constraint(
+        m.leq(m.sqrt_expr(m.sum({m.pow_expr(x, two), m.pow_expr(y, two)})), m.constant(1.0)));
+    m.add_constraint(m.leq(m.log_expr(z), m.constant(1.0)));
+    m.close();
+    REQUIRE(m.num_domain_rows() == 2);
+    m.var_mut(vid(x)).value = 0.0;
+    m.var_mut(vid(y)).value = 0.0;
+    m.var_mut(vid(z)).value = kLogDomainFloor;
+    full_evaluate(m);
+
+    const ViolationManager vm(m);
+    for (size_t c = 0; c < m.constraint_ids().size(); ++c) {
+        CAPTURE(c);
+        REQUIRE(vm.constraint_violation(static_cast<int>(c)) == 0.0);
+    }
+    REQUIRE(vm.total_violation() == 0.0);
+}
+
+TEST_CASE("the solve's feasibility tolerance decides a domain row, not the default",
+          "[domain-rows]") {
+    // #258: the RHS carried the default 1e-6 from close(). At 1e-9 that made
+    // sqrt's optimum x = 0 infeasible; at 1e-4 it let a log's argument down to
+    // about -1e-4 pass.
+    const double tol = GENERATE(1e-9, 1e-4);
+    CAPTURE(tol);
+    SearchConfig cfg;
+    cfg.feasibility_tolerance = tol;
+    cfg.skip_init = true;
+    cfg.max_iterations = 200;
+    cfg.perturbation_period = 1 << 30;
+
+    SECTION("minimize sqrt(x) over a free x is feasible at its optimum x = 0") {
+        Model m;
+        const int32_t x = m.float_var(-kInf, kInf, "x");
+        m.minimize(m.sqrt_expr(x));
+        m.close();
+        m.var_mut(vid(x)).value = 0.0;
+        const SearchResult r = solve(m, /*time_limit=*/0.0, /*seed=*/1, /*use_fj=*/true, nullptr,
+                                     nullptr, 3, nullptr, cfg);
+        REQUIRE(r.feasible);
+        REQUIRE(r.objective == 0.0);
+    }
+
+    SECTION("a log's argument at 0 or below reads infeasible") {
+        Model m;
+        const int32_t x = m.float_var(-kInf, kInf, "x");
+        m.add_constraint(m.leq(m.log_expr(x), m.constant(1.0)));
+        m.close();
+        m.var_mut(vid(x)).value = 1.0;
+        (void)solve(m, /*time_limit=*/0.0, /*seed=*/1, /*use_fj=*/true, nullptr, nullptr, 3,
+                    nullptr, cfg);
+        for (const double v : {0.0, -tol / 2.0, -tol}) {
+            CAPTURE(v);
+            m.var_mut(vid(x)).value = v;
+            full_evaluate(m);
+            REQUIRE_FALSE(ViolationManager(m).is_feasible(tol));
+            REQUIRE_FALSE(verify_model(m, tol).ok);
+        }
+        m.var_mut(vid(x)).value = kLogDomainFloor;
+        full_evaluate(m);
+        REQUIRE(ViolationManager(m).is_feasible(tol));
+    }
+}
+
+TEST_CASE("verify_model holds a domain row to 0 whatever its tolerance", "[domain-rows]") {
+    // The model's margin is the default 1e-6; a check at a looser tolerance
+    // still sees an argument below the floor.
+    Model m;
+    const int32_t x = m.float_var(-kInf, kInf, "x");
+    m.minimize(m.sqrt_expr(x));
+    m.close();
+    m.var_mut(vid(x)).value = -1e-12;
+    full_evaluate(m);
+    REQUIRE_FALSE(verify_model(m, 1e-3).ok);
+    m.var_mut(vid(x)).value = 0.0;
+    full_evaluate(m);
+    REQUIRE(verify_model(m, 1e-3).ok);
 }
 
 TEST_CASE("a sqrt's row reads every negative argument as violated past the tolerance",

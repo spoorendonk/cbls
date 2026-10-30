@@ -243,6 +243,9 @@ private:
         bool q_literal;
         bool is_abs;
         double strict_margin;  // Lt/Gt: the node's margin (ExprNode::const_value), else 0
+        // A domain row (#258): `Model::domain_margin()`, added to a positive
+        // residual only, as `evaluate`'s Geq arm does; else 0.
+        double domain_step;
     };
 
     // Build row ci (must be pending); returns the row, or nullptr if the build

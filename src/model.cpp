@@ -39,6 +39,7 @@ Model::Model(const Model& other)
       objective_constraint_node_(other.objective_constraint_node_),
       objective_constraint_idx_(other.objective_constraint_idx_),
       objective_bound_(other.objective_bound_),
+      domain_margin_(other.domain_margin_),
       closed_(other.closed_),
       inc_sums_(other.inc_sums_) {
     // probe_old_violation_ is deliberately left empty: it is resized and
@@ -1529,17 +1530,17 @@ void Model::append_domain_rows() {
     const std::vector<DomainRow> rows = domain_rows_needed(*this);
     st.num_user_constraints = static_cast<int64_t>(st.constraint_ids.size());
     st.domain_node_begin = static_cast<int32_t>(st.nodes.size());
-    // The RHS is the floor plus the feasibility tolerance: a row counts as
-    // satisfied up to that tolerance, so `arg >= floor` written plainly would
-    // read satisfied at arg = 0 under a `Log`, where the op is still -inf or
-    // NaN. With it the row holds exactly when the argument meets the floor,
-    // at the default tolerance; a looser one reopens a band below the floor.
+    // The RHS is the bare floor. A row counts as satisfied up to the solve's
+    // tolerance, so `arg >= floor` read plainly would pass arg = 0 under a
+    // `Log`, where the op is still -inf or NaN; `evaluate`'s `Geq` arm adds
+    // `domain_margin()` to a violated domain row, which puts any argument below
+    // the floor past that tolerance, and leaves one at the floor at 0 (#258).
     int32_t log_floor = -1;
     int32_t zero_floor = -1;
     for (const DomainRow& r : rows) {
         int32_t& rhs = r.floor > 0.0 ? log_floor : zero_floor;
         if (rhs < 0) {
-            rhs = push_constant(r.floor + kDefaultFeasibilityTolerance);
+            rhs = push_constant(r.floor);
         }
         ChildRef rhs_ref;
         rhs_ref.id = rhs;
@@ -1548,6 +1549,22 @@ void Model::append_domain_rows() {
     }
     st.num_domain_rows = static_cast<int32_t>(rows.size());
     st.domain_node_end = static_cast<int32_t>(st.nodes.size());
+}
+
+void Model::set_domain_tolerance(double tol) {
+    if (!(tol >= 0.0) || !std::isfinite(tol)) {
+        throw std::invalid_argument("set_domain_tolerance: tolerance must be finite and >= 0");
+    }
+    domain_margin_ = std::nextafter(tol, std::numeric_limits<double>::infinity());
+    // The domain rows are roots that no other node reads, so re-evaluating them
+    // in place is the whole update. Before close() they do not exist yet.
+    const ModelStructure& st = s();
+    for (int32_t id = std::max(st.domain_node_begin, 0); id < st.domain_node_end; ++id) {
+        const ExprNode& nd = st.nodes[static_cast<size_t>(id)];
+        if (nd.op == NodeOp::Geq) {
+            node_values_[static_cast<size_t>(id)] = evaluate(nd, *this);
+        }
+    }
 }
 
 void Model::close() {

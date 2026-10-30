@@ -4,9 +4,11 @@
 #include "dag.h"
 
 #include <cassert>
+#include <cmath>
 #include <cstdint>
 #include <functional>
 #include <initializer_list>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -765,15 +767,28 @@ public:
     /// How many implicit domain rows `close()` appended after the modeller's
     /// (#248): `arg >= kLogDomainFloor` under a `Log` or a `Pow` with a constant
     /// negative non-integer exponent, `arg >= 0` under a `Sqrt` or a `Pow` with
-    /// a constant positive non-integer one. Each row's RHS carries the default
-    /// feasibility tolerance on top, so it holds exactly when the argument meets
-    /// its floor. 0 before `close()`.
+    /// a constant positive non-integer one. A row reads its plain `Geq`
+    /// residual (<= 0) when the argument meets its floor, and that residual plus
+    /// `domain_margin()` when it does not (#258). 0 before `close()`.
     [[nodiscard]] int32_t num_domain_rows() const noexcept { return s().num_domain_rows; }
     /// Whether node `id` is one `close()` made for a domain row: what
     /// `save_model` leaves out, since a reload's `close()` makes them again.
     [[nodiscard]] bool is_domain_node(int32_t id) const noexcept {
         return id >= s().domain_node_begin && id < s().domain_node_end;
     }
+    /// The step a violated domain row adds to its residual: the smallest double
+    /// above the feasibility tolerance last set, so that an argument below its
+    /// floor reads violated at that tolerance however little it misses by (a
+    /// miss smaller than the margin's ulp rounds away in the sum, which then is
+    /// the margin itself, still above the tolerance). An argument at or above
+    /// the floor adds nothing.
+    ///
+    /// Per-model state, as `objective_bound()` is: each portfolio worker solves
+    /// at its own `SearchConfig::feasibility_tolerance`, and `solve()` sets it.
+    /// Re-evaluates the domain rows; the caller invalidates any violation cache.
+    /// Allowed on a frozen model.
+    void set_domain_tolerance(double tol);
+    [[nodiscard]] double domain_margin() const noexcept { return domain_margin_; }
     /// Size the variable, node and child-reference arrays up front, when the
     /// caller already knows how big the model will be. `n_child_refs` is the
     /// total number of children over all nodes, i.e. the DAG's edge count.
@@ -1005,6 +1020,8 @@ private:
     int32_t objective_constraint_node_ = -1;  // the `obj - bound` node
     int32_t objective_constraint_idx_ = -1;   // its index in constraint_ids()
     double objective_bound_ = 0.0;
+    double domain_margin_ =
+        std::nextafter(kDefaultFeasibilityTolerance, std::numeric_limits<double>::infinity());
     bool closed_ = false;
     // Scratch for weighted_violation_delta's pre-probe violations. A member so
     // the hot scoring path allocates only until it reaches the widest variable's
