@@ -1076,6 +1076,11 @@ NB_MODULE(_cbls_core, m) {
         .def("node_value", &Model::node_value, nb::arg("id"))
         .def("objective_id", &Model::objective_id)
         .def("constraint_ids", &Model::constraint_ids)
+        // The modeller's rows are constraint_ids()[:num_user_constraints()];
+        // close() appends the hidden domain rows after them (#248).
+        .def("num_user_constraints", &Model::num_user_constraints)
+        .def("num_domain_rows", &Model::num_domain_rows)
+        .def("is_domain_node", &Model::is_domain_node, nb::arg("id"))
         // A view into the model's flat G_v array; copied out to a list, so the
         // Python side holds nothing that a later rebuild could invalidate.
         .def(
