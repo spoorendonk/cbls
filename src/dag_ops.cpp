@@ -1056,6 +1056,99 @@ double compute_partial(const Model& model, int32_t expr_id, int32_t var_id) {
     return s.adjoint[model.num_nodes() + static_cast<size_t>(var_id)];
 }
 
+namespace {
+
+// d(parent)/d(child), summed over the operands of `parent` naming `child`. A Sum
+// pays a scan of its children only when `close()` saw it name one twice, so an
+// objective Sum over n terms costs O(1) per edge, not O(n).
+double up_edge_derivative(const Model& model, int32_t parent, const ChildRef& child) {
+    const ExprNode& pn = model.node(parent);
+    auto same = [&child](const ChildRef& r) {
+        return r.is_var == child.is_var && r.id == child.id;
+    };
+    const ConstSpan<ChildRef> kids = model.children(pn);
+    if (pn.op == NodeOp::Sum) {
+        if ((model.breakpoint_flags()[static_cast<size_t>(parent)] &
+             ModelStructure::kRepeatedChild) == 0) {
+            return 1.0;
+        }
+        return static_cast<double>(std::count_if(kids.begin(), kids.end(), same));
+    }
+    double d = 0.0;
+    for (size_t i = 0; i < kids.size(); ++i) {
+        if (same(kids[i])) {
+            d += local_derivative(pn, static_cast<int>(i), model);
+        }
+    }
+    return d;
+}
+
+}  // namespace
+
+bool UpConePartials::build(const Model& model, int32_t var_id, size_t max_nodes) {
+    const size_t num_nodes = model.num_nodes();
+    if (stamp_.size() < num_nodes) {
+        stamp_.resize(num_nodes, 0);
+        slope_.resize(num_nodes, 0.0);
+    }
+    auto next_epoch = [this] {
+        if (++epoch_ == 0) {
+            std::fill(stamp_.begin(), stamp_.end(), 0);
+            epoch_ = 1;
+        }
+    };
+    next_epoch();
+    cone_.clear();
+    if (model.topo_order().size() != num_nodes || model.breakpoint_flags().size() != num_nodes) {
+        return false;  // not closed: no parents, no order, no Sum flags
+    }
+    auto enter = [this](int32_t nid) {
+        stamp_[static_cast<size_t>(nid)] = epoch_;
+        slope_[static_cast<size_t>(nid)] = 0.0;
+        cone_.push_back(nid);
+    };
+    for (const int32_t dep : model.dependents(var_id)) {
+        enter(dep);
+    }
+    // `cone_` grows while it is walked, so it is indexed rather than iterated.
+    size_t head = 0;
+    while (head < cone_.size()) {
+        if (cone_.size() > max_nodes) {
+            next_epoch();  // a failed build reads 0 everywhere
+            return false;
+        }
+        const int32_t nid = cone_[head++];
+        for (const int32_t parent : model.parents(nid)) {
+            if (stamp_[static_cast<size_t>(parent)] != epoch_) {
+                enter(parent);
+            }
+        }
+    }
+    if (cone_.size() > max_nodes) {
+        next_epoch();
+        return false;
+    }
+    // Topological order, so a node's slope is complete before it is pushed.
+    std::sort(cone_.begin(), cone_.end(), [&model](int32_t a, int32_t b) {
+        return model.topo_position(a) < model.topo_position(b);
+    });
+    const ChildRef var_ref{var_id, true};
+    for (const int32_t dep : model.dependents(var_id)) {
+        slope_[static_cast<size_t>(dep)] += up_edge_derivative(model, dep, var_ref);
+    }
+    for (const int32_t nid : cone_) {
+        const double s = slope_[static_cast<size_t>(nid)];
+        if (s == 0.0) {
+            continue;
+        }
+        const ChildRef ref{nid, false};
+        for (const int32_t parent : model.parents(nid)) {
+            slope_[static_cast<size_t>(parent)] += up_edge_derivative(model, parent, ref) * s;
+        }
+    }
+    return true;
+}
+
 std::vector<double> compute_all_partials(const Model& model, int32_t expr_id) {
     AdjointScratch& s = adjoint_scratch();
     const AdjointScratchGuard guard(s, "compute_all_partials");

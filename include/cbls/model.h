@@ -174,13 +174,13 @@ struct ModelStructure {
     /// model without one takes the candidate generation it always did, with no
     /// per-variable walk to find out that there is nothing to add.
     bool has_breakpoint_nodes = false;
-    /// Per node, rebuilt with the topological order when `has_breakpoint_nodes`
-    /// (empty otherwise): `kReachesBreakpoint` on a breakpoint node and on every
-    /// node that reaches one through ops that carry a slope (`carries_slope`),
-    /// and `kRepeatedChild` on such a Sum that names a child more than once. The
+    /// Per node, rebuilt with the topological order: `kReachesBreakpoint` (only
+    /// when `has_breakpoint_nodes`) on a breakpoint node and on every node that
+    /// reaches one through ops that carry a slope (`carries_slope`), and
+    /// `kRepeatedChild` on every Sum that names a child more than once. The
     /// first gates FJ's breakpoint walk per variable and prunes it; the second
-    /// is what lets the walk count `x + x` as slope 2 without scanning every
-    /// Sum's children.
+    /// is what lets that walk and `UpConePartials` (#249) count `x + x` as
+    /// slope 2 without scanning every Sum's children.
     std::vector<uint8_t> breakpoint_flags;
     static constexpr uint8_t kReachesBreakpoint = 1;
     static constexpr uint8_t kRepeatedChild = 2;
@@ -836,7 +836,7 @@ public:
     /// See `ModelStructure::has_breakpoint_nodes`.
     [[nodiscard]] bool has_breakpoint_nodes() const noexcept { return s().has_breakpoint_nodes; }
     /// See `ModelStructure::breakpoint_flags`. Sized `num_nodes()` on a closed
-    /// model that has a breakpoint node; empty otherwise.
+    /// model; empty before `close()`.
     [[nodiscard]] const std::vector<uint8_t>& breakpoint_flags() const noexcept {
         return s().breakpoint_flags;
     }

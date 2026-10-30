@@ -922,6 +922,78 @@ TEST_CASE("cone AD on an unclosed model returns zeros instead of sorting by no p
     REQUIRE(sparse.empty());
 }
 
+TEST_CASE("forward up-cone partials equal the reverse sweep's on nonlinear shared DAGs", "[dag]") {
+    Model m;
+    auto x = m.float_var(-10, 10);
+    auto y = m.float_var(-10, 10);
+    auto z = m.float_var(0.1, 10);
+    auto three = m.constant(3.0);
+    // `xy` shared along three paths, x reaching f along four, and a Sum naming
+    // x twice and y three times (`kRepeatedChild`, slope 2 and 3).
+    auto xy = m.prod(x, y);
+    auto e = m.exp_expr(m.div_expr(xy, z));
+    auto l = m.log_expr(m.sum({z, m.prod(x, x)}));
+    auto p = m.pow_expr(m.sum({x, y, xy}), three);
+    auto rep = m.sum({x, x, y, m.sin_expr(xy), y, y});
+    auto f = m.sum({m.sin_expr(xy), e, l, p, rep, m.tanh_expr(m.neg(y)), m.sqrt_expr(z)});
+    auto g = m.leq(m.sum({f, m.prod(xy, e)}), m.constant(1.0));
+    m.add_constraint(g);
+    pad_with_unrelated_chain(m, 400);
+    m.minimize(f);
+    m.close();
+
+    UpConePartials up;
+    for (const auto& pt :
+         std::vector<std::vector<double>>{{0.3, -0.7, 1.1}, {1.2, 0.4, 2.5}, {-0.9, 1.3, 0.6}}) {
+        m.var_mut(vid(x)).value = pt[0];
+        m.var_mut(vid(y)).value = pt[1];
+        m.var_mut(vid(z)).value = pt[2];
+        full_evaluate(m);
+        for (const int32_t v : {vid(x), vid(y), vid(z)}) {
+            REQUIRE(up.build(m, v, m.num_nodes()));
+            for (int32_t node = 0; node < static_cast<int32_t>(m.num_nodes()); ++node) {
+                const double rev = compute_partial(m, node, v);
+                // Same chain rule, other summation order: equal to rounding.
+                REQUIRE_THAT(up.of(node), WithinAbs(rev, 1e-12 * std::max(1.0, std::abs(rev))));
+            }
+        }
+    }
+    m.var_mut(vid(x)).value = 0.5;
+    m.var_mut(vid(y)).value = 0.25;
+    full_evaluate(m);
+    REQUIRE(up.build(m, vid(x), m.num_nodes()));
+    REQUIRE(up.of(rep) == 2.0 + (std::cos(0.125) * 0.25));
+    REQUIRE(up.build(m, vid(y), m.num_nodes()));
+    REQUIRE(up.of(rep) == 3.0 + (std::cos(0.125) * 0.5));
+}
+
+TEST_CASE("forward up-cone partials give up past their node budget and on an unclosed model",
+          "[dag]") {
+    Model m;
+    const int32_t x = m.float_var(-1.0, 1.0);
+    const int32_t y = m.float_var(-1.0, 1.0);
+    const int32_t inner = m.prod(x, y);
+    const int32_t row = m.leq(m.sum({inner, m.sin_expr(x)}), m.constant(1.0));
+    m.add_constraint(row);
+
+    UpConePartials up;
+    REQUIRE_FALSE(up.build(m, vid(x), 1000));  // not closed: no parents to walk
+    REQUIRE(up.of(row) == 0.0);
+
+    m.close();
+    m.var_mut(vid(x)).value = 0.5;
+    m.var_mut(vid(y)).value = 0.5;
+    full_evaluate(m);
+    // x's up-cone is prod, sin, the Sum and the row: four nodes.
+    REQUIRE(up.build(m, vid(x), 4));
+    REQUIRE_THAT(up.of(row), WithinAbs(compute_partial(m, row, vid(x)), 1e-15));
+    REQUIRE(up.of(row) != 0.0);
+    REQUIRE_FALSE(up.build(m, vid(x), 3));
+    // A failed build reads 0 everywhere, not the half-built cone's stamps.
+    REQUIRE(up.of(row) == 0.0);
+    REQUIRE(up.of(inner) == 0.0);
+}
+
 TEST_CASE("an AD call from inside a CustomInvariant partial is refused", "[dag]") {
     // The sweep that calls `partial` owns the thread's AD scratch; a nested sweep
     // would push onto the cone the outer one is iterating. It must throw, and the

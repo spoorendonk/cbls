@@ -367,7 +367,7 @@ bool int_jump_candidates(const Variable& var, double x0, Consider&& consider) {
 }
 
 // Float jump candidates: cheap convex-ish descent — a Newton step toward the
-// root of each violated constraint containing v (reverse-mode AD), plus
+// root of each violated constraint containing v (forward-mode AD, #249), plus
 // midpoint/endpoints. The GLS loop iterates these to converge; the
 // InnerSolverHook does the heavy continuous objective polish. This replaces a
 // per-jump golden-section (~60 evals) with a handful — critical for throughput
@@ -387,8 +387,48 @@ bool int_jump_candidates(const Variable& var, double x0, Consider&& consider) {
 //
 // `linear`, when given, supplies a violated row's partial from its cached slope
 // where that is bit-identical to compute_partial (LinearJumpScorer::
-// residual_partial_at), so the Newton candidates are exactly the ones the AD sweep
+// residual_partial_at), so those Newton candidates are exactly the ones a reverse sweep
 // would produce, without the sweep.
+// d(row)/dv for the violated rows `linear` cannot serve, from one forward pass
+// over v's up-cone, built on the first row that needs one and read for every
+// later one (#249). A reverse sweep per row costs that row's whole cone: on a
+// separable objective `obj <= bound` that is the model, read for ONE partial
+// (ucp200-168p: ~30 ms a sweep, 42% of a 60 s run). The forward pass gives up
+// past the reverse sweep's own sorted-cone threshold, n / (log2 n + 1), above
+// which a sweep walks all n nodes anyway; then each row takes the sweep. So a
+// call costs at most the sweeps it did before plus that bound, and where v's
+// up-cone is small (a generator's cost term) a handful of nodes instead of the
+// objective's cone. It loses only where v's up-cone nears the bound while its
+// violated rows are small: a variable in very many nonlinear rows.
+class NewtonPartials {
+public:
+    NewtonPartials(const Model& model, int32_t var_id) : model_(model), var_id_(var_id) {}
+
+    double of(int32_t row) {
+        if (state_ == State::kUnbuilt) {
+            const size_t n = model_.num_nodes();
+            size_t log2_n = 0;
+            while ((size_t{1} << (log2_n + 1)) <= n) {
+                ++log2_n;
+            }
+            state_ = up_cone().build(model_, var_id_, n / (log2_n + 1)) ? State::kBuilt
+                                                                        : State::kTooLarge;
+        }
+        return state_ == State::kBuilt ? up_cone().of(row) : compute_partial(model_, row, var_id_);
+    }
+
+private:
+    static UpConePartials& up_cone() {
+        thread_local UpConePartials up;
+        return up;
+    }
+
+    enum class State : uint8_t { kUnbuilt, kBuilt, kTooLarge };
+    const Model& model_;
+    int32_t var_id_;
+    State state_ = State::kUnbuilt;
+};
+
 template <class Consider>
 bool float_jump_candidates(Model& model, int32_t var_id, const Variable& var, double x0,
                            LinearJumpScorer* linear, double tol, Consider&& consider) {
@@ -399,6 +439,7 @@ bool float_jump_candidates(Model& model, int32_t var_id, const Variable& var, do
     int budget = 4;
     bool any_newton = false;
     bool saw_violated = false;
+    NewtonPartials partials(model, var_id);
     const ConstSpan<int32_t> gv = model.constraints_of_var(var_id);
     for (size_t k = 0; k < gv.size(); ++k) {
         if (budget <= 0) {
@@ -412,7 +453,7 @@ bool float_jump_candidates(Model& model, int32_t var_id, const Variable& var, do
         saw_violated = true;
         double grad = 0.0;
         if (linear == nullptr || !linear->residual_partial_at(var_id, k, grad)) {
-            grad = compute_partial(model, cids[c], var_id);
+            grad = partials.of(cids[c]);
         }
         // A NaN residual (a domain error, #205) gives a NaN step, and an
         // infinite one on an unbounded column an infinite candidate: neither

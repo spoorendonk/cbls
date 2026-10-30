@@ -2,6 +2,7 @@
 
 #include "dag.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <set>
 #include <utility>
@@ -166,6 +167,48 @@ inline double delta_evaluate(Model& model, std::initializer_list<int32_t> change
 
 /// ∂expr/∂var for one variable; 0.0 for a `var_id` outside the model.
 double compute_partial(const Model& model, int32_t expr_id, int32_t var_id);
+
+/// d(node)/d(var) for every node above one variable, forward mode (#249).
+///
+/// `build` collects the variable's up-cone (every node a change of it reaches
+/// through `Model::parents`), sorts it by topological position and carries the
+/// slope forward along each parent edge, the factor being `local_derivative`
+/// (a Sum's: its multiplicity of the operand, from `kRepeatedChild`). The same
+/// chain rule as `compute_partial`, so `of(row)` equals it up to summation order,
+/// except where a path overflows: two infinite slopes that cancel read NaN here,
+/// where the reverse sweep's zero-adjoint skip reads 0. A Newton step takes
+/// neither (both fail its `|grad| > 1e-12` and finiteness tests).
+///
+/// COST: O(u log u) for an up-cone of u nodes, plus their parent edges, and it
+/// gives the partial of EVERY node above the variable at once. `compute_partial`
+/// costs the row's whole cone per row instead. That wins when a row's cone is
+/// large and the variable's up-cone small: a separable objective `obj <= bound`
+/// over many variables (UC-CHPED ucp200-168p: ~30 ms per reverse sweep over a
+/// 1.38M-node cone, 42% of a 60 s run). It loses when the up-cone is large and
+/// the row small (a variable in many nonlinear rows). `build` therefore takes a
+/// node budget and gives up past it, leaving the caller to take the reverse sweep.
+///
+/// Requires a closed model; `build` returns false on one that is not. Not
+/// thread-safe: one instance per thread, reused across calls (entries are
+/// epoch-stamped, so a call never clears the arrays).
+class UpConePartials {
+public:
+    /// Collects and sweeps `var_id`'s up-cone. False, leaving every `of` at 0,
+    /// when the model is not closed or the cone outgrows `max_nodes`.
+    bool build(const Model& model, int32_t var_id, size_t max_nodes);
+
+    /// d(node)/dv at the point `build` saw; 0 for a node the variable cannot reach.
+    [[nodiscard]] double of(int32_t node_id) const {
+        const auto i = static_cast<size_t>(node_id);
+        return i < stamp_.size() && stamp_[i] == epoch_ ? slope_[i] : 0.0;
+    }
+
+private:
+    std::vector<uint32_t> stamp_;
+    std::vector<double> slope_;
+    std::vector<int32_t> cone_;
+    uint32_t epoch_ = 0;
+};
 
 /// Batch AD: partials of `expr_id` w.r.t. ALL variables in one reverse pass.
 /// Returns a vector of size `num_vars()`; entry[i] = ∂expr/∂var_i. The O(num_vars)

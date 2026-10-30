@@ -1149,21 +1149,18 @@ void Model::rebuild_topo_positions() {
     classify_breakpoint_reach();
 }
 
-// `ModelStructure::breakpoint_flags` (#186). One reverse-topological pass: a node
-// reaches a breakpoint op if it is one, or if it carries a slope and a parent
-// reaches one. Then, on the reaching Sums only, a last-writer stamp finds a child
-// named twice. O(nodes + parent edges + the children of reaching Sums), and
-// nothing at all -- the vector stays empty -- on a model without a breakpoint
-// node.
+// `ModelStructure::breakpoint_flags` (#186). One reverse-topological pass, on a
+// model with a breakpoint node only: a node reaches a breakpoint op if it is one,
+// or if it carries a slope and a parent reaches one. Then, on every Sum, a
+// last-writer stamp finds a child named twice: FJ's forward partials read that
+// on any model (#249), not only the breakpoint walk. O(nodes + parent edges +
+// the children of Sums).
 void Model::classify_breakpoint_reach() {
     ModelStructure& st = mut();
-    if (!st.has_breakpoint_nodes) {
-        st.breakpoint_flags.clear();
-        return;
-    }
     std::vector<uint8_t>& flags = st.breakpoint_flags;
     flags.assign(st.nodes.size(), 0);
-    for (auto it = st.topo_order.rbegin(); it != st.topo_order.rend(); ++it) {
+    for (auto it = st.topo_order.rbegin(); st.has_breakpoint_nodes && it != st.topo_order.rend();
+         ++it) {
         const int32_t nid = *it;
         const NodeOp op = st.nodes[static_cast<size_t>(nid)].op;
         bool reaches = is_breakpoint_op(op);
@@ -1181,7 +1178,7 @@ void Model::classify_breakpoint_reach() {
     std::vector<int32_t> node_stamp(st.nodes.size(), -1);
     for (size_t nid = 0; nid < st.nodes.size(); ++nid) {
         const ExprNode& nd = st.nodes[nid];
-        if (nd.op != NodeOp::Sum || flags[nid] == 0) {
+        if (nd.op != NodeOp::Sum) {
             continue;
         }
         for (const ChildRef& c : children(nd)) {
