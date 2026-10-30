@@ -366,29 +366,6 @@ bool int_jump_candidates(const Variable& var, double x0, Consider&& consider) {
     return false;
 }
 
-// Float jump candidates: cheap convex-ish descent — a Newton step toward the
-// root of each violated constraint containing v (forward-mode AD, #249), plus
-// midpoint/endpoints. The GLS loop iterates these to converge; the
-// InnerSolverHook does the heavy continuous objective polish. This replaces a
-// per-jump golden-section (~60 evals) with a handful — critical for throughput
-// on continuous-heavy models. Newton candidates come FIRST so that, on a tie in
-// violation delta (a feasible plateau), the gradient-informed point wins rather
-// than an arbitrary endpoint (`consider` keeps the first-seen minimum). The
-// objective enters here too: when `obj <= bound` is violated, chasing its root
-// pulls the objective down.
-// Returns whether the gradient carried usable direction here. False means this
-// variable takes part in at least one violated constraint yet none of them
-// yielded a Newton candidate — every gradient was ~0 (or non-finite, which
-// fails the same test), i.e. it sits at a
-// *stationary* point — so the three remaining candidates are box constants
-// unrelated to local geometry and the variable may have no move at all.
-//
-// A variable in no violated constraint reports true: nothing to escape.
-//
-// `linear`, when given, supplies a violated row's partial from its cached slope
-// where that is bit-identical to compute_partial (LinearJumpScorer::
-// residual_partial_at), so those Newton candidates are exactly the ones a reverse sweep
-// would produce, without the sweep.
 // d(row)/dv for the violated rows `linear` cannot serve, from one forward pass
 // over v's up-cone, built on the first row that needs one and read for every
 // later one (#249). A reverse sweep per row costs that row's whole cone: on a
@@ -399,7 +376,9 @@ bool int_jump_candidates(const Variable& var, double x0, Consider&& consider) {
 // call costs at most the sweeps it did before plus that bound, and where v's
 // up-cone is small (a generator's cost term) a handful of nodes instead of the
 // objective's cone. It loses only where v's up-cone nears the bound while its
-// violated rows are small: a variable in very many nonlinear rows.
+// violated rows are small: a variable in very many nonlinear rows, or in many
+// terms of one big row (a dense least-squares objective) while only a small row
+// is violated. The budget bounds that loss at one sweep's worth of nodes a call.
 class NewtonPartials {
 public:
     NewtonPartials(const Model& model, int32_t var_id) : model_(model), var_id_(var_id) {}
@@ -429,6 +408,29 @@ private:
     State state_ = State::kUnbuilt;
 };
 
+// Float jump candidates: cheap convex-ish descent — a Newton step toward the
+// root of each violated constraint containing v (forward-mode AD, #249), plus
+// midpoint/endpoints. The GLS loop iterates these to converge; the
+// InnerSolverHook does the heavy continuous objective polish. This replaces a
+// per-jump golden-section (~60 evals) with a handful — critical for throughput
+// on continuous-heavy models. Newton candidates come FIRST so that, on a tie in
+// violation delta (a feasible plateau), the gradient-informed point wins rather
+// than an arbitrary endpoint (`consider` keeps the first-seen minimum). The
+// objective enters here too: when `obj <= bound` is violated, chasing its root
+// pulls the objective down.
+// Returns whether the gradient carried usable direction here. False means this
+// variable takes part in at least one violated constraint yet none of them
+// yielded a Newton candidate — every gradient was ~0 (or non-finite, which
+// fails the same test), i.e. it sits at a
+// *stationary* point — so the three remaining candidates are box constants
+// unrelated to local geometry and the variable may have no move at all.
+//
+// A variable in no violated constraint reports true: nothing to escape.
+//
+// `linear`, when given, supplies a violated row's partial from its cached slope
+// where that is bit-identical to compute_partial (LinearJumpScorer::
+// residual_partial_at), so those Newton candidates are exactly the ones a reverse sweep
+// would produce, without the sweep.
 template <class Consider>
 bool float_jump_candidates(Model& model, int32_t var_id, const Variable& var, double x0,
                            LinearJumpScorer* linear, double tol, Consider&& consider) {

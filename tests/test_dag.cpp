@@ -994,6 +994,24 @@ TEST_CASE("forward up-cone partials give up past their node budget and on an unc
     REQUIRE(up.of(inner) == 0.0);
 }
 
+TEST_CASE("an overflowing operand a Min does not select leaves the forward partial finite",
+          "[dag]") {
+    Model m;
+    const int32_t x = m.float_var(-20.0, 20.0);
+    const int32_t big = m.exp_expr(m.exp_expr(x));  // exp(exp(10)) overflows to inf
+    const int32_t row = m.leq(m.sum({x, m.min_expr({m.constant(1.0), big})}), m.constant(5.0));
+    m.add_constraint(row);
+    m.close();
+    m.var_mut(vid(x)).value = 10.0;
+    full_evaluate(m);
+
+    UpConePartials up;
+    REQUIRE(up.build(m, vid(x), 1000));
+    // The Min's edge to `big` is 0; an inf slope times it must not read NaN.
+    REQUIRE(compute_partial(m, row, vid(x)) == 1.0);
+    REQUIRE(up.of(row) == 1.0);
+}
+
 TEST_CASE("an AD call from inside a CustomInvariant partial is refused", "[dag]") {
     // The sweep that calls `partial` owns the thread's AD scratch; a nested sweep
     // would push onto the cone the outer one is iterating. It must throw, and the

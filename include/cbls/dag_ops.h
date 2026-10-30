@@ -175,9 +175,11 @@ double compute_partial(const Model& model, int32_t expr_id, int32_t var_id);
 /// slope forward along each parent edge, the factor being `local_derivative`
 /// (a Sum's: its multiplicity of the operand, from `kRepeatedChild`). The same
 /// chain rule as `compute_partial`, so `of(row)` equals it up to summation order,
-/// except where a path overflows: two infinite slopes that cancel read NaN here,
-/// where the reverse sweep's zero-adjoint skip reads 0. A Newton step takes
-/// neither (both fail its `|grad| > 1e-12` and finiteness tests).
+/// except where two infinite path slopes meet: they read NaN (or inf) here,
+/// where the reverse sweep may read 0 or a finite sum through its zero-adjoint
+/// skip. A path through a zero edge factor is skipped as the sweep skips it, so
+/// an overflowing branch that is not taken (an If, a Min's unselected operand)
+/// does not poison the row's other, finite paths.
 ///
 /// COST: O(u log u) for an up-cone of u nodes, plus their parent edges, and it
 /// gives the partial of EVERY node above the variable at once. `compute_partial`

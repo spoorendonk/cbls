@@ -1143,7 +1143,13 @@ bool UpConePartials::build(const Model& model, int32_t var_id, size_t max_nodes)
         }
         const ChildRef ref{nid, false};
         for (const int32_t parent : model.parents(nid)) {
-            slope_[static_cast<size_t>(parent)] += up_edge_derivative(model, parent, ref) * s;
+            // A zero edge (an untaken If branch, a Min's unselected operand) is
+            // skipped, not multiplied: an infinite or NaN `s` times 0 would read
+            // NaN where the reverse sweep's zero-adjoint skip reads 0.
+            const double d = up_edge_derivative(model, parent, ref);
+            if (d != 0.0) {
+                slope_[static_cast<size_t>(parent)] += d * s;
+            }
         }
     }
     return true;
