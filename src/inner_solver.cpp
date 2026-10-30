@@ -90,7 +90,13 @@ public:
             }
             const ChildRef ref{nid, false};
             for (const int32_t parent : model.parents(nid)) {
-                slope_[static_cast<size_t>(parent)] += edge_derivative(model, parent, ref) * s;
+                // A zero edge (an untaken If branch, a Min's unselected operand) is
+                // skipped, not multiplied: an infinite `s` times 0 would read NaN
+                // where the edge carries nothing, as in `UpConePartials::build`.
+                const double d = edge_derivative(model, parent, ref);
+                if (d != 0.0) {
+                    slope_[static_cast<size_t>(parent)] += d * s;
+                }
             }
         }
     }

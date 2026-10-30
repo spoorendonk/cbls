@@ -115,6 +115,29 @@ TEST_CASE("FloatIntensifyHook steps toward a violated row outside the first thre
     REQUIRE(vm.is_feasible());
 }
 
+TEST_CASE("FloatIntensifyHook steps past an overflowing operand a Min does not select",
+          "[inner_solver]") {
+    // x + min(1, exp(exp(x))) >= 20 at x = 10: the slope of exp(exp(x)) is inf and
+    // the Min's edge to it is 0. Multiplied, not skipped, that read NaN, the row's
+    // slope with it, and the Newton step to x = 19 was never offered.
+    Model m;
+    const int32_t x = m.float_var(0, 20, "x");
+    const int32_t big = m.exp_expr(m.exp_expr(x));  // exp(exp(10)) overflows to inf
+    m.add_constraint(m.geq(m.sum({x, m.min_expr({m.constant(1.0), big})}), m.constant(20.0)));
+    m.close();
+    m.var_mut(vid(x)).value = 10.0;
+    full_evaluate(m);
+    ViolationManager vm(m);
+    REQUIRE_FALSE(vm.is_feasible());
+
+    FloatIntensifyHook hook;
+    hook.max_sweeps = 1;
+    hook.solve(m, vm);
+
+    REQUIRE_THAT(m.var(vid(x)).value, Catch::Matchers::WithinAbs(19.0, 1e-9));
+    REQUIRE(vm.is_feasible());
+}
+
 TEST_CASE("Backtracking line search finds better step than fixed", "[inner_solver]") {
     // min (x - 3)^2, starting at x = 0
     Model m;
