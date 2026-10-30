@@ -379,6 +379,10 @@ bool int_jump_candidates(const Variable& var, double x0, Consider&& consider) {
 // violated rows are small: a variable in very many nonlinear rows, or in many
 // terms of one big row (a dense least-squares objective) while only a small row
 // is violated. The budget bounds that loss at one sweep's worth of nodes a call.
+// It counts nodes, not their cost: the pass differentiates satisfied rows too,
+// so a variable under many expensive edges (Python CustomInvariant partials,
+// each taking the GIL) pays for all of them where a sweep paid for the violated
+// rows' only. Unmeasured; no benchmark has that shape.
 class NewtonPartials {
 public:
     NewtonPartials(const Model& model, int32_t var_id) : model_(model), var_id_(var_id) {}

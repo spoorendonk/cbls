@@ -1012,6 +1012,49 @@ TEST_CASE("an overflowing operand a Min does not select leaves the forward parti
     REQUIRE(up.of(row) == 1.0);
 }
 
+TEST_CASE("a forward up-cone build re-entered from a CustomInvariant partial is refused", "[dag]") {
+    // The outer build is iterating `cone_` when it asks the Custom for its
+    // partial; a nested build on the same instance would clear and refill it.
+    class NestedBuild : public CustomInvariant {
+    public:
+        NestedBuild(UpConePartials* up, const Model* inner) : up_(up), inner_(inner) {}
+        double evaluate(const InvariantInputs& in) override { return in.value(0); }
+        double partial(const InvariantInputs& /*in*/, int32_t /*i*/) override {
+            return up_->build(*inner_, 0, 1000) ? 1.0 : 0.0;
+        }
+        [[nodiscard]] std::unique_ptr<CustomInvariant> clone() const override {
+            return std::make_unique<NestedBuild>(*this);
+        }
+
+    private:
+        UpConePartials* up_;
+        const Model* inner_;
+    };
+
+    Model inner;
+    const int32_t ix = inner.float_var(-1.0, 1.0);
+    const int32_t iexpr = inner.sin_expr(ix);
+    inner.minimize(iexpr);
+    inner.close();
+    full_evaluate(inner);
+
+    UpConePartials up;
+    Model outer;
+    const int32_t a = outer.float_var(-1.0, 1.0);
+    const int32_t c = outer.custom({a}, std::make_unique<NestedBuild>(&up, &inner), "nested");
+    const int32_t row = outer.leq(outer.sum({c, outer.sin_expr(a)}), outer.constant(1.0));
+    outer.add_constraint(row);
+    outer.close();
+    full_evaluate(outer);
+
+    REQUIRE_THROWS_WITH(up.build(outer, vid(a), 1000),
+                        ContainsSubstring("re-entered from inside a forward up-cone pass"));
+    REQUIRE(up.of(row) == 0.0);  // the refused build left nothing half-built
+    // The instance is usable again outside the pass.
+    REQUIRE(up.build(inner, 0, 1000));
+    REQUIRE(up.of(iexpr) == std::cos(inner.var(0).value));
+}
+
 TEST_CASE("an AD call from inside a CustomInvariant partial is refused", "[dag]") {
     // The sweep that calls `partial` owns the thread's AD scratch; a nested sweep
     // would push onto the cone the outer one is iterating. It must throw, and the

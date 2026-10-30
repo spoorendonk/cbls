@@ -175,11 +175,12 @@ double compute_partial(const Model& model, int32_t expr_id, int32_t var_id);
 /// slope forward along each parent edge, the factor being `local_derivative`
 /// (a Sum's: its multiplicity of the operand, from `kRepeatedChild`). The same
 /// chain rule as `compute_partial`, so `of(row)` equals it up to summation order,
-/// except where two infinite path slopes meet: they read NaN (or inf) here,
-/// where the reverse sweep may read 0 or a finite sum through its zero-adjoint
-/// skip. A path through a zero edge factor is skipped as the sweep skips it, so
-/// an overflowing branch that is not taken (an If, a Min's unselected operand)
-/// does not poison the row's other, finite paths.
+/// except on non-finite paths. A zero edge factor is skipped here, so an
+/// overflow BELOW it (an untaken If branch, a Min's unselected operand) reads 0
+/// in both modes and leaves the row's finite paths alone. An overflow ABOVE it
+/// differs: the reverse sweep multiplies an infinite adjoint by the 0 and reads
+/// NaN, this pass reads the finite sum. Two infinite slopes that meet read NaN
+/// or inf here, where the sweep may skip them through a zero adjoint.
 ///
 /// COST: O(u log u) for an up-cone of u nodes, plus their parent edges, and it
 /// gives the partial of EVERY node above the variable at once. `compute_partial`
@@ -196,7 +197,9 @@ double compute_partial(const Model& model, int32_t expr_id, int32_t var_id);
 class UpConePartials {
 public:
     /// Collects and sweeps `var_id`'s up-cone. False, leaving every `of` at 0,
-    /// when the model is not closed or the cone outgrows `max_nodes`.
+    /// when the model is not closed or the cone outgrows `max_nodes`. A build
+    /// re-entered on the same instance (from a CustomInvariant's partial) throws
+    /// `std::logic_error`; a build that throws leaves every `of` at 0.
     bool build(const Model& model, int32_t var_id, size_t max_nodes);
 
     /// d(node)/dv at the point `build` saw; 0 for a node the variable cannot reach.
@@ -206,10 +209,14 @@ public:
     }
 
 private:
+    bool sweep(const Model& model, int32_t var_id, size_t max_nodes);
+    void next_epoch();
+
     std::vector<uint32_t> stamp_;
     std::vector<double> slope_;
     std::vector<int32_t> cone_;
     uint32_t epoch_ = 0;
+    bool busy_ = false;
 };
 
 /// Batch AD: partials of `expr_id` w.r.t. ALL variables in one reverse pass.

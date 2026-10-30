@@ -1086,17 +1086,39 @@ double up_edge_derivative(const Model& model, int32_t parent, const ChildRef& ch
 }  // namespace
 
 bool UpConePartials::build(const Model& model, int32_t var_id, size_t max_nodes) {
+    // A CustomInvariant's partial runs inside the sweep; a nested build on this
+    // instance would clear and refill the cone the outer one is iterating.
+    if (busy_) {
+        throw std::logic_error(
+            "UpConePartials::build: re-entered from inside a forward up-cone pass. A "
+            "CustomInvariant's partial must not run feasibility jump on its own thread.");
+    }
+    busy_ = true;
+    bool built = false;
+    try {
+        built = sweep(model, var_id, max_nodes);
+    } catch (...) {
+        next_epoch();  // the half-built cone must read 0, as a failed build does
+        busy_ = false;
+        throw;
+    }
+    busy_ = false;
+    return built;
+}
+
+void UpConePartials::next_epoch() {
+    if (++epoch_ == 0) {
+        std::fill(stamp_.begin(), stamp_.end(), 0);
+        epoch_ = 1;
+    }
+}
+
+bool UpConePartials::sweep(const Model& model, int32_t var_id, size_t max_nodes) {
     const size_t num_nodes = model.num_nodes();
     if (stamp_.size() < num_nodes) {
         stamp_.resize(num_nodes, 0);
         slope_.resize(num_nodes, 0.0);
     }
-    auto next_epoch = [this] {
-        if (++epoch_ == 0) {
-            std::fill(stamp_.begin(), stamp_.end(), 0);
-            epoch_ = 1;
-        }
-    };
     next_epoch();
     cone_.clear();
     if (model.topo_order().size() != num_nodes || model.breakpoint_flags().size() != num_nodes) {
