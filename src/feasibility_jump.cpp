@@ -457,6 +457,11 @@ bool float_jump_candidates(Model& model, int32_t var_id, const Variable& var, do
             continue;  // satisfied: no root to chase
         }
         saw_violated = true;
+        if (model.is_domain_node(cids[c])) {
+            // Aim at the floor, not floor + margin: the step is no part of the
+            // argument's distance to its root (#258).
+            residual -= model.domain_margin();
+        }
         double grad = 0.0;
         if (linear == nullptr || !linear->residual_partial_at(var_id, k, grad)) {
             grad = partials.of(cids[c]);
@@ -1262,6 +1267,10 @@ double LazyWeightDecay::fold(std::vector<double>& w, double factor) {
 
 FeasibilityJump::FeasibilityJump(Model& model, ViolationManager& vm, RNG& rng, GFJConfig config)
     : model_(model), vm_(vm), rng_(rng), config_(config), jumps_(model.num_vars()), linear_(model) {
+    // A domain row's step follows this run's tolerance, which a direct caller
+    // (fj_nl_initialize, a test) may set apart from solve()'s (#258).
+    model_.set_domain_tolerance(config_.tolerance);
+    vm_.invalidate_cache();
     const size_t nc = model_.constraint_ids().size();
     violated_.assign(nc, 0);
     violated_pos_.assign(nc, -1);
@@ -1497,7 +1506,11 @@ void FeasibilityJump::audit_nodes(const Model& fresh, std::vector<std::string>& 
     for (size_t c = 0; c < cids.size(); ++c) {
         const int32_t slot = row_slot_[c];
         if (slot >= 0 && slots[static_cast<size_t>(slot)].drifting != 0) {
-            slack[static_cast<size_t>(cids[c])] = slots[static_cast<size_t>(slot)].drift_bound;
+            // A domain row (#258) whose drift moves its residual across 0 gains
+            // or loses its step, so it may be off by the step on top.
+            slack[static_cast<size_t>(cids[c])] =
+                slots[static_cast<size_t>(slot)].drift_bound +
+                (model_.is_domain_node(cids[c]) ? model_.domain_margin() : 0.0);
         }
     }
     for (size_t i = 0; i < cached.size(); ++i) {
@@ -2100,9 +2113,25 @@ bool FeasibilityJump::verdict_undecided(int32_t c, double residual) const {
     // the margin is nudged up the way the drift bound is (see
     // `round_bound_up` in src/dag_ops.cpp), to at least M (1 + u) -- then a
     // computed "decided" is decided exactly.
+    if (model_.is_domain_node(model_.constraint_ids()[static_cast<size_t>(c)])) {
+        return domain_verdict_undecided(residual, st.drift_bound);
+    }
     const double m = st.drift_bound + (std::fabs(residual) * 0x1p-51);
     const double margin = m + (m * 0x1p-51);
     return std::fabs(residual - config_.tolerance) <= margin;
+}
+
+// A domain row (#258) is violated iff its pre-step residual r is > 0, whatever
+// the tolerance: a violated one reads r + domain_margin(). So drift decides its
+// verdict when it can move r across 0, not the read value across tol. r is
+// recovered by taking the step off a positive read value; that subtraction and
+// the step's own add are two more roundings, each within half an ulp of the
+// read value (which is >= the step), so the relative term is doubled.
+bool FeasibilityJump::domain_verdict_undecided(double residual, double drift_bound) const {
+    const double r = residual > 0.0 ? residual - model_.domain_margin() : residual;
+    const double m = drift_bound + (std::fabs(residual) * 0x1p-50);
+    const double margin = m + (m * 0x1p-51);
+    return std::fabs(r) <= margin;
 }
 
 void FeasibilityJump::note_row_certainty(int32_t c, double residual) {

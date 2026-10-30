@@ -533,6 +533,51 @@ TEST_CASE("a domain row's step at its floor scores as the DAG reads it (#258)",
     }
 }
 
+TEST_CASE("a domain row's sign at its floor is the DAG's, not a rounding off it (#258)",
+          "[fj][linear_jump]") {
+    // `floor + slope * (j - x0) - x0` rounds twice and `floor - j` once; for a
+    // j a few ulps off the floor the two can disagree in sign, and then the
+    // scores differ by the whole margin.
+    constexpr double kInf = std::numeric_limits<double>::infinity();
+    Model m;
+    const int32_t x = m.float_var(-kInf, kInf, "x");
+    m.add_constraint(m.leq(m.log_expr(x), m.constant(3.0)));
+    m.close();
+    // The log row (not affine, so unweighted), then the domain row.
+    const std::vector<double> w = {0.0, 1.0};
+    m.var_mut(vid(x)).value = 0.7;
+    full_evaluate(m);
+    LinearJumpScorer sc(m);
+    mark_all_rows(m, sc);
+    REQUIRE(sc.prepare(vid(x), w));
+    double j = kLogDomainFloor;
+    for (int k = 0; k < 4; ++k) {
+        j = std::nextafter(j, -kInf);
+    }
+    for (int k = 0; k < 9; ++k, j = std::nextafter(j, kInf)) {
+        CAPTURE(j);
+        REQUIRE(sc.delta(j) == m.weighted_violation_delta(vid(x), j, w));
+    }
+}
+
+TEST_CASE("the linear scorer leaves a domain row over a computed argument to the probe (#258)",
+          "[fj][linear_jump]") {
+    // `x + y >= 0` under a sqrt: its residual cannot be computed in delta() as
+    // the DAG does, so its step would read off by a rounding near the floor.
+    constexpr double kInf = std::numeric_limits<double>::infinity();
+    Model m;
+    const int32_t x = m.float_var(-kInf, kInf, "x");
+    const int32_t y = m.float_var(-kInf, kInf, "y");
+    m.add_constraint(m.leq(m.sqrt_expr(m.sum({x, y})), m.constant(3.0)));
+    m.close();
+    m.var_mut(vid(x)).value = 0.5;  // a free variable starts at its -inf bound
+    m.var_mut(vid(y)).value = 0.5;
+    full_evaluate(m);
+    LinearJumpScorer sc(m);
+    mark_all_rows(m, sc);
+    REQUIRE_FALSE(sc.prepare(vid(x), {0.0, 1.0}));
+}
+
 TEST_CASE("the linear scorer declines rows it cannot model", "[fj][linear_jump]") {
     Model m;
     const int32_t x = m.float_var(-2.0, 2.0);

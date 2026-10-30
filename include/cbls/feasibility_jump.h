@@ -610,7 +610,9 @@ private:
     // is drifting (IncSumState::drifting): then its real residual
     // lies within drift_bound (plus the rounding of the comparison itself) of
     // `residual`, and the question is whether that interval straddles GFJConfig::tolerance.
+    // A domain row's (#258) straddles 0, before its step: domain_verdict_undecided.
     [[nodiscard]] bool verdict_undecided(int32_t c, double residual) const;
+    [[nodiscard]] bool domain_verdict_undecided(double residual, double drift_bound) const;
     // Put row c on uncertain_rows_ if its verdict is undecided now. Called
     // wherever a row's value or its Sum's drift changes inside a batch --
     // update_var's rows -- so the list holds every undecided row.

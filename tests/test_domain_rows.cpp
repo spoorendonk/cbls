@@ -10,6 +10,7 @@
 
 #include "test_helpers.h"
 
+#include <algorithm>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
 #include <cbls/cbls.h>
@@ -122,10 +123,13 @@ TEST_CASE("the solve's feasibility tolerance decides a domain row, not the defau
         m.var_mut(vid(x)).value = 1.0;
         (void)solve(m, /*time_limit=*/0.0, /*seed=*/1, /*use_fj=*/true, nullptr, nullptr, 3,
                     nullptr, cfg);
+        const int32_t row = m.constraint_ids()[1];
         for (const double v : {0.0, -tol / 2.0, -tol}) {
             CAPTURE(v);
             m.var_mut(vid(x)).value = v;
             full_evaluate(m);
+            // The domain row itself, not just the log row's NaN below 0.
+            REQUIRE(m.node_value(row) > tol);
             REQUIRE_FALSE(ViolationManager(m).is_feasible(tol));
             REQUIRE_FALSE(verify_model(m, tol).ok);
         }
@@ -148,6 +152,75 @@ TEST_CASE("verify_model holds a domain row to 0 whatever its tolerance", "[domai
     m.var_mut(vid(x)).value = 0.0;
     full_evaluate(m);
     REQUIRE(verify_model(m, 1e-3).ok);
+}
+
+TEST_CASE("the violation manager holds a domain row to 0 whatever its tolerance", "[domain-rows]") {
+    // #258 review: is_feasible(tol) and violated_constraints(tol) compared a
+    // domain row to tol, which a margin set tighter than tol undercuts.
+    Model m;
+    const int32_t x = m.float_var(-kInf, kInf, "x");
+    m.minimize(m.sqrt_expr(x));
+    m.close();
+    m.set_domain_tolerance(1e-9);
+    m.var_mut(vid(x)).value = -5e-7;
+    full_evaluate(m);
+    const ViolationManager vm(m);
+    // The domain row by index, apart from the objective row's NaN.
+    const std::vector<int> violated = vm.violated_constraints();
+    REQUIRE(std::find(violated.begin(), violated.end(), 0) != violated.end());
+    REQUIRE_FALSE(vm.is_feasible());
+}
+
+TEST_CASE("a direct FJ run sets the domain margin from its own tolerance", "[domain-rows]") {
+    // #258 review: only solve() set the margin, so fj_nl_initialize at 1e-4
+    // read a log at x = 0 (margin 1e-6) as feasible and stopped there.
+    Model m;
+    const int32_t x = m.float_var(-kInf, kInf, "x");
+    m.add_constraint(m.leq(m.log_expr(x), m.constant(1.0)));
+    m.close();
+    m.var_mut(vid(x)).value = 0.0;
+    full_evaluate(m);
+    ViolationManager vm(m);
+    RNG rng(1);
+    (void)fj_nl_initialize(m, vm, 1000, &rng, 2.0, /*tolerance=*/1e-4);
+    REQUIRE(m.var(vid(x)).value >= kLogDomainFloor);
+}
+
+TEST_CASE("the inner solver steps a domain row violated below the default tolerance",
+          "[domain-rows]") {
+    // #258 review: its Newton gate was g > 1e-6, so at a tighter tolerance a
+    // domain row missing by less than that got no candidate.
+    Model m;
+    const int32_t x = m.float_var(-kInf, kInf, "x");
+    m.add_constraint(m.leq(m.sqrt_expr(x), m.constant(1.0)));
+    m.close();
+    m.set_domain_tolerance(1e-9);
+    m.var_mut(vid(x)).value = -5e-7;
+    full_evaluate(m);
+    ViolationManager vm(m);
+    FloatIntensifyHook hook;
+    hook.solve(m, vm);
+    REQUIRE(m.var(vid(x)).value >= 0.0);
+}
+
+TEST_CASE("a Newton step out of a domain row lands at the floor, not past the margin",
+          "[domain-rows]") {
+    // #258 review: the step aimed at a residual of 0 on the stepped value, so
+    // at tol 1e-4 it landed at x = 1e-4 and sqrt read 1e-2.
+    SearchConfig cfg;
+    cfg.feasibility_tolerance = 1e-4;
+    cfg.skip_init = true;
+    cfg.max_iterations = 200;
+    cfg.perturbation_period = 1 << 30;
+    Model m;
+    const int32_t x = m.float_var(-kInf, kInf, "x");
+    m.minimize(m.sqrt_expr(x));
+    m.close();
+    m.var_mut(vid(x)).value = -1.0;
+    const SearchResult r = solve(m, /*time_limit=*/0.0, /*seed=*/1, /*use_fj=*/true, nullptr,
+                                 nullptr, 3, nullptr, cfg);
+    REQUIRE(r.feasible);
+    REQUIRE(r.objective == 0.0);
 }
 
 TEST_CASE("a sqrt's row reads every negative argument as violated past the tolerance",

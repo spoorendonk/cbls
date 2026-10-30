@@ -1555,7 +1555,11 @@ void Model::set_domain_tolerance(double tol) {
     if (!(tol >= 0.0) || !std::isfinite(tol)) {
         throw std::invalid_argument("set_domain_tolerance: tolerance must be finite and >= 0");
     }
-    domain_margin_ = std::nextafter(tol, std::numeric_limits<double>::infinity());
+    const double margin = std::nextafter(tol, std::numeric_limits<double>::infinity());
+    if (margin == domain_margin_) {
+        return;  // LNS builds an FJ per round at the solve's tolerance
+    }
+    domain_margin_ = margin;
     // The domain rows are roots that no other node reads, so re-evaluating them
     // in place is the whole update. Before close() they do not exist yet.
     const ModelStructure& st = s();

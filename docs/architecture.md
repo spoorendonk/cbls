@@ -318,10 +318,16 @@ negative such exponent has a pole at 0, so it gets the `Log` floor. Each RHS is
 the bare floor. A row within the tolerance counts as satisfied, so `x >= 1e-9`
 read plainly would hold at `x = 0`. A violated domain row therefore adds
 `Model::domain_margin()`, the smallest double above the solve's
-`feasibility_tolerance` (`solve()` sets it through `set_domain_tolerance`). An
-argument below its floor then reads infeasible at that tolerance, and one at
-the floor reads 0 (#258). `verify_model` holds domain rows to 0, not to its
-`tol`. They sit after the modeller's rows in `constraint_ids()` and before the objective
+`feasibility_tolerance` (`solve()` and the `FeasibilityJump` constructor set it
+through `set_domain_tolerance`). An argument below its floor then reads
+infeasible at that tolerance, and one at the floor reads 0 (#258).
+`verify_model` and `ViolationManager::is_feasible`/`violated_constraints` hold
+domain rows to 0, not to their `tol`. The step is not continuous, so Newton
+steps (FJ's and the inner solver's) aim at the floor with the step taken off,
+the closed-form linear scorer takes a domain row only over a bare variable
+(computing its residual as `evaluate` does) and keeps it out of the convex Int
+argmin where the range straddles the floor, and the incremental Sums' drift
+checks judge a domain row's verdict at 0. They sit after the modeller's rows in `constraint_ids()` and before the objective
 row (`num_user_constraints()`, `num_domain_rows()`), count in `verify_model`
 and the feasibility test, and are left out by `save_model`. None is made for an
 op no row or objective reads, for one read only through an `If` branch, for a

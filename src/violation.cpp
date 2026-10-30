@@ -144,16 +144,18 @@ bool ViolationManager::is_feasible(double tol) const {
     const std::vector<int32_t>& cids = model_.constraint_ids();
     // A NaN node value is not <= tol, so all_of rejects it -- which is what we
     // want. Writing the predicate the other way round, as `> tol`, would let
-    // NaN through silently.
-    return std::all_of(cids.begin(), cids.end(),
-                       [&](int32_t cid) { return model_.node_value(cid) <= tol; });
+    // NaN through silently. A domain row is held to 0, as `verify_model` holds
+    // it (#258): it reads > 0 exactly when its argument misses its floor.
+    return std::all_of(cids.begin(), cids.end(), [&](int32_t cid) {
+        return model_.node_value(cid) <= (model_.is_domain_node(cid) ? 0.0 : tol);
+    });
 }
 
 std::vector<int> ViolationManager::violated_constraints(double tol) const {
     std::vector<int> result;
     const auto& cids = model_.constraint_ids();
     for (size_t i = 0; i < cids.size(); ++i) {
-        if (!(model_.node_value(cids[i]) <= tol)) {
+        if (!(model_.node_value(cids[i]) <= (model_.is_domain_node(cids[i]) ? 0.0 : tol))) {
             result.push_back(static_cast<int>(i));
         }
     }

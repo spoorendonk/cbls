@@ -154,11 +154,17 @@ void newton_candidates(Model& model, const Scratch& sc, const Variable& var, dou
             break;
         }
         const int32_t cid = cids[static_cast<size_t>(ci)];
-        const double g = model.node_value(cid);
+        const bool domain = model.is_domain_node(cid);
+        double g = model.node_value(cid);
         // Not `<= tol`: a NaN residual (#205) has no root to step toward, and
-        // fails this test as every comparison against NaN does.
-        if (!(g > kDefaultFeasibilityTolerance)) {
+        // fails this test as every comparison against NaN does. A domain row is
+        // violated at any g > 0 (#258); its root is that of g less its step, the
+        // floor itself, not floor + margin.
+        if (!(g > (domain ? 0.0 : kDefaultFeasibilityTolerance))) {
             continue;
+        }
+        if (domain) {
+            g -= model.domain_margin();
         }
         const double dg = sc.slopes.of(cid);
         // Negated form of `> 1e-12`, not `<= 1e-12`: a NaN partial must skip the

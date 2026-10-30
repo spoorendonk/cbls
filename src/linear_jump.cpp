@@ -26,6 +26,19 @@ bool is_literal(const Model& model, const ChildRef& ref) {
     return !ref.is_var && model.nodes()[static_cast<size_t>(ref.id)].op == NodeOp::Const;
 }
 
+// The residual's sides p - q of row node `nd` (id `nid`): p = child1 for
+// Geq/Gt, so that the residual reads p - q for every comparison. A bare body is
+// the residual `body - 0`: p is the row's own node, q the literal zero, which
+// has no node (id -1) and is never read from the DAG.
+std::pair<ChildRef, ChildRef> residual_sides(const Model& model, const ExprNode& nd, int32_t nid) {
+    if (!is_comparison_op(nd.op)) {
+        return {ChildRef{nid, false}, ChildRef{-1, false}};
+    }
+    const ConstSpan<ChildRef> children = model.children(nd);
+    const bool swap = nd.op == NodeOp::Geq || nd.op == NodeOp::Gt;
+    return {children[swap ? 1 : 0], children[swap ? 0 : 1]};
+}
+
 // Sparse partials of one side of an Eq row: a variable child is its own slope,
 // a node is swept. Sorted by variable id for the merge in build_row.
 void side_partials(const Model& model, const ChildRef& ref,
@@ -143,15 +156,14 @@ const LinearJumpScorer::BuiltRow* LinearJumpScorer::build_row(int32_t ci) {
     const int32_t nid = model_.constraint_ids()[static_cast<size_t>(ci)];
     const ExprNode& nd = model_.nodes()[static_cast<size_t>(nid)];
     const bool bare = !is_comparison_op(nd.op);
-    // A bare body is the residual `body - 0`: p is the row's own node, q the
-    // literal zero, which has no node and is never read from the DAG.
-    ChildRef p{nid, false};
-    ChildRef q{-1, false};
-    if (!bare) {
-        const ConstSpan<ChildRef> children = model_.children(nd);
-        const bool swap = nd.op == NodeOp::Geq || nd.op == NodeOp::Gt;
-        p = children[swap ? 1 : 0];
-        q = children[swap ? 0 : 1];
+    const auto [p, q] = residual_sides(model_, nd, nid);
+    // A domain row (#258) steps by domain_margin() where its residual turns
+    // positive, so `p + r D` must match the DAG's sign there exactly, not to a
+    // rounding: only a bare variable argument (q, after the Geq swap) gives a
+    // residual `delta` can compute as `evaluate` does. Any other goes to the probe.
+    if (model_.is_domain_node(nid) && !q.is_var) {
+        slots_[static_cast<size_t>(ci)] = kIneligible;
+        return nullptr;
     }
     BuiltRow row;
     row.p_id = p.id;
@@ -351,8 +363,14 @@ double LinearJumpScorer::delta(double j) const {
         } else {
             // + 0.0 on a non-strict row, which leaves every residual unchanged.
             residual = comparison_residual(p, q, t.p_literal, t.q_literal) + t.strict_margin;
-            if (residual > 0.0) {
-                residual += t.domain_step;  // + 0.0 off a domain row
+            if (t.domain_step != 0.0) {
+                // A domain row's argument is the variable itself (build_row), so
+                // the DAG's residual is floor - j in one rounding; p - q above
+                // takes two and may disagree in sign near the floor.
+                residual = comparison_residual(t.p, j, t.p_literal, false);
+                if (residual > 0.0) {
+                    residual += t.domain_step;
+                }
             }
         }
         sum += t.weight * (clamped_node_violation(residual) - t.old_viol);
@@ -424,18 +442,20 @@ bool LinearJumpScorer::argmin_applies(double lo, double hi) const {
     // ends, where an affine |residual| peaks.
     const double d_lo = lo - x0_;
     const double d_hi = hi - x0_;
-    return std::all_of(terms_.begin(), terms_.end(), [d_lo, d_hi](const Term& t) {
+    return std::all_of(terms_.begin(), terms_.end(), [lo, hi, d_lo, d_hi](const Term& t) {
         // A domain row's step at its floor is not convex, which the minimum
-        // search below assumes of every term.
-        if (t.domain_step != 0.0) {
+        // search below assumes of every term; t.p is that floor, in the
+        // variable's own units (build_row), so a range wholly on one side of it
+        // sees an affine residual, or that plus a constant step.
+        if (t.domain_step != 0.0 && lo < t.p && t.p <= hi) {
             return false;
         }
         if (std::isinf(t.p) || std::isinf(t.q)) {
             return true;  // constant in j: an infinite literal side absorbs any step
         }
         const double a = t.p - t.q + t.strict_margin;
-        return std::abs(a + (t.slope * d_lo)) < kInfPenalty &&
-               std::abs(a + (t.slope * d_hi)) < kInfPenalty;
+        return std::abs(a + (t.slope * d_lo)) + t.domain_step < kInfPenalty &&
+               std::abs(a + (t.slope * d_hi)) + t.domain_step < kInfPenalty;
     });
 }
 
