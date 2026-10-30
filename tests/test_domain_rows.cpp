@@ -171,6 +171,20 @@ TEST_CASE("the violation manager holds a domain row to 0 whatever its tolerance"
     REQUIRE_FALSE(vm.is_feasible());
 }
 
+TEST_CASE("LNS acceptance holds a domain row to 0 whatever its tolerance", "[domain-rows]") {
+    // #258 round 2: lns_acceptance_key counted a domain row only above tol, so
+    // under a margin tighter than tol an argument below its floor scored as
+    // feasible.
+    Model m;
+    const int32_t x = m.float_var(-kInf, kInf, "x");
+    m.minimize(m.sqrt_expr(x));
+    m.close();
+    m.set_domain_tolerance(1e-9);
+    m.var_mut(vid(x)).value = -5e-7;
+    full_evaluate(m);
+    REQUIRE(lns_acceptance_key(m, 1e-6).first > 0.0);
+}
+
 TEST_CASE("a direct FJ run sets the domain margin from its own tolerance", "[domain-rows]") {
     // #258 review: only solve() set the margin, so fj_nl_initialize at 1e-4
     // read a log at x = 0 (margin 1e-6) as feasible and stopped there.

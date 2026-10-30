@@ -785,9 +785,11 @@ public:
     ///
     /// Per-model state, as `objective_bound()` is: each portfolio worker solves
     /// at its own `SearchConfig::feasibility_tolerance`, and `solve()` sets it.
-    /// Re-evaluates the domain rows; the caller invalidates any violation cache.
-    /// Allowed on a frozen model.
-    void set_domain_tolerance(double tol);
+    /// Re-evaluates the domain rows and returns true when the margin changed;
+    /// the caller then invalidates any violation cache on the model. The margin
+    /// stays until the next call: `solve()` and each `FeasibilityJump` set it
+    /// from their own tolerance. Allowed on a frozen model.
+    bool set_domain_tolerance(double tol);
     [[nodiscard]] double domain_margin() const noexcept { return domain_margin_; }
     /// Size the variable, node and child-reference arrays up front, when the
     /// caller already knows how big the model will be. `n_child_refs` is the

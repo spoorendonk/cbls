@@ -245,7 +245,13 @@ bool multi_var_newton_step(Model& model, ViolationManager& vm, int32_t cid) {
     // two augmented_objective() readings comparing exactly: that total is an
     // incrementally maintained accumulator with a periodic resync, so a
     // last-ulp drift could accept an all-NaN assignment.
-    if (!std::isfinite(g) || std::abs(g) < 1e-15) {
+    if (!std::isfinite(g)) {
+        return false;
+    }
+    if (g > 0.0 && model.is_domain_node(cid)) {
+        g -= model.domain_margin();  // aim at the floor, as newton_candidates does (#258)
+    }
+    if (std::abs(g) < 1e-15) {
         return false;
     }
 

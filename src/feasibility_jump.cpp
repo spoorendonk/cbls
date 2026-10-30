@@ -459,8 +459,13 @@ bool float_jump_candidates(Model& model, int32_t var_id, const Variable& var, do
         saw_violated = true;
         if (model.is_domain_node(cids[c])) {
             // Aim at the floor, not floor + margin: the step is no part of the
-            // argument's distance to its root (#258).
+            // argument's distance to its root (#258). A miss below the margin's
+            // rounding cancels to 0 here: no Newton step, so it does not count
+            // as one, and the escape probe stays open.
             residual -= model.domain_margin();
+            if (!(residual > 0.0)) {
+                continue;
+            }
         }
         double grad = 0.0;
         if (linear == nullptr || !linear->residual_partial_at(var_id, k, grad)) {
@@ -1269,8 +1274,9 @@ FeasibilityJump::FeasibilityJump(Model& model, ViolationManager& vm, RNG& rng, G
     : model_(model), vm_(vm), rng_(rng), config_(config), jumps_(model.num_vars()), linear_(model) {
     // A domain row's step follows this run's tolerance, which a direct caller
     // (fj_nl_initialize, a test) may set apart from solve()'s (#258).
-    model_.set_domain_tolerance(config_.tolerance);
-    vm_.invalidate_cache();
+    if (model_.set_domain_tolerance(config_.tolerance)) {
+        vm_.invalidate_cache();
+    }
     const size_t nc = model_.constraint_ids().size();
     violated_.assign(nc, 0);
     violated_pos_.assign(nc, -1);

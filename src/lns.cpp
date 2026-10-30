@@ -45,7 +45,8 @@ std::pair<double, double> lns_acceptance_key(const Model& model, double tol) {
             real_violation = std::numeric_limits<double>::infinity();
             break;
         }
-        real_violation += v > tol ? v : 0.0;
+        // A domain row is violated at any v > 0 (#258), as is_feasible reads it.
+        real_violation += v > (model.is_domain_node(cids[i]) ? 0.0 : tol) ? v : 0.0;
     }
     double obj = model.objective_id() >= 0 ? model.node_value(model.objective_id()) : 0.0;
     // A NaN objective (a domain error, inf - inf) ranks LAST, as +inf: compared

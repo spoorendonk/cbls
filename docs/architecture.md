@@ -321,8 +321,8 @@ read plainly would hold at `x = 0`. A violated domain row therefore adds
 `feasibility_tolerance` (`solve()` and the `FeasibilityJump` constructor set it
 through `set_domain_tolerance`). An argument below its floor then reads
 infeasible at that tolerance, and one at the floor reads 0 (#258).
-`verify_model` and `ViolationManager::is_feasible`/`violated_constraints` hold
-domain rows to 0, not to their `tol`. The step is not continuous, so Newton
+`verify_model`, `ViolationManager::is_feasible`/`violated_constraints` and
+`lns_acceptance_key` hold domain rows to 0, not to their `tol`. The step is not continuous, so Newton
 steps (FJ's and the inner solver's) aim at the floor with the step taken off,
 the closed-form linear scorer takes a domain row only over a bare variable
 (computing its residual as `evaluate` does) and keeps it out of the convex Int
