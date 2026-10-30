@@ -165,6 +165,31 @@ inline double delta_evaluate(Model& model, std::initializer_list<int32_t> change
 // `expr_id` must be a node id of `model` (not a variable handle); it is not
 // range-checked here, on the hot path. The Python binding checks it.
 
+/// One chain-rule step along a DAG edge: `acc += edge * carried`, `edge` being
+/// the edge's local derivative and `carried` the adjoint (reverse mode) or slope
+/// (forward mode) brought to it. Every propagation pass takes its edges through
+/// here: the reverse sweep and the three forward up-cone passes
+/// (`UpConePartials`, FJ's breakpoint slopes, the inner solver's slopes; #260).
+///
+/// A zero edge -- an untaken If branch, a Min's unselected operand -- is skipped,
+/// not multiplied: an infinite or NaN `carried` times 0 would read NaN where the
+/// edge carries nothing, and turn a partial that is truly 0 into NaN. Any other
+/// edge multiplies, so inf and NaN on a live path still propagate. For a finite
+/// `carried` the skip changes no result but the sign of a zero.
+inline void add_chain_term(double& acc, double edge, double carried) {
+    if (edge != 0.0) {
+        acc += edge * carried;
+    }
+}
+
+/// d(parent)/d(child) for one DAG edge, summed over the operands of `parent`
+/// naming `child`: the edge factor of the forward up-cone passes, whose cone
+/// walk sees a parent once however often it names the child. A Sum's is its
+/// multiplicity of the operand, 1 unless `Model::close()` marked the Sum
+/// `kRepeatedChild`, so an objective Sum over n terms costs O(1) per edge, not
+/// O(n); any other op scans its children. Requires a closed model.
+double up_edge_derivative(const Model& model, int32_t parent, const ChildRef& child);
+
 /// ∂expr/∂var for one variable; 0.0 for a `var_id` outside the model.
 double compute_partial(const Model& model, int32_t expr_id, int32_t var_id);
 
@@ -172,15 +197,13 @@ double compute_partial(const Model& model, int32_t expr_id, int32_t var_id);
 ///
 /// `build` collects the variable's up-cone (every node a change of it reaches
 /// through `Model::parents`), sorts it by topological position and carries the
-/// slope forward along each parent edge, the factor being `local_derivative`
-/// (a Sum's: its multiplicity of the operand, from `kRepeatedChild`). The same
-/// chain rule as `compute_partial`, so `of(row)` equals it up to summation order,
-/// except on non-finite paths. A zero edge factor is skipped here, so an
-/// overflow BELOW it (an untaken If branch, a Min's unselected operand) reads 0
-/// in both modes and leaves the row's finite paths alone. An overflow ABOVE it
-/// differs: the reverse sweep multiplies an infinite adjoint by the 0 and reads
-/// NaN, this pass reads the finite sum. Two infinite slopes that meet read NaN
-/// or inf here, where the sweep may skip them through a zero adjoint.
+/// slope forward along each parent edge, the factor being `up_edge_derivative`.
+/// The same chain rule as `compute_partial`, so `of(row)` equals it up to
+/// summation order, except on non-finite paths. Both modes skip a zero edge
+/// (`add_chain_term`), so an overflow on either side of one (an untaken If
+/// branch, a Min's unselected operand) reads 0 in both and leaves the row's
+/// finite paths alone. Where infinite paths meet, the modes can still differ:
+/// they sum the paths at different nodes, and inf meeting -inf reads NaN.
 ///
 /// COST: O(u log u) for an up-cone of u nodes, plus their parent edges, and it
 /// gives the partial of EVERY node above the variable at once. `compute_partial`

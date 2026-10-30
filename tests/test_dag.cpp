@@ -752,7 +752,7 @@ std::vector<double> full_walk_all_partials(const Model& model, int32_t expr_id) 
             const ChildRef& child = children[i];
             const size_t key = child.is_var ? num_nodes + static_cast<size_t>(child.id)
                                             : static_cast<size_t>(child.id);
-            adjoint[key] += adj * ld;
+            add_chain_term(adjoint[key], ld, adj);
         }
     }
     return {adjoint.begin() + static_cast<std::ptrdiff_t>(num_nodes), adjoint.end()};
@@ -859,8 +859,8 @@ TEST_CASE("cone AD keeps the zero-adjoint skip for cancelled and zero-derivative
     // 0 * inf = NaN into x's partial.
     auto u = m.exp_expr(x);
     auto cancelled = m.sum({u, m.neg(u)});
-    // y * z at z == 0: the local derivative w.r.t. y is 0.0 -- y is written but
-    // stays zero, so it too is absent from the sparse result.
+    // y * z at z == 0: the local derivative w.r.t. y is 0.0 -- a zero edge, so y
+    // stays zero and it too is absent from the sparse result.
     auto yz = m.prod(y, z);
     auto f = m.sum({cancelled, yz});
     const int32_t chain = pad_with_unrelated_chain(m, 400);
@@ -1010,6 +1010,31 @@ TEST_CASE("an overflowing operand a Min does not select leaves the forward parti
     // The Min's edge to `big` is 0; an inf slope times it must not read NaN.
     REQUIRE(compute_partial(m, row, vid(x)) == 1.0);
     REQUIRE(up.of(row) == 1.0);
+}
+
+TEST_CASE("an infinite adjoint across a Min's unselected edge leaves the reverse partial zero",
+          "[dag][ad]") {
+    // exp(exp(min(10, z))) at z = 20: the Min selects 10, so d(row)/dz is 0. The
+    // Min's adjoint is exp(exp(10)) * exp(10) = inf and its edge to z is 0;
+    // multiplied, not skipped, that read NaN (#260).
+    Model m;
+    const int32_t z = m.float_var(-20.0, 20.0);
+    const int32_t row =
+        m.leq(m.exp_expr(m.exp_expr(m.min_expr({m.constant(10.0), z}))), m.constant(5.0));
+    m.add_constraint(row);
+    m.close();
+    m.var_mut(vid(z)).value = 20.0;
+    full_evaluate(m);
+
+    REQUIRE(compute_partial(m, row, vid(z)) == 0.0);
+    REQUIRE(compute_all_partials(m, row)[static_cast<size_t>(vid(z))] == 0.0);
+    std::vector<std::pair<int32_t, double>> sparse;
+    compute_partials_sparse(m, row, sparse);
+    REQUIRE(sparse.empty());
+    // The forward pass agrees.
+    UpConePartials up;
+    REQUIRE(up.build(m, vid(z), 1000));
+    REQUIRE(up.of(row) == 0.0);
 }
 
 TEST_CASE("a forward up-cone build re-entered from a CustomInvariant partial is refused", "[dag]") {

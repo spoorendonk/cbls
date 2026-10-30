@@ -348,10 +348,9 @@ public:
     /// one that leaves a Float input with Feasibility Jump's non-gradient
     /// candidates rather than no candidates.
     ///
-    /// +/-inf reads as unknown as well. The reverse sweep accumulates
-    /// `adjoint += adj * ld`, so one infinite edge would turn the next `ld == 0`
-    /// into `inf * 0` -- a NaN partial for a SIBLING variable that has nothing to
-    /// do with this node.
+    /// +/-inf reads as unknown as well. The chain rule would multiply it into
+    /// the partial of every variable below input i, and two such paths meeting
+    /// with opposite signs read `inf - inf` -- NaN.
     virtual double partial(const InvariantInputs& in, int32_t i) {
         (void)in;
         (void)i;

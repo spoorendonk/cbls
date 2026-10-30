@@ -358,9 +358,9 @@ TEST_CASE("no slope is offered where log's value is NaN", "[dag][domain][ad]") {
 TEST_CASE("a div partial that overflows does not poison a sibling's partial", "[dag][domain][ad]") {
     // f = n / max(w, z) at n = 1e300, w = 1e-5, z = -1. The quotient is a finite
     // 1e305, but d(n/d)/dd = -n/d^2 = -1e310 overflows to -inf. That infinite
-    // adjoint reaches the Max, whose edge into the unselected z has slope 0 --
-    // and the sweep's `adj * ld` is then -inf * 0 = NaN in z's partial, a
-    // variable f does not depend on here at all.
+    // adjoint would reach the Max and make w's partial -inf. (Its zero edge into
+    // the unselected z read -inf * 0 = NaN in z's partial until #260 skipped zero
+    // edges; Div's fold of the overflow to 0 kept that from happening here.)
     Model m;
     const int32_t n = m.float_var(-1e300, 1e300, "n");
     const int32_t w = m.float_var(-1, 1, "w");

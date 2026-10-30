@@ -518,10 +518,11 @@ static double extremum_share(const ExprNode& node, ConstSpan<ChildRef> children,
 // edge, so it sits on the same hot path. The `default:`-free table is gated the
 // same way -- see the note on evaluate() above.
 //
-// Non-finite partials. The reverse sweep accumulates `adjoint[child] += adj *
-// ld`, so one infinite edge turns the next `ld == 0.0` on the same path into
-// `inf * 0.0` -- NaN -- in the partial of a variable that has nothing to do with
-// the singular node (see the Custom case). `Custom`, `Pow`, `SignPower`, and
+// Non-finite partials. Every propagation pass multiplies the edges along a path
+// (`add_chain_term`), so one infinite edge makes the partial of every variable
+// below it on a live path infinite, and two such paths meeting with opposite
+// signs read `inf - inf` -- NaN (see the Custom case). A zero edge below it is
+// skipped, not multiplied, since #260. `Custom`, `Pow`, `SignPower`, and
 // since #205 `Div` and `Tan`, therefore fold a non-finite partial to 0; `Log`
 // and `Sqrt` return 0 on and below their singular point, where their value is
 // -inf or NaN. What stays finite but huge near a pole (`1/x` at x = 1e-15) is
@@ -719,12 +720,11 @@ double local_derivative(const ExprNode& node, int child_idx, const Model& model)
             // same answer the structural ops above give, and the one that leaves
             // a Float input on FJ's non-gradient candidates.
             //
-            // +/-inf reads as unknown TOO, and that is not pedantry: the reverse
-            // sweep accumulates `adjoint[child] += adj * ld`, so one infinite edge
-            // turns the very next `ld == 0.0` into `inf * 0.0` -- NaN -- in the
-            // partial of a SIBLING variable that has nothing to do with this node.
-            // Same clamp-rather-than-propagate rule as clamped_node_violation and
-            // comparison_residual.
+            // +/-inf reads as unknown TOO, and that is not pedantry: the chain
+            // rule multiplies it into the partial of every variable below this
+            // input, and two such paths meeting with opposite signs read
+            // `inf - inf` -- NaN. Same clamp-rather-than-propagate rule as
+            // clamped_node_violation and comparison_residual.
             const double p =
                 custom_of(node, model)
                     .partial(InvariantInputs(model, children), static_cast<int32_t>(child_idx));

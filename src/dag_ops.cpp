@@ -948,7 +948,7 @@ void propagate_adjoint(const Model& model, int32_t nid, size_t num_nodes, Adjoin
         if (s.adjoint[key] == 0.0) {
             s.written.push_back(key);
         }
-        s.adjoint[key] += adj * ld;
+        add_chain_term(s.adjoint[key], ld, adj);
     }
 }
 
@@ -1056,11 +1056,6 @@ double compute_partial(const Model& model, int32_t expr_id, int32_t var_id) {
     return s.adjoint[model.num_nodes() + static_cast<size_t>(var_id)];
 }
 
-namespace {
-
-// d(parent)/d(child), summed over the operands of `parent` naming `child`. A Sum
-// pays a scan of its children only when `close()` saw it name one twice, so an
-// objective Sum over n terms costs O(1) per edge, not O(n).
 double up_edge_derivative(const Model& model, int32_t parent, const ChildRef& child) {
     const ExprNode& pn = model.node(parent);
     auto same = [&child](const ChildRef& r) {
@@ -1082,8 +1077,6 @@ double up_edge_derivative(const Model& model, int32_t parent, const ChildRef& ch
     }
     return d;
 }
-
-}  // namespace
 
 bool UpConePartials::build(const Model& model, int32_t var_id, size_t max_nodes) {
     // A CustomInvariant's partial runs inside the sweep; a nested build on this
@@ -1165,13 +1158,8 @@ bool UpConePartials::sweep(const Model& model, int32_t var_id, size_t max_nodes)
         }
         const ChildRef ref{nid, false};
         for (const int32_t parent : model.parents(nid)) {
-            // A zero edge (an untaken If branch, a Min's unselected operand) is
-            // skipped, not multiplied: an infinite or NaN `s` times 0 would read
-            // NaN where the reverse sweep's zero-adjoint skip reads 0.
-            const double d = up_edge_derivative(model, parent, ref);
-            if (d != 0.0) {
-                slope_[static_cast<size_t>(parent)] += d * s;
-            }
+            add_chain_term(slope_[static_cast<size_t>(parent)],
+                           up_edge_derivative(model, parent, ref), s);
         }
     }
     return true;

@@ -570,9 +570,8 @@ TEST_CASE("a custom node's partial reaches the AD path", "[custom]") {
 }
 
 TEST_CASE("an infinite partial does not poison a sibling variable's gradient", "[custom]") {
-    // The reverse sweep accumulates `adjoint[child] += adj * ld`. An infinite `ld`
-    // on one edge makes the NEXT `ld == 0.0` edge `inf * 0.0` -- NaN -- in the
-    // partial of a variable that has nothing to do with the custom node. So
+    // The chain rule multiplies an infinite partial into every variable below it,
+    // and two such paths meeting with opposite signs read `inf - inf` -- NaN. So
     // `local_derivative` folds a non-finite partial to 0, exactly as it folds NaN.
     class WildPartial : public CustomInvariant {
     public:

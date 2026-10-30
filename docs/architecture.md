@@ -508,8 +508,12 @@ return 0 — FJ gets the latter's plateaus from their breakpoints instead (see
 `Custom` node asks its invariant's `partial`, whose NaN *or infinity* ("unknown")
 reads as 0 here — the same answer, so a custom node with no derivative is exactly
 as differentiable as a structural op. An infinity has to be folded too, not just
-propagated: the sweep accumulates `adjoint += adj * ld`, so one infinite edge
-would make `inf * 0` — NaN — in the partial of an unrelated sibling variable.
+propagated: the chain rule would multiply it into the partial of every variable
+below that input, and two such paths meeting with opposite signs read
+`inf - inf` — NaN. Every propagation pass, reverse and forward, takes its edges
+through `add_chain_term` (`include/cbls/dag_ops.h`), which skips a zero edge
+rather than multiplying it, so an infinite adjoint or slope never reads
+`inf * 0` across an untaken If branch or a Min's unselected operand (#260).
 
 The built-ins follow the same rule since #205: `Pow`, `SignPower`, `Div` and
 `Tan` fold a non-finite partial to 0, `Log`/`Sqrt` return 0 on and below
@@ -3025,11 +3029,11 @@ and mutates Float variables directly.
 
 Each coordinate step on a Float variable v reads only what v can move:
 
-- **Slopes:** one forward-mode pass over v's up-cone (`UpConeSlopes`) gives
-  d(row)/dv for every row of G_v and d(objective)/dv. The pass costs
-  O(u log u) for an up-cone of u nodes. A wide Sum's operand multiplicity is
-  memoised per hook call, so an objective Sum over n terms is not scanned once
-  per variable.
+- **Slopes:** one forward-mode pass over v's up-cone (`UpConePartials`, with
+  no node budget) gives d(row)/dv for every row of G_v and d(objective)/dv. The
+  pass costs O(u log u) for an up-cone of u nodes. A Sum's operand multiplicity
+  comes from `close()`'s `kRepeatedChild` flag, so an objective Sum over n terms
+  is not scanned once per variable.
 - **Scoring:** a candidate is scored by the augmented objective's change over
   G_v plus the objective (`AugmentedDelta`), differenced per row the way
   `weighted_delta_from` does it, instead of by two full `augmented_objective()`

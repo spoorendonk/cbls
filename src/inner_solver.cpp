@@ -4,22 +4,25 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <vector>
 
 namespace cbls {
 
 namespace {
 
-// d(node)/d(v) for every node above one variable, forward mode (#207).
+// d(node)/d(v) for every node above one variable, forward mode (#207): the
+// `UpConePartials` pass FJ's row slopes use (#249), with no node budget.
 //
 // One pass over v's up-cone -- every node a change of v can reach through
 // parents -- gives the partial of each row in G_v AND of the objective at once,
 // which is everything a coordinate step on v reads. The cone is collected through
 // `Model::parents`, sorted by topological position and swept once, each edge's
-// factor being the parent's `local_derivative` for that operand (summed when the
-// parent names it twice). That is the same chain rule the reverse sweep applies,
-// so the slopes equal `compute_partial`'s up to summation order.
+// factor being `up_edge_derivative`. That is the same chain rule the reverse
+// sweep applies, zero edges skipped in both (`add_chain_term`), so the slopes
+// equal `compute_partial`'s up to summation order on finite paths.
 //
 // COST, per variable: O(u log u) for an up-cone of u nodes, plus their parent
 // edges. A probe's `delta_evaluate` dirties that same up-cone, so the slopes cost
@@ -37,134 +40,9 @@ namespace {
 // n times cheaper than n forward passes, but its gradient goes stale with every
 // committed move of a nonlinear objective; the forward pass costs there exactly
 // what the per-variable reverse sweep it replaces did, so that regime is no
-// worse than before, only not better.
-//
-// A Sum's edge factor is its multiplicity of the operand, 1 unless the Sum
-// names a child twice. `parents` lists a parent once however often it names the
-// child, so the multiplicity has to come from the Sum's children; scanning them
-// per edge would make an objective Sum over n terms cost O(n) for EVERY variable,
-// the quadratic this class exists to remove. So each Sum is scanned once per
-// hook call, the first time an edge into it is taken, and the verdict memoised.
-// Any other op scans its children per edge, as `local_derivative` largely does
-// itself; a wide Prod/Min/Max in many variables' cones is the regime that
-// remains O(arity) per variable.
-class UpConeSlopes {
-public:
-    explicit UpConeSlopes(const Model& model)
-        : stamp_(model.num_nodes(), 0),
-          slope_(model.num_nodes(), 0.0),
-          sum_kind_(model.num_nodes(), kSumUnknown),
-          child_seen_(model.num_nodes() + model.num_vars(), -1) {}
-
-    void build(const Model& model, int32_t var_id) {
-        if (++epoch_ == 0) {
-            std::fill(stamp_.begin(), stamp_.end(), 0);
-            epoch_ = 1;
-        }
-        cone_.clear();
-        for (const int32_t dep : model.dependents(var_id)) {
-            enter(dep);
-        }
-        // `cone_` grows while it is walked, so it is indexed rather than iterated.
-        size_t head = 0;
-        while (head < cone_.size()) {
-            const int32_t nid = cone_[head++];
-            for (const int32_t parent : model.parents(nid)) {
-                if (stamp_[static_cast<size_t>(parent)] != epoch_) {
-                    enter(parent);
-                }
-            }
-        }
-        // Topological order, so a node's slope is complete before it is pushed.
-        std::sort(cone_.begin(), cone_.end(), [&model](int32_t a, int32_t b) {
-            return model.topo_position(a) < model.topo_position(b);
-        });
-        const ChildRef var_ref{var_id, true};
-        for (const int32_t dep : model.dependents(var_id)) {
-            slope_[static_cast<size_t>(dep)] += edge_derivative(model, dep, var_ref);
-        }
-        for (const int32_t nid : cone_) {
-            const double s = slope_[static_cast<size_t>(nid)];
-            if (s == 0.0) {
-                continue;
-            }
-            const ChildRef ref{nid, false};
-            for (const int32_t parent : model.parents(nid)) {
-                // A zero edge (an untaken If branch, a Min's unselected operand) is
-                // skipped, not multiplied: an infinite `s` times 0 would read NaN
-                // where the edge carries nothing, as in `UpConePartials::sweep`.
-                const double d = edge_derivative(model, parent, ref);
-                if (d != 0.0) {
-                    slope_[static_cast<size_t>(parent)] += d * s;
-                }
-            }
-        }
-    }
-
-    // d(node)/dv at the current point; 0 for a node v cannot reach.
-    [[nodiscard]] double of(int32_t nid) const {
-        const auto i = static_cast<size_t>(nid);
-        return stamp_[i] == epoch_ ? slope_[i] : 0.0;
-    }
-
-private:
-    static constexpr uint8_t kSumUnknown = 0;
-    static constexpr uint8_t kSumDistinct = 1;
-    static constexpr uint8_t kSumRepeats = 2;
-
-    void enter(int32_t nid) {
-        stamp_[static_cast<size_t>(nid)] = epoch_;
-        slope_[static_cast<size_t>(nid)] = 0.0;
-        cone_.push_back(nid);
-    }
-
-    [[nodiscard]] static size_t key(const Model& model, const ChildRef& r) {
-        return r.is_var ? model.num_nodes() + static_cast<size_t>(r.id) : static_cast<size_t>(r.id);
-    }
-
-    // Does Sum `parent` name some child more than once? Scanned on first use.
-    bool sum_repeats(const Model& model, int32_t parent) {
-        uint8_t& kind = sum_kind_[static_cast<size_t>(parent)];
-        if (kind == kSumUnknown) {
-            kind = kSumDistinct;
-            for (const ChildRef& c : model.children(model.node(parent))) {
-                int32_t& seen = child_seen_[key(model, c)];
-                if (seen == parent) {
-                    kind = kSumRepeats;
-                    break;
-                }
-                seen = parent;
-            }
-        }
-        return kind == kSumRepeats;
-    }
-
-    // d(parent)/d(child), summed over the operands of `parent` naming `child`.
-    double edge_derivative(const Model& model, int32_t parent, const ChildRef& child) {
-        const ExprNode& pn = model.node(parent);
-        const ConstSpan<ChildRef> kids = model.children(pn);
-        auto same = [&child](const ChildRef& r) {
-            return r.is_var == child.is_var && r.id == child.id;
-        };
-        if (pn.op == NodeOp::Sum && !sum_repeats(model, parent)) {
-            return 1.0;
-        }
-        double d = 0.0;
-        for (size_t i = 0; i < kids.size(); ++i) {
-            if (same(kids[i])) {
-                d += local_derivative(pn, static_cast<int>(i), model);
-            }
-        }
-        return d;
-    }
-
-    std::vector<uint32_t> stamp_;
-    std::vector<double> slope_;
-    std::vector<uint8_t> sum_kind_;
-    std::vector<int32_t> child_seen_;
-    std::vector<int32_t> cone_;
-    uint32_t epoch_ = 0;
-};
+// worse than before, only not better. Hence no node budget: past one there is
+// nothing cheaper to fall back to.
+constexpr size_t kUnboundedUpCone = std::numeric_limits<size_t>::max();
 
 // The objective as `augmented_objective()` reads it: 0 without one, and a
 // non-finite value clamped so the metric stays ordered.
@@ -226,8 +104,7 @@ private:
 
 // Per-call scratch shared by every coordinate step.
 struct Scratch {
-    explicit Scratch(const Model& model) : slopes(model) {}
-    UpConeSlopes slopes;
+    UpConePartials slopes;
     AugmentedDelta delta;
 };
 
@@ -330,7 +207,9 @@ void line_search_candidates(Model& model, const Scratch& sc, const Variable& var
 bool descend_float_var(Model& model, const ViolationManager& vm, Scratch& sc, const Variable& var,
                        double initial_step, int max_line_search_steps) {
     const double old_val = var.value;
-    sc.slopes.build(model, var.id);
+    // False only on a model not closed, which the hook never sees; every slope
+    // then reads 0 and no candidate is probed.
+    sc.slopes.build(model, var.id, kUnboundedUpCone);
     sc.delta.snapshot(model, vm, var.id);
     Incumbent best{old_val, 0.0};
 
@@ -520,7 +399,7 @@ int FloatIntensifyHook::vars_per_poll(const Model& model) {
 void FloatIntensifyHook::solve(Model& model, ViolationManager& vm,
                                const std::vector<int32_t>& /*last_changed_vars*/, StopRef stop) {
     const int stride = vars_per_poll(model);
-    Scratch scratch(model);
+    Scratch scratch;
     std::vector<int32_t> regrounded;
     for (int sweep = 0; sweep < max_sweeps; ++sweep) {
         const PassOutcome coordinate = coordinate_pass(model, vm, scratch, initial_step_size,

@@ -586,29 +586,6 @@ bool variable_reaches_breakpoint(const Model& model, int32_t var_id) {
                        [&model](int32_t d) { return reaches_breakpoint(model, d); });
 }
 
-// d(parent)/d(child) for one edge, summed over the operands naming `child`. A
-// Sum pays a scan of its children only when `close()` saw it name one twice.
-double edge_derivative(const Model& model, const ExprNode& parent, const ChildRef& child) {
-    auto same = [&child](const ChildRef& r) {
-        return r.is_var == child.is_var && r.id == child.id;
-    };
-    const ConstSpan<ChildRef> kids = model.children(parent);
-    if (parent.op == NodeOp::Sum) {
-        if ((model.breakpoint_flags()[static_cast<size_t>(parent.id)] &
-             ModelStructure::kRepeatedChild) == 0) {
-            return 1.0;
-        }
-        return static_cast<double>(std::count_if(kids.begin(), kids.end(), same));
-    }
-    double d = 0.0;
-    for (size_t i = 0; i < kids.size(); ++i) {
-        if (same(kids[i])) {
-            d += local_derivative(parent, static_cast<int>(i), model);
-        }
-    }
-    return d;
-}
-
 // The pruned cone above one variable and du/dv on it, forward mode. Per thread,
 // grown to the largest model walked; entries are valid only under the current
 // epoch, so a call costs its own cone and never a clear of the arrays.
@@ -675,7 +652,7 @@ private:
         for (const int32_t dep : model.dependents(var_id_)) {
             const ExprNode& nd = model.nodes()[static_cast<size_t>(dep)];
             if (stamp_[static_cast<size_t>(dep)] == epoch_ && carries_slope(nd.op)) {
-                slope_[static_cast<size_t>(dep)] += edge_derivative(model, nd, var_ref);
+                slope_[static_cast<size_t>(dep)] += up_edge_derivative(model, dep, var_ref);
             }
         }
         for (const int32_t nid : cone_) {
@@ -689,13 +666,8 @@ private:
                 if (stamp_[static_cast<size_t>(parent)] != epoch_ || !carries_slope(pn.op)) {
                     continue;
                 }
-                // A zero edge (an untaken If branch, a Min's unselected operand) is
-                // skipped, not multiplied: an infinite `s` times 0 would read NaN
-                // where the edge carries nothing, as in `UpConePartials::sweep`.
-                const double d = edge_derivative(model, pn, ref);
-                if (d != 0.0) {
-                    slope_[static_cast<size_t>(parent)] += d * s;
-                }
+                add_chain_term(slope_[static_cast<size_t>(parent)],
+                               up_edge_derivative(model, parent, ref), s);
             }
         }
     }
