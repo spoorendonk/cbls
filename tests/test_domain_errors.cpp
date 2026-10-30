@@ -355,7 +355,7 @@ TEST_CASE("no slope is offered where log's value is NaN", "[dag][domain][ad]") {
     CHECK(compute_partial(m, l, vid(x)) == 0.5);
 }
 
-TEST_CASE("a div partial that overflows does not poison a sibling's partial", "[dag][domain][ad]") {
+TEST_CASE("a div partial that overflows is folded to 0", "[dag][domain][ad]") {
     // f = n / max(w, z) at n = 1e300, w = 1e-5, z = -1. The quotient is a finite
     // 1e305, but d(n/d)/dd = -n/d^2 = -1e310 overflows to -inf. That infinite
     // adjoint would reach the Max and make w's partial -inf. (Its zero edge into

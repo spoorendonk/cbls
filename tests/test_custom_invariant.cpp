@@ -569,10 +569,11 @@ TEST_CASE("a custom node's partial reaches the AD path", "[custom]") {
     REQUIRE_THAT(compute_partial(m, fx.row, handle_to_var_id(fx.f)), WithinAbs(1.0, 1e-12));
 }
 
-TEST_CASE("an infinite partial does not poison a sibling variable's gradient", "[custom]") {
-    // The chain rule multiplies an infinite partial into every variable below it,
-    // and two such paths meeting with opposite signs read `inf - inf` -- NaN. So
-    // `local_derivative` folds a non-finite partial to 0, exactly as it folds NaN.
+TEST_CASE("an infinite custom partial is folded to 0", "[custom]") {
+    // `local_derivative` folds a non-finite partial to 0, exactly as it folds NaN:
+    // the chain rule would otherwise carry the infinity into every variable below
+    // it. `a` pins the fold. `b`'s zero edge is skipped by the sweep since #260,
+    // so it stays 0 with or without the fold.
     class WildPartial : public CustomInvariant {
     public:
         double evaluate(const InvariantInputs& in) override { return in.value(0) + in.value(1); }
@@ -596,8 +597,7 @@ TEST_CASE("an infinite partial does not poison a sibling variable's gradient", "
     const std::vector<double> partials = compute_all_partials(m, row);
     REQUIRE(std::isfinite(partials[handle_to_var_id(a)]));
     REQUIRE(std::isfinite(partials[handle_to_var_id(b)]));
-    // `b`'s edge carries a legitimate 0, and it must stay a 0 rather than becoming
-    // NaN because `a`'s edge was infinite.
+    // `b`'s edge carries a legitimate 0, and it stays a 0.
     REQUIRE_THAT(partials[handle_to_var_id(b)], WithinAbs(0.0, 1e-12));
     REQUIRE_THAT(partials[handle_to_var_id(a)], WithinAbs(0.0, 1e-12));
 }
