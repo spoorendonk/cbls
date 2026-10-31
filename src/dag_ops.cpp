@@ -273,9 +273,10 @@ double evaluate_dirty_node(Model& model, int32_t nid, DeltaMode mode,
     assert(slot >= 0);
     if (mode == DeltaMode::Rollback && model.custom_probe_pending(slot)) {
         // A paired Rollback never walks: it writes the probe's undo log back
-        // (`roll_back_probe`, #270). This is a Rollback whose log a walk in
-        // between dropped -- one whose cone missed this node, so its probe is
-        // still open. The engine restores the node's VALUE; the invariant
+        // (`roll_back_probe`, #270). This is a Rollback whose log was dropped
+        // in between -- by a walk whose cone missed this node, or by a setter
+        // (see DeltaMode) -- so this node's probe is still open. The engine
+        // restores the node's VALUE; the invariant
         // discards only its own staged state. Its parents recompute from the
         // restored value below, in topological order.
         model.custom_invariant(slot).rollback();
@@ -782,7 +783,7 @@ double delta_walk(Model& model, const int32_t* changed_var_ids, size_t count, De
             // open probe gets its `rollback()`, then the walk below recomputes
             // the union's cone from the assignment. The caller's journal
             // describes its own set only, so it is not passed on; a custom node
-            // then gets the two-argument `delta()`, which is always correct.
+            // then gets inputs with no edit list, which is always correct.
             // Out of contract, so sort-and-unique's O(n log n) is no concern.
             roll_back_probe(model, undo);
             thread_local std::vector<int32_t> merged;

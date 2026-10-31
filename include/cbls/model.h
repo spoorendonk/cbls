@@ -245,8 +245,9 @@ struct IncSums {
 
 /// The undo log of the last `Probe` walk (#270), which the matching `Rollback`
 /// writes back instead of walking the cone again. Per model because it
-/// describes `node_values_`. Only `delta_evaluate` and its siblings in
-/// src/dag_ops.cpp touch it: see `DeltaMode::Rollback`.
+/// describes `node_values_`. `delta_evaluate` and its siblings in
+/// src/dag_ops.cpp arm and spend it; every writer of node values outside a
+/// walk must drop it (`pending`). See `DeltaMode::Rollback`.
 struct ProbeUndo {
     /// The probe's changed-variable set, as it was passed: a `Rollback` over
     /// any other set is not this probe's.
@@ -256,8 +257,10 @@ struct ProbeUndo {
     /// and a custom node's value (#166) included. (node id, value).
     std::vector<std::pair<int32_t, double>> values;
     /// Armed by a `Probe`, spent by the `Rollback` and dropped by every other
-    /// walk, `full_evaluate` and `reground_inc_sum`: each moves the assignment
-    /// on, after which the log no longer describes anything to roll back to.
+    /// walk, `full_evaluate`, `reground_inc_sum`, `set_objective_bound` and
+    /// `set_domain_tolerance`: each rewrites node values, after which the log
+    /// no longer describes anything to roll back to. A new out-of-walk writer
+    /// of node values must drop it too, or its write is undone by the Rollback.
     bool pending = false;
 };
 

@@ -1777,7 +1777,8 @@ TEST_CASE("a Rollback over another variable set commits both sets", "[dag][probe
     }
 }
 
-TEST_CASE("a walk between a Probe and its Rollback drops the probe's log", "[dag][probe]") {
+TEST_CASE("a walk or a setter between a Probe and its Rollback drops the probe's log",
+          "[dag][probe]") {
     // A Commit of y between x's probe and its Rollback moves `row` on. The
     // log's `row` predates y's move, so writing it back would undo that move;
     // the Rollback must instead commit x, which re-reads the current terms.
@@ -1792,6 +1793,36 @@ TEST_CASE("a walk between a Probe and its Rollback drops the probe's log", "[dag
         m.var_mut(h.y).value = 0.5;
         delta_evaluate(m, &h.y, 1);
         delta_evaluate(m, &h.x, 1, DeltaMode::Rollback);
+        require_matches_full_evaluate(m);
+    }
+
+    // The two setters that write node values outside a walk, each between x's
+    // probe and its Rollback over the restored x. A log written back over
+    // either would restore the row the setter rewrote: the objective row
+    // (sqrt(4) - bound, violated so the bound shows) or the domain row of an
+    // x below sqrt's floor (whose value carries the margin).
+    for (const bool objective_bound : {true, false}) {
+        CAPTURE(objective_bound);
+        constexpr double kInf = std::numeric_limits<double>::infinity();
+        Model m;
+        const int32_t xn = m.float_var(-kInf, kInf, "x");
+        m.minimize(m.sqrt_expr(xn));
+        m.close();
+        m.add_objective_soft_constraint();
+        m.set_objective_bound(1.0);
+        const int32_t x = vid(xn);
+        const double old_x = objective_bound ? 4.0 : -1.0;
+        m.var_mut(x).value = old_x;
+        full_evaluate(m);
+        m.var_mut(x).value = objective_bound ? 9.0 : -2.0;
+        probe_scalar_move(m, x, old_x);
+        if (objective_bound) {
+            m.set_objective_bound(0.5);
+        } else {
+            REQUIRE(m.set_domain_tolerance(0.25));
+        }
+        m.var_mut(x).value = old_x;
+        delta_evaluate(m, &x, 1, DeltaMode::Rollback);
         require_matches_full_evaluate(m);
     }
 }

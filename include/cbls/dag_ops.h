@@ -38,8 +38,9 @@ enum class DeltaMode : uint8_t {
     /// gets `rollback()`.
     ///
     /// Must directly follow a `Probe` over the same changed-variable set, in
-    /// the same order. Any other walk, `full_evaluate` or `reground_inc_sum`
-    /// in between drops the log, and the Rollback is then treated as `Commit`
+    /// the same order. Any other walk, `full_evaluate`, `reground_inc_sum`,
+    /// `Model::set_objective_bound` or `Model::set_domain_tolerance` in between
+    /// drops the log, and the Rollback is then treated as `Commit`
     /// -- the honest reading of a caller that moved the assignment without
     /// probing first -- apart from a custom node whose probe is still open,
     /// which gets `rollback()` and its saved value. A Rollback over a different

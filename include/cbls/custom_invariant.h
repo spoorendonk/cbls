@@ -237,8 +237,8 @@ private:
 /// `commit()`:
 ///
 ///  - the structural batch (`src/structural_batch.cpp`);
-///  - the inner solver's `probe_candidate` and `multi_var_newton_step`
-///    (`src/inner_solver.cpp`);
+///  - the inner solver's `multi_var_newton_step` (`src/inner_solver.cpp`; its
+///    scalar `probe_candidate` IS bracketed, Probe then Rollback);
 ///  - Novelty Jump's backtracking compound-move search
 ///    (`FeasibilityJump::novelty_jump_search`, `src/feasibility_jump.cpp`), which
 ///    is on the same per-candidate path the bracketed scalar probe is.
