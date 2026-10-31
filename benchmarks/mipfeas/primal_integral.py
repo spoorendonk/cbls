@@ -130,9 +130,27 @@ CONFIG_KEYS = (
     "inf_clamp",
     "propagate_bounds",
     "max_propagation_passes",
+    "lns",
+    "lns_interval",
+    "novelty_prob",
+    "unproductive_iters",
+    "perturbation_period",
     "workers",
     "parameters",
 )
+
+#: The engine knobs `cbls_mipfeas` took as flags in #267, at the values every
+#: row before them ran: LNS on at interval 3 (the runner's old constant) and the
+#: engine's defaults for the other three. A key at this value is dropped from
+#: the config cell, so an old row (no key) and a new default row share one cell
+#: and every table scored before #267 stays byte-identical.
+TUNABLE_DEFAULTS: dict[str, object] = {
+    "lns": True,
+    "lns_interval": 3,
+    "novelty_prob": 0.5,
+    "unproductive_iters": 300,
+    "perturbation_period": 100,
+}
 
 
 def config_string(result: dict[str, object]) -> str:
@@ -140,7 +158,8 @@ def config_string(result: dict[str, object]) -> str:
 
     One key is back-filled, and the opt-in engine flags (`exact_int_jump`,
     #216; `perturb_near_value`, #217; `objective_tie_break`, #218;
-    `restart_randomization` and `luby_restart_unit`, #239) dropped when off;
+    `restart_randomization` and `luby_restart_unit`, #239) dropped when off,
+    and #267's tunable knobs (TUNABLE_DEFAULTS) dropped at their defaults;
     see their lines.
     `share_objective_bound` (#179) did not exist before
     the shared bound, and at one thread it names no behaviour at all -- a single
@@ -169,6 +188,11 @@ def config_string(result: dict[str, object]) -> str:
     # #239's Luby schedule, whose off arm is a unit of 0 rather than False.
     if cells.get("luby_restart_unit") == 0:
         del cells["luby_restart_unit"]
+    # #267's tunable knobs, the same rule at their pre-#267 values. The type is
+    # compared too, because `1 == True` in Python: `lns=1` is not the default.
+    for key, default in TUNABLE_DEFAULTS.items():
+        if key in cells and type(cells[key]) is type(default) and cells[key] == default:
+            del cells[key]
     return ";".join(f"{k}={cells[k]}" for k in CONFIG_KEYS if k in cells)
 
 

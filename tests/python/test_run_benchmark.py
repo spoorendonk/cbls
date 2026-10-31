@@ -28,6 +28,7 @@ from benchmarks.mipfeas import run_benchmark
 from benchmarks.mipfeas.primal_integral import (
     MAX_WORKER_LOSS_ATTEMPTS,
     NO_SOLUTION_GAP,
+    TUNABLE_DEFAULTS,
     check_uniform_configuration,
     config_string,
     score_instance,
@@ -191,6 +192,147 @@ def test_the_runner_rejects_a_nonpositive_budget(tmp_path: Path) -> None:
     assert result.returncode == 2
     assert "--budget: 'notanumber' is not a number" in result.stderr
     assert "--budget must be a positive" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("flags", "said"),
+    [
+        (["--lns-interval", "0"], "--lns-interval must be >= 1"),
+        (["--no-lns", "--lns-interval", "5"], "--lns-interval has no effect with --no-lns"),
+        (["--novelty-prob", "1.5"], "--novelty-prob must be in [0, 1]"),
+        (["--novelty-prob", "nan"], "--novelty-prob must be in [0, 1]"),
+        (
+            ["--no-compound-moves", "--novelty-prob", "0.2"],
+            "--novelty-prob has no effect without --compound-moves",
+        ),
+        (["--unproductive-iters", "-1"], "--unproductive-iters must be >= 0"),
+        (["--unproductive-iters", "1.5"], "--unproductive-iters"),
+        (["--perturbation-period", "0"], "--perturbation-period must be >= 1"),
+        (["--lns-interval"], "Unknown argument: --lns-interval"),
+        # The shared flags this runner does not take stay unknown (#267).
+        (["--no-float-hook"], "Unknown argument: --no-float-hook"),
+        (["--max-iterations", "5"], "Unknown argument: --max-iterations"),
+    ],
+    ids=[
+        "lns-interval-zero",
+        "lns-interval-without-lns",
+        "novelty-prob-above-one",
+        "novelty-prob-nan",
+        "novelty-prob-without-compound-moves",
+        "unproductive-iters-negative",
+        "unproductive-iters-not-an-integer",
+        "perturbation-period-zero",
+        "lns-interval-without-a-value",
+        "no-float-hook-not-taken",
+        "max-iterations-not-taken",
+    ],
+)
+def test_the_runner_refuses_a_tuning_flag_it_cannot_run(
+    tmp_path: Path, flags: list[str], said: str
+) -> None:
+    """#267's shared search flags keep the shared refusals, before any solve."""
+    out_dir = tmp_path / "results"
+    result = subprocess.run(
+        [str(_binary()), *("--instance", "anything", "--out-dir", str(out_dir)), *flags],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 2
+    assert said in result.stderr
+    assert not out_dir.exists()
+
+
+def _run_tiny(tmp_path: Path, name: str, threads: int, flags: list[str]) -> dict[str, object]:
+    """One 0.3 s run of the tiny MPS; its result row."""
+    from test_verify_solution import TINY_MPS
+
+    inst_dir = tmp_path / "instances"
+    if not inst_dir.exists():
+        inst_dir.mkdir()
+        (inst_dir / "tiny.mps.gz").write_bytes(gzip.compress(TINY_MPS.encode()))
+    out_dir = tmp_path / name
+    completed = subprocess.run(
+        [
+            str(_binary()),
+            *("--instance", "tiny", "--inst-dir", str(inst_dir), "--out-dir", str(out_dir)),
+            *("--budget", "0.3", "--threads", str(threads), *flags),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    row: dict[str, object] = json.loads((out_dir / "tiny.json").read_text())
+    return row
+
+
+def _count(row: dict[str, object], key: str) -> int:
+    value = row[key]
+    assert isinstance(value, int), key
+    return value
+
+
+@pytest.mark.parametrize("threads", [1, 2], ids=["solve", "portfolio"])
+def test_each_tuning_flag_reaches_the_search(tmp_path: Path, threads: int) -> None:
+    """Two values of each #267 flag give two different runs, on both paths.
+
+    Each pair is chosen so that a counter tells the runs apart by a wide margin
+    on a 0.3 s wall budget, which a flag dropped on either path (the
+    single-threaded `solve()` or the portfolio's per-worker config and LNS
+    factory) would not. The row also records each value.
+    """
+    pytest.importorskip("pyscipopt", reason="pyscipopt is in the 'benchmarks' extra, not 'dev'")
+
+    def run(name: str, flags: list[str]) -> dict[str, object]:
+        return _run_tiny(tmp_path, name, threads, flags)
+
+    # Novelty probability: 0 runs no Novelty batch, 1 runs no FJ batch.
+    none = run("novelty0", ["--novelty-prob", "0"])
+    every = run("novelty1", ["--novelty-prob", "1"])
+    assert none["novelty_prob"] == 0.0
+    assert every["novelty_prob"] == 1.0
+    assert _count(none, "novelty_batches") == 0 < _count(none, "fj_batches")
+    assert _count(every, "fj_batches") == 0 < _count(every, "novelty_batches")
+
+    # Perturbation period: a kick every stalled batch, against never.
+    often = run("period1", ["--perturbation-period", "1"])
+    never = run("period-huge", ["--perturbation-period", "1000000"])
+    assert often["perturbation_period"] == 1
+    assert never["perturbation_period"] == 1000000
+    assert _count(often, "perturbations") > 0 == _count(never, "perturbations")
+
+    # LNS, under a kick per stalled batch so that it has kicks to run on: on at
+    # interval 1, on at an interval no run reaches, and off.
+    kicks = ["--perturbation-period", "1"]
+    every_kick = run("lns1", [*kicks, "--lns-interval", "1"])
+    unreached = run("lns-huge", [*kicks, "--lns-interval", "1000000"])
+    off = run("no-lns", [*kicks, "--no-lns"])
+    assert every_kick["lns"] is True
+    assert every_kick["lns_interval"] == 1
+    assert unreached["lns_interval"] == 1000000
+    assert off["lns"] is False
+    assert _count(every_kick, "lns_repairs") > 0
+    assert _count(unreached, "lns_repairs") == 0
+    assert _count(off, "lns_repairs") == 0
+
+    # FJ's unproductive-batch exit: armed after 1 batch it kicks many times
+    # more often than the fixed cadence (0) does (~15x when measured, #267).
+    eager = run("unproductive1", ["--unproductive-iters", "1"])
+    fixed = run("unproductive0", ["--unproductive-iters", "0"])
+    assert eager["unproductive_iters"] == 1
+    assert fixed["unproductive_iters"] == 0
+    assert _count(eager, "perturbations") > 3 * max(_count(fixed, "perturbations"), 1)
+
+
+def test_a_default_row_records_the_tuning_flags_at_the_pre_267_values(tmp_path: Path) -> None:
+    """The default arm's row carries #267's keys at the values every older row
+    ran, and the scorer reads it as the same configuration as an older row."""
+    pytest.importorskip("pyscipopt", reason="pyscipopt is in the 'benchmarks' extra, not 'dev'")
+    row = _run_tiny(tmp_path, "default", 1, [])
+    for key, value in TUNABLE_DEFAULTS.items():
+        assert row[key] == value, key
+        assert type(row[key]) is type(value), key
+    older = {k: v for k, v in row.items() if k not in TUNABLE_DEFAULTS}
+    assert config_string(row) == config_string(older)
 
 
 # --- the invocations ------------------------------------------------------------

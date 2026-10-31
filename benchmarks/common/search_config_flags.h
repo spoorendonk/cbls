@@ -39,10 +39,10 @@ namespace cbls::bench {
 //   * `use_fj` -- both `solve()`'s argument and `SearchConfig::use_fj`. The
 //     first line of `solve()` in src/search.cpp is `(void)use_fj;` with the
 //     comment "GFJ is always the engine now; the flag is vestigial", and
-//     `config.use_fj` is read only by `ParallelSearch`, which no benchmark
-//     runner uses. `--fj`/`--no-fj` would therefore have been exactly the rho
-//     trap: the two runners already pass opposite values (minlplib true,
-//     uc-chped false) and get the same engine.
+//     `config.use_fj` is read only by `ParallelSearch`, which hands it to that
+//     same `solve()` (src/pool.cpp). `--fj`/`--no-fj` would therefore have been
+//     exactly the rho trap: the two runners already pass opposite values
+//     (minlplib true, uc-chped false) and get the same engine.
 //
 // Adding a flag here means checking the same thing: that src/search.cpp or
 // src/feasibility_jump.cpp actually reads the field, and that a test can show

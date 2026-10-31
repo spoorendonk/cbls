@@ -20,8 +20,11 @@
 // missing instance must not be scored as "found nothing" (see issue #103, where
 // a runner emptied a published table by skipping every absent instance).
 
+#include <algorithm>
+#include <array>
 #include <atomic>
 #include <benchmarks/common/runner_args.h>
+#include <benchmarks/common/search_config_flags.h>
 #include <benchmarks/mipfeas/worker_accounting.h>
 #include <cbls/cbls.h>
 #include <cbls/io_mps.h>
@@ -33,6 +36,7 @@
 #include <exception>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iomanip>
 #include <limits>
 #include <memory>
@@ -44,12 +48,27 @@
 
 namespace {
 
-// LNS settings, unchanged from the single-threaded path they were written for
-// and named so the portfolio's per-worker factories cannot drift from it: the
-// two paths must differ in concurrency and in nothing else, or a --threads A/B
-// measures two engines.
+// The LNS destroy fraction, unchanged from the single-threaded path it was
+// written for and named so the portfolio's per-worker factory cannot drift from
+// it: the two paths must differ in concurrency and in nothing else, or a
+// --threads A/B measures two engines. The LNS interval was a constant here too
+// (3, the engine's default); it is now `--lns-interval` (#267).
 constexpr double kLnsFraction = 0.3;
-constexpr int kLnsInterval = 3;
+
+// The shared search flags (benchmarks/common/search_config_flags.h) this runner
+// takes, for `xk tune` (#267). Only these: the rest of the common and scalar
+// families either duplicate this runner's own flags (--compound-moves,
+// --perturb-near-value, --no-objective-tie-break, each recorded under its own
+// JSON key since before the shared table had them) or do not fit its protocol
+// (--no-time-limit and --max-iterations against a Primal Integral over a wall
+// budget; --no-float-hook, which no MIPfeas arm has asked for). A shared flag
+// not listed here falls through to "Unknown argument", as before.
+constexpr std::array<const char*, 5> kSharedSearchFlags = {"--no-lns", "--lns-interval",
+                                                           "--novelty-prob", "--unproductive-iters",
+                                                           "--perturbation-period"};
+
+/// The families the flags above belong to, for validate_search_flags().
+constexpr unsigned kSharedSearchFamilies = cbls::bench::kScalarRunnerSearchFlags;
 
 struct Args {
     std::string instance;
@@ -114,6 +133,13 @@ struct Args {
     // at --threads 1, which has no pool, but recorded there too so every row
     // carries the same keys.
     bool share_objective_bound = true;
+    // The kSharedSearchFlags arms (#267): LNS on/off and its interval, the
+    // Novelty probability, FJ's unproductive-batch exit and the kick period.
+    // Only those fields are read; the struct's other fields stay at their
+    // defaults, as nothing here can set them. Each is recorded per result and is
+    // a config key in the scorer, dropped there at its default so a row from
+    // before these flags is read as the default arm.
+    cbls::bench::SearchFlags search;
     // Where to write the solution vector of a feasible run, for independent
     // verification against the original instance file (#138). Empty means "do
     // not write one" -- the driver passes it, a bare invocation need not.
@@ -130,6 +156,8 @@ void print_usage() {
         "                    [--no-compound-moves] [--exact-int-jump]\n"
         "                    [--perturb-near-value] [--no-objective-tie-break]\n"
         "                    [--restart-randomization] [--luby-restart-unit N]\n"
+        "                    [--no-lns] [--lns-interval N] [--novelty-prob P]\n"
+        "                    [--unproductive-iters N] [--perturbation-period N]\n"
         "                    [--threads N]\n"
         "                    [--share-bound | --no-share-bound]\n"
         "                    [--solution-dir DIR]\n"
@@ -175,6 +203,15 @@ int parse_luby_restart_unit(const char* text) {
 bool parse_search_flag(cbls::bench::ArgCursor& c, Args& a) {
     const std::string s = c.arg();
     const char* v = nullptr;
+    const bool shared = std::any_of(kSharedSearchFlags.begin(), kSharedSearchFlags.end(),
+                                    [&s](const char* flag) { return s == flag; });
+    // The shared parse, not a copy of it: the value policy (a non-integer exits
+    // 2, a non-number double becomes NaN for validation to refuse) is the other
+    // runners'. A value flag with no value does not match and falls through to
+    // "Unknown argument".
+    if (shared) {
+        return cbls::bench::match_search_flag(c, s, a.search);
+    }
     if (s == "--compound-moves") {
         a.compound_moves = true;
     } else if (s == "--no-compound-moves") {
@@ -442,6 +479,11 @@ void write_result(const Args& args, const nlohmann::json& extra) {
     j["max_propagation_passes"] = args.max_propagation_passes;
     j["threads"] = args.threads;
     j["share_objective_bound"] = args.share_objective_bound;
+    j["lns"] = args.search.lns;
+    j["lns_interval"] = args.search.lns_interval;
+    j["novelty_prob"] = args.search.novelty_prob;
+    j["unproductive_iters"] = args.search.unproductive_iters;
+    j["perturbation_period"] = args.search.perturbation_period;
     j["commit_sha"] = args.commit_sha;
 
     // Write-then-rename: a job killed mid-write must leave either the previous
@@ -498,6 +540,18 @@ int validate_args(const Args& args) {
     // resume then treats as work completed.
     if (!(args.inf_clamp > 0.0)) {
         std::fprintf(stderr, "--inf-clamp must be a positive bound\n");
+        return 2;
+    }
+    // The shared ranges and no-effect refusals (#267). Compound moves is this
+    // runner's own flag, so it is copied in for "--novelty-prob has no effect
+    // without --compound-moves"; the other fields the check reads are at their
+    // defaults, which pass. No `--time-limit` exists here to conflict with.
+    cbls::bench::SearchFlags search = args.search;
+    search.compound_moves = args.compound_moves;
+    std::string error;
+    if (!cbls::bench::validate_search_flags(search, kSharedSearchFamilies,
+                                            /*time_limit_set=*/false, error)) {
+        std::fprintf(stderr, "%s\n", error.c_str());
         return 2;
     }
     return 0;
@@ -588,9 +642,14 @@ cbls::SearchResult solve_portfolio(const Args& args, cbls::MpsToModelResult& bui
     auto hook_factory = [](cbls::Model&) -> std::shared_ptr<cbls::InnerSolverHook> {
         return std::make_shared<cbls::FloatIntensifyHook>();
     };
-    auto lns_factory = []() -> std::shared_ptr<cbls::LNS> {
-        return std::make_shared<cbls::LNS>(kLnsFraction);
-    };
+    // Empty under --no-lns: ParallelSearch then gives no worker an LNS, as
+    // lns_argument() gives the single-threaded solve() a null one.
+    std::function<std::shared_ptr<cbls::LNS>()> lns_factory;
+    if (args.search.lns) {
+        lns_factory = []() -> std::shared_ptr<cbls::LNS> {
+            return std::make_shared<cbls::LNS>(kLnsFraction);
+        };
+    }
     cbls::ParallelConfig par_config;
     par_config.n_threads = args.threads;
     par_config.share_objective_bound = args.share_objective_bound;
@@ -719,7 +778,15 @@ int run_benchmark(int argc, char** argv) {
     cfg.fj_objective_tie_break = args.objective_tie_break;
     cfg.restart_randomization = args.restart_randomization;
     cfg.luby_restart_unit = args.luby_restart_unit;
-    cfg.lns_interval = kLnsInterval;
+    // The kSharedSearchFlags arms (#267), field by field rather than through
+    // apply_search_flags(), which would also write the fields this runner sets
+    // from its own flags above. validate_args() has range-checked the narrowed
+    // ones. The portfolio reads `cfg.lns_interval`; the single-threaded solve()
+    // takes it as an argument, set below from the same field.
+    cfg.lns_interval = cbls::bench::lns_interval_argument(args.search);
+    cfg.novelty_jump_probability = args.search.novelty_prob;
+    cfg.unproductive_iterations = args.search.unproductive_iters;
+    cfg.perturbation_period = static_cast<int>(args.search.perturbation_period);
 
     // One model per portfolio worker, replicated BEFORE the solve bracket opens.
     // Since #157 a replica shares the master's immutable structure and copies only
@@ -781,8 +848,9 @@ int run_benchmark(int argc, char** argv) {
         } else {
             cbls::FloatIntensifyHook hook;
             cbls::LNS lns(kLnsFraction);
-            result = cbls::solve(built.model, args.budget, args.seed, /*use_fj=*/true, &hook, &lns,
-                                 kLnsInterval, &recorder, cfg);
+            result = cbls::solve(built.model, args.budget, args.seed, /*use_fj=*/true, &hook,
+                                 cbls::bench::lns_argument(args.search, lns), cfg.lns_interval,
+                                 &recorder, cfg);
         }
         trace_points = recorder.n_points();
     } catch (const std::exception& e) {
