@@ -208,6 +208,10 @@ def test_the_runner_rejects_a_nonpositive_budget(tmp_path: Path) -> None:
         (["--unproductive-iters", "-1"], "--unproductive-iters must be >= 0"),
         (["--unproductive-iters", "1.5"], "--unproductive-iters"),
         (["--perturbation-period", "0"], "--perturbation-period must be >= 1"),
+        (
+            ["--luby-restart-unit", "1", "--unproductive-iters", "1"],
+            "--unproductive-iters has no effect with --luby-restart-unit",
+        ),
         (["--lns-interval"], "Unknown argument: --lns-interval"),
         # The shared flags this runner does not take stay unknown (#267).
         (["--no-float-hook"], "Unknown argument: --no-float-hook"),
@@ -222,6 +226,7 @@ def test_the_runner_rejects_a_nonpositive_budget(tmp_path: Path) -> None:
         "unproductive-iters-negative",
         "unproductive-iters-not-an-integer",
         "perturbation-period-zero",
+        "unproductive-iters-under-luby",
         "lns-interval-without-a-value",
         "no-float-hook-not-taken",
         "max-iterations-not-taken",
@@ -314,8 +319,9 @@ def test_each_tuning_flag_reaches_the_search(tmp_path: Path, threads: int) -> No
     assert _count(unreached, "lns_repairs") == 0
     assert _count(off, "lns_repairs") == 0
 
-    # FJ's unproductive-batch exit: armed after 1 batch it kicks many times
-    # more often than the fixed cadence (0) does (~15x when measured, #267).
+    # FJ's unproductive-batch exit: armed at 1 iteration without improvement, it
+    # ends batches early and kicks many times more often than the fixed cadence
+    # (0) does (~15x when measured, #267).
     eager = run("unproductive1", ["--unproductive-iters", "1"])
     fixed = run("unproductive0", ["--unproductive-iters", "0"])
     assert eager["unproductive_iters"] == 1

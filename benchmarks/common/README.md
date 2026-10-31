@@ -24,18 +24,22 @@ tests run.
 `search_config_flags.h` is the per-arm search configuration (#136): the flag
 table, its parse, its validation, its application onto `cbls::SearchConfig` and
 `solve()`'s arguments, and the canonical `search_config` cell every row carries.
-`minlplib` and `uc-chped` share it. Two rules it exists to enforce: **a flag
+`minlplib` and `uc-chped` share it; `mipfeas` takes five of its flags (#267:
+`--no-lns`, `--lns-interval`, `--novelty-prob`, `--unproductive-iters`,
+`--perturbation-period`), parsed and validated here but recorded under its own
+JSON keys. Two rules it exists to enforce: **a flag
 whose field the engine ignores must not ship** (the header names the two
 rejected — the GLS ρ and `use_fj`, whose argument `solve()` opens by discarding),
 and **a non-default arm may never write a published comparison table**, which is
-why `first_non_default_search_flag` feeds both runners' `resolve_out_csv`. Every
+why `first_non_default_search_flag` feeds `minlplib`'s and `uc-chped`'s
+`resolve_out_csv`. Every
 flag has a behavioural probe in `tests/test_bench_flags.cpp`; add one with the
 next flag, and check it fails when the apply step is neutered.
 
 Whether the engine reads a flag depends on the model too, so every flag belongs
 to a **family** (common, scalar, structural, neighbour; #198) and every runner
-declares the families its models can use: `minlplib` and `uc-chped` declare
-`kScalarRunnerSearchFlags`, a List runner the common, structural and — when it
+declares the families its models can use: `minlplib`, `uc-chped` and `mipfeas`
+declare `kScalarRunnerSearchFlags`, a List runner the common, structural and — when it
 supplies the cost — neighbour families. A flag outside the declared set is
 refused by `validate_search_flags`, and the `search_config` cell and `--help`
 carry the declared families only, which keeps a scalar runner's cell

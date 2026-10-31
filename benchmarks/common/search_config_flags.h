@@ -76,7 +76,8 @@ inline constexpr unsigned kScalarSearchFlags = 1U << 1U;
 inline constexpr unsigned kStructuralSearchFlags = 1U << 2U;
 inline constexpr unsigned kNeighbourSearchFlags = 1U << 3U;
 inline constexpr std::size_t kSearchFlagFamilyCount = 4;
-/// What a runner over scalar models (minlplib, uc-chped) declares.
+/// What a runner over scalar models (minlplib, uc-chped, and mipfeas for the
+/// five shared flags it takes, #267) declares.
 inline constexpr unsigned kScalarRunnerSearchFlags = kCommonSearchFlags | kScalarSearchFlags;
 
 /// The family's spelling in a refusal.
@@ -98,7 +99,7 @@ struct SearchFlags {
     // to `SearchConfig`'s defaults cannot silently make "default" on the row
     // mean something the engine no longer does. The two booleans that are not
     // `SearchConfig` fields (the hook and LNS are `solve()` pointer arguments)
-    // default to what both runners pass today: on.
+    // default to what every runner passes today: on.
     bool float_hook = true;
     bool lns = true;
     // Held as int64_t even where the engine field is `int`: parse_int64 is the
@@ -111,7 +112,7 @@ struct SearchFlags {
     int64_t perturbation_period = SearchConfig{}.perturbation_period;
     int64_t max_iterations = SearchConfig{}.max_iterations;
     // Not a `SearchConfig` field: `solve()` disables its wall clock when handed
-    // `time_limit <= 0`, and both runners guard their `--time-limit` as
+    // `time_limit <= 0`, and minlplib and uc-chped guard their `--time-limit` as
     // strictly positive. This is the way to ask for the iteration-budgeted,
     // clock-free arm without loosening that guard.
     bool no_time_limit = false;

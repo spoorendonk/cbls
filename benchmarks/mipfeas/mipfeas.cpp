@@ -554,6 +554,15 @@ int validate_args(const Args& args) {
         std::fprintf(stderr, "%s\n", error.c_str());
         return 2;
     }
+    // A no-effect refusal the shared check cannot make, because Luby restarts
+    // are this runner's own flag: with them on, Search stops watching progress
+    // (search.h, luby_restart_unit), so FJ never reads unproductive_iterations.
+    // Accepted, the pair would be a second config cell for the same run.
+    if (args.luby_restart_unit > 0 &&
+        args.search.unproductive_iters != cbls::SearchConfig{}.unproductive_iterations) {
+        std::fprintf(stderr, "--unproductive-iters has no effect with --luby-restart-unit\n");
+        return 2;
+    }
     return 0;
 }
 
