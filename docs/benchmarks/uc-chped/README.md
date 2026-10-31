@@ -366,7 +366,9 @@ for a reason:
 - **`batches`** — `SolveProgress::iteration`, the ViolationLS batch count (not
   `comparison.csv`'s `iterations`, which is the GLS count). It separates a flat
   tail meaning "converged" from one meaning "barely got going" — opposite
-  arguments about the budget.
+  arguments about the budget. Single-threaded only: at `--threads N > 1` the
+  portfolio rewrites a report's time and objective but not its iteration, so
+  the cell is the reporting worker's own count and is not monotone.
 - **`commit_sha`** — a search-trajectory change silently invalidates a profile,
   and without the commit the next reader cannot tell drift from a bug.
 

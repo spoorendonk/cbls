@@ -133,9 +133,10 @@ inline int64_t parse_int64(const char* flag, const std::string& text) {
 inline constexpr int kMaxThreads = 256;
 
 /// `--threads N`, range-checked rather than cast; reports and exits 2 outside
-/// [1, kMaxThreads]. 0 is refused rather than read as "one per core": a row
-/// records the concurrency it ran at, and a machine-dependent default would
-/// make two rows of one table incomparable.
+/// [1, kMaxThreads]. 0 is refused rather than read as "one per core": a
+/// machine-dependent default would make two runs of one command incomparable.
+/// `mipfeas` and `cvrp` record the count on every row; `minlplib` and
+/// `uc-chped` do not, and refuse any count above 1 onto their published tables.
 inline int parse_thread_count(const std::string& text) {
     const int64_t threads = parse_int64("--threads", text);
     if (threads < 1 || threads > kMaxThreads) {

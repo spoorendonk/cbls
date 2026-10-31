@@ -93,6 +93,10 @@ OWNED_FLAGS = frozenset(
         "--trace",
         "--periods",
         "--verify",
+        # Not set here, but the MINLPLib residual check and the MIPfeas status
+        # judge feasibility at it: a loosened tolerance would score as a better
+        # configuration and not reproduce under the published 1e-6.
+        "--feas-tol",
     }
 )
 
@@ -240,14 +244,21 @@ def main(argv: list[str] | None = None) -> int:
             print(f"tune_trial: {exc}", file=sys.stderr)
             return 2
         (out_dir / MIPFEAS_ENGINE).mkdir(exist_ok=True)
+    # A reused run directory must not show the last trial's cost if this one
+    # dies before writing its own.
+    (out_dir / "cost.json").unlink(missing_ok=True)
     cmd = runner_command(args, out_dir)
-    returncode = subprocess.run(cmd, check=False).returncode
+    try:
+        returncode = subprocess.run(cmd, check=False).returncode
+    except OSError as exc:
+        print(f"tune_trial: cannot run {cmd[0]}: {exc}", file=sys.stderr)
+        return 2
     cost: float | None = None
     error = ""
     if returncode == 0:
         try:
             cost = score(args, out_dir)
-        except ValueError as exc:
+        except (ValueError, KeyError, OSError, csv.Error) as exc:
             # Still a cost.json: a run with no readable score is a failed
             # trial, and the reason belongs beside it.
             error = str(exc)

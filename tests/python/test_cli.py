@@ -699,7 +699,9 @@ def test_uc_chped_runs_one_horizon_on_the_portfolio(tmp_path: Path) -> None:
 
     result = subprocess.run(
         [str(UC_CHPED_BINARY), str(inst_dir), "--instance", "ucp13", "--periods", "3"]
-        + ["--threads", "2", "--time-limit", "0.3", "--verify"]
+        # 1 s, not less: a worker that starts after the deadline counts as
+        # lost (#170) and fails the run, which a loaded machine can cause.
+        + ["--threads", "2", "--time-limit", "1", "--verify"]
         + ["--out", str(out), "--trace", str(trace)],
         capture_output=True,
         text=True,
@@ -1140,7 +1142,9 @@ def test_minlplib_runs_an_instance_on_the_portfolio(tmp_path: Path) -> None:
     trace = tmp_path / "t.csv"
 
     result = _run_minlplib(
-        *[str(inst_dir), "--instance", "alkylation", "--threads", "2", "--time-limit", "0.3"],
+        # 1 s, not less: a worker that starts after the deadline counts as
+        # lost (#170) and fails the run, which a loaded machine can cause.
+        *[str(inst_dir), "--instance", "alkylation", "--threads", "2", "--time-limit", "1"],
         *["--out", str(out), "--trace", str(trace)],
     )
     assert result.returncode == 0, result.stderr

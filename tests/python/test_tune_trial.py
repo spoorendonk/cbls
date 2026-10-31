@@ -247,7 +247,7 @@ def test_a_runner_refusal_is_passed_on_with_no_cost(tmp_path: Path) -> None:
 # --- review round 1 ---------------------------------------------------------
 
 
-@pytest.mark.parametrize("flag", ["--seed", "--time-limit=3"])
+@pytest.mark.parametrize("flag", ["--seed", "--time-limit=3", "--feas-tol"])
 def test_refuses_a_study_flag_that_overrides_the_wrappers_own(
     flag: str, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -287,3 +287,13 @@ def test_an_unreadable_result_still_leaves_a_null_cost(tmp_path: Path) -> None:
     assert record["cost"] is None
     assert record["returncode"] == 1
     assert record["error"]
+
+
+def test_a_run_that_cannot_start_leaves_no_stale_cost(tmp_path: Path) -> None:
+    """A reused run directory must not hand xk the previous trial's cost."""
+    out = tmp_path / "run"
+    out.mkdir()
+    (out / "cost.json").write_text('{"cost": 0.0}\n')
+    argv = ["cvrp", "--build-dir", str(tmp_path / "no-build"), "--out-dir", str(out)]
+    assert tune_trial.main([*argv, "--instance", "X-n101-k25", "--seed", "1", "--budget", "1"]) == 2
+    assert not (out / "cost.json").exists()
