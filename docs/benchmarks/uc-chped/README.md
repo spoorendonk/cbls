@@ -321,8 +321,12 @@ is renamed into place only on a run that exited 0, so a refused or killed run
 leaves the committed log matching the committed table.
 
 `--feas-tol T` overrides the tolerance, `--time-limit S` overrides the
-per-horizon budget map, `--seed N` the seed, and `--instance NAME` restricts the
-roster. `--instance` and `--time-limit` are refused outright when the resolved `--out` path *is*
+per-horizon budget map, `--seed N` the seed, `--instance NAME` restricts the
+roster and `--periods N` its horizons (one (file, horizon) per run is the shape a
+tuning study scores, #262; a horizon no selected file has is refused).
+`--threads N` runs the `ParallelSearch` portfolio instead of the single-threaded
+`solve()` the table measures. `--instance`, `--periods`, `--threads` and
+`--time-limit` are refused outright when the resolved `--out` path *is*
 the published table above — a partial roster or a shortened budget cannot become
 the published result, whether the path was defaulted or spelled out. Writing
 that file at all requires `--commit`, so a published row always names the engine

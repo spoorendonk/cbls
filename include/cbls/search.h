@@ -712,11 +712,10 @@ int64_t luby(int64_t i);
 /// `coord` is `ParallelSearch`'s cross-worker channel: non-null only there. With
 /// it null -- every call site outside that class -- the search reads and writes
 /// nothing shared and its trajectory is bit-identical to the run without the
-/// parameter. `tests/test_parallel.cpp` pins that. Three of the four benchmark
-/// runners are single-threaded and always pass null; `benchmarks/mipfeas` does
-/// too at its default `--threads 1`, which is the arm every published MIPfeas
-/// figure was measured on and the one that keeps the same-algorithm comparison
-/// about the engine rather than about the portfolio.
+/// parameter. `tests/test_parallel.cpp` pins that. Every benchmark runner passes
+/// null at its default `--threads 1`, which is the arm every published figure
+/// was measured on and, for MIPfeas, the one that keeps the same-algorithm
+/// comparison about the engine rather than about the portfolio.
 /// Throws `std::invalid_argument` on a `SearchConfig` the search cannot run:
 /// today, `batch_iterations <= 0` or `luby_restart_unit < 0`. Every batch loop
 /// counts its work against that budget, and at <= 0 a loop whose only exit is

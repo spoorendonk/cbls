@@ -124,4 +124,25 @@ inline int64_t parse_int64(const char* flag, const std::string& text) {
     return value;
 }
 
+/// Upper bound on `--threads`. Not a hardware limit: a portfolio worker shares
+/// the model's DAG but owns its own variables, node values and search tables
+/// (#157), so memory still grows with this number -- 0.34-0.39 GiB per worker on
+/// MIPfeas's `neos-5114902-kasavu` at `06eb3e5`, against 0.75-0.86 GiB when the
+/// DAG was copied too, and more on an instance with more columns. A typo'd 1000
+/// would be an out-of-memory kill rather than an error message.
+inline constexpr int kMaxThreads = 256;
+
+/// `--threads N`, range-checked rather than cast; reports and exits 2 outside
+/// [1, kMaxThreads]. 0 is refused rather than read as "one per core": a row
+/// records the concurrency it ran at, and a machine-dependent default would
+/// make two rows of one table incomparable.
+inline int parse_thread_count(const std::string& text) {
+    const int64_t threads = parse_int64("--threads", text);
+    if (threads < 1 || threads > kMaxThreads) {
+        std::fprintf(stderr, "--threads must be in [1, %d]\n", kMaxThreads);
+        std::exit(2);
+    }
+    return static_cast<int>(threads);
+}
+
 }  // namespace cbls::bench

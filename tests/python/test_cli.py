@@ -234,14 +234,25 @@ def _uc_chped_scratch(tmp_path: Path) -> Path:
     return dst
 
 
-@pytest.mark.parametrize("flag", ["--time-limit", "--instance"])
-def test_uc_chped_refuses_a_partial_run_onto_the_published_table(flag: str, tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("flag", "value"),
+    [
+        ("--time-limit", "0.2"),
+        ("--instance", "ucp13"),
+        # One horizon per run and the portfolio are tuning shapes (#262), not
+        # the single-threaded full-roster protocol the table publishes.
+        ("--periods", "3"),
+        ("--threads", "2"),
+    ],
+)
+def test_uc_chped_refuses_a_partial_run_onto_the_published_table(
+    flag: str, value: str, tmp_path: Path
+) -> None:
     if not UC_CHPED_BINARY.exists():
         pytest.skip("cbls_uc_chped not built")
     inst_dir = _uc_chped_scratch(tmp_path)
     published = inst_dir / "comparison.csv"
     before = published.read_bytes()
-    value = "0.2" if flag == "--time-limit" else "ucp13"
 
     # --out spelled out, which is the shape the README documents.
     result = subprocess.run(
@@ -655,6 +666,59 @@ def test_uc_chped_rejects_a_trace_flag_with_no_value(tmp_path: Path) -> None:
     assert not (tmp_path / "o.csv").exists()
 
 
+def test_uc_chped_refuses_a_horizon_no_selected_file_has(tmp_path: Path) -> None:
+    """A run asked for one row and finding none would write an empty table at
+    exit 0: a tuning study would read that as a missing value, not a typo."""
+    if not UC_CHPED_BINARY.exists():
+        pytest.skip("cbls_uc_chped not built")
+    inst_dir = _uc_chped_scratch(tmp_path)
+    out = tmp_path / "o.csv"
+
+    result = subprocess.run(
+        [str(UC_CHPED_BINARY), str(inst_dir), "--instance", "ucp13", "--periods", "48"]
+        + ["--out", str(out)],
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+
+    assert result.returncode == 2, result.stdout
+    assert "--periods 48 is not a horizon of the selected instances" in result.stderr
+    assert not out.exists()
+
+
+def test_uc_chped_runs_one_horizon_on_the_portfolio(tmp_path: Path) -> None:
+    """The tuning shape (#262): one (file, horizon) on `ParallelSearch` gives one
+    verified measured row, the portfolio's stream reaches the trace, and the
+    row reports the best incumbent that stream saw."""
+    if not UC_CHPED_BINARY.exists():
+        pytest.skip("cbls_uc_chped not built")
+    inst_dir = _uc_chped_scratch(tmp_path)
+    out = tmp_path / "o.csv"
+    trace = tmp_path / "t.csv"
+
+    result = subprocess.run(
+        [str(UC_CHPED_BINARY), str(inst_dir), "--instance", "ucp13", "--periods", "3"]
+        + ["--threads", "2", "--time-limit", "0.3", "--verify"]
+        + ["--out", str(out), "--trace", str(trace)],
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    assert result.returncode == 0, result.stderr
+
+    lines = [ln for ln in out.read_text().splitlines() if not ln.startswith("#")]
+    rows = list(csv.DictReader(lines))
+    measured = [r for r in rows if r["method"] == "CBLS ViolationLS"]
+    assert [(r["instance"], r["periods"]) for r in measured] == [("ucp13", "3")]
+    assert measured[0]["verified"] == "true", measured[0]
+    incumbents = list(csv.DictReader(trace.read_text().splitlines()))
+    assert incumbents, "the portfolio's stream never reached the trace"
+    assert float(measured[0]["objective"]) == pytest.approx(
+        min(float(p["objective"]) for p in incumbents if p["objective"]), rel=1e-6
+    )
+
+
 # The same two properties on the MINLPLib runner. Its rows are cheap to provoke:
 # a roster naming an instance whose .nl is absent writes the runner's
 # "not found" row without solving anything, and that row is exactly the
@@ -1031,9 +1095,12 @@ def test_minlplib_rejects_a_negative_unproductive_iters(value: str, tmp_path: Pa
     assert "--unproductive-iters must be >= 0" in result.stderr, result.stderr
 
 
-@pytest.mark.parametrize("flag", ["--time-limit", "--seed", "--feas-tol"])
+@pytest.mark.parametrize(
+    ("flag", "value"),
+    [("--time-limit", "1"), ("--seed", "1"), ("--feas-tol", "1"), ("--threads", "2")],
+)
 def test_minlplib_refuses_an_off_protocol_run_onto_the_published_table(
-    flag: str, tmp_path: Path
+    flag: str, value: str, tmp_path: Path
 ) -> None:
     """The budget and the numerics belong in the guard, not just the roster.
 
@@ -1051,7 +1118,7 @@ def test_minlplib_refuses_an_off_protocol_run_onto_the_published_table(
     before = published.read_bytes()
 
     result = subprocess.run(
-        [str(MINLPLIB_BINARY), str(inst_dir), flag, "1"],
+        [str(MINLPLIB_BINARY), str(inst_dir), flag, value],
         capture_output=True,
         text=True,
         timeout=300,
@@ -1060,6 +1127,30 @@ def test_minlplib_refuses_an_off_protocol_run_onto_the_published_table(
     assert result.returncode == 2, result.stdout
     assert flag in result.stderr, result.stderr
     assert published.read_bytes() == before, "the published table was modified"
+
+
+def test_minlplib_runs_an_instance_on_the_portfolio(tmp_path: Path) -> None:
+    """`--threads 2` (#262): one row, feasible, its residual read from the
+    portfolio's best restored into the model, and the portfolio's stream in the
+    trace."""
+    if not MINLPLIB_BINARY.exists():
+        pytest.skip("cbls_minlplib not built")
+    inst_dir = Path(__file__).resolve().parents[2] / "benchmarks" / "instances" / "minlplib"
+    out = tmp_path / "o.csv"
+    trace = tmp_path / "t.csv"
+
+    result = _run_minlplib(
+        *[str(inst_dir), "--instance", "alkylation", "--threads", "2", "--time-limit", "0.3"],
+        *["--out", str(out), "--trace", str(trace)],
+    )
+    assert result.returncode == 0, result.stderr
+
+    rows = list(csv.DictReader(out.read_text().splitlines()))
+    assert [(r["instance"], r["feasible"], r["note"]) for r in rows] == [
+        ("alkylation", "true", "feasible")
+    ]
+    incumbents = list(csv.DictReader(trace.read_text().splitlines()))
+    assert incumbents, "the portfolio's stream never reached the trace"
 
 
 def test_minlplib_requires_a_commit_to_write_the_published_table(tmp_path: Path) -> None:

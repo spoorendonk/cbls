@@ -233,7 +233,9 @@ while describing a different search. `cbls_uc_chped` carries the same flags,
 judged against its own protocol (compound moves off, so there `--compound-moves`
 is the arm and `--novelty-prob` alone is refused), and
 `benchmarks/common/search_config_flags.h` is the single definition of all of
-them.
+them. `--threads N` (#262) runs the `ParallelSearch` portfolio on N threads, one
+hook and one LNS per worker; the table measures the single-threaded `solve()`,
+so any N above 1 is refused onto it the same way.
 
 ### The ablation campaign
 

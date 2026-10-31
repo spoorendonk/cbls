@@ -35,8 +35,10 @@
 #include <exception>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <limits>
 #include <map>
+#include <memory>
 #include <ostream>
 #include <sstream>
 #include <string>
@@ -98,6 +100,15 @@ struct Args {
     // numerics/feastol.
     double feas_tol = cbls::kDefaultFeasibilityTolerance;
     std::vector<std::string> instances;  // optional roster filter (base names)
+    // Optional horizon filter: only these periods of the selected files. A tuning
+    // study (#262) scores one (instance, horizon) per run, and a file's horizons
+    // otherwise all run in one call. Held as typed, so a refusal names the value
+    // the caller gave.
+    std::vector<int64_t> periods;
+    // Portfolio workers. 1 is the single-threaded `solve()` this table has always
+    // measured; >1 runs `ParallelSearch` on that many threads, a different run at
+    // any thread count, so it is not the published protocol.
+    int threads = 1;
     bool commit_set = false;
     std::string commit_sha = "unknown";
     std::string out_csv;    // default: <inst_dir>/comparison.csv
@@ -196,6 +207,12 @@ void check_numeric_flags(Args& a) {
 const char* non_published_protocol(const Args& a) {
     if (!a.instances.empty()) {
         return "--instance";
+    }
+    if (!a.periods.empty()) {
+        return "--periods";
+    }
+    if (a.threads != 1) {
+        return "--threads";
     }
     const char* arm =
         cbls::bench::first_non_default_search_flag(a.search, published_search_flags());
@@ -394,6 +411,12 @@ Args parse_args(int argc, char** argv) {
             a.feas_tol = parse_double("--feas-tol", v);
         } else if (c.value_flag("--instance", v)) {
             a.instances.emplace_back(v);
+        } else if (c.value_flag("--periods", v)) {
+            // No range check of its own: filter_specs refuses a horizon no
+            // selected file has, which covers 0 and negatives too.
+            a.periods.push_back(parse_int64("--periods", v));
+        } else if (c.value_flag("--threads", v)) {
+            a.threads = cbls::bench::parse_thread_count(v);
         } else if (c.value_flag("--commit", v)) {
             a.commit_sha = v;
             a.commit_set = true;
@@ -407,8 +430,8 @@ Args parse_args(int argc, char** argv) {
         } else if (s == "--help" || s == "-h") {
             std::printf(
                 "Usage: cbls_uc_chped [inst-dir] [--verify] [--time-limit S] [--seed N]"
-                " [--feas-tol T] [--instance NAME ...] [--commit SHA] [--out CSV]"
-                " [--trace CSV]\n"
+                " [--feas-tol T] [--instance NAME ...] [--periods N ...] [--threads N]"
+                " [--commit SHA] [--out CSV] [--trace CSV]\n"
                 "       %s\n",
                 cbls::bench::search_flags_usage(kSearchFlagFamilies).c_str());
             std::exit(0);
@@ -683,10 +706,38 @@ cbls::SearchResult solve_instance(const Args& args, const cbls::uc_chped::UCInst
     // else, so the `search_config` cell on the row describes exactly the
     // configuration this call received (#136).
     cbls::bench::apply_search_flags(args.search, cfg);
-    return cbls::solve(ucm.model, cbls::bench::time_limit_argument(args.search, tlim), args.seed,
-                       false, cbls::bench::hook_argument(args.search, hook),
-                       cbls::bench::lns_argument(args.search, lns),
-                       cbls::bench::lns_interval_argument(args.search), callback, cfg);
+    const double time_limit = cbls::bench::time_limit_argument(args.search, tlim);
+    if (args.threads == 1) {
+        return cbls::solve(ucm.model, time_limit, args.seed, false,
+                           cbls::bench::hook_argument(args.search, hook),
+                           cbls::bench::lns_argument(args.search, lns),
+                           cbls::bench::lns_interval_argument(args.search), callback, cfg);
+    }
+    // The master overload, as cbls_cvrp: workers copy the warm-started model
+    // (skip_init keeps that start). One hook and one LNS per worker -- the search
+    // locks neither, so a shared instance would be a data race (pool.h).
+    std::function<std::shared_ptr<cbls::InnerSolverHook>(cbls::Model&)> hook_factory;
+    if (args.search.float_hook) {
+        hook_factory = [](cbls::Model&) { return std::make_shared<cbls::FloatIntensifyHook>(); };
+    }
+    std::function<std::shared_ptr<cbls::LNS>()> lns_factory;
+    if (args.search.lns) {
+        lns_factory = [] { return std::make_shared<cbls::LNS>(0.3); };
+    }
+    cfg.lns_interval = cbls::bench::lns_interval_argument(args.search);
+    cbls::ParallelConfig par;
+    par.n_threads = args.threads;
+    cbls::ParallelSearch ps(args.threads);
+    cbls::SearchResult result =
+        ps.solve(ucm.model, time_limit, args.seed, cfg, hook_factory, lns_factory, callback, par);
+    // The workers searched copies, so the master still holds its start: restore
+    // the returned best, which is the state run_one scores and verifies. Guarded:
+    // a portfolio whose deadline expired before any worker ran returns no state.
+    if (result.best_state.values.size() == ucm.model.num_vars()) {
+        ucm.model.restore_state(result.best_state);
+        cbls::full_evaluate(ucm.model);
+    }
+    return result;
 }
 
 /// A solve result scored against the instance's published bounds, before the
@@ -861,6 +912,45 @@ bool filter_specs(const Args& args, std::vector<InstanceSpec>& specs) {
     return true;
 }
 
+/// Apply `--periods` to the files `--instance` left. Refuses, as `--instance`
+/// does, a horizon that no selected file has: a run asked for one row and
+/// finding none would otherwise write an empty table at exit 0. A file left
+/// with no horizon is dropped.
+bool filter_periods(const Args& args, std::vector<InstanceSpec>& specs) {
+    if (args.periods.empty()) {
+        return true;
+    }
+    bool all_matched = true;
+    for (const int64_t want : args.periods) {
+        const bool found = std::any_of(specs.begin(), specs.end(), [&](const InstanceSpec& spec) {
+            return std::find(spec.periods.begin(), spec.periods.end(), want) != spec.periods.end();
+        });
+        if (!found) {
+            std::fprintf(stderr, "--periods %lld is not a horizon of the selected instances\n",
+                         static_cast<long long>(want));
+            all_matched = false;
+        }
+    }
+    if (!all_matched) {
+        return false;
+    }
+    std::vector<InstanceSpec> filtered;
+    for (const auto& spec : specs) {
+        InstanceSpec kept{spec.filename, {}};
+        for (const int horizon : spec.periods) {
+            if (std::find(args.periods.begin(), args.periods.end(), horizon) !=
+                args.periods.end()) {
+                kept.periods.push_back(horizon);
+            }
+        }
+        if (!kept.periods.empty()) {
+            filtered.push_back(std::move(kept));
+        }
+    }
+    specs = filtered;
+    return true;
+}
+
 void print_tally(const Args& args, const Tally& tally) {
     std::printf("=== Tally ===\n");
     std::printf("wrote:                %s\n", args.out_csv.c_str());
@@ -1000,6 +1090,9 @@ int run_benchmark(int argc, char** argv) {
     };
     if (!filter_specs(args, specs)) {
         std::fprintf(stderr, "--instance: unknown name(s) listed above (see --help)\n");
+        return 2;
+    }
+    if (!filter_periods(args, specs)) {
         return 2;
     }
 

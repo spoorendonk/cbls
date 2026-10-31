@@ -143,14 +143,7 @@ void print_usage() {
 // exit 2, and a bad integer is reported and exits 2 directly.
 using cbls::bench::parse_double;
 using cbls::bench::parse_int64;
-
-/// Upper bound on `--threads`. Not a hardware limit: a portfolio worker shares
-/// this model's DAG but owns its own variables, node values and search tables
-/// (#157), so memory still grows with this number -- 0.34-0.39 GiB per worker on
-/// `neos-5114902-kasavu` at `06eb3e5`, against 0.75-0.86 GiB when the DAG was
-/// copied too, and more on an instance with more columns. A typo'd 1000 would be
-/// an out-of-memory kill rather than an error message.
-constexpr int kMaxThreads = 256;
+using cbls::bench::parse_thread_count;
 
 /// Range-checked rather than cast: parse_int64 validates the syntax, but an
 /// out-of-range value would wrap to a small or negative pass count and silently
@@ -163,20 +156,6 @@ int parse_propagation_passes(const char* text) {
         std::exit(2);
     }
     return static_cast<int>(passes);
-}
-
-/// Range-checked for the same reason `--max-propagation-passes` is, with one
-/// addition: 0 is rejected rather than read as "one per core". The CLI spells 0
-/// that way, but a benchmark row must record the concurrency it actually ran at
-/// against a baseline given the same number, and a machine-dependent default
-/// would make two rows of one table incomparable.
-int parse_thread_count(const char* text) {
-    const int64_t threads = parse_int64("--threads", text);
-    if (threads < 1 || threads > kMaxThreads) {
-        std::fprintf(stderr, "--threads must be in [1, %d]\n", kMaxThreads);
-        std::exit(2);
-    }
-    return static_cast<int>(threads);
 }
 
 /// SearchConfig::luby_restart_unit's range (#239): 0 is off, and the field is

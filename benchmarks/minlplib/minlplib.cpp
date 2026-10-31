@@ -22,8 +22,10 @@
 #include <cstdlib>
 #include <exception>
 #include <fstream>
+#include <functional>
 #include <iomanip>
 #include <limits>
+#include <memory>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -54,6 +56,10 @@ struct Args {
     double feas_tol = cbls::kDefaultFeasibilityTolerance;
     bool feas_tol_set = false;
     std::vector<std::string> instances;  // optional override
+    // Portfolio workers. 1 is the single-threaded `solve()` this table has always
+    // measured; >1 runs `ParallelSearch` on that many threads, a different run at
+    // any thread count, so it is not the published protocol (#262).
+    int threads = 1;
     bool commit_set = false;
     std::string commit_sha = "unknown";
     std::string out_csv;    // default: <inst_dir>/comparison.csv
@@ -171,6 +177,8 @@ void resolve_out_csv(Args& a) {
         why = "--seed";
     } else if (a.feas_tol_set) {
         why = "--feas-tol";
+    } else if (a.threads != 1) {
+        why = "--threads";
     } else {
         why = cbls::bench::first_non_default_search_flag(a.search);
     }
@@ -229,6 +237,8 @@ Args parse_args(int argc, char** argv) {
             a.feas_tol_set = true;
         } else if (c.value_flag("--instance", v)) {
             a.instances.emplace_back(v);
+        } else if (c.value_flag("--threads", v)) {
+            a.threads = cbls::bench::parse_thread_count(v);
         } else if (c.value_flag("--commit", v)) {
             a.commit_sha = v;
             a.commit_set = true;
@@ -244,8 +254,8 @@ Args parse_args(int argc, char** argv) {
         } else if (s == "--help" || s == "-h") {
             std::printf(
                 "Usage: cbls_minlplib [inst-dir] [--time-limit S] [--seed N]"
-                " [--feas-tol T] [--instance NAME ...] [--commit SHA] [--out CSV]"
-                " [--trace CSV] [--solution-dir DIR]\n"
+                " [--feas-tol T] [--instance NAME ...] [--threads N] [--commit SHA]"
+                " [--out CSV] [--trace CSV] [--solution-dir DIR]\n"
                 "       %s\n",
                 cbls::bench::search_flags_usage(kSearchFlagFamilies).c_str());
             std::exit(0);
@@ -1028,6 +1038,54 @@ bool prepare_instance(std::ostream& csv, const Args& args, const std::string& na
     return true;
 }
 
+/// The search itself: the single-threaded `solve()` at `--threads 1`, the
+/// `ParallelSearch` master overload above it. Either way the model is left
+/// holding the state the row scores.
+cbls::SearchResult search_instance(const Args& args, cbls::Model& model,
+                                   cbls::SolveCallback* callback) {
+    cbls::SearchConfig cfg;
+    cfg.feasibility_tolerance = args.feas_tol;
+    // The ablation arm. Everything the flags touch is applied here and nowhere
+    // else, so the `search_config` cell on the row describes exactly the
+    // configuration this call received (#136).
+    cbls::bench::apply_search_flags(args.search, cfg);
+    const double time_limit = cbls::bench::time_limit_argument(args.search, args.time_limit);
+    if (args.threads == 1) {
+        cbls::FloatIntensifyHook hook;
+        cbls::LNS lns(0.3);
+        return cbls::solve(model, time_limit, args.seed, /*use_fj=*/true,
+                           cbls::bench::hook_argument(args.search, hook),
+                           cbls::bench::lns_argument(args.search, lns),
+                           cbls::bench::lns_interval_argument(args.search), callback, cfg);
+    }
+    // One hook and one LNS per worker: the search locks neither, so a shared
+    // instance would be a data race (pool.h). The callback is the portfolio's
+    // ordered stream, invoked under the pool's mutex.
+    std::function<std::shared_ptr<cbls::InnerSolverHook>(cbls::Model&)> hook_factory;
+    if (args.search.float_hook) {
+        hook_factory = [](cbls::Model&) { return std::make_shared<cbls::FloatIntensifyHook>(); };
+    }
+    std::function<std::shared_ptr<cbls::LNS>()> lns_factory;
+    if (args.search.lns) {
+        lns_factory = [] { return std::make_shared<cbls::LNS>(0.3); };
+    }
+    cfg.lns_interval = cbls::bench::lns_interval_argument(args.search);
+    cbls::ParallelConfig par;
+    par.n_threads = args.threads;
+    cbls::ParallelSearch ps(args.threads);
+    cbls::SearchResult result =
+        ps.solve(model, time_limit, args.seed, cfg, hook_factory, lns_factory, callback, par);
+    // The workers searched copies, so the master still holds its start: restore
+    // the returned best, which is the state the row's residual check and `.sol`
+    // read. Guarded: a portfolio whose deadline expired before any worker ran
+    // returns no state.
+    if (result.best_state.values.size() == model.num_vars()) {
+        model.restore_state(result.best_state);
+        cbls::full_evaluate(model);
+    }
+    return result;
+}
+
 /// Read, build, solve and score one instance, and write its row. Every exit
 /// writes exactly one row.
 void run_instance(std::ostream& csv, std::ofstream& trace, const Args& args,
@@ -1048,14 +1106,6 @@ void run_instance(std::ostream& csv, std::ofstream& trace, const Args& args,
     std::fflush(stdout);
 
     auto t0 = std::chrono::steady_clock::now();
-    cbls::FloatIntensifyHook hook;
-    cbls::LNS lns(0.3);
-    cbls::SearchConfig cfg;
-    cfg.feasibility_tolerance = args.feas_tol;
-    // The ablation arm. Everything the flags touch is applied here and nowhere
-    // else, so the `search_config` cell on the row below describes exactly the
-    // configuration this call received (#136).
-    cbls::bench::apply_search_flags(args.search, cfg);
     cbls::SearchResult result;
     try {
         // Test seam: the solve-error path needs a solve that throws, and since
@@ -1067,12 +1117,7 @@ void run_instance(std::ostream& csv, std::ofstream& trace, const Args& args,
             throw std::runtime_error("CBLS_MINLPLIB_THROW_IN_SOLVE names this instance");
         }
         TraceRecorder recorder(trace, name);
-        result =
-            cbls::solve(built.model, cbls::bench::time_limit_argument(args.search, args.time_limit),
-                        args.seed, /*use_fj=*/true, cbls::bench::hook_argument(args.search, hook),
-                        cbls::bench::lns_argument(args.search, lns),
-                        cbls::bench::lns_interval_argument(args.search),
-                        trace.is_open() ? &recorder : nullptr, cfg);
+        result = search_instance(args, built.model, trace.is_open() ? &recorder : nullptr);
     } catch (const std::exception& e) {
         std::printf(" ERROR solving: %s\n", e.what());
         ++t.errored;

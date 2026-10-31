@@ -52,10 +52,6 @@ constexpr unsigned kSearchFlagFamilies = cbls::bench::kCommonSearchFlags |
                                          cbls::bench::kStructuralSearchFlags |
                                          cbls::bench::kNeighbourSearchFlags;
 
-/// Upper bound on `--threads`; mipfeas's reasoning: a typo'd 1000 would be an
-/// out-of-memory kill rather than an error message.
-constexpr int kMaxThreads = 256;
-
 struct Args {
     std::string instance;
     std::string inst_dir = "benchmarks/instances/cvrp";
@@ -112,7 +108,7 @@ Args parse_args(int argc, char** argv) {
         } else if (c.value_flag("--seed", v)) {
             a.seed = static_cast<uint64_t>(parse_int64("--seed", v));
         } else if (c.value_flag("--threads", v)) {
-            a.threads = parse_bounded_int("--threads", v, 1, kMaxThreads);
+            a.threads = cbls::bench::parse_thread_count(v);
         } else if (c.value_flag("--fleet", v)) {
             a.fleet = parse_bounded_int("--fleet", v, 1, std::numeric_limits<int>::max());
         } else if (c.value_flag("--commit", v)) {

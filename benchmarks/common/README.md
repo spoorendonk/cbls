@@ -69,3 +69,17 @@ but do pin each driver's use of them — which jobs go in the tail, what a kille
 job records, which timeout a call carries — since that wiring is what a
 refactor silently drops. Drivers run as scripts reach the package through a
 `sys.path` shim on the repository root, as `run_ablation.py` always did.
+
+`tune_trial.py` is one `xk tune` evaluation (#262): it runs one runner once on
+one (instance, seed) — `mipfeas`, `minlplib`, `uc` (one horizon, `--periods`) or
+`cvrp` — and writes `<out-dir>/cost.json` with `{"cost": float|null, ...}`, read
+by a study's `[cost] json = "cost"`, `file = "{rundir}/cost.json"`. The value is
+the one each table scores, by that table's own code: the Primal Integral
+(`primal_integral.score_instance` against the roster's reference;
+`campaign_report.anytime_scores` against `bounds.csv`), UC's verified objective
+(for `relative = "reference"`), CVRP's `gap_percent`. `null` is a run the table
+would not score either (an error, an unverified row); xk counts it `failed`.
+Flags after `--` go to the runner, which is where a study's `{config}` lands.
+All four runners take `--threads N` (`parse_thread_count` in `runner_args.h`),
+the `ParallelSearch` portfolio above 1; `minlplib` and `uc-chped` refuse that
+onto their published tables, which measure the single-threaded `solve()`.
