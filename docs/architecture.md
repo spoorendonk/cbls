@@ -392,8 +392,9 @@ differences of its changed terms instead of re-summing it.
     solver's multi-variable pass, the structural batch) re-sums plainly and leaves the Sum
     untracked. So does `full_evaluate`. The next commit then re-sums it,
     checked.
-  - A Probe applies the commit's own updates and stashes each Sum as it first
-    writes it. The Rollback restores the stashed values to the bit.
+  - A Probe applies the commit's own updates, and logs its whole cone's values
+    before its first write (`ProbeUndo`, #270). The Rollback writes the log
+    back, Sums included, to the bit, without walking the cone again.
   - A model with no incremental Sum and no custom node takes the pre-#177
     walk verbatim.
 
@@ -3050,7 +3051,8 @@ Each coordinate step on a Float variable v reads only what v can move:
   readings.
 - **Probes and commits:** these go through `probe_scalar_move` / `Rollback` and
   `commit_scalar_move`, so an incremental Sum (#188) above v moves by its one
-  changed term rather than being re-summed. `solve()` re-grounds every drifted
+  changed term rather than being re-summed, and the Rollback writes the probe's
+  undo log back rather than walking the cone a second time (#270). `solve()` re-grounds every drifted
   Sum before the multi-variable pass, which reads raw, and again before it
   returns, early stop included, so the search's raw reads after the hook see
   re-grounded values.

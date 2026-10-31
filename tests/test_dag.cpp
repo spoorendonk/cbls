@@ -1687,6 +1687,111 @@ TEST_CASE("non-finite values take the re-sum, and the way back is bounded drift"
     require_matches_full_evaluate(m);
 }
 
+// ---------------------------------------------------------------------------
+// The probe's undo log (#270)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// a = x * x and b = y * y, two cones that meet only at `row`: a + b, an
+// incremental Sum, or a * b, which leaves the model on the plain walk.
+struct TwoCones {
+    int32_t x = -1;  // variable ids
+    int32_t y = -1;
+    int32_t a = -1;  // node ids
+    int32_t b = -1;
+    int32_t row = -1;
+};
+
+TwoCones build_two_cones(Model& m, bool inc_sum) {
+    const int32_t x = m.float_var(-10.0, 10.0);
+    const int32_t y = m.float_var(-10.0, 10.0);
+    TwoCones h;
+    h.a = m.prod(x, x);
+    h.b = m.prod(y, y);
+    h.row = inc_sum ? m.sum({h.a, h.b}) : m.prod(h.a, h.b);
+    m.add_constraint(m.leq(h.row, m.constant(100.0)));
+    m.close();
+    h.x = vid(x);
+    h.y = vid(y);
+    m.var_mut(h.x).value = 1.5;
+    m.var_mut(h.y).value = 2.5;
+    full_evaluate(m);
+    if (inc_sum) {
+        REQUIRE(m.node(h.row).inc_sum_flags == ExprNode::kIncSum);
+    } else {
+        REQUIRE(m.inc_sum_nodes().empty());
+    }
+    return h;
+}
+
+}  // namespace
+
+TEST_CASE("a Rollback writes the probe's cone back rather than re-evaluating it", "[dag][probe]") {
+    // `a` is made stale -- a value no evaluation of x gives -- before x is
+    // probed. Written back from the log, it comes back stale, to the bit; a
+    // Rollback that re-walked the cone (as before #270) would recompute it.
+    for (const bool inc_sum : {false, true}) {
+        CAPTURE(inc_sum);
+        Model m;
+        const TwoCones h = build_two_cones(m, inc_sum);
+        m.set_node_value_unchecked(h.a, m.node_value(h.a) + 1.0);
+        const std::vector<double> before(m.node_values().begin(), m.node_values().end());
+        const double old_value = m.var(h.x).value;
+        m.var_mut(h.x).value = -3.0;
+        probe_scalar_move(m, h.x, old_value);
+        CHECK(m.node_value(h.a) == 9.0);
+        m.var_mut(h.x).value = old_value;
+        delta_evaluate(m, &h.x, 1, DeltaMode::Rollback);
+        require_same_bits(before, m.node_values());
+
+        // Same through the general entry point.
+        m.var_mut(h.x).value = -3.0;
+        delta_evaluate(m, &h.x, 1, DeltaMode::Probe);
+        m.var_mut(h.x).value = old_value;
+        delta_evaluate(m, &h.x, 1, DeltaMode::Rollback);
+        require_same_bits(before, m.node_values());
+    }
+}
+
+TEST_CASE("a Rollback over another variable set restores the probe and commits that set",
+          "[dag][probe]") {
+    // x is probed; the caller puts x back but also moves y, and rolls back
+    // over {y}. The probe's cone (a, row) must not keep the probe's values,
+    // and y's (b, row) must take y's move.
+    for (const bool inc_sum : {false, true}) {
+        CAPTURE(inc_sum);
+        Model m;
+        const TwoCones h = build_two_cones(m, inc_sum);
+        const double old_x = m.var(h.x).value;
+        m.var_mut(h.x).value = -3.0;
+        probe_scalar_move(m, h.x, old_x);
+        m.var_mut(h.x).value = old_x;
+        m.var_mut(h.y).value = 0.5;
+        delta_evaluate(m, &h.y, 1, DeltaMode::Rollback);
+        require_matches_full_evaluate(m);
+    }
+}
+
+TEST_CASE("a walk between a Probe and its Rollback drops the probe's log", "[dag][probe]") {
+    // A Commit of y between x's probe and its Rollback moves `row` on. The
+    // log's `row` predates y's move, so writing it back would undo that move;
+    // the Rollback must instead commit x, which re-reads the current terms.
+    for (const bool inc_sum : {false, true}) {
+        CAPTURE(inc_sum);
+        Model m;
+        const TwoCones h = build_two_cones(m, inc_sum);
+        const double old_x = m.var(h.x).value;
+        m.var_mut(h.x).value = -3.0;
+        probe_scalar_move(m, h.x, old_x);
+        m.var_mut(h.x).value = old_x;
+        m.var_mut(h.y).value = 0.5;
+        delta_evaluate(m, &h.y, 1);
+        delta_evaluate(m, &h.x, 1, DeltaMode::Rollback);
+        require_matches_full_evaluate(m);
+    }
+}
+
 TEST_CASE("a breakpoint op as a term of an incremental Sum", "[dag][inc_sum][element]") {
     // #186's Round as a term: its change is pushed like any node term's. FJ
     // runs over the model; then commits drive it by hand to a drifted state,

@@ -14,12 +14,13 @@ double full_evaluate(Model& model);
 
 /// What a `delta_evaluate` call means for a `CustomInvariant` (#166).
 ///
-/// Built-in ops recompute from the assignment in front of them under all three,
-/// whatever the caller intends to do next, with one exception: an incremental
-/// `Sum` (#188) in the cone is stashed by a `Probe` and written back from the
-/// stash by the matching `Rollback`, so that a committed value carrying drift
-/// comes back to the bit instead of being re-summed. Otherwise only a custom
-/// node reads the mode.
+/// `Commit` and `Probe` recompute every built-in op in the cone from the
+/// assignment in front of them; only a custom node reads the difference. A
+/// `Probe` also logs the cone's values as it found them (`ProbeUndo`, #270), and
+/// the matching `Rollback` writes that log back instead of walking the cone
+/// again: O(cone) stores rather than a collect, sort and evaluate, and exact by
+/// construction, so an incremental `Sum` (#188) carrying drift comes back to
+/// the bit instead of being re-summed.
 enum class DeltaMode : uint8_t {
     /// The assignment being evaluated is the new committed one. Each custom
     /// node in the dirty cone gets `delta()` then `commit()`. This is what an
@@ -32,13 +33,17 @@ enum class DeltaMode : uint8_t {
     /// `Rollback` call. No `commit()`.
     Probe,
     /// The caller has put back the assignment the `Probe` was measured from.
-    /// Each custom node with a probe pending gets `rollback()` and its stashed
-    /// value back, and is NOT re-evaluated; one without a pending probe is
-    /// treated as `Commit`, which is the honest reading of a caller that moved
-    /// the assignment without probing first.
+    /// Every node of the probe's cone gets its pre-probe value back from the
+    /// log, nothing is re-evaluated, and each custom node with a probe pending
+    /// gets `rollback()`.
     ///
-    /// Must follow a `Probe` over the same changed-variable set, or the node
-    /// values it restores are not the ones the caller thinks they are.
+    /// Must directly follow a `Probe` over the same changed-variable set, in
+    /// the same order. Any other walk, `full_evaluate` or `reground_inc_sum`
+    /// in between drops the log, and the Rollback is then treated as `Commit`
+    /// -- the honest reading of a caller that moved the assignment without
+    /// probing first -- apart from a custom node whose probe is still open,
+    /// which gets `rollback()` and its saved value. A Rollback over a different
+    /// set writes the log back, then commits the set it was given.
     Rollback,
 };
 
@@ -94,10 +99,10 @@ double commit_scalar_move(Model& model, int32_t var_id, double old_value);
 /// values, so an identity move on a drifted state scores exactly 0. Where the
 /// commit would re-sum instead (an untracked Sum, `kIncSumPeriod` reached, a
 /// non-finite value) the probe still updates, so its score can differ from the
-/// commit's by up to the Sum's drift bound plus the re-sum's rounding. The Sums
-/// in the cone are stashed as the probe first writes each, and the matching
-/// `delta_evaluate(..., Rollback)` writes them back, so a drifted committed
-/// state comes back to the bit. No Sum's drift state changes.
+/// commit's by up to the Sum's drift bound plus the re-sum's rounding. The
+/// matching `delta_evaluate(..., Rollback)` writes the probe's undo log back
+/// (see `DeltaMode`), so a drifted committed state comes back to the bit. No
+/// Sum's drift state changes.
 double probe_scalar_move(Model& model, int32_t var_id, double old_value);
 
 /// Re-sums, checked, the incremental Sum in `slot` and re-evaluates the rows

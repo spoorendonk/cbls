@@ -241,11 +241,24 @@ struct IncSums {
     /// Slots that started drifting since `reground_drifted_sums` last emptied
     /// the list, each once. Some may have been re-summed since.
     std::vector<int32_t> drifted;
-    /// A `Probe` walk's values of the incremental Sums in its cone, written back
-    /// by the matching `Rollback` so the committed value -- drift included --
-    /// comes back to the bit. (node id, value).
-    std::vector<std::pair<int32_t, double>> probe_stash;
-    bool probe_pending = false;
+};
+
+/// The undo log of the last `Probe` walk (#270), which the matching `Rollback`
+/// writes back instead of walking the cone again. Per model because it
+/// describes `node_values_`. Only `delta_evaluate` and its siblings in
+/// src/dag_ops.cpp touch it: see `DeltaMode::Rollback`.
+struct ProbeUndo {
+    /// The probe's changed-variable set, as it was passed: a `Rollback` over
+    /// any other set is not this probe's.
+    std::vector<int32_t> vars;
+    /// Every node of the probe's cone with its value before the probe, so the
+    /// write-back is exact by construction -- an incremental Sum's drift (#188)
+    /// and a custom node's value (#166) included. (node id, value).
+    std::vector<std::pair<int32_t, double>> values;
+    /// Armed by a `Probe`, spent by the `Rollback` and dropped by every other
+    /// walk, `full_evaluate` and `reground_inc_sum`: each moves the assignment
+    /// on, after which the log no longer describes anything to roll back to.
+    bool pending = false;
 };
 
 class Model {
@@ -711,6 +724,9 @@ public:
     /// Python (#156): the walks index it by slot unchecked.
     [[nodiscard]] IncSums& inc_sums() noexcept { return inc_sums_; }
     [[nodiscard]] const IncSums& inc_sums() const noexcept { return inc_sums_; }
+    /// The pending probe's undo log (#270): see `ProbeUndo`. Not bound to
+    /// Python (#156): the rollback writes its node ids unchecked.
+    [[nodiscard]] ProbeUndo& probe_undo() noexcept { return probe_undo_; }
     /// Slot -> node id of every incremental Sum; see `ModelStructure`.
     [[nodiscard]] const std::vector<int32_t>& inc_sum_nodes() const noexcept {
         return s().inc_sum_nodes;
@@ -1040,6 +1056,9 @@ private:
     /// among them it pushed those onto more cache lines, which cost a
     /// probe-bound model ~5% (#188).
     IncSums inc_sums_;
+    /// See `probe_undo()`. Last for the reason `inc_sums_` is. Not copied: a
+    /// replica starts owing no rollback (see the copy constructor).
+    ProbeUndo probe_undo_;
 
     /// Throws if the model is frozen. `mut()` is the backstop for anything that
     /// writes the structure; this is for the public mutators that would otherwise

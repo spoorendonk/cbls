@@ -127,6 +127,8 @@ double full_evaluate(Model& model) {
     if (model.has_custom_nodes()) {
         model.clear_custom_probes();
     }
+    // Likewise the probe's undo log (#270): every value is about to be rewritten.
+    model.probe_undo().pending = false;
     // Re-sums without the rounding check, so no incremental Sum is tracked
     // afterwards and none carries drift (#188); its first commit re-sums it,
     // checked. Also what sizes the state: every close and every structural
@@ -134,8 +136,6 @@ double full_evaluate(Model& model) {
     IncSums& sums = model.inc_sums();
     sums.slots.assign(model.inc_sum_nodes().size(), IncSumState{});
     sums.drifted.clear();
-    sums.probe_stash.clear();
-    sums.probe_pending = false;
     for (int32_t nid : model.topo_order()) {
         model.set_node_value_unchecked(nid, evaluate(model.nodes()[nid], model));
     }
@@ -272,10 +272,12 @@ double evaluate_dirty_node(Model& model, int32_t nid, DeltaMode mode,
     // slot vector unchecked, so -1 would be a heap read one entry before it.
     assert(slot >= 0);
     if (mode == DeltaMode::Rollback && model.custom_probe_pending(slot)) {
-        // The engine restores the node's VALUE; the invariant discards only its
-        // own staged state. Its parents recompute from the restored value below,
-        // in topological order, so the whole cone lands back where the probe
-        // found it.
+        // A paired Rollback never walks: it writes the probe's undo log back
+        // (`roll_back_probe`, #270). This is a Rollback whose log a walk in
+        // between dropped -- one whose cone missed this node, so its probe is
+        // still open. The engine restores the node's VALUE; the invariant
+        // discards only its own staged state. Its parents recompute from the
+        // restored value below, in topological order.
         model.custom_invariant(slot).rollback();
         return model.custom_end_probe(slot);
     }
@@ -365,17 +367,17 @@ double evaluate_dirty_node(Model& model, int32_t nid, DeltaMode mode,
 //     its cone and leaves it untracked -- a snap, but only of rows the caller
 //     moved and so re-reads; the next FJ commit to update the Sum re-sums it
 //     again, checked, first;
-//   - a `Probe` stashes every incremental Sum in its cone, and, when it knows
-//     the old value (`probe_scalar_move`), applies the commit's update to the
-//     committed value, so an identity move on a drifted state scores exactly 0.
-//     Where the commit would re-sum instead (an untracked Sum, the period
-//     reached, a non-finite value) the probe still updates, and its score
-//     differs from the commit's by at most the Sum's drift bound plus the
-//     re-sum's rounding. That is a scoring difference at the ulp level; FJ
-//     makes no feasibility or bump decision on a probe's value;
-//   - the matching `Rollback` writes the stash back rather than re-summing,
-//     which would snap the committed value, and change the violated-row
-//     bookkeeping under FeasibilityJump's feet.
+//   - a `Probe`, when it knows the old value (`probe_scalar_move`), applies
+//     the commit's update to the committed value, so an identity move on a
+//     drifted state scores exactly 0. Where the commit would re-sum instead
+//     (an untracked Sum, the period reached, a non-finite value) the probe
+//     still updates, and its score differs from the commit's by at most the
+//     Sum's drift bound plus the re-sum's rounding. That is a scoring
+//     difference at the ulp level; FJ makes no feasibility or bump decision
+//     on a probe's value;
+//   - the matching `Rollback` writes the probe's undo log back (`ProbeUndo`,
+//     #270) rather than re-summing, which would snap the committed value, and
+//     change the violated-row bookkeeping under FeasibilityJump's feet.
 //
 // The cost model. The update costs two TwoSums and a store per changed term,
 // paid by the term, plus a parents scan for each dirty node term. It wins when
@@ -389,12 +391,9 @@ namespace {
 
 thread_local IncrementalSumCounters inc_sum_counts;
 
-// dirty_flags bits beyond 1 ("in the cone"), on an incremental Sum: re-sum it
-// at its turn rather than take it as its updates left it; a Probe has stashed
-// its value; a Rollback has written it back from the stash.
+// The dirty_flags bit beyond 1 ("in the cone"), on an incremental Sum: re-sum
+// it at its turn rather than take it as its updates left it.
 constexpr uint8_t kDirtyResum = 2;
-constexpr uint8_t kDirtyStashed = 4;
-constexpr uint8_t kDirtyRestored = 8;
 
 // The rounding error of `s = fl(a + b)`, exactly: a + b == s + err in real
 // arithmetic (Knuth's TwoSum; valid for any finite a, b whose sum does not
@@ -455,22 +454,12 @@ public:
           sums_(model.inc_sums()),
           dirty_(dirty_flags),
           rule_(rule_for(model, mode)),
-          push_(push && (rule_ == Rule::Commit || rule_ == Rule::Probe)) {
-        if (rule_ != Rule::Restore) {
-            // Any walk but the Rollback it belongs to moves the assignment on,
-            // so a stash still pending -- only an exception out of a probe can
-            // leave one -- no longer describes anything to roll back to. A
-            // Probe re-arms it in prepare().
-            sums_.probe_stash.clear();
-            sums_.probe_pending = false;
-        }
-    }
+          push_(push && (rule_ == Rule::Commit || rule_ == Rule::Probe)) {}
 
-    // Before the walk: a Rollback writes its probe's stash back; a Probe arms
-    // one; then the changed variables' own moves are pushed
-    // into the Sums they are terms of.
+    // Before the walk: a plain commit untracks the Sums in its cone; then the
+    // changed variables' own moves are pushed into the Sums they are terms of.
     //
-    // This, `eval_flagged` and `restore_stash` are kept out of line
+    // This and `eval_flagged` are kept out of line
     // deliberately. Inlined, they grew `delta_walk` and made the probe-bound
     // MINLPLib walks 5-14% slower per iteration at a fixed iteration count
     // (eg_all_s 7.09 s against 6.20 s for the pre-#188 engine; maxmin, nvs01,
@@ -483,13 +472,9 @@ public:
         switch (rule_) {
             case Rule::Plain:
                 return;
-            case Rule::Restore:
-                restore_stash();
-                return;
             case Rule::Probe:
-                // The Sums are stashed as the walk first touches each one
-                // (stash_once): O(incremental Sums in the cone), not O(cone).
-                sums_.probe_pending = true;
+                // Nothing to save: the walk's undo log holds every value the
+                // probe is about to write (#270).
                 break;
             case Rule::Commit:
                 if (!push_) {
@@ -568,11 +553,11 @@ private:
         return new_v;
     }
 
-    enum class Rule : uint8_t { Plain, Commit, Probe, Restore };
+    enum class Rule : uint8_t { Plain, Commit, Probe };
 
     static Rule rule_for(const Model& model, DeltaMode mode) {
         // A model with no incremental Sum -- most MINLPLib instances -- takes
-        // the plain walk, stash bookkeeping and all left out.
+        // the plain walk.
         if (model.inc_sum_nodes().empty() ||
             model.inc_sums().slots.size() != model.inc_sum_nodes().size()) {
             return Rule::Plain;
@@ -580,37 +565,12 @@ private:
         if (mode == DeltaMode::Probe) {
             return Rule::Probe;
         }
-        // A Rollback with no probe pending is a Commit, as it is for a custom
-        // node (see DeltaMode).
-        if (mode == DeltaMode::Rollback && model.inc_sums().probe_pending) {
-            return Rule::Restore;
-        }
+        // A Rollback reaches a walk only with no probe of its own pending,
+        // and is then a Commit, as it is for a custom node (see DeltaMode).
         return Rule::Commit;
     }
 
     [[nodiscard]] int32_t slot_of(int32_t nid) const { return nodes_[nid].lambda_func_id; }
-
-    // Called before a Probe first writes an incremental Sum -- a push, or its
-    // turn in the walk -- so the value stashed is the committed one.
-    void stash_once(int32_t nid, uint8_t& flag) {
-        if ((flag & kDirtyStashed) == 0) {
-            flag |= kDirtyStashed;
-            sums_.probe_stash.emplace_back(nid, model_.node_values()[nid]);
-        }
-    }
-
-    // Only a node in this walk's cone is flagged: the guard clears the flags
-    // of the cone and nothing else, so flagging a stranger would leak.
-    [[gnu::noinline]] void restore_stash() {
-        for (const auto& [nid, value] : sums_.probe_stash) {
-            model_.set_node_value_unchecked(nid, value);
-            if (dirty_[nid] != 0) {
-                dirty_[nid] |= kDirtyRestored;
-            }
-        }
-        sums_.probe_stash.clear();
-        sums_.probe_pending = false;
-    }
 
     // One term of the incremental Sum `p` moved from `old_v` to `new_v`.
     void push(int32_t p, double new_v, double old_v) {
@@ -623,7 +583,6 @@ private:
         const double s = cur + d;
         if (rule_ == Rule::Probe) {
             // No drift state moves under a probe: it is rolled back.
-            stash_once(p, flag);
             if (!std::isfinite(s) || !std::isfinite(d)) {
                 flag |= kDirtyResum;
                 return;
@@ -677,16 +636,7 @@ private:
         switch (rule_) {
             case Rule::Plain:
                 return evaluate(node, model_);
-            case Rule::Restore:
-                if ((flag & kDirtyRestored) != 0) {
-                    return model_.node_values()[nid];
-                }
-                // Not in the probe's cone: the caller broke the pairing. The
-                // honest reading is a commit of the current terms.
-                ++inc_sum_counts.resummed;
-                return checked_resum(model_, node, sums_.slots[slot_of(nid)]);
             case Rule::Probe:
-                stash_once(nid, flag);  // before the walk writes its new value
                 if (push_ && (flag & kDirtyResum) == 0) {
                     return model_.node_values()[nid];
                 }
@@ -756,12 +706,81 @@ double objective_value(const Model& model) {
     return 0.0;
 }
 
+// A Probe's undo log (#270): its cone, with every value as it stood before the
+// probe. Taken after the cone is collected and before anything in it is
+// written -- an incremental Sum's term pushes included -- so the log holds the
+// committed values, drift and all. O(cone) loads and stores, against the
+// O(cone log cone) collect-sort-evaluate walk the Rollback no longer repeats.
+void arm_probe_undo(Model& model, const std::vector<int32_t>& dirty_list,
+                    const int32_t* changed_var_ids, size_t count) {
+    ProbeUndo& undo = model.probe_undo();
+    const std::vector<double>& values = model.node_values();
+    undo.values.clear();
+    for (const int32_t nid : dirty_list) {
+        undo.values.emplace_back(nid, values[nid]);
+    }
+    undo.vars.assign(changed_var_ids, changed_var_ids + count);
+    undo.pending = true;
+}
+
+// The Rollback of a pending probe (#270), with no cone collection, sort or
+// evaluation: the log's values are written back, which is exact by
+// construction, where re-evaluating restored them only as far as every node's
+// value was what `evaluate()` gives -- not an incremental Sum carrying drift
+// (#188), which needed a stash of its own, nor a custom node (#166). A custom
+// node in the cone still has its probe closed and its invariant told
+// `rollback()`; the log's value is the one `custom_begin_probe` saved.
+//
+// The caller has dropped `pending` already, so a throwing `rollback()` leaves
+// no log to be written back twice. The writes come first: a value never waits
+// on user code.
+void roll_back_probe(Model& model, const ProbeUndo& undo) {
+    for (const auto& [nid, value] : undo.values) {
+        model.set_node_value_unchecked(nid, value);
+    }
+    if (!model.has_custom_nodes()) {
+        return;
+    }
+    const std::vector<ExprNode>& nodes = model.nodes();
+    for (const auto& entry : undo.values) {
+        const ExprNode& node = nodes[entry.first];
+        if (node.op == NodeOp::Custom && model.custom_probe_pending(node.lambda_func_id)) {
+            model.custom_invariant(node.lambda_func_id).rollback();
+            (void)model.custom_end_probe(node.lambda_func_id);
+        }
+    }
+}
+
+// Whether a Rollback over `changed_var_ids` is the one the pending probe owes:
+// the same set in the same order, which is how every caller passes it.
+bool undo_matches(const ProbeUndo& undo, const int32_t* changed_var_ids, size_t count) {
+    return undo.vars.size() == count &&
+           std::equal(undo.vars.begin(), undo.vars.end(), changed_var_ids);
+}
+
 // The one walk behind every entry point. `old_values`, when non-null, holds the
 // previous value of each of `changed_var_ids` and switches the term updates on;
 // null re-sums every dirty incremental Sum, as `delta_evaluate` always did.
 double delta_walk(Model& model, const int32_t* changed_var_ids, size_t count, DeltaMode mode,
                   const EditJournal* journal, const double* old_values) {
     const EvaluationGuard guard("delta_evaluate");
+    // Any walk moves the assignment on from the pending probe's, so the log is
+    // dropped here, whatever the mode; only the Rollback it belongs to spends it.
+    ProbeUndo& undo = model.probe_undo();
+    if (undo.pending) {
+        undo.pending = false;
+        if (mode == DeltaMode::Rollback) {
+            const bool matches = undo_matches(undo, changed_var_ids, count);
+            roll_back_probe(model, undo);
+            if (matches) {
+                return objective_value(model);
+            }
+            // A Rollback over a set the probe did not move: the caller broke
+            // the pairing. The probe's cone is back where it was; the honest
+            // reading of the rest is a commit of the caller's set, which is
+            // what the walk below does with no probe pending (see DeltaMode).
+        }
+    }
     const size_t num_nodes = model.num_nodes();
 
     // Flat dirty flags + dirty list for O(dirty) cleanup
@@ -774,31 +793,38 @@ double delta_walk(Model& model, const int32_t* changed_var_ids, size_t count, De
     }
     dirty_list.clear();
 
+    if (count == 0) {
+        if (mode == DeltaMode::Probe) {
+            arm_probe_undo(model, dirty_list, changed_var_ids, count);  // an empty cone
+        }
+        return objective_value(model);
+    }
+
     // A model with neither an incremental Sum nor a custom node -- most of
     // MINLPLib -- takes the pre-#177 walk verbatim. Measured, not guessed: on
     // gear4, whose probe cones are a handful of nodes, merely constructing the
     // incremental-Sum rules per walk cost ~10% of the run (#188).
     if (model.inc_sum_nodes().empty() && !model.has_custom_nodes()) {
-        if (count == 0) {
-            return objective_value(model);
-        }
         const DirtyFlagGuard plain_guard(dirty_flags, dirty_list);
         collect_dirty_cone(model, changed_var_ids, count, dirty_flags, dirty_list);
+        if (mode == DeltaMode::Probe) {
+            arm_probe_undo(model, dirty_list, changed_var_ids, count);
+        }
         evaluate_dirty_in_topo_order(
             model, dirty_list, dirty_flags, num_nodes,
             [&model](int32_t id) { return evaluate(model.nodes()[id], model); });
         return objective_value(model);
     }
-    // Before the early return: it is what drops a stale probe stash.
     IncSumWalk sums(model, mode, old_values != nullptr, dirty_flags);
-    if (count == 0) {
-        return objective_value(model);
-    }
 
     // Armed BEFORE the seeding loop, so it covers every flag this call sets --
     // including the ones set before an exception out of the walk below.
     const DirtyFlagGuard flag_guard(dirty_flags, dirty_list);
     collect_dirty_cone(model, changed_var_ids, count, dirty_flags, dirty_list);
+    if (mode == DeltaMode::Probe) {
+        // Before `prepare`, whose pushes are the walk's first writes.
+        arm_probe_undo(model, dirty_list, changed_var_ids, count);
+    }
     sums.prepare(dirty_list, changed_var_ids, count, old_values);
 
     // One test per CALL, not per node: a model with no custom node takes the
@@ -846,9 +872,8 @@ double probe_scalar_move(Model& model, int32_t var_id, double old_value) {
 void reground_inc_sum(Model& model, int32_t slot) {
     const EvaluationGuard guard("reground_inc_sum");
     IncSums& sums = model.inc_sums();
-    // A write between a probe and its rollback would be undone by the stash.
-    sums.probe_stash.clear();
-    sums.probe_pending = false;
+    // A write between a probe and its rollback would be undone by the log.
+    model.probe_undo().pending = false;
     const int32_t nid = model.inc_sum_nodes()[static_cast<size_t>(slot)];
     const std::vector<ExprNode>& nodes = model.nodes();
     model.set_node_value_unchecked(

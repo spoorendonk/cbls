@@ -122,8 +122,9 @@ struct Incumbent {
 // the caller may probe any number of candidates against one common baseline.
 //
 // The probe moves each incremental Sum in v's cone by its one changed term
-// (`probe_scalar_move`, #188) and the Rollback writes the probe's stash back, so
-// a probe costs O(up-cone) rather than a re-sum of every wide Sum above v. On
+// (`probe_scalar_move`, #188) and the Rollback writes the probe's undo log back
+// without a second walk (#270), so a probe costs O(up-cone) rather than a re-sum
+// of every wide Sum above v. On
 // UC-CHPED the objective is a Sum over every unit x period cost term; before
 // this, re-summing it twice per probe was what each probe cost.
 void probe_candidate(Model& model, const AugmentedDelta& delta, int32_t var_id, double old_val,

@@ -1777,10 +1777,9 @@ std::vector<std::pair<int32_t, double>> Model::per_constraint_violation_delta(in
         }
     }
 
-    // Restore exactly: same inputs through deterministic evaluate() roll node
-    // values back to where they were. `Rollback` is what makes that true for a
-    // custom node, and for an incremental Sum carrying drift, too -- see the
-    // notes on weighted_violation_delta below.
+    // Restore exactly: the Rollback writes the probe's undo log back (#270),
+    // custom nodes and drifted incremental Sums included -- see the notes on
+    // weighted_violation_delta below.
     var_mut(var_id).value = old_value;
     delta_evaluate(*this, &var_id, 1, DeltaMode::Rollback);
 
@@ -1845,8 +1844,9 @@ double Model::weighted_violation_delta(int32_t var_id, double j,
     // The old value is what lets the probe move each incremental Sum in the
     // cone by its term's change, as the commit's update does (#188): the score
     // is then measured against the committed value, drift included, rather than
-    // against a re-sum of it, and the Rollback writes the Sums back from the
-    // probe's stash, so a drifted committed state comes back to the bit. Where
+    // against a re-sum of it. The Rollback writes the probe's undo log back
+    // rather than walking the cone again (#270), so a drifted committed state
+    // comes back to the bit, at O(cone) stores. Where
     // the commit would re-sum instead, the two can differ by the Sum's drift
     // bound; see `probe_scalar_move`.
     const double old_value = v.value;
