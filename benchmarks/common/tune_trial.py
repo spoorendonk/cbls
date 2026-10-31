@@ -12,8 +12,9 @@ each class's own table scores, computed by that table's own code, so a tuned
 configuration is chosen on the measure it will be reported on:
 
 - `mipfeas`: the Primal Integral of `primal_integral.score_instance` against
-  the roster's reference value. A no-solution run scores its 2.0; an errored
-  or mismatched one is null.
+  the roster's reference value, without the table's verification gate (the
+  runner writes no `.verify.json`; the driver's checker does). A no-solution
+  run scores its 2.0; an errored or mismatched one is null.
 - `minlplib`: the Primal Integral of `campaign_report.anytime_scores` against
   `bounds.csv`'s primal BKS (sign-normalised on a maximize row).
 - `uc`: the objective of the one measured row, null unless the engine and the
@@ -21,9 +22,17 @@ configuration is chosen on the measure it will be reported on:
   constructed rows, so the study scores it with `relative = "reference"`.
 - `cvrp`: the runner's `gap_percent` to the pinned BKS, null unless verified.
 
+A UC or CVRP run that ends infeasible is null too: those tables have no
+"never feasible" score, and xk gives a missing value the study's `[cost]
+failed`, a cost worse than any run's, so the tuner ranks it last.
+
 Flags after `--` go to the runner unchanged: that is where a study's
-`{config}` lands. The runner's exit code is this script's, after `cost.json`
-is written; a runner refusal (exit 2) is a configuration the runner rejects.
+`{config}` lands. A flag this script sets itself (the seed, threads, budget,
+outputs) is refused there, since the runner keeps the last value given and the
+cost would be scored under the wrong one. The runner's exit code is this
+script's, after `cost.json` is written; a runner refusal (exit 2) is a
+configuration the runner rejects. A run the scorer cannot read leaves a null
+cost and exits 1.
 """
 
 from __future__ import annotations
@@ -69,6 +78,23 @@ MIPFEAS_ENGINE = "cbls"
 # searching badly, and scoring it 2.0 would teach the tuner the wrong thing.
 MIPFEAS_SCORED_STATUSES = ("feasible", "no_solution")
 UC_MEASURED_METHOD = "CBLS ViolationLS"
+# What this script passes itself, and so what a study's flags may not repeat.
+OWNED_FLAGS = frozenset(
+    {
+        "--seed",
+        "--threads",
+        "--budget",
+        "--time-limit",
+        "--no-time-limit",
+        "--instance",
+        "--inst-dir",
+        "--out",
+        "--out-dir",
+        "--trace",
+        "--periods",
+        "--verify",
+    }
+)
 
 
 def finite_or_none(value: float | None) -> float | None:
@@ -195,6 +221,9 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
         parser.error("uc needs --periods: a run scores one (instance, horizon)")
     if args.runner != "uc" and args.periods is not None:
         parser.error("--periods is uc's")
+    owned = sorted({flag.split("=", 1)[0] for flag in args.runner_flags} & OWNED_FLAGS)
+    if owned:
+        parser.error(f"{', '.join(owned)} after -- would override this script's own")
     return args
 
 
@@ -203,19 +232,38 @@ def main(argv: list[str] | None = None) -> int:
     out_dir: Path = args.out_dir
     out_dir.mkdir(parents=True, exist_ok=True)
     if args.runner == "mipfeas":
+        # Looked up before the runner starts too: an instance the roster lacks
+        # is a broken call, refused before it spends the budget.
+        try:
+            mipfeas_reference(args.roster, args.instance)
+        except ValueError as exc:
+            print(f"tune_trial: {exc}", file=sys.stderr)
+            return 2
         (out_dir / MIPFEAS_ENGINE).mkdir(exist_ok=True)
     cmd = runner_command(args, out_dir)
     returncode = subprocess.run(cmd, check=False).returncode
-    cost = score(args, out_dir) if returncode == 0 else None
+    cost: float | None = None
+    error = ""
+    if returncode == 0:
+        try:
+            cost = score(args, out_dir)
+        except ValueError as exc:
+            # Still a cost.json: a run with no readable score is a failed
+            # trial, and the reason belongs beside it.
+            error = str(exc)
+            returncode = 1
     record = {
         "cost": cost,
         "runner": args.runner,
         "instance": args.instance,
         "seed": args.seed,
         "returncode": returncode,
+        "error": error,
         "command": cmd,
     }
     atomic_write(out_dir / "cost.json", json.dumps(record, indent=2) + "\n")
+    if error:
+        print(f"tune_trial: {error}", file=sys.stderr)
     return returncode
 
 

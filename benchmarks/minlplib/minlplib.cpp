@@ -13,6 +13,7 @@
 #include <benchmarks/common/runner_args.h>
 #include <benchmarks/common/search_config_flags.h>
 #include <benchmarks/minlplib/note_policy.h>
+#include <benchmarks/mipfeas/worker_accounting.h>
 #include <cbls/cbls.h>
 #include <cbls/io_nl.h>
 #include <chrono>
@@ -464,6 +465,9 @@ struct Tally {
     // would otherwise be reported as an infeasibility -- the very claim the
     // nonzero exit status exists to deny.
     int solve_errored = 0;
+    // Solves whose portfolio completed fewer workers than `--threads` asked
+    // for (#170): the row is written, but it is not the N-thread run it says.
+    int lost_workers = 0;
     // Instances whose .nl file was present, counted once each. Derived from the
     // buckets it used to be summed from, `parsed + skipped_unsupported +
     // errored`, double-counted every outcome reached AFTER the read succeeded:
@@ -1118,6 +1122,11 @@ void run_instance(std::ostream& csv, std::ofstream& trace, const Args& args,
         }
         TraceRecorder recorder(trace, name);
         result = search_instance(args, built.model, trace.is_open() ? &recorder : nullptr);
+        if (cbls::mipfeas::lost_workers(result, args.threads)) {
+            std::fputs(cbls::mipfeas::lost_workers_message(name, args.threads, result).c_str(),
+                       stderr);
+            ++t.lost_workers;
+        }
     } catch (const std::exception& e) {
         std::printf(" ERROR solving: %s\n", e.what());
         ++t.errored;
@@ -1321,6 +1330,12 @@ int run_benchmark(int argc, char** argv) {
                      "Those rows carry read-error/build-error/solve-error and record no "
                      "search -- they are not infeasibility results.\n",
                      t.errored, status);
+    }
+    // As cbls_mipfeas and cbls_cvrp: a portfolio that lost workers measured
+    // fewer threads than its rows claim, so the job failed (#170).
+    if (status == 0 && t.lost_workers > 0) {
+        std::fprintf(stderr, "%d solve(s) lost portfolio workers; exiting 1\n", t.lost_workers);
+        return 1;
     }
     return status;
 }

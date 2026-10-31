@@ -27,6 +27,7 @@
 #include <array>
 #include <benchmarks/common/runner_args.h>
 #include <benchmarks/common/search_config_flags.h>
+#include <benchmarks/mipfeas/worker_accounting.h>
 #include <cbls/cbls.h>
 #include <cmath>
 #include <cstdint>
@@ -642,6 +643,9 @@ struct Tally {
     int feasible = 0;
     int verified_pass = 0;
     int verified_fail = 0;
+    // Solves whose portfolio completed fewer workers than `--threads` asked
+    // for (#170): the row is written, but it is not the N-thread run it says.
+    int lost_workers = 0;
 };
 
 /// Restate an instance's published Table 2 bounds as cited reference rows.
@@ -838,6 +842,11 @@ void run_one(std::ostream& csv, std::ofstream& trace, const Args& args,
     cbls::uc_chped::TraceRecorder recorder(trace, instance_name, horizon, tlim, args.commit_sha);
     const cbls::SearchResult result =
         solve_instance(args, inst, ucm, tlim, trace.is_open() ? &recorder : nullptr);
+    if (cbls::mipfeas::lost_workers(result, args.threads)) {
+        std::fputs(cbls::mipfeas::lost_workers_message(inst.name, args.threads, result).c_str(),
+                   stderr);
+        ++tally.lost_workers;
+    }
     // Close the trace for this solve, so every (instance, horizon) the runner
     // started appears in it exactly once at its final time. Without this the
     // record stops at the last periodic sample -- up to a second and a half
@@ -1168,6 +1177,12 @@ int run_benchmark(int argc, char** argv) {
     if (!args.trace_csv.empty() && !trace) {
         std::fprintf(stderr, "Error writing %s; the trace is incomplete\n", args.trace_csv.c_str());
         return 2;
+    }
+    // As cbls_mipfeas and cbls_cvrp: a portfolio that lost workers measured
+    // fewer threads than its rows claim, so the job failed (#170).
+    if (tally.lost_workers > 0) {
+        std::fprintf(stderr, "%d solve(s) lost portfolio workers; exiting 1\n", tally.lost_workers);
+        return 1;
     }
     return 0;
 }

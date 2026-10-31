@@ -242,3 +242,48 @@ def test_a_runner_refusal_is_passed_on_with_no_cost(tmp_path: Path) -> None:
     record = json.loads((tmp_path / "cost.json").read_text())
     assert record["cost"] is None
     assert record["returncode"] == 2
+
+
+# --- review round 1 ---------------------------------------------------------
+
+
+@pytest.mark.parametrize("flag", ["--seed", "--time-limit=3"])
+def test_refuses_a_study_flag_that_overrides_the_wrappers_own(
+    flag: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The runners keep the last value given, so a `{config}` carrying the seed
+    or the budget would run one thing and be scored as another."""
+    with pytest.raises(SystemExit) as exc:
+        tune_trial.parse_args(["cvrp", *BASE, "--budget", "1", "--", flag, "7"])
+    assert exc.value.code == 2
+    assert "would override this script's own" in capsys.readouterr().err
+
+
+def test_an_instance_the_roster_lacks_is_refused_before_the_run(tmp_path: Path) -> None:
+    roster = tmp_path / "roster.csv"
+    roster.write_text("instance,reference_value,reference_kind\ninst,100.0,opt\n")
+    out = tmp_path / "run"
+    argv = ["mipfeas", "--build-dir", str(tmp_path / "no-build"), "--out-dir", str(out)]
+    argv += ["--instance", "other", "--seed", "1", "--budget", "1", "--roster", str(roster)]
+    # The build dir holds no runner: reaching the subprocess would raise.
+    assert tune_trial.main(argv) == 2
+    assert not (out / "cost.json").exists()
+
+
+def test_an_unreadable_result_still_leaves_a_null_cost(tmp_path: Path) -> None:
+    """A run whose output the scorer refuses is a failed trial with its reason
+    on disk, not a traceback and no file."""
+    build = tmp_path / "build"
+    build.mkdir()
+    fake = build / "cbls_cvrp"
+    fake.write_text(
+        '#!/bin/sh\nwhile [ $# -gt 0 ]; do [ "$1" = --out ] && printf "{" > "$2"; shift; done\n'
+    )
+    fake.chmod(0o755)
+    out = tmp_path / "run"
+    argv = ["cvrp", "--build-dir", str(build), "--out-dir", str(out), "--instance", "X-n101-k25"]
+    assert tune_trial.main([*argv, "--seed", "1", "--budget", "1"]) == 1
+    record = json.loads((out / "cost.json").read_text())
+    assert record["cost"] is None
+    assert record["returncode"] == 1
+    assert record["error"]
