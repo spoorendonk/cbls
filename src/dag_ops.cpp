@@ -770,15 +770,32 @@ double delta_walk(Model& model, const int32_t* changed_var_ids, size_t count, De
     if (undo.pending) {
         undo.pending = false;
         if (mode == DeltaMode::Rollback) {
-            const bool matches = undo_matches(undo, changed_var_ids, count);
-            roll_back_probe(model, undo);
-            if (matches) {
+            if (undo_matches(undo, changed_var_ids, count)) {
+                roll_back_probe(model, undo);
                 return objective_value(model);
             }
             // A Rollback over a set the probe did not move: the caller broke
-            // the pairing. The probe's cone is back where it was; the honest
-            // reading of the rest is a commit of the caller's set, which is
-            // what the walk below does with no probe pending (see DeltaMode).
+            // the pairing, so the log's values are not known to match the
+            // assignment in front of us -- the probed variables may not have
+            // been put back. The honest reading is a commit of BOTH sets (see
+            // DeltaMode): the log is written back first, so every custom node's
+            // open probe gets its `rollback()`, then the walk below recomputes
+            // the union's cone from the assignment. The caller's journal
+            // describes its own set only, so it is not passed on; a custom node
+            // then gets the two-argument `delta()`, which is always correct.
+            // Out of contract, so sort-and-unique's O(n log n) is no concern.
+            roll_back_probe(model, undo);
+            thread_local std::vector<int32_t> merged;
+            merged.assign(undo.vars.begin(), undo.vars.end());
+            merged.insert(merged.end(), changed_var_ids, changed_var_ids + count);
+            std::sort(merged.begin(), merged.end());
+            merged.erase(std::unique(merged.begin(), merged.end()), merged.end());
+            // The walk below stays a Rollback, now with no log pending: a
+            // Commit, apart from a custom node outside the cone whose probe is
+            // still open.
+            changed_var_ids = merged.data();
+            count = merged.size();
+            journal = nullptr;
         }
     }
     const size_t num_nodes = model.num_nodes();
@@ -801,7 +818,9 @@ double delta_walk(Model& model, const int32_t* changed_var_ids, size_t count, De
     }
 
     // A model with neither an incremental Sum nor a custom node -- most of
-    // MINLPLib -- takes the pre-#177 walk verbatim. Measured, not guessed: on
+    // MINLPLib -- evaluates its cone with plain `evaluate()`, building no
+    // incremental-Sum rules (its Probe still arms the log, and its paired
+    // Rollback returned above without walking). Measured, not guessed: on
     // gear4, whose probe cones are a handful of nodes, merely constructing the
     // incremental-Sum rules per walk cost ~10% of the run (#188).
     if (model.inc_sum_nodes().empty() && !model.has_custom_nodes()) {

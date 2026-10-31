@@ -43,7 +43,9 @@ enum class DeltaMode : uint8_t {
     /// -- the honest reading of a caller that moved the assignment without
     /// probing first -- apart from a custom node whose probe is still open,
     /// which gets `rollback()` and its saved value. A Rollback over a different
-    /// set writes the log back, then commits the set it was given.
+    /// set writes the log back, then commits the union of the probe's set and
+    /// the set it was given, without the journal (which describes only the
+    /// latter): correct whether or not the probed variables were put back.
     Rollback,
 };
 

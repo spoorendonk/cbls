@@ -1754,22 +1754,26 @@ TEST_CASE("a Rollback writes the probe's cone back rather than re-evaluating it"
     }
 }
 
-TEST_CASE("a Rollback over another variable set restores the probe and commits that set",
-          "[dag][probe]") {
-    // x is probed; the caller puts x back but also moves y, and rolls back
-    // over {y}. The probe's cone (a, row) must not keep the probe's values,
-    // and y's (b, row) must take y's move.
+TEST_CASE("a Rollback over another variable set commits both sets", "[dag][probe]") {
+    // x is probed; the caller moves y and rolls back over {y}. Both cones must
+    // match the assignment afterwards: the probe's (a, row) whether or not the
+    // caller put x back -- left at the probe's value, the log's `a` is stale --
+    // and y's (b, row) with y's move.
     for (const bool inc_sum : {false, true}) {
-        CAPTURE(inc_sum);
-        Model m;
-        const TwoCones h = build_two_cones(m, inc_sum);
-        const double old_x = m.var(h.x).value;
-        m.var_mut(h.x).value = -3.0;
-        probe_scalar_move(m, h.x, old_x);
-        m.var_mut(h.x).value = old_x;
-        m.var_mut(h.y).value = 0.5;
-        delta_evaluate(m, &h.y, 1, DeltaMode::Rollback);
-        require_matches_full_evaluate(m);
+        for (const bool restore_x : {true, false}) {
+            CAPTURE(inc_sum, restore_x);
+            Model m;
+            const TwoCones h = build_two_cones(m, inc_sum);
+            const double old_x = m.var(h.x).value;
+            m.var_mut(h.x).value = -3.0;
+            probe_scalar_move(m, h.x, old_x);
+            if (restore_x) {
+                m.var_mut(h.x).value = old_x;
+            }
+            m.var_mut(h.y).value = 0.5;
+            delta_evaluate(m, &h.y, 1, DeltaMode::Rollback);
+            require_matches_full_evaluate(m);
+        }
     }
 }
 

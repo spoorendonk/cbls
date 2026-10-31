@@ -395,8 +395,9 @@ differences of its changed terms instead of re-summing it.
   - A Probe applies the commit's own updates, and logs its whole cone's values
     before its first write (`ProbeUndo`, #270). The Rollback writes the log
     back, Sums included, to the bit, without walking the cone again.
-  - A model with no incremental Sum and no custom node takes the pre-#177
-    walk verbatim.
+  - A model with no incremental Sum and no custom node evaluates its cone
+    with plain `evaluate()` and builds no incremental-Sum rules; its Probe
+    still arms the log, and its Rollback writes it back like any other.
 
 FeasibilityJump acts on no verdict that drift could have flipped:
 

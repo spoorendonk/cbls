@@ -465,8 +465,8 @@ TEST_CASE("delta_evaluate and full_evaluate agree over a random move sequence", 
 
 TEST_CASE("a custom node may be fed by another custom node", "[custom]") {
     // Two slots in one model, and a cone in which a probe has to open and roll
-    // back BOTH of them in topological order -- the child restored from its stash
-    // before the parent re-reads it. Nothing else here builds two custom nodes, so
+    // back BOTH of them -- each told `rollback()` and its value written back from
+    // the probe's undo log (#270). Nothing else here builds two custom nodes, so
     // an off-by-one in slot assignment or in the clone ordering would otherwise
     // pass.
     auto log = std::make_shared<CallLog>();

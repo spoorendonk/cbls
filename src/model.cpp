@@ -1560,6 +1560,9 @@ bool Model::set_domain_tolerance(double tol) {
         return false;  // LNS builds an FJ per round at the solve's tolerance
     }
     domain_margin_ = margin;
+    // Node values change under any pending probe's log, which would write the
+    // old residuals back on its Rollback (#270): drop it.
+    probe_undo_.pending = false;
     // The domain rows are roots that no other node reads, so re-evaluating them
     // in place is the whole update. Before close() they do not exist yet.
     const ModelStructure& st = s();
@@ -1650,6 +1653,9 @@ void Model::set_objective_bound(double bound) {
         throw std::logic_error("set_objective_bound requires add_objective_soft_constraint first");
     }
     objective_bound_ = bound;
+    // Node values change under any pending probe's log, which would write the
+    // old bound back on its Rollback (#270): drop it.
+    probe_undo_.pending = false;
     // The shared node's `const_value` is NOT touched -- it is structure, and a
     // frozen structure is every worker's. `evaluate()` reads the bound from
     // `objective_bound()` instead; see its `Const` arm.
