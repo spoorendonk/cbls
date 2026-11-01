@@ -206,8 +206,10 @@ def reason_category(reason: str) -> str:
 
     A one-word parenthetical is a solver status and stays, so `no-solution(timelimit)`
     and `no-solution(infeasible)` are two groups; free text, as in
-    `read-error(OSError: x)`, is dropped.
+    `read-error(OSError: x)`, is dropped. Annotations `reference_solve.annotate`
+    appends after `"; "` (catalogue mismatches) do not change the group.
     """
+    reason = reason.split("; ", 1)[0]
     status = re.fullmatch(r"([^(:]+\([\w-]+\))", reason.strip())
     if status:
         return status.group(1).strip()
@@ -340,9 +342,9 @@ def load_cbls_staging(stage: Path, roster: Mapping[str, Bound]) -> CblsSide:
     rejected: dict[str, str] = {}
     for path in _staged_rejected(stage):
         stem = path.name.removesuffix(STAGED_REJECTED_SUFFIX)
-        row = _staged_row(path, stem, roster)
         if stem in rows:
             continue
+        row = _staged_row(path, stem, roster)
         note = "no whole row" if row is None else row.note or NO_NOTE
         rejected[stem] = f"rejected: {note}"
     return CblsSide(rows=rows, rejected=rejected)
@@ -736,9 +738,9 @@ def budget_seconds(text: str) -> float:
 
 
 STAGING_NEEDS_PARTIAL = (
-    "--cbls-staging requires --partial: staged rows have not passed the independent SCIP "
-    "check (the driver demotes a row that check rejects to VERIFY-FAILED only once the whole "
-    "roster is solved); score the assembled comparison.csv for a result"
+    "--cbls-staging requires --partial: a staged row may not have passed the independent "
+    "SCIP check (a driver killed between a solve and the check leaves it unchecked, and "
+    "nothing marks a checked row); score the assembled comparison.csv for a result"
 )
 
 

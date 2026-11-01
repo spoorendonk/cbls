@@ -345,6 +345,8 @@ def test_markdown_groups_no_solution_instances_by_reason_category(
     ) in text
     assert reason_category("read-error(bad .nl header)") == "read-error"
     assert reason_category("rejected: lost workers") == "rejected"
+    annotated = "no-solution(timelimit); integrality mismatch: SCIP 3 vs catalogue 4"
+    assert reason_category(annotated) == "no-solution(timelimit)"
     assert "- cbls no solution: 0\n" in text
 
 
@@ -570,7 +572,7 @@ def test_cbls_staging_without_partial_is_a_usage_error_saying_why(
     with pytest.raises(SystemExit) as exc:
         main(staging_argv(bounds, stage, shards))
     assert exc.value.code == EXIT_REFUSED
-    assert "have not passed the independent SCIP check" in capsys.readouterr().err
+    assert "may not have passed the independent" in capsys.readouterr().err
 
 
 def test_a_staged_row_filed_under_another_instance_is_refused(tmp_path: Path) -> None:
