@@ -725,6 +725,12 @@ public:
     // use. `weights` is indexed by constraint index (constraint_ids()). Scalar
     // variables only; same no-commit / precondition contract as above.
     double weighted_violation_delta(int32_t var_id, double j, const std::vector<double>& weights);
+    // The same delta under `weights`, which it returns, and under `second`,
+    // written to `second_delta`, from ONE probe (#272). Each is summed exactly
+    // as the single-weight call sums it, so both are the doubles two separate
+    // calls would return. `second` is indexed like `weights`.
+    double weighted_violation_delta(int32_t var_id, double j, const std::vector<double>& weights,
+                                    const std::vector<double>& second, double& second_delta);
 
     [[nodiscard]] const Variable& var(int32_t id) const {
         if (id < 0 || id >= static_cast<int32_t>(vars_.size())) {
@@ -1092,6 +1098,9 @@ private:
     // constraint count. Not reentrant — same single-thread-per-Model contract as
     // the probe's transient node mutation.
     std::vector<double> probe_old_violation_;
+    // Both weighted_violation_deltas: `second` null for the single-weight one.
+    double probe_weighted_delta(int32_t var_id, double j, const std::vector<double>& weights,
+                                const std::vector<double>* second, double* second_delta);
     /// One entry per custom node, indexed by its `ExprNode::lambda_func_id`
     /// (#166). PER-MODEL, not structure: the instance is mutable state a search
     /// writes, so a portfolio replica gets its own `clone()` of each -- which is

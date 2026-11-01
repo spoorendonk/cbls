@@ -1111,16 +1111,21 @@ class JumpArgmin {
 public:
     JumpArgmin(double x0, const double* objective_coef) : j_(x0), coef_(objective_coef) {}
 
-    void offer(double j, double fv) {
+    // True when j became the incumbent.
+    bool offer(double j, double fv) {
         if (fv < f_) {
             f_ = fv;
             j_ = j;
             objective_only_ = false;
-        } else if (coef_ != nullptr && fv == f_ && *coef_ * (j - j_) < 0.0) {
+            return true;
+        }
+        if (coef_ != nullptr && fv == f_ && *coef_ * (j - j_) < 0.0) {
             // c * (j - j_) is the objective change from the incumbent to j.
             j_ = j;
             objective_only_ = f_ == 0.0;
+            return true;
         }
+        return false;
     }
     [[nodiscard]] double f() const { return f_; }
     [[nodiscard]] JumpResult result() const {
@@ -1134,39 +1139,12 @@ private:
     bool objective_only_ = false;  // j_ won on the objective alone
 };
 
-}  // namespace
-
-JumpResult compute_var_jump(Model& model, const std::vector<double>& weights, int32_t var_id,
-                            bool allow_escape_probe, LinearJumpScorer* linear, double tol,
-                            bool exact_int, const double* objective_coef) {
-    const Variable& var = model.var(var_id);
-    const double x0 = var.value;
-
-    // f(j) = weighted violation delta of moving var_id to j (0 at the current
-    // value). The best jump minimises f; score is the reduction -min f.
-    //
-    // In closed form when every weighted row of G_v allows it (prepared once per
-    // call, O(|G_v|)); a non-finite candidate or step -- an infinite Float bound
-    // -- is one the closed form does not model, so that one candidate takes the
-    // probe. The probe restores the assignment exactly, so the snapshot survives.
-    const bool fast = linear != nullptr && linear->prepare(var_id, weights);
-    if (JumpResult exact{}; exact_int_jump(var, exact_int, fast, linear, exact)) {
-        return exact;
-    }
-    auto f = [&](double j) {
-        if (fast && std::isfinite(j - x0)) {
-            return linear->delta(j);
-        }
-        return model.weighted_violation_delta(var_id, j, weights);
-    };
-
-    JumpArgmin best(x0, objective_coef);
-    auto consider = [&](double j) {
-        if (j == x0) {
-            return;
-        }
-        best.offer(j, f(j));
-    };
+// compute_var_jump's candidate values for var_id, each offered through
+// `consider`; `best` is read by the Float escape probe's guard only.
+template <class Consider>
+void offer_jump_candidates(Model& model, int32_t var_id, const Variable& var, double x0,
+                           bool allow_escape_probe, LinearJumpScorer* linear, double tol,
+                           const JumpArgmin& best, Consider&& consider) {
     // A variable that reaches a breakpoint node (#186) records what the Int/Float
     // path offered, so its breakpoint candidates can skip those values; every
     // other variable pays one predictable branch per candidate and records
@@ -1213,9 +1191,124 @@ JumpResult compute_var_jump(Model& model, const std::vector<double>& weights, in
             float_escape_candidates(var, x0, consider);
         }
     }
+}
 
+// A second weighting the chosen jump is also scored under (#272: Novelty picks
+// by W' and filters by W), and what the candidates' probes learned of it.
+struct SecondWeighting {
+    const std::vector<double>* weights = nullptr;
+    bool fast = false;           // the dual prepare took the closed form
+    bool winner_probed = false;  // the chosen jump was scored by a (dual) probe
+    double winner_delta = 0.0;   // ...and this is its delta under `weights`
+};
+
+// compute_var_jump, and with `second` non-null its prepare and its probes also
+// weigh under second->weights, in the same pass.
+JumpResult compute_var_jump_core(Model& model, const std::vector<double>& weights, int32_t var_id,
+                                 bool allow_escape_probe, LinearJumpScorer* linear, double tol,
+                                 bool exact_int, const double* objective_coef,
+                                 SecondWeighting* second) {
+    const Variable& var = model.var(var_id);
+    const double x0 = var.value;
+
+    // f(j) = weighted violation delta of moving var_id to j (0 at the current
+    // value). The best jump minimises f; score is the reduction -min f.
+    //
+    // In closed form when every weighted row of G_v allows it (prepared once per
+    // call, O(|G_v|)); a non-finite candidate or step -- an infinite Float bound
+    // -- is one the closed form does not model, so that one candidate takes the
+    // probe. The probe restores the assignment exactly, so the snapshot survives.
+    const bool fast =
+        linear != nullptr && (second != nullptr ? linear->prepare(var_id, weights, *second->weights)
+                                                : linear->prepare(var_id, weights));
+    if (second != nullptr) {
+        second->fast = fast;
+    }
+    if (JumpResult exact{}; exact_int_jump(var, exact_int, fast, linear, exact)) {
+        return exact;
+    }
+    bool probed = false;   // f's last value came from a dual probe...
+    double probed2 = 0.0;  // ...which weighed it as this under second->weights
+    auto f = [&](double j) {
+        probed = false;
+        if (fast && std::isfinite(j - x0)) {
+            return linear->delta(j);
+        }
+        if (second != nullptr) {
+            probed = true;
+            return model.weighted_violation_delta(var_id, j, weights, *second->weights, probed2);
+        }
+        return model.weighted_violation_delta(var_id, j, weights);
+    };
+
+    JumpArgmin best(x0, objective_coef);
+    auto consider = [&](double j) {
+        if (j == x0) {
+            return;
+        }
+        if (best.offer(j, f(j)) && second != nullptr) {
+            second->winner_probed = probed;
+            second->winner_delta = probed2;
+        }
+    };
+    offer_jump_candidates(model, var_id, var, x0, allow_escape_probe, linear, tol, best, consider);
     return best.result();
 }
+
+}  // namespace
+
+JumpResult compute_var_jump(Model& model, const std::vector<double>& weights, int32_t var_id,
+                            bool allow_escape_probe, LinearJumpScorer* linear, double tol,
+                            bool exact_int, const double* objective_coef) {
+    return compute_var_jump_core(model, weights, var_id, allow_escape_probe, linear, tol, exact_int,
+                                 objective_coef, nullptr);
+}
+
+namespace {
+
+// select_novelty_var's candidate (#272): the W'-argmin (`novelty`, as
+// compute_var_jump returns it) and the delta of that jump under W. That delta
+// is, to the bit, what scoring the jump afresh would give -- `linear` prepared
+// under W and its delta when the closed form applies, else the probe under W --
+// but it comes from the W' pass: the dual prepare weighs every term under both
+// vectors, and every probe the argmin took weighs under both. A second prepare
+// is needed only when W and W' differ in which rows of G_v they zero (W' is
+// W / 1024 on most rows, which is 0 for a positive W only below about 2^-1064),
+// and a second
+// probe only when the jump was not probed (it is x0, or the closed form scored
+// it). The probe restores the assignment to the bit (#270), so a delta taken
+// mid-argmin equals one taken after it.
+struct NoveltyJump {
+    JumpResult novelty;
+    double delta_w = 0.0;
+};
+
+NoveltyJump compute_novelty_jump(Model& model, const std::vector<double>& novelty_weights,
+                                 const std::vector<double>& weights, int32_t var_id,
+                                 LinearJumpScorer& linear, double tol, bool exact_int) {
+    SecondWeighting second;
+    second.weights = &weights;
+    NoveltyJump out;
+    out.novelty = compute_var_jump_core(model, novelty_weights, var_id, false, &linear, tol,
+                                        exact_int, nullptr, &second);
+    const double j = out.novelty.jump_value;
+    const bool finite_step = std::isfinite(j - model.var(var_id).value);
+    if (!linear.second_ready()) {
+        // The zero patterns differ: score afresh, as before #272.
+        out.delta_w = linear.prepare(var_id, weights) && finite_step
+                          ? linear.delta(j)
+                          : model.weighted_violation_delta(var_id, j, weights);
+    } else if (second.winner_probed) {
+        out.delta_w = second.winner_delta;
+    } else if (second.fast && finite_step) {
+        out.delta_w = linear.delta_second(j);
+    } else {
+        out.delta_w = model.weighted_violation_delta(var_id, j, weights);
+    }
+    return out;
+}
+
+}  // namespace
 
 void gls_update_weights(ViolationManager& vm, double rho, double tol) {
     const size_t nc = vm.weights.size();
@@ -3318,15 +3411,13 @@ FeasibilityJump::NoveltyPick FeasibilityJump::select_novelty_var(double s_m, dou
             continue;
         }
         // W'-argmin, then its score under W. Both in closed form where the rows
-        // allow it, exactly as apply_jump scores.
-        JumpResult nr = compute_var_jump(model_, novelty_weights_, v, false, &linear_,
-                                         config_.tolerance, config_.exact_int_jump);
-        double score = 0.0;
-        if (linear_.prepare(v, vm_.weights) && std::isfinite(nr.jump_value - model_.var(v).value)) {
-            score = -linear_.delta(nr.jump_value);
-        } else {
-            score = -model_.weighted_violation_delta(v, nr.jump_value, vm_.weights);
-        }
+        // allow it, exactly as apply_jump scores, and both from one pass over
+        // v's rows (#272; compute_novelty_jump).
+        const NoveltyJump pick =
+            compute_novelty_jump(model_, novelty_weights_, vm_.weights, v, linear_,
+                                 config_.tolerance, config_.exact_int_jump);
+        const JumpResult& nr = pick.novelty;
+        const double score = -pick.delta_w;
         const bool passes = (s_m + nr.score > 0.0) || (score > s_c);
         if (!passes) {
             remove_at(idx);

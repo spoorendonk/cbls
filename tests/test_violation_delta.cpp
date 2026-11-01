@@ -216,6 +216,44 @@ TEST_CASE("delta: weights are applied", "[violation][delta]") {
     REQUIRE(vm.weighted_violation_delta(vid(x), 6.0) > 0.0);
 }
 
+TEST_CASE("delta: one probe weighs under two vectors, each to the bit of its own call (#272)",
+          "[violation][delta]") {
+    // Non-linear rows over fractional data and fractional weights, so a sum
+    // taken in another order or over other terms would differ in its last bits.
+    Model m;
+    auto x = m.float_var(0.1, 3.0);
+    auto y = m.float_var(0.1, 3.0);
+    m.add_constraint(m.leq(m.prod(x, y), m.constant(1.7)));
+    m.add_constraint(m.leq(m.sin_expr(x), m.constant(0.3)));
+    m.add_constraint(m.geq(m.sum({x, m.prod(m.constant(0.7), y)}), m.constant(2.9)));
+    m.add_constraint(m.leq(m.exp_expr(m.prod(m.constant(0.4), x)), m.constant(1.3)));
+    m.minimize(m.sum({x, y}));
+    m.close();
+    m.var_mut(vid(x)).value = 1.1;
+    m.var_mut(vid(y)).value = 0.9;
+    full_evaluate(m);
+    const size_t nc = m.constraint_ids().size();
+    std::vector<double> w(nc);
+    std::vector<double> second(nc);
+    for (size_t c = 0; c < nc; ++c) {
+        w[c] = 0.3 + (0.7 * static_cast<double>(c));
+        second[c] = c == 1 ? 0.0 : 1.1 / static_cast<double>(c + 3);
+    }
+    int nonzero = 0;
+    for (const int32_t v : {vid(x), vid(y)}) {
+        for (const double j : {0.1, 0.37, 1.1, 2.3, 3.0}) {
+            const std::vector<double> before = m.node_values();
+            double got_second = -1.0;
+            const double got = m.weighted_violation_delta(v, j, w, second, got_second);
+            REQUIRE(m.node_values() == before);  // the one probe rolled back
+            REQUIRE(got == m.weighted_violation_delta(v, j, w));
+            REQUIRE(got_second == m.weighted_violation_delta(v, j, second));
+            nonzero += got != 0.0 && got_second != 0.0 ? 1 : 0;
+        }
+    }
+    REQUIRE(nonzero > 4);
+}
+
 TEST_CASE("delta: throws on List/Set variables", "[violation][delta]") {
     Model m;
     auto lst = m.list_var(4);

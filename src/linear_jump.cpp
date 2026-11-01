@@ -270,6 +270,41 @@ double LinearJumpScorer::child_value(int32_t id, bool is_var) const {
 }
 
 bool LinearJumpScorer::prepare(int32_t var_id, const std::vector<double>& weights) {
+    return prepare_impl(var_id, weights, nullptr);
+}
+
+bool LinearJumpScorer::prepare(int32_t var_id, const std::vector<double>& weights,
+                               const std::vector<double>& second) {
+    return prepare_impl(var_id, weights, &second);
+}
+
+// w * (new - old) with both clamped, hence finite, is exactly 0 at w == 0, so
+// such a row cannot change the sum whatever its shape.
+//
+// Refused rows first, before anything is built: on a mixed model a variable
+// that falls back anyway should not pay slope sweeps for its linear rows.
+//
+// A dual prepare compares the two zero patterns in this same pass, so it walks
+// all of G_v while the patterns still match even after a refusal: the caller
+// skips the second prepare on a refusal only if they match.
+bool LinearJumpScorer::refusal_scan(int32_t var_id, const std::vector<double>& weights,
+                                    const std::vector<double>* second) {
+    const ConstSpan<int32_t> gv = model_.constraints_of_var(var_id);
+    bool ok = std::isfinite(x0_);
+    second_ready_ = second != nullptr;
+    for (size_t k = 0; (ok || second_ready_) && k < gv.size(); ++k) {
+        const auto c = static_cast<size_t>(gv[k]);
+        const bool zero = weights[c] == 0.0;
+        if (second_ready_) {
+            second_ready_ = zero == ((*second)[c] == 0.0);
+        }
+        ok = ok && (zero || slots_[c] != kIneligible);
+    }
+    return ok;
+}
+
+bool LinearJumpScorer::prepare_impl(int32_t var_id, const std::vector<double>& weights,
+                                    const std::vector<double>* second) {
     const std::vector<int32_t>& cids = model_.constraint_ids();
     if (slots_.size() != cids.size()) {
         throw std::logic_error(
@@ -277,19 +312,12 @@ bool LinearJumpScorer::prepare(int32_t var_id, const std::vector<double>& weight
             "a row added to the model must be followed by resize_rows and set_row_eligible on it");
     }
     terms_.clear();
+    second_weights_.clear();
+    second_terms_ = false;
     x0_ = model_.var(var_id).value;
     const ConstSpan<int32_t> gv = model_.constraints_of_var(var_id);
     const size_t base = model_.constraints_of_var_offset(var_id);
-    // w * (new - old) with both clamped, hence finite, is exactly 0 at w == 0, so
-    // such a row cannot change the sum whatever its shape.
-    //
-    // Refused rows first, before anything is built: on a mixed model a variable
-    // that falls back anyway should not pay slope sweeps for its linear rows.
-    bool ok = std::isfinite(x0_);
-    for (size_t k = 0; ok && k < gv.size(); ++k) {
-        const auto c = static_cast<size_t>(gv[k]);
-        ok = weights[c] == 0.0 || slots_[c] != kIneligible;
-    }
+    bool ok = refusal_scan(var_id, weights, second);
     const std::vector<double>& node_values = model_.node_values();
     for (size_t k = 0; ok && k < gv.size(); ++k) {
         const int32_t c = gv[k];
@@ -336,20 +364,41 @@ bool LinearJumpScorer::prepare(int32_t var_id, const std::vector<double>& weight
                                   ? model_.nodes()[static_cast<size_t>(cids[c])].const_value
                                   : 0.0,
                               model_.is_domain_node(cids[c]) ? model_.domain_margin() : 0.0});
+        if (second != nullptr) {
+            second_weights_.push_back((*second)[static_cast<size_t>(c)]);
+        }
     }
     if (!ok) {
         terms_.clear();
+        second_weights_.clear();
         ++fallback_prepares_;
         return false;
     }
+    second_terms_ = second != nullptr;
     ++fast_prepares_;
     return true;
 }
 
 double LinearJumpScorer::delta(double j) const {
+    return delta_impl<false>(j);
+}
+
+double LinearJumpScorer::delta_second(double j) {
+    if (!second_ready_ || !second_terms_) {
+        throw std::logic_error(
+            "LinearJumpScorer::delta_second: no successful dual prepare, or its second weights' "
+            "zero pattern differs; prepare under the second weights instead");
+    }
+    ++second_deltas_;
+    return delta_impl<true>(j);
+}
+
+template <bool kSecond>
+double LinearJumpScorer::delta_impl(double j) const {
     const double d = j - x0_;
     double sum = 0.0;
-    for (const Term& t : terms_) {
+    for (size_t i = 0; i < terms_.size(); ++i) {
+        const Term& t = terms_[i];
         // The whole move lands on p. Which side carries it matters only where a
         // side is infinite, and there it does not either: the computed sides are
         // finite (prepare), so an infinite side is a literal, and a literal
@@ -373,7 +422,10 @@ double LinearJumpScorer::delta(double j) const {
                 }
             }
         }
-        sum += t.weight * (clamped_node_violation(residual) - t.old_viol);
+        // The same expression either way, so a dual prepare's second sum is
+        // the double a single prepare under those weights would return.
+        const double w = kSecond ? second_weights_[i] : t.weight;
+        sum += w * (clamped_node_violation(residual) - t.old_viol);
     }
     return sum;
 }

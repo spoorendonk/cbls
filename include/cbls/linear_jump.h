@@ -137,9 +137,27 @@ public:
     /// added to the model after `resize_rows`).
     bool prepare(int32_t var_id, const std::vector<double>& weights);
 
+    /// `prepare(var_id, weights)`, which it returns, and in the same pass over
+    /// G_v each term's weight under `second` (#272: Novelty scores its W'-argmin
+    /// under W). `second_ready()` then says whether `prepare(var_id, second)`
+    /// is known to build the SAME terms: true when every row of G_v has a zero
+    /// weight under `second` exactly where it has one under `weights` -- the
+    /// only thing prepare reads from a weight. Then that prepare would succeed
+    /// exactly when this one did, and `delta_second(j)` is, to the bit, what its
+    /// `delta(j)` would return: the same terms, summed in the same order.
+    /// False (a weight one vector has and the other lacks): call
+    /// `prepare(var_id, second)` instead. `second` is sized like `weights`.
+    bool prepare(int32_t var_id, const std::vector<double>& weights,
+                 const std::vector<double>& second);
+    [[nodiscard]] bool second_ready() const { return second_ready_; }
+
     /// Weighted violation delta of moving the prepared variable to `j`, which
     /// must be finite (and so must `j - x0`); see `prepare`.
     [[nodiscard]] double delta(double j) const;
+    /// `delta(j)` under the dual prepare's `second` weights; only after a dual
+    /// prepare that returned true with `second_ready()` (else throws
+    /// `std::logic_error`).
+    double delta_second(double j);
 
     /// The exact best jump of the prepared INT variable over the integers of
     /// [lo, hi] (#208): OR-Tools' `ComputeLinearJump`. Every
@@ -202,6 +220,8 @@ public:
     [[nodiscard]] int64_t fast_prepares() const { return fast_prepares_; }
     [[nodiscard]] int64_t fallback_prepares() const { return fallback_prepares_; }
     [[nodiscard]] int64_t cached_partials() const { return cached_partials_; }
+    /// delta_second calls: second weights scored from a dual prepare (#272).
+    [[nodiscard]] int64_t second_deltas() const { return second_deltas_; }
     /// Nonzero slopes written by the builds since the last layout reset -- a
     /// build counter, not a memory figure: the slope array costs 8 B per G_v
     /// incidence of the model however many rows are built.
@@ -248,6 +268,17 @@ private:
         double domain_step;
     };
 
+    // Both prepares: `second` null for the single-weight one.
+    bool prepare_impl(int32_t var_id, const std::vector<double>& weights,
+                      const std::vector<double>* second);
+    // prepare's up-front pass over G_v (x0_ set): false if x0_ is not finite or
+    // a weighted row is ineligible; sets second_ready_ from the zero patterns.
+    bool refusal_scan(int32_t var_id, const std::vector<double>& weights,
+                      const std::vector<double>* second);
+    // delta's sum, each term weighted by Term::weight or by second_weights_.
+    template <bool kSecond>
+    [[nodiscard]] double delta_impl(double j) const;
+
     // Build row ci (must be pending); returns the row, or nullptr if the build
     // demoted it to ineligible. Appends to built_, so any BuiltRow pointer
     // held across a call is invalidated.
@@ -287,6 +318,11 @@ private:
     size_t slope_len_ = 0;  // elements in slope_at_, 0 while null
     size_t cached_slopes_ = 0;
     std::vector<Term> terms_;
+    // A dual prepare's weights under `second`, parallel to terms_. Kept out of
+    // Term so a single prepare's term stays one 64-byte line.
+    std::vector<double> second_weights_;
+    bool second_ready_ = false;
+    bool second_terms_ = false;   // the last prepare was dual and succeeded
     std::vector<double> points_;  // int_argmin's sorted breakpoints, kept warm
     // build_row's scratch, kept so a build allocates only the row it keeps.
     std::vector<std::pair<int32_t, double>> merged_;
@@ -296,6 +332,7 @@ private:
     int64_t fast_prepares_ = 0;
     int64_t fallback_prepares_ = 0;
     int64_t cached_partials_ = 0;
+    int64_t second_deltas_ = 0;
 };
 
 }  // namespace cbls

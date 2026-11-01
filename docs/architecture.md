@@ -1622,7 +1622,9 @@ explored at the current level. A candidate var is selected (`select_novelty_var`
 as the best — by **novelty score**, as OR-Tools ranks its sample (#209) — of up
 to 3 sampled vars in `Q\T` passing the filter
 `(s_m + W'-score > 0) OR (W-score > s_c)`, scored by `compute_var_jump` under
-`W'`. The move is applied; if `s_m + W-score > 0` the compound move is committed
+`W'`; its W-score comes from the same pass (#272: a dual-weight
+`LinearJumpScorer::prepare`, a dual-weight probe), bit-identical to scoring it
+afresh under `W`. The move is applied; if `s_m + W-score > 0` the compound move is committed
 (left applied) and returns true; otherwise it recurses, and on failure backtracks
 (reverting the move and consuming a `budget` discrepancy — at the root too, as
 in the paper; OR-Tools does not count root backtracks, see the comment above

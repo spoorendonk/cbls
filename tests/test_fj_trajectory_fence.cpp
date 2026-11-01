@@ -71,6 +71,10 @@
 // weight to 1 -- so phase-1 weights now reach the hash directly. FJ's tolerance
 // moving from 1e-9 to the search's 1e-6 does not touch either: both fence
 // models are integral, so every residual is an integer.
+//
+// #272 added the third, non-linear Novelty hash, recorded at engine 805cdb2
+// before #272 scored each Novelty candidate under W' and W in one pass; #272
+// reproduced all three unchanged.
 
 #include <algorithm>
 #include <catch2/catch_test_macros.hpp>
@@ -187,6 +191,35 @@ uint64_t two_phase_run_trajectory() {
     return hash_state(h, m, vm);
 }
 
+// Novelty batches over a model whose every fifth row is non-linear and weighted
+// (single phase), so select_novelty_var scores those rows' variables by the DAG
+// probe -- the path the batch-API fence, all-linear, never takes.
+uint64_t nonlinear_novelty_trajectory() {
+    Model m;
+    build_fence_model(m, 303, 40, 90, true);
+    m.close();
+    ViolationManager vm(m);
+    RNG rng(31);
+    GFJConfig cfg;
+    cfg.two_phase = false;
+    FeasibilityJump fj(m, vm, rng, cfg);
+    fj.begin(true);
+    uint64_t h = 0;
+    for (int b = 0; b < 40; ++b) {
+        fj.set_rho(b % 2 == 0 ? 0.95 : 1.0);
+        h = mix(h, fj.batch(100) ? 1U : 0U);
+        h = mix(h, fj.novelty_batch(200) ? 1U : 0U);
+        h = mix(h, static_cast<uint64_t>(fj.iterations()));
+        h = hash_state(h, m, vm);
+        if (b % 10 == 9) {
+            fj.perturb(0.1);
+        }
+    }
+    // The fence is about the probe path: some prepare must have fallen back.
+    REQUIRE(fj.linear_scorer().fallback_prepares() > 0);
+    return h;
+}
+
 }  // namespace
 
 TEST_CASE("FJ's batch-API trajectory matches its recorded fingerprint",
@@ -201,4 +234,11 @@ TEST_CASE("FJ's two-phase run() trajectory matches its recorded fingerprint",
     const uint64_t h = two_phase_run_trajectory();
     CAPTURE(h);
     REQUIRE(h == 0xfefd9a2f749d666bULL);
+}
+
+TEST_CASE("FJ's Novelty trajectory over non-linear rows matches its recorded fingerprint",
+          "[fj][violated_set][trajectory]") {
+    const uint64_t h = nonlinear_novelty_trajectory();
+    CAPTURE(h);
+    REQUIRE(h == 0x773677ae558b7b7eULL);
 }

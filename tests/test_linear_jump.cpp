@@ -655,8 +655,10 @@ TEST_CASE("FeasibilityJump scores through the linear scorer", "[fj][linear_jump]
 TEST_CASE("novelty jump scores both its W'-argmin and its W score in closed form",
           "[fj][linear_jump]") {
     // One jumpable variable, so exactly one is sampled; select_novelty_var then
-    // prepares twice -- once under W' (the argmin) and once under W (the score).
-    // A count, not "grew": either call site reverting to the probe loses one.
+    // prepares ONCE, under W' and W together (#272), and scores the W' argmin
+    // under W from that prepare. Counts, not "grew": the argmin reverting to
+    // the probe loses the prepare, the W score reverting to a fresh prepare
+    // adds one, and reverting to the probe loses the second delta.
     Model m;
     const int32_t x = m.int_var(0, 5);
     m.add_constraint(m.leq(x, m.constant(0.0)));
@@ -667,10 +669,121 @@ TEST_CASE("novelty jump scores both its W'-argmin and its W score in closed form
     RNG rng(1);
     FeasibilityJump fj(m, vm, rng);
     fj.begin(false);
-    const int64_t before = fj.linear_scorer().fast_prepares();
+    const LinearJumpScorer& sc = fj.linear_scorer();
+    const int64_t before = sc.fast_prepares();
+    const int64_t seconds_before = sc.second_deltas();
     REQUIRE(fj.apply_novelty_jump());
-    REQUIRE(fj.linear_scorer().fast_prepares() == before + 2);
+    REQUIRE(sc.fast_prepares() == before + 1);
+    REQUIRE(sc.second_deltas() == seconds_before + 1);
+    REQUIRE(sc.fallback_prepares() == 0);
     REQUIRE(m.var(vid(x)).value == 0.0);
+}
+
+TEST_CASE("novelty jump re-prepares under W where W' zeroes a row W weighs (#272)",
+          "[fj][linear_jump]") {
+    // Row 0 is violated, so W'[0] = W[0]; row 1 holds, so W'[1] = W[1] / 1024,
+    // and a W[1] of denorm_min makes that 0. The zero patterns then differ over
+    // x's rows, the dual prepare cannot stand for a prepare under W, and the W
+    // score takes a second prepare -- as before #272 -- instead of delta_second.
+    Model m;
+    const int32_t x = m.int_var(0, 5);
+    m.add_constraint(m.leq(x, m.constant(0.0)));
+    m.add_constraint(m.leq(x, m.constant(4.0)));
+    m.close();
+    m.var_mut(vid(x)).value = 3.0;
+    full_evaluate(m);
+    ViolationManager vm(m);
+    RNG rng(1);
+    FeasibilityJump fj(m, vm, rng);
+    fj.begin(false);
+    vm.weights[1] = std::numeric_limits<double>::denorm_min();
+    REQUIRE(vm.weights[1] / 1024.0 == 0.0);
+    const LinearJumpScorer& sc = fj.linear_scorer();
+    const int64_t before = sc.fast_prepares();
+    const int64_t seconds_before = sc.second_deltas();
+    REQUIRE(fj.apply_novelty_jump());
+    REQUIRE(fj.novelty_weight(1) == 0.0);
+    REQUIRE(sc.fast_prepares() == before + 2);
+    REQUIRE(sc.second_deltas() == seconds_before);
+    REQUIRE(m.var(vid(x)).value == 0.0);
+}
+
+namespace {
+
+// Whether w and second zero the same rows of G_v.
+bool same_zero_pattern(const Model& m, int32_t v, const std::vector<double>& w,
+                       const std::vector<double>& second) {
+    const ConstSpan<int32_t> gv = m.constraints_of_var(v);
+    return std::all_of(gv.begin(), gv.end(), [&](int32_t c) {
+        return (w[static_cast<size_t>(c)] == 0.0) == (second[static_cast<size_t>(c)] == 0.0);
+    });
+}
+
+// One variable's dual prepare against two single ones. Returns the candidates
+// compared to the bit; -1 when the patterns differ (and second_ready said so).
+int check_dual_prepare(Model& m, LinearJumpScorer& dual, LinearJumpScorer& single, int32_t v,
+                       const std::vector<double>& w, const std::vector<double>& second, RNG& rng) {
+    const bool same = same_zero_pattern(m, v, w, second);
+    const bool ok = dual.prepare(v, w, second);
+    REQUIRE(dual.second_ready() == same);
+    REQUIRE(ok == single.prepare(v, w));
+    if (!same) {
+        if (ok) {
+            REQUIRE_THROWS_AS(dual.delta_second(0.0), std::logic_error);
+        }
+        return -1;
+    }
+    // The same pattern: the second prepare succeeds exactly when the first did.
+    REQUIRE(single.prepare(v, second) == ok);
+    int compared = 0;
+    for (const double j : ok ? candidates_for(m.var(v), rng) : std::vector<double>{}) {
+        REQUIRE(single.prepare(v, w));
+        const double under_w = single.delta(j);
+        REQUIRE(single.prepare(v, second));
+        const double under_second = single.delta(j);
+        REQUIRE(dual.delta(j) == under_w);
+        REQUIRE(dual.delta_second(j) == under_second);
+        ++compared;
+    }
+    return compared;
+}
+
+}  // namespace
+
+TEST_CASE("a dual prepare scores its second weights to the bit of a single prepare (#272)",
+          "[fj][linear_jump]") {
+    // Fractional rows, so a different term set or summation order would show
+    // in the last bits. `second` keeps w's zero pattern (w scaled per row, as W'
+    // scales W) on even rounds and draws its own on odd ones, where
+    // second_ready() must report whether the patterns agree over G_v.
+    int compared = 0;
+    int mismatched = 0;
+    for (uint64_t seed = 201; seed <= 208; ++seed) {
+        RandomLinearModel r;
+        build_random_linear(r, seed, /*integral=*/false);
+        Model& m = r.m;
+        LinearJumpScorer dual(m);
+        LinearJumpScorer single(m);
+        mark_all_rows(m, dual);
+        mark_all_rows(m, single);
+        RNG rng(seed * 6151);
+        for (int round = 0; round < 4; ++round) {
+            randomise_assignment(m, rng);
+            const size_t nc = m.constraint_ids().size();
+            const std::vector<double> w = random_weights(nc, rng);
+            std::vector<double> second = random_weights(nc, rng);
+            for (size_t c = 0; round % 2 == 0 && c < nc; ++c) {
+                second[c] = w[c] * rng.uniform(0.001, 3.0);
+            }
+            for (int32_t v = 0; v < static_cast<int32_t>(m.num_vars()); ++v) {
+                const int n = check_dual_prepare(m, dual, single, v, w, second, rng);
+                compared += std::max(n, 0);
+                mismatched += n < 0 ? 1 : 0;
+            }
+        }
+    }
+    REQUIRE(compared > 200);
+    REQUIRE(mismatched > 0);
 }
 
 TEST_CASE("a Float's Newton step reads the cached row partial", "[fj][linear_jump]") {

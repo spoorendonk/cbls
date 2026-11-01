@@ -1888,10 +1888,23 @@ std::vector<std::pair<int32_t, double>> Model::per_constraint_violation_delta(in
 
 double Model::weighted_violation_delta(int32_t var_id, double j,
                                        const std::vector<double>& weights) {
+    return probe_weighted_delta(var_id, j, weights, nullptr, nullptr);
+}
+
+double Model::weighted_violation_delta(int32_t var_id, double j, const std::vector<double>& weights,
+                                       const std::vector<double>& second, double& second_delta) {
+    return probe_weighted_delta(var_id, j, weights, &second, &second_delta);
+}
+
+double Model::probe_weighted_delta(int32_t var_id, double j, const std::vector<double>& weights,
+                                   const std::vector<double>* second, double* second_delta) {
     const Variable& v = var(var_id);  // bounds-checked
     if (is_structured(v.type)) {
         throw std::invalid_argument(
             "weighted_violation_delta: scalar variable required (Bool/Int/Float)");
+    }
+    if (second_delta != nullptr) {
+        *second_delta = 0.0;
     }
     const ConstSpan<int32_t> affected = constraints_of_var(var_id);
     if (affected.empty()) {
@@ -1953,16 +1966,26 @@ double Model::weighted_violation_delta(int32_t var_id, double j,
     var_mut(var_id).value = j;
     probe_scalar_move(*this, var_id, old_value);
 
+    // One probe, two weightings (#272): each row's difference is computed once,
+    // and each sum is the single-weight call's, term for term and in order.
     double delta = 0.0;
+    double delta2 = 0.0;
     for (size_t k = 0; k < affected.size(); ++k) {
         const int32_t c = affected[k];
         const double new_viol = clamped_node_violation(node_values_[cids[c]]);
-        delta += weights[c] * (new_viol - probe_old_violation_[k]);
+        const double diff = new_viol - probe_old_violation_[k];
+        delta += weights[c] * diff;
+        if (second != nullptr) {
+            delta2 += (*second)[c] * diff;
+        }
     }
 
     var_mut(var_id).value = old_value;
     delta_evaluate(*this, &var_id, 1, DeltaMode::Rollback);
 
+    if (second_delta != nullptr) {
+        *second_delta = delta2;
+    }
     return delta;
 }
 
