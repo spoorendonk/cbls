@@ -198,9 +198,10 @@ def _parse_lines(lines: Iterable[str]) -> list[tuple[float, float]]:
 
 
 class PreflightFailure(NamedTuple):
-    """One thing the preflight found broken, and which of the two checks found it."""
+    """One thing the preflight found broken, and which check found it."""
 
-    #: `WORKER_RESTRICTION_CHECK` or `LOG_FORMAT_CHECK`.
+    #: `WORKER_RESTRICTION_CHECK` or `LOG_FORMAT_CHECK`; `DEFAULTS_CHECK` in
+    #: defaults mode in place of the first.
     check: str
     message: str
 

@@ -27,8 +27,9 @@ Built for an unattended multi-hour run on a bigger machine, so:
   an entry rather than overwriting the one before it.
 
 Usage:
-    python run_benchmark.py --roster smoke --budget 60 --jobs 2
-    python run_benchmark.py --roster full --budget 600 --jobs 4 --mem-limit-gb 6
+    python run_benchmark.py --roster smoke --budget 60
+    # fj + ls mode: CP-SAT at its defaults (--cpsat-workers 0) needs --jobs 1
+    python run_benchmark.py --roster full --budget 600 --cpsat-workers 1 --jobs 4 --mem-limit-gb 6
 """
 
 from __future__ import annotations
@@ -224,10 +225,12 @@ def run_cpsat_preflight(workers: int) -> tuple[bool, str]:
     exercises the same interpreter and the same import of OR-Tools the roster will.
     One tiny in-memory model; no instance and no network.
 
-    At the worker count the roster will actually use: the announcement carries a
-    multiplicity at two or more (`fj(2)`) and the thread-count assertion is about
-    the share of CPU the baseline gets against CBLS's one thread, so preflighting a
-    configuration the run does not use checks the wrong thing.
+    In the mode and at the worker count the roster will actually use. In fj + ls
+    mode the announcement carries a multiplicity at two or more (`fj(2)`) and the
+    thread-count assertion is about the share of CPU the baseline gets against
+    CBLS, so preflighting a configuration the run does not use checks the wrong
+    thing. At 0 (CP-SAT's defaults) there is no count to assert; the preflight
+    checks only the log lines the worker count and the trace are read from.
     """
     outcome = run_process(
         [sys.executable, str(CPSAT_SCRIPT), "--preflight", "--workers", str(workers)],

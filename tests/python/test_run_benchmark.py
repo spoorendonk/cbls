@@ -585,6 +585,34 @@ def test_a_default_run_resumes_over_a_job_it_killed(tmp_path: Path) -> None:
     assert run_benchmark.check_resume_configuration(jobs, tmp_path, off) == 2
 
 
+@pytest.mark.parametrize(
+    ("recorded", "asked"),
+    [(1, 0), (0, 1), (0, 4)],
+    ids=["fj-ls-to-defaults", "defaults-to-fj-ls", "defaults-to-fj-ls-4"],
+)
+@pytest.mark.parametrize("killed", [False, True], ids=["finished", "killed"])
+def test_resuming_cp_sat_in_the_other_mode_is_refused(
+    tmp_path: Path, recorded: int, asked: int, killed: bool
+) -> None:
+    # #284: fj + ls rows and CP-SAT-at-defaults rows are different baselines, so a
+    # directory of one cannot be resumed as the other -- resume would skip every
+    # job and the table would carry rows of the mode it did not ask for.
+    job = Job("cpsat", "a")
+    then = _driver_args(cpsat_workers=recorded, cbls_threads=max(recorded, 1))
+    if killed:
+        arm = run_benchmark.arm_keys("cpsat", then)
+        write_failure_result(job, tmp_path, "killed", "exceeded wall clock", 60.0, arm)
+    else:
+        (tmp_path / "cpsat").mkdir()
+        (tmp_path / "cpsat" / "a.json").write_text(
+            json.dumps({"instance": "a", "workers": recorded})
+        )
+    same = run_benchmark.check_resume_configuration([job], tmp_path, then)
+    other = _driver_args(cpsat_workers=asked, cbls_threads=max(asked, 1))
+    assert same is None
+    assert run_benchmark.check_resume_configuration([job], tmp_path, other) == 2
+
+
 def test_a_killed_row_does_not_split_the_scored_configuration(tmp_path: Path) -> None:
     # The killed row's arm is kept out of the keys the scorer reads, or it would
     # carry a partial config no completed row matches and the uniformity check
