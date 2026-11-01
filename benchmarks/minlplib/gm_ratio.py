@@ -17,8 +17,11 @@ Usage, from any directory:
 
 `--cbls-staging DIR` reads the driver's staging directory instead of the
 assembled table, and only with `--partial`: the driver demotes a staged row to
-`VERIFY-FAILED` only once the whole roster is solved (`verify_staged` in
-`run_benchmark.py`), so no staged row has passed the independent SCIP check yet.
+`VERIFY-FAILED` in `verify_staged` (`run_benchmark.py`), after the solves, and a
+driver killed in between leaves a row unchecked with nothing to mark it (#307).
+
+The SCIP shards are `scip_shards.py`'s output: `<instance>.csv`, or an
+`<instance>.failed` marker holding `exit <rc>`.
 
 THE MEASURE, kept exactly as #228's smoke defined it (`MEASURE_RULE` below
 states it in every output):

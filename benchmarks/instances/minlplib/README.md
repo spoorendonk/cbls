@@ -107,6 +107,26 @@ catalogue instance one status, the first that applies: `unsupported-op`,
 which takes one instance directory, so it goes next to the NL files. Counts per
 status for a given catalogue and engine commit are recorded on #280.
 
+### Full-library campaign (#256)
+
+Both halves read that `bounds.csv`, and neither writes under
+`benchmarks/instances/`:
+
+- SCIP: `../../minlplib/scip_shards.py --nl-dir NL --shards DIR` runs
+  `reference_solve.py` once per instance, `--jobs` single-thread solves at a
+  time, under one machine lock. Each instance leaves `<instance>.csv` or an
+  `<instance>.failed` marker (`exit <rc>`; 124 is the 15-min wrapper cap). A
+  re-run retries only the missing and failed ones. The #256 rule: one retry with
+  the memory cap raised, then a remaining failure counts as SCIP no-solution,
+  named with its exit.
+- cbls: `../../minlplib/run_benchmark.py`, one instance per call, at the
+  campaign's thread count.
+- Score: `../../minlplib/gm_ratio.py --bounds NL/bounds.csv --cbls
+  comparison.csv --scip-shards DIR` prints the GM(gap+1) ratio cbls/SCIP with
+  feasible and head-to-head counts, and names every no-solution instance on
+  both sides. It refuses an incomplete roster; `--cbls-staging STAGE --partial`
+  gives an interim score from the driver's staging directory.
+
 ## Yuck / fzn-oscar-cbls coverage
 
 These FlatZinc-based local-search solvers are the natural CBLS comparators, but
