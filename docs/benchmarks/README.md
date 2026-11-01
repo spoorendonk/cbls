@@ -27,23 +27,28 @@ continuous variables. A benchmark whose faithful formulation is a MILP cannot
 carry such a claim however interesting the application is, because CP-SAT, CPLEX
 and Gurobi own that regime and epic #87 already rejects competing there.
 
-Row 1 is deliberately exempt, on a different rationale: `mipfeas` is pure MILP
-and CP-SAT expresses every instance natively. It earns its place as an
-*implementation* check — same algorithm, two implementations, identical
-formulation — not as a claim that this engine is better there. Read the two
-admission grounds as separate: expressiveness (rows 2-3) or same-algorithm
-head-to-head (row 1). Nothing else qualifies.
+Row 1 is admitted on a different ground: `mipfeas` is pure MILP and CP-SAT
+expresses every instance natively. It earns its place because CP-SAT carries
+the same jump-based algorithm (its `fj` and `ls` workers) on an identical
+formulation, not as an expressiveness claim. Read the two admission grounds
+as separate: expressiveness (rows 2-3) or the same algorithm in the baseline
+(row 1). Nothing else qualifies.
 
 | # | Benchmark | Compared against | Purpose | Tracking |
 |---|-----------|------------------|---------|----------|
-| 1 | `mipfeas` | OR-Tools CP-SAT `num_violation_ls` worker **only** | head-to-head correctness *and* performance against the reference implementation of the same jump-based algorithm | #87, #106 |
+| 1 | `mipfeas` | OR-Tools CP-SAT at its default parameters | correctness *and* performance against CP-SAT as it ships, which holds the reference implementation of the same jump-based algorithm | #87, #106, #255 |
 | 2 | `minlplib` | SCIP (nonlinear) | performance on non-convex MINLP — the regime CP-SAT's LS worker cannot express | #87 |
 | 3 | `uc-chped` | Pedroso 2014 | a good result on a published unit-commitment formulation | #25, #92, #131 |
 
-**Priority 1 is deliberately not a MIP shootout.** Compare only against CP-SAT's
-`num_violation_ls` worker (same algorithm, different implementation). Do **not**
-compare against CP-SAT's default full portfolio, Xpress, Gurobi or CPLEX — see
-epic #87 for why that framing is rejected.
+**Every comparison solver runs at its own default parameters** (Simon,
+2026-11-01, [#87](https://github.com/spoorendonk/cbls/issues/87#issuecomment-6558356494)):
+CP-SAT, SCIP and HiGHS with no setting changed. CP-SAT runs as it ships —
+presolve on, its full default portfolio — not restricted to its `fj` + `ls`
+workers under `num_violation_ls`, as row 1 was until then (#106, #256). The
+comparison reports what each solver does and does not try to even out their
+differences; the MIPfeas table records each engine's version and the threads,
+CPU and wall time of every solve (#285). Xpress, Gurobi and CPLEX stay out of
+every table (#87).
 
 Nothing outside this table is a comparative benchmark. Beside it sit **one
 worked example per structured variable type** (user decision, 2026-10-03). Their

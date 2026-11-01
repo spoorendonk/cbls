@@ -1,8 +1,12 @@
 # MIPfeas benchmark
 
-Head-to-head against the reference implementation of the algorithm this engine
-reimplements. **This is an implementation sanity check, not a MIP-competitiveness
-claim** — see epic #87 for why a MIP shootout is deliberately out of scope.
+CBLS against OR-Tools CP-SAT **at its default parameters**, which holds the
+reference implementation of the algorithm this engine reimplements. Every
+comparison solver runs at its own defaults, with no setting changed and no
+attempt to even out solver differences (Simon, 2026-11-01,
+[#87](https://github.com/spoorendonk/cbls/issues/87#issuecomment-6558356494)).
+Until then the baseline was CP-SAT restricted to its `fj` + `ls` workers; that
+mode is still available (`--cpsat-workers N`), but no longer the campaign's.
 
 ## The question
 
@@ -10,15 +14,17 @@ CP-SAT ships a violation-based local search directly descended from Feasibility
 Jump — the `fj` and `ls` workers described in Davies, Didier & Perron,
 *ViolationLS: Constraint-Based Local Search in CP-SAT*, CPAIOR 2024
 ([paper](https://link.springer.com/chapter/10.1007/978-3-031-60597-0_16)). CBLS
-implements the same algorithm from scratch. Running both on the same instances at
-the same budget answers one narrow question: **does the reimplementation hold up
-against the reference implementation?** (Same jump and weighting; what each does
-on stagnation differs, see **Restart versus kick** below.)
+implements the same algorithm from scratch. (Same jump and weighting; what each
+does on stagnation differs, see **Restart versus kick** below.)
 
-A gap in either direction is informative. What would *not* be informative is
-comparing against CP-SAT's default portfolio, or against Xpress/Gurobi/CPLEX:
-those bring presolve, cuts and decades of MIP heuristics to a fight this engine
-is not in. They are excluded by design, not by oversight.
+Restricted to those workers, CP-SAT answered one narrow question: **does the
+reimplementation hold up against the reference implementation?** At its
+defaults it answers a wider one: how CBLS fares against CP-SAT as it ships,
+with presolve, its full portfolio and the worker count it picks for the
+machine. The table states that baseline, each engine's version, and the
+threads, CPU and wall time of every solve (**Where the time went**), and
+reports the result without correcting for those differences. Xpress, Gurobi
+and CPLEX stay out (#87).
 
 ## Roster: MIPfeas, 233 instances
 
@@ -59,8 +65,9 @@ the correctness sweep is for and keeps the anytime score as a co-equal section:
 5. **trace health** — how many anytime profiles are genuine, over a stated
    denominator (rows the engine reported feasible);
 6. **anytime quality** — the Primal Integral aggregate, labelled with the exact
-   pairing it measures: CP-SAT's `fj` + `ls` subsolvers under `num_violation_ls`,
-   never "solvers" in general;
+   baseline it measures (CP-SAT at its default parameters, or, for an fj+ls
+   table, its `fj` + `ls` subsolvers under `num_violation_ls`), never "solvers"
+   in general;
 7. **where the time went** — setup and solve time in separate columns;
 8. **the machine and run record** — host, cores, memory, the concurrency the run
    used, the memory cap, the engine commit, the solver versions, the budget and
@@ -181,7 +188,7 @@ benchmarks/instances/mipfeas/
 
 benchmarks/mipfeas/
   mipfeas.cpp        CBLS runner, one instance per process
-  cpsat_solve.py     CP-SAT fj+ls baseline, same result schema
+  cpsat_solve.py     CP-SAT baseline (defaults, or fj+ls), same result schema
   run_benchmark.py   driver: parallel, resumable, memory-capped
   verify_solution.py independent feasibility check against the instance file
   primal_integral.py scoring -> comparison.csv + <stem>_report.md
@@ -467,11 +474,13 @@ restarting from it when they stall.
 Three things follow. Two of them the harness checks; the third is sizing that
 stays the operator's, and is called out below rather than implied away:
 
-* **The baseline gets the same number.** CP-SAT at `num_workers: N` runs N `fj`
-  and N `ls` subsolvers, so an N-thread CBLS against a 1-worker CP-SAT is an
-  N-fold CPU advantage that the table would report as an implementation gap. The
-  driver refuses `--cbls-threads != --cpsat-workers` unless
-  `--allow-asymmetric-cpu` says the asymmetry is the measurement.
+* **In the fj+ls mode, the baseline gets the same number.** CP-SAT at
+  `num_workers: N` runs N `fj` and N `ls` subsolvers, so an N-thread CBLS against
+  a 1-worker CP-SAT is an N-fold CPU advantage that the table would report as an
+  implementation gap. The driver refuses `--cbls-threads != --cpsat-workers`
+  unless `--allow-asymmetric-cpu` says the asymmetry is the measurement. At
+  CP-SAT's defaults (`--cpsat-workers 0`) it picks its own count and nothing is
+  matched: the table records the threads each side used (#255, #285).
 * **Memory still grows with the thread count, and nothing checks it.** Since
   #157 a worker's replica shares the built model's immutable DAG by reference, so
   N threads cost one structure plus N copies of what a search writes, not N whole
@@ -679,12 +688,12 @@ inherited, so a published number cannot silently change when a default moves:
 
 | | CBLS | CP-SAT |
 |---|---|---|
-| Threads | 1 (`--cbls-threads`, > 1 runs the cooperative portfolio) | 1 (`--cpsat-workers` -> `num_workers`) |
-| Algorithm | Feasibility Jump + ViolationLS + Novelty Jump | `fj` + `ls` workers only (`filter_subsolvers`) |
+| Threads | 1 (`--cbls-threads`, > 1 runs the cooperative portfolio) | CP-SAT's own count (`--cpsat-workers 0`, the default; recorded as `workers_started`), or N in the fj+ls mode (`--cpsat-workers N` -> `num_workers`) |
+| Algorithm | Feasibility Jump + ViolationLS + Novelty Jump | its full default portfolio; in the fj+ls mode `fj` + `ls` workers only (`filter_subsolvers`) |
 | Presolve | implied variable bounds only (activity-based propagation) | default, i.e. on |
 | Feasibility tolerance | `1e-6`, stated explicitly | CP-SAT's own |
 | Unbounded column falls back to | `1e7` (`--inf-clamp`), where propagation derives nothing | not clamped |
-| Recorded per result | commit SHA, seed, tolerance, clamp + columns it still narrows, columns declared unbounded, columns tightened, propagation verdict and pass cap, compound-move, exact-Int-jump (#216, off by default), near-value-perturbation (#217, off by default), objective tie-break (#218, on by default since #226) and propagation flags, peak RSS, read/build/setup seconds, trace point count and trace source | OR-Tools version, seed, full parameter string, solver verdict, peak RSS, read/setup seconds, free-row count, trace source |
+| Recorded per result | commit SHA, seed, tolerance, clamp + columns it still narrows, columns declared unbounded, columns tightened, propagation verdict and pass cap, compound-move, exact-Int-jump (#216, off by default), near-value-perturbation (#217, off by default), objective tie-break (#218, on by default since #226) and propagation flags, peak RSS, read/build/setup seconds, trace point count and trace source | OR-Tools version, seed, full parameter string, workers started (at its defaults), solver verdict, peak RSS, read/setup seconds, free-row count, trace source |
 | Solution verified against the instance file | yes, by SCIP | yes, by SCIP |
 
 Two of those are deliberate choices against the engine's defaults as they stood

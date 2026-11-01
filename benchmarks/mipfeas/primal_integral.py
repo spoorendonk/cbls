@@ -835,9 +835,10 @@ def check_uniform_configuration(rows: list[Scored]) -> None:
 # ---------------------------------------------------------------------------
 # Parity, defects and cross-checks.
 #
-# This benchmark is admitted as a head-to-head against the reference
-# implementation of the same jump-based algorithm -- correctness first, and
-# performance against that one worker pairing (docs/benchmarks/README.md, "Benchmark priority").
+# This benchmark is admitted because CP-SAT carries the reference implementation
+# of the same jump-based algorithm -- correctness first, then performance against
+# CP-SAT at its defaults, or its fj + ls workers in that mode
+# (docs/benchmarks/README.md, "Benchmark priority").
 # The Primal Integral aggregate answers the second half. Everything below is the
 # first half: who reached feasibility where, what the two engines disagree about,
 # and which rows are defects rather than results (issue #139).

@@ -127,7 +127,10 @@ A one-screen map of the pipeline, its files and defaults, the extension points, 
    `worker_failures` report it, the runner publishes them per row, and the scorer
    refuses a row with fewer completed workers than `threads`. It still
    grows with `--threads`, but with the per-worker mutable side rather than a whole
-   DAG — 0.60s at eight workers against ~1.6s before. Its driver
+   DAG — 0.60s at eight workers against ~1.6s before. CP-SAT runs at its
+   defaults by default (`--cpsat-workers 0`, #284): it picks its own worker
+   count and the table records it per row, uneven by design (Simon,
+   2026-11-01). In the fj+ls mode (`--cpsat-workers N > 0`) the driver still
    refuses `--cbls-threads != --cpsat-workers` without `--allow-asymmetric-cpu`:
    CP-SAT at N workers runs N `fj` and N `ls` subsolvers, so an asymmetric split
    is an N-fold CPU advantage that the table would report as an implementation
@@ -2133,8 +2136,10 @@ Exactly one path initialises each variable, split by type:
 
 **The scalar starting point does not depend on the seed, and this is deliberate.**
 Feasibility Jump specifies the closest-to-zero start, and the priority-1
-benchmark (`mipfeas`) is a head-to-head against another implementation of the
-same algorithm, so the start point is part of what is being compared. Two seeds
+benchmark (`mipfeas`) was built as a head-to-head against another
+implementation of the same algorithm (CP-SAT's `fj` worker), so the start point
+was part of what was compared. Since 2026-11-01 CP-SAT runs there at its
+defaults (#255), but the published start stays. Two seeds
 on a scalar-only model therefore begin at the *same* assignment — if you are
 reading identical results across seeds as evidence that the search converged,
 check whether it simply started there.

@@ -111,14 +111,18 @@ directories for details.
 
 | # | Benchmark | Runner | Compared against | What it establishes |
 |---|-----------|--------|------------------|---------------------|
-| 1 | MIPfeas (MIPLIB 2017) | `cbls_mipfeas` | OR-Tools CP-SAT `num_violation_ls` worker only | that this implementation holds up against the reference implementation of the same algorithm. Deliberately **not** a MIP-competitiveness claim |
+| 1 | MIPfeas (MIPLIB 2017) | `cbls_mipfeas` | OR-Tools CP-SAT at its default parameters | how this implementation of the jump-based algorithm fares against CP-SAT as it ships, whose `fj`/`ls` workers are the reference implementation of the same algorithm. Pure MILP, so no expressiveness claim |
 | 2 | MINLPLib subset | `cbls_minlplib` | SCIP (nonlinear) | non-convex MINLP — the regime CP-SAT's LS worker cannot express. This is the headline claim |
 | 3 | UC-CHPED | `cbls_uc_chped` | Pedroso et al. 2014 | a published unit-commitment formulation whose valve-point `\|d·sin(e·(Pmin−P))\|` term is likewise inexpressible in CP-SAT |
 
 A benchmark earns a place on that list on one of two grounds: it contains terms
-CP-SAT cannot express (rows 2-3), or it is a same-algorithm head-to-head on a
+CP-SAT cannot express (rows 2-3), or CP-SAT carries the same algorithm on a
 formulation both sides express identically (row 1). Nothing else qualifies — a
 model whose faithful form is a MILP belongs to CP-SAT, CPLEX and Gurobi.
+Every comparison solver runs at its own default parameters, CP-SAT included:
+nothing is restricted or evened out, and the differences are reported, not
+corrected for (Simon, 2026-11-01,
+[#87](https://github.com/spoorendonk/cbls/issues/87#issuecomment-6558356494)).
 
 Two further directories are **not** benchmarks in that sense:
 
