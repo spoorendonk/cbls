@@ -81,7 +81,7 @@ A one-screen map of the pipeline, its files and defaults, the extension points, 
 
 2. **Expression DAG** (`include/cbls/dag.h`, `src/dag.cpp`, `src/dag_ops.cpp`) — Variables use negative handles `-(id+1)`, nodes use non-negative `id`. 35 `NodeOp` operation types. Two evaluation modes:
    - `full_evaluate`: evaluate all nodes in topo order (initialization)
-   - `delta_evaluate`: BFS dirty-marking from changed variables, recompute only affected nodes (moves). On an FJ commit an incremental Sum (#188, a row read only by top-level comparisons) is moved by its changed terms instead of re-summed, so inside a batch its value may sit within a tracked drift bound of a re-sum; every verdict re-grounds first. A bit-exact delta-vs-full test must allow for that on fractional data. Details under **Evaluation Modes** below
+   - `delta_evaluate`: recompute only the nodes a move reaches. A one-variable walk on a frozen model reads that variable's cached topo-sorted cone (#271); other walks BFS-mark dirty nodes from the changed variables and sort them. On an FJ commit an incremental Sum (#188, a row read only by top-level comparisons) is moved by its changed terms instead of re-summed, so inside a batch its value may sit within a tracked drift bound of a re-sum; every verdict re-grounds first. A bit-exact delta-vs-full test must allow for that on fractional data. Details under **Evaluation Modes** below
    - Reverse-mode AD via `compute_all_partials` for the continuous (Newton) jump-value engine
 
 3. **Search** (`src/search.cpp`) — ViolationLS batch outer loop (Davies et al. CPAIOR 2024, Algorithm 6). The objective is folded into the constraints as `obj <= bound`; each batch is a Feasibility Jump, Novelty Jump, or STRUCTURAL batch (selected by config probabilities). The objective bound is tightened on each new real-feasible solution; on stagnation the assignment is perturbed or diversified via LNS. CP-SAT's restart randomisation (`restart_randomization`) and Luby schedule (`luby_restart_unit`) are kept as arms, default **off**: neither separated from the stall trigger in #239's smoke A/B.
@@ -113,12 +113,12 @@ A one-screen map of the pipeline, its files and defaults, the extension points, 
    against "1-worker + N x a measured per-worker constant". **Solution Pool &
    Parallel Search** below carries the measurements with their commits.
 
-   Three callers drive it: `src/cli.cpp`, which loads the model once and passes it
-   as the master; Python's `ParallelSearch.solve_master`, likewise; and
+   Callers: `src/cli.cpp`, which loads the model once and passes it as the
+   master; Python's `ParallelSearch.solve_master`, likewise; the `cvrp`,
+   `uc-chped` and `minlplib` runners at `--threads > 1`, also through the master
+   overload (#262; at `--threads 1` they call `solve()` directly); and
    `benchmarks/mipfeas/` at `--threads > 1`, through the factory overload over
-   pre-built copies of its frozen master (the other three
-   runners are still single-threaded, so their trajectories are unchanged). The
-   runner freezes the model and replicates it once per worker **before** the solve
+   pre-built copies of its frozen master. That runner freezes the model and replicates it once per worker **before** the solve
    bracket opens, and reports the cost as `replicate_seconds`. That has to stay
    outside the bracket for two reasons: inside it the copies come out of the
    search's own deadline, and a `bad_alloc` there is parked by `ParallelSearch`,
@@ -269,7 +269,7 @@ of per-model state, which is roughly one per row on a MIP.
 | Arithmetic   | Const, Neg, Sum, Prod, Div, Pow                      |
 | Aggregation  | Min, Max, Abs                                        |
 | Trigonometric| Sin, Cos, Tan                                        |
-| Exponential  | Exp, Log, Sqrt                                       |
+| Exponential  | Exp, Log, Sqrt, SignPower (`sign(x)·abs(x)^p`), Tanh |
 | Conditional  | If                                                   |
 | Rounding     | Ceil, Floor, Round (#186³)                           |
 | Table lookup | Element: `table[i]` or `table[i][j]`, each index any scalar, truncated toward zero (#186³) |
@@ -277,8 +277,9 @@ of per-model state, which is roughly one per row on a MIP.
 | Comparison   | Leq, Eq, Geq, Neq, Lt, Gt                           |
 | User code    | Custom (a `CustomInvariant`², #166)                  |
 
-35 enumerators in all. The six #186 ones are appended after `Custom`, so every
-older enumerator keeps its value.
+35 enumerators in all. The six #186 ones are appended after `Custom`; SignPower
+and Tanh (for MINLPLib) sit before `If`. Saved models name ops rather than
+number them, so the order is not a file format.
 
 Comparison nodes evaluate to a **violation measure** (0 when satisfied,
 positive when violated):
@@ -344,8 +345,10 @@ order. Used at initialization, after perturbation/LNS, and after the
 objective-bound soft constraint is appended.
 
 **Delta evaluation** (`delta_evaluate`): given a set of changed variable IDs,
-BFS-marks dirty nodes upward through `Model::dependents`/`Model::parents`, then
-recomputes only dirty nodes in topological order. This is the hot path during
+recomputes only the nodes they reach, in topological order. A one-variable walk
+on a frozen model reads the variable's cached cone (**Cone cache** below); any
+other walk BFS-marks dirty nodes upward through
+`Model::dependents`/`Model::parents` and sorts them. This is the hot path during
 GFJ — each jump changes one variable and touches a small subgraph, and each
 jump *candidate* is scored by a no-commit delta probe (see
 [`weighted_violation_delta`](#violation--gls-weights)) unless every weighted
@@ -862,9 +865,10 @@ declares that a group of Lists over one universe covers it exactly, or at most
 once, and that invariant is maintained **by the moves** rather than by a penalty
 row — see [Structural Batch](#structural-batch).
 
-**Expression creation**: arithmetic (`sum`, `prod`, `div_expr`, `pow_expr`,
-`neg`, `abs`), trigonometric (`sin_`, `cos_`, `tan_`), other (`exp_`, `log_`,
-`sqrt_`), conditional (`if_then_else`), rounding (`ceil_expr`, `floor_expr`,
+**Expression creation** (`Model` builders): arithmetic (`sum`, `prod`,
+`div_expr`, `pow_expr`, `neg`, `abs_expr`, `min_expr`, `max_expr`),
+trigonometric (`sin_expr`, `cos_expr`, `tan_expr`), other (`exp_expr`,
+`log_expr`, `sqrt_expr`, `signpower_expr`, `tanh_expr`), conditional (`if_then_else`), rounding (`ceil_expr`, `floor_expr`,
 `round_expr`), table lookup (`element`), collection (`at`, `count`,
 `lambda_sum`, `pair_lambda_sum`, each also with an `extra` form — see footnote
 ³ above), and comparisons (`leq`, `eq_expr`, `geq`,
@@ -894,10 +898,11 @@ flag. After close the ordinary builders — variable and expression creation,
 `add_constraint`, `minimize`/`maximize`, `add_var_sequence`,
 `add_list_partition` — throw `std::logic_error` (#173): a node or row they
 appended then was never placed in the topological order, so no evaluation
-reached it and `solve()` reported feasible over it. `solve()` itself closes a
-model it is handed unclosed, so a model that has been
-solved refuses the builders too. A closed model does not grow, apart from the
-objective soft constraint, which `solve()` appends lazily (see below). (Growth of
+reached it and `solve()` reported feasible over it. `solve()` freezes the model
+it is handed (`Model::freeze()`: close if open, append the objective row, build
+the cone cache), so a model that has been solved refuses the builders too. A
+closed model does not grow, apart from the objective soft constraint, which
+`freeze()` appends (see below). (Growth of
 a closed model, `Model::extend` from #167, was removed in #181 together with its
 only user, column generation, #180.)
 
@@ -963,7 +968,7 @@ When the model has an objective, `freeze()` -- which `solve()` calls -- calls
 - creates a constant node `objective_bound_node_` (initially `+inf`),
 - adds the constraint `obj - bound <= 0` (`objective_constraint_node_`), inert
   while the bound is `+inf`,
-- records its index in `constraint_ids_` as `objective_constraint_idx_`,
+- records its index in `constraint_ids()` (`ModelStructure::constraint_ids`) as `objective_constraint_idx_`,
 - rebuilds the topo order and `G_v` (a node/constraint was appended after
   `close()`).
 
@@ -1074,14 +1079,17 @@ Tracks per-constraint violation and the GLS weight vector.
   restores node state, so it is not reentrant on a shared Model — each search
   thread owns its own Model.) The GFJ jump *score* is `-deltaG` (positive =
   improving). Scalar variables only.
-- `snapshot_violations(out)` / `weighted_delta_from(snapshot[, rows])` — the structural
+- `snapshot_violations(out)` / `weighted_delta_from(snapshot[, rows[, differing]])` — the structural
   counterpart of the above, for moves on List/Set variables that the scalar-only
   probe cannot score. Snapshot the accepted assignment's per-constraint
   violations once, apply a candidate move, then read the weighted change against
   the snapshot. Like `weighted_violation_delta` it accumulates **per
   constraint**, which is what keeps a row clamped to `kInfPenalty` from
   swallowing the O(1) real rows (`1e30 + 3 == 1e30`, so differencing two whole
-  sums loses them; `1e30 - 1e30` cancels exactly). See #100 and #118.
+  sums loses them; `1e30 - 1e30` cancels exactly). See #100 and #118. The
+  `rows` form, ascending constraint indices, reads only those rows and is exact
+  when they cover every row the move can touch; `differing`, when non-null,
+  gets the rows of `rows` whose violation changed (#273).
 - `augmented_objective()` = `obj + total_violation()` — the penalty-method
   metric. **Used only as the inner solver's local descent objective**, not as
   any search acceptance rule. (When the objective is folded in as a soft
@@ -1554,7 +1562,7 @@ The ViolationLS outer loop owns the iteration clock and calls:
   OR-Tools' no-restart path (`PerturbateCurrentSolution`); its restart states
   redraw near zero or the objective bound, and below 16 workers on one state
   set it runs no no-restart state, so the mipfeas CP-SAT arm in its fj+ls mode
-  never takes it (#234); at its defaults (#255) it picks its own worker count.
+  never takes it (#234); at its defaults (#87, #284) it picks its own worker count.
 
 **The objective before the first feasible point (#218), on by default.**
 Without help FJ ignores the objective until the first feasible point: the
@@ -2052,25 +2060,18 @@ guidance of its own.
 ### Deadline bound
 
 The sweep is bounded by the same wall-clock deadline as the rest of the loop,
-checked **between variables** — never mid-variable, so a variable's move set is
-always evaluated whole (the reference move set is never truncated for speed) and
-the overrun is capped at one variable's work.
+checked **between generators** (`StructuralBatch::run`) — never mid-generator,
+so a generator's drawn candidates are always evaluated whole (the reference move
+set is never truncated for speed) and the overrun is capped at one generator's
+work.
 
-The bound is needed because the sweep's cost is unbounded in the model size:
-`O(#structured vars x #moves x (delta_evaluate + O(#constraints)))`, since the
-weighted delta rescans every constraint once per move. (The per-variable costs
-below were measured at `95820e1`, where the pass hoisted `before =
-vm.total_violation()` out of the move loop — one constraint scan per move plus
-one per variable. The current form is one `weighted_delta_from` scan per move
-plus a `snapshot_violations` per pass and per accepted move. Those numbers are
-therefore close but not a strict upper bound: `total_violation()` is not O(1)
-either — its "incremental" path diffs every constraint on every call — yet a
-variable whose moves are all accepted costs one extra scan and one vector copy
-apiece. Accepts are rare on a stalled structural search, and #118 makes them
-rarer still by rejecting the phantom improvements it used to take. The genuinely
-two-scans-per-move form — `invalidate_cache()` plus a full recompute on both
-sides of each move — predates `8e17796` and none of these numbers were measured
-against it.)
+The bound is needed because the sweep's cost grows with the model:
+`O(#generators x #candidates x (delta_evaluate + |R_c| + |differing_|))`, where
+a candidate is scored over the rows its walk reached (`R_c`, from each walked
+variable's G_v) plus the rows that already differ from the pass's baseline
+(`differing_`), not over every constraint (#273,
+`StructuralBatch::delta_after_walk`). The measurements below predate #273: at
+`95820e1` every move rescanned every constraint.
 Both factors matter — a 1000-List x 800-element model costs 44.5us per variable
 on its own, but **with ~40k constraints** the same model costs 407us per
 variable. On a 1500-List x 100-element model with 40k constraints, a 0.5s budget
@@ -2140,7 +2141,7 @@ Feasibility Jump specifies the closest-to-zero start, and the priority-1
 benchmark (`mipfeas`) was built as a head-to-head against another
 implementation of the same algorithm (CP-SAT's `fj` worker), so the start point
 was part of what was compared. Since 2026-11-01 CP-SAT runs there at its
-defaults (#255), but the published start stays. Two seeds
+defaults (#87, #284), but the published start stays. Two seeds
 on a scalar-only model therefore begin at the *same* assignment — if you are
 reading identical results across seeds as evidence that the search converged,
 check whether it simply started there.
@@ -2370,7 +2371,7 @@ before the deadline could overrun it. Five can, and each is bounded separately:
 | 1 | Feasibility Jump batch | handed the same absolute deadline, checked inside the GLS loop on a stride bounded two ways: at most 64 iterations, and at most 1/64 of the *remaining* budget in predicted time (#113) | `gfj.time_limit = budget_seconds` |
 | 2 | `InnerSolverHook` | not *started* when the budget is spent, and handed the loop's own `past_deadline()` as `solve()`'s `StopRef stop` (#191); `FloatIntensifyHook` polls it every `vars_per_poll()` Float variables (65 536 / max(rows, nodes), clamped to [1, 256]: a model-size proxy for a variable's cost, argued in `src/inner_solver.cpp`; 1 on rahue) and before every multi-variable Newton step. A custom hook that ignores `stop` is still unbounded — the call is synchronous | `if (hook && !past_deadline())`, `LoopStop` |
 | 3 | LNS repair | handed `min(2.0, remaining())`, not its own independent 2s. Clock only: the repair does not see a peer worker's stop or a host cancel, so either can wait up to 2s for it | `diversify()` |
-| 4 | STRUCTURAL sweep | checked between generators, one per structured variable by default; the overrun is one generator's candidates, which the built-ins cap at 5 and a registered generator does not (#105, #165) | `StructuralBatch::run` |
+| 4 | STRUCTURAL sweep | checked between generators, one per structured variable by default; the overrun is one generator's candidates: a built-in `generate` call appends at most 5, `BestOfSample` calls until it holds `structural_sample_size` (possibly overshooting), and `GranularBest` takes whole granular neighbourhoods topped up to that size; a registered generator's own count is not capped (#105, #165, #203) | `StructuralBatch::run` |
 | 5 | diversification kick, structural half | checked between structural *moves*, on a stride bounded the same two ways as row 1: at most 64 moves, and at most 1/64 of the *remaining* budget in predicted time (#115) | `perturb_structural` |
 
 Bound 3 has two halves, and only the lower one is about the deadline. The
@@ -3025,24 +3026,9 @@ correctly changes nothing.
 
 ### SearchConfig
 
-```cpp
-struct SearchConfig {
-    bool skip_init = false;                 // keep the assignment whole: no List/Set
-                                            // randomisation, no FJ scalar start
-    int64_t max_iterations = 0;             // 0 = unlimited (use time_limit); counts GLS iterations
-    bool use_fj = true;                     // vestigial: GFJ is always the engine
-    int lns_interval = 3;                   // LNS fires every Nth diversification kick
-
-    int64_t batch_iterations = 1000;        // GLS iterations per FJ batch
-    int perturbation_period = 100;          // batches without improvement before diversifying
-    double perturbation_probability = 0.1;  // scalar randomisation prob + List/Set
-                                            // kick size (never a no-op)
-    double structural_batch_probability = -1.0;  // <0 = auto (0.33 if any generator, else 0);
-                                                 // auto is 1.0 when FJ has nothing to jump (#201)
-    bool use_compound_moves = true;         // run Novelty Jump batches (else FJ only)
-    double novelty_jump_probability = 0.5;  // P(a batch is Novelty Jump) when enabled
-};
-```
+`SearchConfig` (`include/cbls/search.h`) carries every outer-loop knob. Its
+fields and defaults are listed once, in the [Parameters Table](#parameters-table);
+the header is the source of truth and carries each field's reasoning.
 
 ### SolveProgress
 
@@ -3161,7 +3147,8 @@ Measured 2026-10-01 on an AMD Ryzen 5 5600H at `c4b4861`: #191 on `7291a2c`,
 before #192 and #190, landing as `752e18a` (same patch-id). Neither of those
 reaches rahue: its MPS rows are comparisons over Sums, so it has no Sum posted
 as a row (#192), no bare constraint body and no nested comparison (#190). The
-stride was later resized by node count, which leaves rahue's stride at 1. #207
+hook's stop-poll stride (`vars_per_poll`, `src/inner_solver.cpp`) was later sized by
+model size (`kPollUnits / max(rows, nodes)`), which leaves rahue's stride at 1. #207
 then changed what each descent does, so these runs record the #191 overrun fix.
 They are not a timing of the current hook.
 
@@ -3232,7 +3219,7 @@ draws:
   random vars (default `destroy_fraction = 0.3`).
 
 Destroyed variables are re-randomized by type through the shared `randomize_var`
-(see "Randomising a variable" under Initialization): Bool/Int/Float uniform over
+(see "Randomising a variable" under [Who initialises what](#who-initialises-what-108)): Bool/Int/Float uniform over
 the guarded domain window, List a reshuffle of its current elements
 (`ListOrder::Perturb` — destroy/repair perturbs an incumbent, so the elements
 present are preserved and only their order changes), Set a random
@@ -3384,8 +3371,7 @@ the column count, and this roster's `supportcase19` has 2x kasavu's.
 Four things make it cooperative rather than N independent runs, and all four
 are reached through one parameter -- `cbls::solve()`'s trailing
 `SearchCoordination*`, which is null at every call site outside this class
-(three of the four benchmark runners always, and `mipfeas` at its default
-`--threads 1`), leaving the single-threaded trajectory
+(every benchmark runner at its default `--threads 1`), leaving the single-threaded trajectory
 bit-identical to what it was before the parameter existed:
 
 1. **Submit when found.** `record_best()` shares each new incumbent into the
@@ -3672,7 +3658,9 @@ than #102's stall trigger and slower to a first feasible point, so it stays off.
 ```
 solve(model, time_limit, seed, use_fj, hook, lns, lns_interval, callback, config, coord)
 │
-├── [if objective] add_objective_soft_constraint(); set_objective_bound(+inf)
+├── model.freeze(config.cone_cache_bytes)   # close if open, objective row, cone cache
+├── [if objective] set_objective_bound(+inf)
+├── set_domain_tolerance(config.feasibility_tolerance)
 ├── ViolationManager vm(model)
 ├── [unless config.skip_init] initialize_structured_random(model)   # List/Set only
 │
@@ -3751,6 +3739,21 @@ solve(model, time_limit, seed, use_fj, hook, lns, lns_interval, callback, config
 | `use_compound_moves` | true | `SearchConfig` | enable Novelty Jump batches (the UC-CHPED runner turns it off) |
 | `novelty_jump_probability` | 0.5 | `SearchConfig` | P(Novelty Jump batch) when enabled |
 | `lns_interval` | 3 | `SearchConfig` / arg | LNS fires every Nth diversification kick |
+| `move_generators` | empty | `SearchConfig` | extra structural move generators, cloned per worker (#165) |
+| `default_structural_generators` | true | `SearchConfig` | also register the built-in List/Set generators |
+| `structural_selection` | `Auto` | `SearchConfig` | how a generator's candidates become a commit; `Auto` is `GranularBest` with `structural_neighbours`, else `FirstImprovingSample` (#165, #203) |
+| `structural_sample_size` | 8 | `SearchConfig` | candidates per generator under the sampling policies; a neutral placeholder, not measured |
+| `structural_neighbours` | null | `SearchConfig` | k-nearest neighbour list for the built-in generators; setting it makes `Auto` `GranularBest` (#203) |
+| `cone_cache_bytes` | 256 MiB (`Model::kDefaultConeCacheBytes`) | `SearchConfig` | cap on the frozen model's cone cache (#271) |
+| `unproductive_iterations` | 300 | `SearchConfig` → `GFJConfig` | end an FJ batch after this many GLS iterations without a new real-violation low, and take the kick as due (#102); `<= 0` = fixed cadence |
+| `fj_exact_int_jump` | false | `SearchConfig` | exact Int argmin over all-linear rows (OR-Tools' `ComputeLinearJump`, #216) |
+| `perturb_near_value` | false | `SearchConfig` | OR-Tools' near-value diversification kick (#217) |
+| `fj_objective_tie_break` | true | `SearchConfig` | OR-Tools' affine-objective tie-break before the first feasible point (#218, #226) |
+| `restart_randomization` | false | `SearchConfig` | CP-SAT's restart randomisation as an arm (#239) |
+| `luby_restart_unit` | 0 (off) | `SearchConfig` | Luby kick schedule in place of #102's trigger (#239) |
+| `stop` | none | `SearchConfig` | caller's cancellation flag, read at batch boundaries (#169) |
+| `tracer` | null | `SearchConfig` | caller's event sink, per worker (#169) |
+| `auditor` | null | `SearchConfig` | test-facing consistency hook (#225) |
 | `rho` (GLS decay) | {0.95, 1.0} | sampled per batch | GLS weight decay factor |
 | `sample_size_general` | 5 | `GFJConfig` | best-of-N scan-set sample, general phase (ViolationLS §3; 3 until #211) |
 | `sample_size_linear` | 5 | `GFJConfig` | best-of-N scan-set sample, linear phase |
@@ -3759,16 +3762,17 @@ solve(model, time_limit, seed, use_fj, hook, lns, lns_interval, callback, config
 | `kCompoundDiscount` | 1/1024 | `feasibility_jump.cpp` | Novelty-weight discount on satisfied constraints |
 | `kNoveltyWorkBudget` | 256 | `feasibility_jump.cpp` | max moves per `apply_novelty_jump` |
 | `kEscapeArmFraction` | 0.25 | `search.cpp` `solve` | fraction of the wall-clock budget without a new best that arms the Float escape probe (#117). Not a `SearchConfig` knob |
-| `objective_bound_eps` | 1 (integral objective) / step·(|obj|+1), step adaptive in [1e-6, 1e-3] (#241) | `search.cpp` `objective_bound_below`, `kObjStep*` | bound tightening / hook Newton step |
+| objective bound step (not a knob) | 1 (integral objective) / step·(abs(obj)+1), step adaptive in [1e-6, 1e-3] (#241) | `search.cpp` `objective_bound_below`, `kObjStep*` | bound tightening / hook Newton step |
 | `destroy_fraction` | 0.3 | `LNS` ctor | fraction of variables/sequences destroyed |
 | `repair_time_limit` | 2.0 s | `LNS::destroy_repair` | FJ repair budget; `<= 0` = iteration-bounded only |
 | `feasibility_tolerance` | 1e-6 | `SearchConfig` / `kDefaultFeasibilityTolerance` | violation below which a constraint counts as satisfied |
-| `lns_repair_iters` | 2000 | `lns.cpp` | GFJ iterations in LNS repair |
+| LNS repair iterations (not a knob) | 2000 | `lns.cpp`, literal in `fj_nl_initialize` call | GFJ iterations in LNS repair |
 | `max_sweeps` | 3 | `inner_solver.h` | inner-solver coordinate-descent sweeps |
 | `initial_step_size` | 0.1 | `inner_solver.h` | line-search starting step |
 | `max_line_search_steps` | 5 | `inner_solver.h` | max backtracking halvings |
 | `max_multi_var_constraints` | 5 | `inner_solver.h` | max constraints for multi-var Newton |
 | `pool_capacity` | 0 = max(10, 2·workers) | `ParallelConfig` | max solutions in the shared pool |
+| `share_objective_bound` | true | `ParallelConfig` | workers tighten `obj <= bound` to the pool's best at batch boundaries (#179) |
 | `n_threads` | 0 = hw_concurrency | CLI / `ParallelConfig` | portfolio workers |
 
 ---
@@ -3950,9 +3954,35 @@ tabulated over their input domain on save and reconstructed on load, and a
 PairLambda additionally carries its `mode` and its `head`/`tail` tables when
 they are not the default (see the
 [Lambda serialization note](#expression-dag)). The objective soft constraint is
-*not* part of the serialized model — `solve()` appends it at runtime.
+*not* part of the serialized model — `freeze()`, which `solve()` calls, appends it at runtime.
 
 Models can also be built programmatically via the C++ or Python API.
+
+### NL Model Format (#280-#291)
+
+`read_nl(path)` / `parse_nl(text)` (`include/cbls/io_nl.h`, `src/io/nl_reader.cpp`)
+read AMPL `.nl` files, an original implementation of Gay's public spec: text
+(`g` header) and binary (`b`, host byte order only). `nl_to_model`
+(`src/io/nl_to_model.cpp`) builds a closed `Model`: one Int or Float per column,
+each `V` defined variable inlined as one shared node, each constraint body as one
+or two comparison rows from its `r` bound, the first objective with its sense.
+
+- **Skipped:** `d` (initial dual guess) segments; the search does not use them.
+- **Refused** with `std::runtime_error`: a malformed header (a block count
+  outside `[0, n_vars]`, more discrete columns than variables, or block counts
+  no valid variable ordering produces, #291); a discrete-column placement that
+  does not match the declared count; out-of-range segment indices; a binary file
+  in the other byte order; `S` suffixes (MINLPLib's are SOS declarations, and
+  dropping them would solve a relaxation) and `F` imported functions.
+- **Unsupported operators** do not throw: `nl_to_model` sets `supported = false`
+  with a reason, and the model must not be solved.
+
+`cbls_minlplib_nl_check` (`benchmarks/minlplib/nl_check.cpp`) reads and models
+each file named on its command line without solving and prints one status line
+per file (`modelled`, `reader-error`, `reader-unsupported`,
+`adapter-unsupported`, `checker-failed`);
+`benchmarks/instances/minlplib/status.py` runs it over the MINLPLib catalogue
+(#283).
 
 ### SolveCallback
 
@@ -3992,7 +4022,7 @@ selects via `--format` and suppresses both with `--quiet`.
 
 Top-level `solve()` arguments carry defaults (`time_limit=10.0`, `seed=42`,
 `use_fj=true`, `hook=nullptr`, `lns=nullptr`, `lns_interval=3`,
-`callback=nullptr`, `config={}`). Algorithmic tuning lives in `SearchConfig`
+`callback=nullptr`, `config={}`, `coord=nullptr`, the portfolio's `SearchCoordination*`). Algorithmic tuning lives in `SearchConfig`
 (outer loop) and `GFJConfig` (engine); inner-solver knobs are fields on
 `FloatIntensifyHook`; LNS takes `destroy_fraction`. See the
 [Parameters Table](#parameters-table).
@@ -4012,9 +4042,9 @@ OpenMP, no work-stealing, no parallel DAG evaluation.
 ### Determinism
 
 The solver is deterministic given the same seed, modulo wall-clock. All
-randomness flows through a single `RNG` (`mt19937_64`). Unordered containers in
-`delta_evaluate` / AD are used only for membership/lookup — iteration order does
-not affect results because recomputation follows topological order.
+randomness flows through a single `RNG` (`mt19937_64`). `delta_evaluate` and AD
+keep their scratch in flat `thread_local` vectors and recompute in topological
+order, so no container's iteration order reaches a result.
 
 That holds for a **single-threaded** run. With `time_limit = 0` and
 `SearchConfig::max_iterations` set, such a run reads no clock at all and is
