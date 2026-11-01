@@ -131,16 +131,13 @@ public:
         if (j >= 0 && j < static_cast<int32_t>(vh_.size())) {
             return vh_[j];
         }
-        const int64_t slot = static_cast<int64_t>(j) - static_cast<int64_t>(vh_.size());
-        if (j < 0 || slot >= static_cast<int64_t>(prob_.defined_vars.size())) {
+        const int64_t slot = slot_of(j);
+        if (slot < 0) {
             fail("var index out of range");
             return m_.constant(0.0);
         }
         return defined_var(static_cast<std::size_t>(slot));
     }
-
-    /// Whether NL variable `j` names a defined variable rather than a column.
-    [[nodiscard]] bool is_defined_var(int32_t j) const { return slot_of(j) >= 0; }
 
 private:
     enum class DefState : std::uint8_t { Unbuilt, Building, Built };
@@ -183,7 +180,7 @@ private:
                 if (def_state_[dep] == DefState::Unbuilt) {
                     enter(dep, stack);  // invalidates `top`; not used again
                 } else if (def_state_[dep] == DefState::Building) {
-                    fail(label(dep) + " refers to itself");
+                    fail(label(dep) + " refers to itself, directly or through others");
                 }
                 continue;
             }
@@ -329,18 +326,14 @@ private:
     std::string reason_;
 };
 
-// Build the linear part sum_j coef_j * x_j as a CBLS node (or constant 0). A
-// J/G term names a column, never a defined variable; one out of range is
-// dropped (io_nl.h: skip, don't throw).
+// Build the linear part sum_j coef_j * x_j as a CBLS node (or constant 0).
+// Every term names a column; `build_body` refuses the body otherwise.
 int32_t build_linear(Model& m, const std::vector<NlLinTerm>& terms,
                      const std::vector<int32_t>& vh) {
     std::vector<int32_t> parts;
     parts.reserve(terms.size());
     for (const NlLinTerm& t : terms) {
-        if (t.var < 0 || t.var >= static_cast<int32_t>(vh.size())) {
-            continue;
-        }
-        parts.push_back(scaled(m, t.coef, vh[t.var]));
+        parts.push_back(scaled(m, t.coef, vh[static_cast<std::size_t>(t.var)]));
     }
     return sum_of(m, parts);
 }
@@ -387,12 +380,13 @@ BodyResult build_body(Model& m, ExprTranslator& tr, const NlExpr& nonlinear,
             return out;
         }
     }
-    // AMPL never writes a defined variable into J/G, and `build_linear` would
-    // drop the term, relaxing the row; refuse it as a V segment's bad index is.
+    // A J/G term names a column (AMPL never writes a defined variable there).
+    // Dropping a bad one would relax the row, so refuse it, as a V segment's
+    // bad index is.
     for (const NlLinTerm& t : linear) {
-        if (tr.is_defined_var(t.var)) {
+        if (t.var < 0 || t.var >= static_cast<int32_t>(var_handles.size())) {
             out.ok = false;
-            out.reason = "linear term names defined variable " + std::to_string(t.var);
+            out.reason = "linear term names variable " + std::to_string(t.var) + ", not a column";
             return out;
         }
     }
@@ -501,10 +495,10 @@ BoundPropagationStats tighten_column_bounds(const NlProblem& prob, const NlToMod
         LinearRow row;
         row.lo = rb->lo;
         row.hi = rb->hi;
-        // `propagate_bounds` rejects an out-of-range column outright, but
-        // `build_linear` drops one silently and io_nl.h promises "skip, don't
-        // throw" on a malformed file. Drop the whole row instead: omitting a row
-        // costs tightening, never validity.
+        // `propagate_bounds` rejects an out-of-range column outright, and
+        // io_nl.h promises "skip, don't throw" on a malformed file. Leave such a
+        // row out of propagation (omitting a row costs tightening, never
+        // validity); `build_body` refuses the model for it anyway.
         bool in_range = true;
         for (const NlLinTerm& t : c.linear) {
             if (t.var < 0 || static_cast<std::size_t>(t.var) >= lb.size()) {

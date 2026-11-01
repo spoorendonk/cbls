@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <benchmarks/minlplib/note_policy.h>
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 #include <cbls/cbls.h>
@@ -344,13 +345,18 @@ TEST_CASE("NL reader refuses a V segment outside the declared range", "[minlplib
         REQUIRE_THROWS_WITH(parse_nl(text, "twice"),
                             Catch::Matchers::ContainsSubstring("defined twice"));
     }
-    SECTION("counts whose sum overflows") {
-        // Two INT64_MAX counts wrap negative if summed before the range check.
+    SECTION("a common-expression count too large") {
+        // Line 10's counts are each range-checked, and so is their sum.
+        // INT64_MAX counts would wrap int64 if summed first; counts each
+        // within int32 can still sum past it, and would wrap the cast.
+        const std::string line =
+            GENERATE(std::string(" 9223372036854775807 9223372036854775807 2 0 0"),
+                     std::string(" 2000000000 2000000000 0 0 0"));
         std::string text = nl_header(2, 0, 1);
         const std::string line10 = " 0 0 0 0 0\t# common exprs";
         const std::size_t at = text.find(line10);
         REQUIRE(at != std::string::npos);
-        text.replace(at, line10.size(), " 9223372036854775807 9223372036854775807 2 0 0");
+        text.replace(at, line10.size(), line);
         text += "O0 0\nn0\n";
         REQUIRE_THROWS_WITH(parse_nl(text, "overflow"),
                             Catch::Matchers::ContainsSubstring("malformed common-expression"));
@@ -593,14 +599,17 @@ TEST_CASE("nl_to_model reports an undefined or cyclic defined variable", "[minlp
         REQUIRE_FALSE(r.supported);
         REQUIRE_THAT(r.skipped_reasons[0], Catch::Matchers::ContainsSubstring("refers to itself"));
     }
-    SECTION("named in a linear J segment") {
-        // AMPL never writes this; dropping the term would relax the row.
+    SECTION("a linear J term that names no column") {
+        // Index 1 is the defined variable (AMPL never writes one into J),
+        // index 2 is past every variable. Dropping either term would relax
+        // the row, so both are refused.
+        const std::string idx = GENERATE(std::string("1"), std::string("2"));
         std::string text = nl_header(1, 1, 1, /*ndef=*/1);
-        text += "b\n0 0 5\nr\n1 4\nV1 0 0\nn1\nC0\nn0\nJ0 1\n1 1\nO0 0\nn0\n";
+        text += "b\n0 0 5\nr\n1 4\nV1 0 0\nn1\nC0\nn0\nJ0 1\n" + idx + " 1\nO0 0\nn0\n";
         NlToModelResult r = nl_to_model(parse_nl(text, "defjac"));
         REQUIRE_FALSE(r.supported);
         REQUIRE_THAT(r.skipped_reasons[0],
-                     Catch::Matchers::ContainsSubstring("linear term names defined variable"));
+                     Catch::Matchers::ContainsSubstring("linear term names variable " + idx));
     }
 }
 

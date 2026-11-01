@@ -358,7 +358,8 @@ NlHeaderCounts parse_header(Tokenizer& tok, NlProblem& prob) {
     //
     // Peek ahead: the remaining header lines all start with a digit, '-', or
     // space. Consume them until a segment marker letter appears. While doing so,
-    // capture the two lines needed to place the discrete variables. In the `g`
+    // capture the two lines needed to place the discrete variables and the
+    // common-expression line that counts the defined variables. In the `g`
     // format the header layout is fixed; lines 1 (`g...`) and 2 (counts) are
     // already consumed, so of the lines skipped here:
     //   #3 -> header line 5: "nlvc nlvo nlvb"          (nonlinear var counts)
