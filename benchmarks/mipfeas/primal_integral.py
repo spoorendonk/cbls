@@ -395,6 +395,11 @@ class Scored(NamedTuple):
     driver_wall_seconds: float | None = None
     driver_cpu_seconds: float | None = None
     cpu_wall_ratio: float | None = None
+    #: The `config` cell of the arm a driver-written row (a killed job) says it
+    #: ran under, from its nested `driver_arm`. Not a column and not compared:
+    #: read only where the table names its mode, so a table whose CP-SAT rows
+    #: were all killed still says which baseline it ran.
+    arm_config: str = ""
 
 
 def primal_gap(incumbent: float | None, reference: float) -> float:
@@ -636,6 +641,7 @@ def score_instance(
     threads = result.get("threads" if engine == "cbls" else "workers_started")
     raw_driver = result.get("driver_measured")
     driver: dict[str, object] = raw_driver if isinstance(raw_driver, dict) else {}
+    raw_arm = result.get("driver_arm")
     return Scored(
         instance=instance,
         engine=engine,
@@ -682,6 +688,7 @@ def score_instance(
         driver_wall_seconds=_measured(driver, "wall_seconds"),
         driver_cpu_seconds=_measured(driver, "cpu_seconds"),
         cpu_wall_ratio=_measured(driver, "cpu_wall_ratio"),
+        arm_config=config_string(raw_arm) if isinstance(raw_arm, dict) else "",
     )
 
 
@@ -2067,11 +2074,16 @@ def _roster_label(
 
 
 def _config_value(rows: list[Scored], engine: str, key: str) -> str | None:
-    """The value `key` took in `engine`'s rows, or None when no row records it."""
+    """The value `key` took in `engine`'s rows, or None when no row records it.
+
+    A killed row has no config cell but records its arm (`arm_config`), so a
+    table whose rows of one engine were all killed still states their mode.
+    """
     for row in rows:
-        if row.engine != engine or not row.config:
+        cell = row.config or row.arm_config
+        if row.engine != engine or not cell:
             continue
-        for part in row.config.split(";"):
+        for part in cell.split(";"):
             name, _, value = part.partition("=")
             if name == key:
                 return value
@@ -2140,10 +2152,21 @@ def baseline_phrase(rows: list[Scored]) -> str:
 
 
 def versions_line(rows: list[Scored]) -> str:
-    """Each engine's build, as its rows record it: CBLS's commit, OR-Tools' version."""
+    """Each engine's build, as its rows record it: CBLS's commit, OR-Tools' version.
+
+    Rows that record no build are skipped: the driver writes a killed job's row
+    itself, without one, and "unknown" beside the real build would read as a
+    second build.
+    """
     parts = []
     for engine, label in (("cbls", "CBLS commit"), ("cpsat", "OR-Tools")):
-        seen = sorted({r.provenance for r in rows if r.engine == engine and r.status != "not_run"})
+        seen = sorted(
+            {
+                r.provenance
+                for r in rows
+                if r.engine == engine and r.provenance not in ("unknown", "n/a")
+            }
+        )
         parts.append(f"{label} {', '.join(seen) if seen else 'not recorded'}")
     return "; ".join(parts)
 

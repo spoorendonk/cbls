@@ -20,6 +20,7 @@ from benchmarks.mipfeas.primal_integral import (
     HeldOut,
     Scored,
     check_uniform_configuration,
+    cpsat_at_defaults,
     held_out_problems,
     main,
     primal_gap,
@@ -31,6 +32,7 @@ from benchmarks.mipfeas.primal_integral import (
     score_instance,
     shifted_geometric_mean,
     summarize,
+    versions_line,
     write_comparison,
 )
 from benchmarks.mipfeas.run_benchmark import DEFAULT_INSTANCE_DIR
@@ -1048,6 +1050,33 @@ def test_a_table_mixing_defaults_and_fj_ls_cp_sat_rows_is_refused(tmp_path: Path
     _write_result(tmp_path, "cpsat", "fjls", fj_ls, trace=[(1.0, 100.0)])
     with pytest.raises(ValueError, match="cpsat results span 2 configurations"):
         check_uniform_configuration([*rows, _score(tmp_path, "fjls", engine="cpsat")])
+
+
+def _killed_cpsat_row(tmp_path: Path, instance: str) -> Scored:
+    """A CP-SAT row as `run_benchmark.write_failure_result` writes it at defaults."""
+    killed: dict[str, object] = {
+        "status": "killed",
+        "message": "exceeded 960.0s wall clock",
+        "objective": None,
+        "budget_seconds": 60.0,
+        "driver_arm": {"workers": 0},
+    }
+    _write_result(tmp_path, "cpsat", instance, killed)
+    return _score(tmp_path, instance, engine="cpsat")
+
+
+def test_a_killed_row_does_not_read_as_a_second_build(tmp_path: Path) -> None:
+    rows = [*_defaults_rows(tmp_path), _killed_cpsat_row(tmp_path, "inst1")]
+    assert versions_line(rows) == "CBLS commit abc1234; OR-Tools 9.15.6755"
+
+
+def test_a_table_whose_cp_sat_rows_were_all_killed_still_names_its_mode(
+    tmp_path: Path,
+) -> None:
+    cbls_row = _defaults_rows(tmp_path)[0]
+    rows = [cbls_row, _killed_cpsat_row(tmp_path, "inst0")]
+    assert cpsat_at_defaults(rows)
+    assert versions_line(rows) == "CBLS commit abc1234; OR-Tools not recorded"
 
 
 @pytest.mark.parametrize(
