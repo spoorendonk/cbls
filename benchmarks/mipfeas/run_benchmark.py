@@ -1115,17 +1115,22 @@ def check_arguments(args: argparse.Namespace) -> int | None:
 
     Returns the exit code to fail with, or None to proceed.
     """
-    if args.cbls_threads < 1 or args.cpsat_workers < 1:
+    if args.cbls_threads < 1 or args.cpsat_workers < 0:
         print(
-            f"--cbls-threads and --cpsat-workers must be >= 1 "
+            f"--cbls-threads must be >= 1 and --cpsat-workers >= 0 "
             f"(got {args.cbls_threads}, {args.cpsat_workers}).",
             file=sys.stderr,
         )
         return 2
-    # Both engines get the same CPU per instance or the table is not a
-    # head-to-head. Checked before anything is built or run, because the cost of
-    # discovering it afterwards is the whole run.
-    if args.cbls_threads != args.cpsat_workers and not args.allow_asymmetric_cpu:
+    # In fj + ls mode both engines get the same CPU per instance or the table is
+    # not a head-to-head. Checked before anything is built or run, because the
+    # cost of discovering it afterwards is the whole run. Defaults mode (0) makes
+    # no such claim: CP-SAT picks its own count and the table records it (#255).
+    if (
+        args.cpsat_workers
+        and args.cbls_threads != args.cpsat_workers
+        and not args.allow_asymmetric_cpu
+    ):
         print(
             f"--cbls-threads {args.cbls_threads} != --cpsat-workers "
             f"{args.cpsat_workers}: the two engines would not get the same CPU per "
@@ -1166,6 +1171,16 @@ def check_cpuset(args: argparse.Namespace) -> int | None:
     }
     for engine in args.engines:  # an engine the run leaves out has no threads to pin
         flag, count = threads[engine]
+        if engine == "cpsat" and count == 0:
+            # Simon, 2026-11-01 (#255): CP-SAT at its defaults runs unpinned. Its
+            # worker count is its own, so no set could match it anyway.
+            print(
+                "--cpuset with CP-SAT at its defaults (--cpsat-workers 0): CP-SAT "
+                "runs unpinned. Run it without --cpuset, or pass --cpsat-workers N "
+                "for the pinned fj + ls mode.",
+                file=sys.stderr,
+            )
+            return 2
         if len(cpuset) != count:
             print(
                 f"--cpuset names {len(cpuset)} CPUs but {flag} is {count}: pin "
@@ -1237,7 +1252,14 @@ def main() -> int:
         "otherwise attributed to its own content hash rather than to a commit it "
         "may not have been built from",
     )
-    parser.add_argument("--cpsat-workers", type=int, default=1)
+    parser.add_argument(
+        "--cpsat-workers",
+        type=int,
+        default=0,
+        help="0 (default): CP-SAT at its default parameters, unpinned, its own worker "
+        "count recorded per result (Simon, 2026-11-01, #255). N >= 1: CP-SAT "
+        "restricted to its fj + ls workers at N threads, the same-algorithm check",
+    )
     parser.add_argument(
         "--cbls-threads",
         type=int,
@@ -1259,7 +1281,7 @@ def main() -> int:
     parser.add_argument(
         "--allow-asymmetric-cpu",
         action="store_true",
-        help="permit --cbls-threads != --cpsat-workers. Refused by default: "
+        help="permit --cbls-threads != --cpsat-workers in fj + ls mode. Refused by default: "
         "CP-SAT at N workers runs N fj and N ls subsolvers, so an N-thread CBLS "
         "against a 1-worker baseline is an N-fold CPU advantage that the table "
         "would report as an implementation gap -- the one claim this benchmark "

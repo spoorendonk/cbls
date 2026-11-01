@@ -447,17 +447,42 @@ def _main_with(argv: list[str]) -> int:
         # CP-SAT at N workers runs N fj and N ls subsolvers, so an N-thread CBLS
         # against a 1-worker baseline is an N-fold CPU advantage the table would
         # read as an implementation gap. Refused before any instance is touched.
-        (["--cbls-threads", "4"], "--cbls-threads 4 != --cpsat-workers 1", None),
+        (
+            ["--cbls-threads", "4", "--cpsat-workers", "1"],
+            "--cbls-threads 4 != --cpsat-workers 1",
+            None,
+        ),
         # The refusal guards the published claim; it is not a law of the harness.
         # An asymmetry that IS the measurement gets past it by saying so -- shown
         # by the run failing on the NEXT guard instead.
         (
-            ["--cbls-threads", "4", "--allow-asymmetric-cpu", "--budget", "0"],
+            [
+                "--cbls-threads",
+                "4",
+                "--cpsat-workers",
+                "1",
+                "--allow-asymmetric-cpu",
+                "--budget",
+                "0",
+            ],
             "--budget must be > 0",
             "--cbls-threads 4 != --cpsat-workers 1",
         ),
+        # CP-SAT at its defaults (the default, 0) picks its own worker count, so
+        # there is no symmetry to claim or refuse (#255): the next guard fires.
+        (
+            ["--cbls-threads", "4", "--budget", "0"],
+            "--budget must be > 0",
+            "!= --cpsat-workers",
+        ),
+        (["--cpsat-workers", "-1"], "--cpsat-workers >= 0", None),
     ],
-    ids=["asymmetric-cpu-refused", "asymmetric-cpu-opted-into"],
+    ids=[
+        "asymmetric-cpu-refused",
+        "asymmetric-cpu-opted-into",
+        "cpsat-defaults-not-asymmetric",
+        "negative-workers-refused",
+    ],
 )
 def test_the_driver_refuses_a_run_whose_flags_cannot_be_read(
     capsys: pytest.CaptureFixture[str], argv: list[str], said: str, not_said: str | None
@@ -795,6 +820,10 @@ def test_every_solve_that_leaves_a_row_carries_what_the_driver_measured(
             [],
             "--cpsat-workers is 2",
         ),
+        # CP-SAT at its defaults runs unpinned (#255): its worker count is its own,
+        # so no set could match it. A cbls-only run beside it may still pin.
+        ({"cpsat_workers": 0}, [], "CP-SAT runs unpinned"),
+        ({"engines": ["cbls"], "cpsat_workers": 0}, [], None),
     ],
     ids=[
         "accepted",
@@ -803,6 +832,8 @@ def test_every_solve_that_leaves_a_row_carries_what_the_driver_measured(
         "smt-siblings",
         "unused-engine-ignored",
         "used-engine-checked",
+        "cpsat-defaults-refused",
+        "cpsat-defaults-unused-ignored",
     ],
 )
 def test_a_cpuset_that_would_not_give_each_thread_a_core_is_refused(

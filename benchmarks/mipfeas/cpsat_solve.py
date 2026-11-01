@@ -1,4 +1,16 @@
-"""MIPfeas baseline: OR-Tools CP-SAT restricted to its violation-based local search.
+"""MIPfeas baseline: OR-Tools CP-SAT, at its defaults or restricted to its local search.
+
+**Defaults mode** (`--workers 0`, the default): CP-SAT exactly as it ships. Only
+the time limit and `log_search_progress` are set -- the log is the only source of
+the incumbent trace -- so presolve is on, the full portfolio runs, and the worker
+count and seed are CP-SAT's own. Each result records the worker count CP-SAT
+reports starting (`workers_started`). Simon's decision of 2026-11-01 (#255, #87):
+every comparison solver runs at its defaults and the table compares results
+without evening out differences. The preflight in this mode checks the log
+format only.
+
+**fj + ls mode** (`--workers N`, N >= 1): the same-algorithm check (#106). The
+notes below are about this mode.
 
 This is the reference implementation of the algorithm CBLS reimplements — the
 `fj` (Feasibility Jump) and `ls` (ViolationLS) workers described in Davies, Didier
@@ -86,7 +98,9 @@ SUBSOLVER_LINE = re.compile(r"^\d+\s+([a-z][a-z ]*?)\s+subsolvers?:\s*\[(.*)\]\s
 #: `Starting search at 0.00s with 1 workers.`
 SEARCH_WORKERS_LINE = re.compile(r"^Starting search at [0-9.]+s with (\d+) workers?\.?$")
 
-DEFAULT_WORKERS = 1
+#: `--workers` 0 is defaults mode: CP-SAT picks its own count, unrestricted.
+#: A positive count restricts it to the fj + ls pairing at that many workers.
+DEFAULT_WORKERS = 0
 
 #: The OR-Tools range every parameter and log-format fact in this file was
 #: established against, mirrored by the `ortools` bound in `pyproject.toml`. The
@@ -119,13 +133,28 @@ UNRESTRICTED_ROLES = frozenset({"helper", "ignored"})
 PREFLIGHT_BUDGET_SECONDS = 2.0
 
 
-def build_parameters(workers: int, seed: int) -> str:
-    """CP-SAT parameter string restricting the solve to the fj + ls workers.
+#: The one parameter defaults mode sets. Defaults mode is CP-SAT exactly as it
+#: ships -- presolve on, its own worker count and seed, the full portfolio
+#: (Simon, 2026-11-01, #255 and #87). The log is the only source of the
+#: incumbent trace, and logging does not steer the search.
+DEFAULTS_PARAMETERS = "log_search_progress:true"
 
-    The budget is not set here: `set_time_limit_in_seconds` already populates
-    `max_time_in_seconds`, and this string merges on top of it rather than
-    replacing it, so stating the limit twice would only invite the two to drift.
+
+def build_parameters(workers: int | None, seed: int | None) -> str:
+    """CP-SAT parameter string: defaults mode when `workers` is None, else fj + ls.
+
+    Defaults mode sets nothing but logging, so the seed is CP-SAT's own as well;
+    passing one there is a caller bug. The budget is not set here:
+    `set_time_limit_in_seconds` already populates `max_time_in_seconds`, and this
+    string merges on top of it rather than replacing it, so stating the limit
+    twice would only invite the two to drift.
     """
+    if workers is None:
+        if seed is not None:
+            raise ValueError("defaults mode sets no seed; CP-SAT keeps its own")
+        return DEFAULTS_PARAMETERS
+    if seed is None:
+        raise ValueError("fj-ls mode needs a seed")
     return (
         f"num_workers:{workers},"
         f"num_violation_ls:1,"
@@ -244,33 +273,31 @@ def _announcement_failures(announced: dict[str, frozenset[str]]) -> list[Preflig
     return failures
 
 
-def check_preflight_log(
-    log_text: str, *, status: str, workers: int, found_solution: bool
-) -> list[PreflightFailure]:
-    """Everything the preflight can conclude from one solve, without solving again.
+def workers_started(log_text: str) -> int | None:
+    """The worker count CP-SAT reports starting the search with, or None if absent.
 
-    Pure, so the failure modes it exists for can be tested against a log captured
-    from the release that is broken rather than by installing that release.
+    In defaults mode this is the only record of the threads the baseline used,
+    since nothing asked for a count.
     """
-    failures: list[PreflightFailure] = []
-    if status == "INVALID_SOLVER_PARAMETERS":
-        return [
-            PreflightFailure(
-                WORKER_RESTRICTION_CHECK,
-                "CP-SAT rejected the parameter string outright "
-                f"(status {status}). `filter_subsolvers` no longer accepts these "
-                "names, or a parameter in the string was renamed or removed.",
-            )
-        ]
+    for line in log_text.splitlines():
+        match = SEARCH_WORKERS_LINE.match(line.strip())
+        if match is not None:
+            return int(match.group(1))
+    return None
 
+
+def _restriction_failures(log_text: str) -> list[PreflightFailure]:
+    """Whether the fj + ls restriction is in force, read off the announcement block.
+
+    The block is one block. If any line in it parsed, the format is intact and a
+    *role* missing from it is the restriction having gone, not the parser having
+    gone stale -- an unrestricted run announces `full problem` and neither of the
+    two expected roles. Only a block that parsed nothing at all is a format break.
+    That keeps the shape/content split of the two checks checkable rather than a
+    guess: what is read is shape, what it says is content.
+    """
     announced = parse_subsolvers(log_text)
-    # The announcement block is one block. If any line in it parsed, the format is
-    # intact and a *role* missing from it is the restriction having gone, not the
-    # parser having gone stale -- an unrestricted run announces `full problem` and
-    # neither of the two below. Only a block that parsed nothing at all is a format
-    # break. That keeps the shape/content split of the two checks checkable rather
-    # than a guess: what is read is shape, what it says is content.
-    failures += _announcement_failures(announced)
+    failures = _announcement_failures(announced)
     extra = {
         role: names
         for role, names in announced.items()
@@ -284,10 +311,36 @@ def check_preflight_log(
                 f"{ {role: sorted(names) for role, names in sorted(extra.items())} }.",
             )
         )
+    return failures
 
-    worker_line = [SEARCH_WORKERS_LINE.match(line.strip()) for line in log_text.splitlines()]
-    matched = [m for m in worker_line if m is not None]
-    if not matched:
+
+def check_preflight_log(
+    log_text: str, *, status: str, workers: int | None, found_solution: bool
+) -> list[PreflightFailure]:
+    """Everything the preflight can conclude from one solve, without solving again.
+
+    Pure, so the failure modes it exists for can be tested against a log captured
+    from the release that is broken rather than by installing that release.
+    `workers` None is defaults mode: there is no restriction to assert, so only
+    the log format is checked -- the worker line the table's thread count is read
+    from, and the improving-solution lines the trace is.
+    """
+    failures: list[PreflightFailure] = []
+    if status == "INVALID_SOLVER_PARAMETERS":
+        return [
+            PreflightFailure(
+                WORKER_RESTRICTION_CHECK,
+                "CP-SAT rejected the parameter string outright "
+                f"(status {status}). `filter_subsolvers` no longer accepts these "
+                "names, or a parameter in the string was renamed or removed.",
+            )
+        ]
+
+    if workers is not None:
+        failures += _restriction_failures(log_text)
+
+    started = workers_started(log_text)
+    if started is None:
         failures.append(
             PreflightFailure(
                 LOG_FORMAT_CHECK,
@@ -295,11 +348,11 @@ def check_preflight_log(
                 "thread count the baseline ran at cannot be confirmed from the log.",
             )
         )
-    elif int(matched[0].group(1)) != workers:
+    elif workers is not None and started != workers:
         failures.append(
             PreflightFailure(
                 WORKER_RESTRICTION_CHECK,
-                f"CP-SAT started {matched[0].group(1)} workers, not the {workers} asked "
+                f"CP-SAT started {started} workers, not the {workers} asked "
                 "for. The baseline would get a different share of CPU than CBLS.",
             )
         )
@@ -308,9 +361,9 @@ def check_preflight_log(
         failures.append(
             PreflightFailure(
                 WORKER_RESTRICTION_CHECK,
-                "the restricted configuration found no solution at all on a model the "
-                "fj + ls pairing solves in milliseconds. The workers the filter leaves "
-                "running cannot search.",
+                "the configuration found no solution at all on a model even the "
+                "fj + ls pairing alone solves in milliseconds. The workers this "
+                "configuration runs cannot search.",
             )
         )
     elif not parse_trace(log_text):
@@ -350,7 +403,7 @@ def build_preflight_model() -> model_builder.ModelBuilder:
     return model
 
 
-def run_preflight(workers: int = DEFAULT_WORKERS, seed: int = 42) -> list[PreflightFailure]:
+def run_preflight(workers: int | None = None, seed: int | None = None) -> list[PreflightFailure]:
     """Solve the preflight model and report what the release broke, if anything.
 
     Run once before a roster, not once per instance: an OR-Tools release that
@@ -377,9 +430,15 @@ def run_preflight(workers: int = DEFAULT_WORKERS, seed: int = 42) -> list[Prefli
     )
 
 
-def report_preflight(failures: list[PreflightFailure], workers: int) -> int:
+def report_preflight(failures: list[PreflightFailure], workers: int | None) -> int:
     """Print the verdict; 0 when the baseline is the one this harness documents."""
     installed = version("ortools")
+    if not failures and workers is None:
+        print(
+            f"preflight OK: ortools {installed}, default parameters, "
+            "worker line and improving-solution lines parse."
+        )
+        return 0
     if not failures:
         print(
             f"preflight OK: ortools {installed}, {workers} worker(s), restricted to "
@@ -455,8 +514,8 @@ def status_note(status_name: str, has_solution: bool, parameters: str) -> tuple[
     if status_name == "INVALID_SOLVER_PARAMETERS":
         return (
             "invalid_parameters",
-            f"CP-SAT rejected the parameter string `{parameters}`. The worker "
-            "restriction this baseline is defined by is not in force; run "
+            f"CP-SAT rejected the parameter string `{parameters}`. The "
+            "configuration this baseline is defined by is not in force; run "
             "`cpsat_solve.py --preflight` to see which part of it moved.",
         )
     if not has_solution and status_name in ("MODEL_INVALID", "ABNORMAL"):
@@ -491,7 +550,7 @@ def capture_stdout_fd(sink_path: Path) -> Iterator[None]:
 
 
 def solve(
-    mps_path: Path, budget: float, workers: int, seed: int
+    mps_path: Path, budget: float, workers: int | None, seed: int | None
 ) -> tuple[dict[str, object], list[tuple[float, float]], dict[str, float]]:
     """Run the LS-only CP-SAT configuration.
 
@@ -548,6 +607,9 @@ def solve(
             status = solver.solve(model)
         wall = time.monotonic() - started
         trace = parse_trace_file(log_path)
+        # The threads the baseline actually ran with: in defaults mode nothing
+        # asked for a count, so the log is the only record of it.
+        n_started = workers_started(log_path.read_text(errors="replace"))
     has_solution = status in (
         model_builder.SolveStatus.OPTIMAL,
         model_builder.SolveStatus.FEASIBLE,
@@ -572,6 +634,7 @@ def solve(
     # A systematic regex miss after an OR-Tools log-format change would otherwise
     # score every CP-SAT instance ~2.0, indistinguishable from "CP-SAT is bad".
     record["trace_source"] = "log" if trace else "final_only"
+    record["workers_started"] = n_started
 
     values: dict[str, float] = {}
     if has_solution:
@@ -600,6 +663,13 @@ def solution_text(instance: str, objective: object, values: dict[str, float]) ->
     return "\n".join(lines) + "\n"
 
 
+def cli_mode(args: argparse.Namespace) -> tuple[int | None, int | None]:
+    """(workers, seed) as `build_parameters` takes them: both None in defaults mode."""
+    if not args.workers:
+        return None, None
+    return int(args.workers), int(args.seed)
+
+
 def write_outputs(
     out_dir: Path,
     instance: str,
@@ -622,10 +692,12 @@ def write_outputs(
         # measurement rather than guessed.
         peak_rss_kib=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
         budget_seconds=args.budget,
-        seed=args.seed,
+        # Defaults mode sets no seed: CP-SAT's own is what ran, so none is recorded.
+        seed=args.seed if args.workers else None,
         workers=args.workers,
+        cpsat_defaults=not args.workers,
         ortools_version=version("ortools"),
-        parameters=build_parameters(args.workers, args.seed),
+        parameters=build_parameters(*cli_mode(args)),
     )
     lines = ["time_seconds,objective"]
     lines += [f"{t},{obj}" for t, obj in trace]
@@ -675,9 +747,13 @@ def main() -> int:
         "--workers",
         type=int,
         default=DEFAULT_WORKERS,
-        help="CP-SAT threads; 1 runs both the fj and ls workers, matching CBLS",
+        help="0 (default): CP-SAT at its default parameters, its own worker count and "
+        "seed, presolve on, full portfolio (#255). N >= 1: restricted to the fj + ls "
+        "workers at N threads; 1 runs both, matching a 1-thread CBLS",
     )
-    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--seed", type=int, default=42, help="fj + ls mode only; defaults mode sets none"
+    )
     parser.add_argument(
         "--solution-dir",
         default=None,
@@ -685,9 +761,12 @@ def main() -> int:
         "verify_solution.py to check against the original instance file",
     )
     args = parser.parse_args()
+    if args.workers < 0:
+        parser.error(f"--workers must be >= 0 (got {args.workers})")
+    workers, seed = cli_mode(args)
 
     if args.preflight:
-        return report_preflight(run_preflight(args.workers, args.seed), args.workers)
+        return report_preflight(run_preflight(workers, seed), workers)
     missing = [f for f in ("instance", "out_dir") if getattr(args, f) is None]
     if missing:
         parser.error(
@@ -707,7 +786,7 @@ def main() -> int:
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    record, trace, values = solve(mps_path, args.budget, args.workers, args.seed)
+    record, trace, values = solve(mps_path, args.budget, workers, seed)
     record = write_outputs(out_dir, args.instance, record, trace, args, values)
 
     objective = record.get("objective")

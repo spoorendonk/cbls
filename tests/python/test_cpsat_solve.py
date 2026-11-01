@@ -9,6 +9,7 @@ harness — after a 39 CPU-hour run. These are the golden lines that pin it down
 
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
 
 import pytest
@@ -25,11 +26,13 @@ from benchmarks.mipfeas.cpsat_solve import (  # noqa: E402
     build_parameters,
     build_preflight_model,
     check_preflight_log,
+    cli_mode,
     parse_subsolvers,
     parse_trace,
     report_preflight,
     run_preflight,
     status_note,
+    workers_started,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -92,6 +95,33 @@ def test_build_parameters_does_not_set_the_time_limit() -> None:
     # set_time_limit_in_seconds already populates max_time_in_seconds and this
     # string merges on top of it; stating the budget twice invites the two to drift.
     assert "max_time_in_seconds" not in build_parameters(workers=1, seed=42)
+
+
+def test_build_parameters_at_defaults_sets_only_the_log_the_trace_is_read_from() -> None:
+    # Simon, 2026-11-01 (#255): CP-SAT runs as it ships. No worker count, no seed,
+    # no subsolver filter; logging is the one setting, as the trace needs it.
+    assert build_parameters(workers=None, seed=None) == "log_search_progress:true"
+
+
+def test_a_seed_in_defaults_mode_is_a_caller_bug() -> None:
+    with pytest.raises(ValueError, match="defaults mode"):
+        build_parameters(workers=None, seed=42)
+
+
+def test_fj_ls_mode_without_a_seed_is_a_caller_bug() -> None:
+    with pytest.raises(ValueError, match="needs a seed"):
+        build_parameters(workers=1, seed=None)
+
+
+@pytest.mark.parametrize(
+    ("workers", "seed", "mode"),
+    [(0, 42, (None, None)), (1, 42, (1, 42)), (16, 7, (16, 7))],
+    ids=["defaults", "fj-ls-1", "fj-ls-16"],
+)
+def test_cli_mode_maps_workers_0_to_defaults(
+    workers: int, seed: int, mode: tuple[int | None, int | None]
+) -> None:
+    assert cli_mode(argparse.Namespace(workers=workers, seed=seed)) == mode
 
 
 # --- Preflight ----------------------------------------------------------------
@@ -288,10 +318,60 @@ def test_report_preflight_exits_zero_when_nothing_is_broken(
     assert "preflight OK" in capsys.readouterr().out
 
 
-def test_the_installed_ortools_passes_the_preflight_it_documents() -> None:
+#: What CP-SAT at its defaults logs: the full portfolio, its own worker count.
+DEFAULTS_LOG = (
+    "Starting search at 0.00s with 32 workers.\n"
+    "21 full problem subsolvers: [core, default_lp, max_lp, no_lp, quick_restart]\n"
+    "2 first solution subsolvers: [fj, fs_random_no_lp]\n"
+    "1 interleaved subsolver: [ls]\n"
+) + IMPROVING_LINE
+
+
+def test_defaults_mode_preflight_does_not_assert_the_fj_ls_restriction() -> None:
+    # The full portfolio is what defaults mode runs, so it is not a failure there.
+    assert (
+        check_preflight_log(DEFAULTS_LOG, status="FEASIBLE", workers=None, found_solution=True)
+        == []
+    )
+
+
+def test_defaults_mode_preflight_still_needs_the_worker_line() -> None:
+    # The table's CP-SAT thread count is read from that line; without it the
+    # baseline's CPU share is unknown.
+    log = DEFAULTS_LOG.replace("Starting search at 0.00s with 32 workers.\n", "")
+    failures = check_preflight_log(log, status="FEASIBLE", workers=None, found_solution=True)
+
+    assert _checks(failures) == {LOG_FORMAT_CHECK}
+
+
+def test_defaults_mode_preflight_still_needs_the_improving_solution_lines() -> None:
+    log = DEFAULTS_LOG.replace(IMPROVING_LINE, "")
+    failures = check_preflight_log(log, status="FEASIBLE", workers=None, found_solution=True)
+
+    assert _checks(failures) == {LOG_FORMAT_CHECK}
+
+
+@pytest.mark.parametrize(
+    ("log", "started"),
+    [(DEFAULTS_LOG, 32), (GOOD_PREFLIGHT_LOG, 1), (IMPROVING_LINE, None)],
+    ids=["defaults", "fj-ls", "absent"],
+)
+def test_workers_started_reads_the_count_cp_sat_started(log: str, started: int | None) -> None:
+    assert workers_started(log) == started
+
+
+def test_report_preflight_in_defaults_mode_says_so(capsys: pytest.CaptureFixture[str]) -> None:
+    assert report_preflight([], workers=None) == 0
+    assert "default parameters" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(("workers", "seed"), [(None, None), (1, 42)], ids=["defaults", "fj-ls"])
+def test_the_installed_ortools_passes_the_preflight_it_documents(
+    workers: int | None, seed: int | None
+) -> None:
     # The whole point: run it against whatever is actually installed. One tiny
     # in-memory model, no instance file and no network.
-    assert run_preflight() == []
+    assert run_preflight(workers, seed) == []
 
 
 def test_the_preflight_model_is_the_same_one_on_every_machine() -> None:
