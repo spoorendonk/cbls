@@ -677,7 +677,7 @@ on them a published row is in-sample:
 | objective tie-break on | #226 Run A, 5 seeds at 10s; gap at first feasible 0.748 | `9e1cce9` (#220) |
 | near-value kick off | #226 Run B on MINLPLib; Run A on this roster passed it | default kept since #217 (#219) |
 
-`docs/architecture.md` and #226 carry the numbers. The other 222 instances were
+#209 and #226 carry the numbers. The other 222 instances were
 never tuned on. With 11 of 233 the effect on a roster-wide aggregate is small,
 but it is not zero, so a published table names these 11 when it quotes one.
 

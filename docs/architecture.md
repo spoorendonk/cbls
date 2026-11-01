@@ -1268,7 +1268,7 @@ so the structural batch keeps the sample's starting assignment and puts back,
 before each candidate, exactly what the previous one disturbed: committing
 candidate k and then candidate k+1 leaves k's change gone. That is one
 allocation-free `assign` per variable the previous candidate changed (one or
-two for every built-in), where whole vectors cost two heap allocations and
+two for every built-in), where whole vectors cost at least two heap allocations and
 three O(n) copies per candidate.
 
 The scalar move generators `flip`, `int_dec`/`int_inc`/`int_rand` and
