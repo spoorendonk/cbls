@@ -1298,8 +1298,8 @@ def main() -> int:
         help="permit --cbls-threads != --cpsat-workers in fj + ls mode. Refused by default: "
         "CP-SAT at N workers runs N fj and N ls subsolvers, so an N-thread CBLS "
         "against a 1-worker baseline is an N-fold CPU advantage that the table "
-        "would report as an implementation gap -- the one claim this benchmark "
-        "exists to make honestly (epic #87)",
+        "would report as an implementation gap. At CP-SAT's defaults "
+        "(--cpsat-workers 0) nothing is matched and this flag is not needed",
     )
     parser.add_argument(
         "--inf-clamp",

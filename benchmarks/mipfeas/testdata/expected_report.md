@@ -5,7 +5,8 @@ Roster `roster.csv` (13 instances), 2.0s per instance-engine pair. Table: `expec
 CBLS against CP-SAT restricted to its `fj` + `ls` subsolvers under
 `num_violation_ls` -- the reference implementation of the same jump-based
 algorithm. This is a correctness-and-parity sweep against that one worker
-pairing, never a claim against any solver's default portfolio (epic #87).
+pairing, not a claim about CP-SAT at its defaults (the baseline since
+2026-11-01, #255).
 
 Versions: CBLS commit fixture; OR-Tools 9.15.6755.
 

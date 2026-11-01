@@ -252,19 +252,20 @@ flag or reformats a log line does not crash — it produces a degraded or empty
 baseline across all 233 instances at exit 0.
 
 `cpsat_solve.py --preflight` solves one tiny model built in memory (no instance,
-no network, ~2s) and asserts both halves, naming which broke. At CP-SAT's
-defaults (`--workers 0`, the default) there is no restriction to assert, so it
-checks that CP-SAT accepted the one parameter it sets and the log format only,
-including the worker line `workers_started` is read from; with `--workers N`
-it checks both:
+no network, ~2s) and asserts what the mode depends on, naming which broke.
+With `--workers N` (fj+ls) it checks both halves below. At CP-SAT's defaults
+(`--workers 0`, the default) there is no restriction to assert, so it checks a
+**default configuration** half instead (CP-SAT accepted the one parameter it
+sets, and finds a solution), plus the log format without the announcement lines:
 
 * **worker restriction** (fj+ls mode only) — CP-SAT accepted the parameter string, the log's
   subsolver announcement lists exactly `fj` as first-solution and `ls` as
   interleaved, the thread count is the one asked for, and the configuration can
   actually find a solution;
-* **log format** — the announcement lines and the search header are present in
-  the shape the harness parses, and the improving-solution lines still match the
-  regex the incumbent trace is recovered from.
+* **log format** — the search header (`Starting search at Xs with N workers.`,
+  which `workers_started` is read from) and, in the fj+ls mode, the announcement
+  lines are present in the shape the harness parses, and the improving-solution
+  lines still match the regex the incumbent trace is recovered from.
 
 The split is by what moved: the *shape* of a line is the log format, its
 *content* is the restriction. `pyproject.toml` bounds `ortools` to the range the
@@ -558,7 +559,9 @@ objective is the global incumbent, so the profile the Primal Integral integrates
 is monotone and ends at the objective the run returns — not at whatever worker 0
 happened to hold.
 
-Sizing `--jobs` is a memory question rather than a core-count one. Every result
+At CP-SAT's defaults `--jobs` is 1 (it takes every core, so the driver refuses
+more). In the fj+ls mode, or a CBLS-only run, sizing `--jobs` is a memory
+question rather than a core-count one. Every result
 records its `peak_rss_kib` — of the **solve only**; verification runs afterwards
 in the same job slot (see above). From the wiring check, `neos-5114902-kasavu` (710k
 columns, 961k rows, 4.9M nonzeros) peaked at **1.2 GB under CBLS and 3.2 GB
@@ -687,8 +690,11 @@ states whether the tie-break was on.
 
 ## Configuration, and what is recorded
 
-Both engines are run at a stated configuration, recorded per result rather than
-inherited, so a published number cannot silently change when a default moves:
+CBLS, and CP-SAT in the fj+ls mode, run at a stated configuration, recorded per
+result rather than inherited, so a published number cannot silently change when
+a default moves. CP-SAT at its defaults inherits them on purpose: there the
+recorded OR-Tools version, parameter string and `workers_started` are what pin
+the run:
 
 | | CBLS | CP-SAT |
 |---|---|---|

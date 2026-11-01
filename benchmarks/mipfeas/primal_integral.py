@@ -2143,7 +2143,8 @@ def _baseline_paragraph(rows: list[Scored]) -> list[str]:
             "CBLS against CP-SAT restricted to its `fj` + `ls` subsolvers under",
             "`num_violation_ls` -- the reference implementation of the same jump-based",
             "algorithm. This is a correctness-and-parity sweep against that one worker",
-            "pairing, never a claim against any solver's default portfolio (epic #87).",
+            "pairing, not a claim about CP-SAT at its defaults (the baseline since",
+            "2026-11-01, #255).",
         ]
     return [
         f"CBLS against {baseline_phrase(rows)}: CP-SAT as it ships, full portfolio,",

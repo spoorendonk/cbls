@@ -6,8 +6,8 @@ the incumbent trace -- so presolve is on, the full portfolio runs, and the worke
 count and seed are CP-SAT's own. Each result records the worker count CP-SAT
 reports starting (`workers_started`). Simon's decision of 2026-11-01 (#255, #87):
 every comparison solver runs at its defaults and the table compares results
-without evening out differences. The preflight in this mode checks the log
-format only.
+without evening out differences. The preflight in this mode checks that the
+default configuration is accepted and finds a solution, and the log format.
 
 **fj + ls mode** (`--workers N`, N >= 1): the same-algorithm check (#106). The
 notes below are about this mode.
