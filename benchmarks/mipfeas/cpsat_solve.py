@@ -16,10 +16,11 @@ This is the reference implementation of the algorithm CBLS reimplements — the
 `fj` (Feasibility Jump) and `ls` (ViolationLS) workers described in Davies, Didier
 & Perron, *ViolationLS: Constraint-Based Local Search in CP-SAT*, CPAIOR 2024
 (https://link.springer.com/chapter/10.1007/978-3-031-60597-0_16). Comparing against
-them answers "is the reimplementation competent"; comparing against CP-SAT's default
-portfolio would be a different (and rejected) question — see epic #87.
+them answers "is the reimplementation competent"; CP-SAT at its defaults (the mode
+above) answers the different question of how CBLS stands against the solver as it
+ships (#255, #87).
 
-Configuration notes, all established empirically against ortools 9.15:
+fj + ls configuration notes, all established empirically against ortools 9.15:
 
 * `filter_subsolvers` is the only parameter that accepts `fj`/`ls`. `subsolvers` and
   `ignore_subsolvers` validate against full-problem subsolver names only and reject
@@ -28,8 +29,8 @@ Configuration notes, all established empirically against ortools 9.15:
   That pairing mirrors CBLS, which runs Feasibility Jump to reach feasibility and then
   ViolationLS with the objective folded in as `obj <= bound`.
 * `num_workers: 1` runs both of them — the log reports `1 first solution subsolver: [fj]`
-  and `1 interleaved subsolver: [ls]`. One worker is therefore the default here, so the
-  baseline gets the same single thread CBLS does. Raising it multiplies *both* workers
+  and `1 interleaved subsolver: [ls]`. One worker therefore gives the baseline the
+  same single thread a 1-thread CBLS gets. Raising it multiplies *both* workers
   (`num_workers: 2` gives `fj(2)` and `ls(2)`, ~2x the CPU in the same wall time), so
   the count is recorded per result rather than assumed.
 * Presolve is left at its default (on), i.e. the worker as it actually ships.
@@ -48,12 +49,14 @@ against is pinned in `pyproject.toml` (`ortools>=9.7,<9.16`). A release that ren
 subsolver flag or reformats a log line does not crash -- it silently produces a
 degraded or empty baseline across the whole roster, visible only at scoring time.
 `--preflight` is the cheap check for exactly that: one tiny in-memory model, no
-instance and no network, asserting that the restriction is in force and that the
-log still carries the lines the trace is recovered from, and naming which of the
-two broke. The run driver runs it once before dispatching any job.
+instance and no network, asserting that the log still carries the lines the
+worker count and the trace are recovered from, and in fj + ls mode that the
+restriction is in force, and naming which of the two broke. The run driver runs
+it once, in the mode of the run, before dispatching any job.
 
 Usage:
-    python cpsat_solve.py --preflight
+    python cpsat_solve.py --preflight                 # defaults mode
+    python cpsat_solve.py --preflight --workers 1     # fj + ls mode
     python cpsat_solve.py --instance pk1 --out-dir results/cpsat --budget 600
 """
 
@@ -108,11 +111,14 @@ DEFAULT_WORKERS = 0
 #: never checked on; the preflight is what catches one installed anyway.
 SUPPORTED_ORTOOLS_RANGE = ">=9.7,<9.16"
 
-#: The two things the preflight can find broken, named in the failure so a run
-#: that refuses to start says which. The split is by *what moved*: the shape of a
-#: line the harness reads is the log format; what the line says is the restriction.
+#: The things the preflight can find broken, named in the failure so a run that
+#: refuses to start says which. The split is by *what moved*: the shape of a line
+#: the harness reads is the log format; what the line says is the restriction.
+#: Defaults mode sets no restriction, so a solve that is rejected or cannot
+#: search there is CP-SAT's own configuration failing, named as such.
 WORKER_RESTRICTION_CHECK = "worker restriction"
 LOG_FORMAT_CHECK = "log format"
+DEFAULTS_CHECK = "default configuration"
 
 #: Which subsolvers the restriction is supposed to leave running, by announcement
 #: role. `ls` alone never bootstraps a first solution, so both are required and
@@ -279,7 +285,17 @@ def workers_started(log_text: str) -> int | None:
     In defaults mode this is the only record of the threads the baseline used,
     since nothing asked for a count.
     """
-    for line in log_text.splitlines():
+    return _workers_started_lines(log_text.splitlines())
+
+
+def workers_started_file(path: Path) -> int | None:
+    """Same, streaming the file and stopping at the line: `parse_trace_file`'s cap."""
+    with open(path, errors="replace") as fh:
+        return _workers_started_lines(fh)
+
+
+def _workers_started_lines(lines: Iterable[str]) -> int | None:
+    for line in lines:
         match = SEARCH_WORKERS_LINE.match(line.strip())
         if match is not None:
             return int(match.group(1))
@@ -326,6 +342,14 @@ def check_preflight_log(
     from, and the improving-solution lines the trace is.
     """
     failures: list[PreflightFailure] = []
+    if status == "INVALID_SOLVER_PARAMETERS" and workers is None:
+        return [
+            PreflightFailure(
+                DEFAULTS_CHECK,
+                f"CP-SAT rejected the parameter string {DEFAULTS_PARAMETERS!r} "
+                f"(status {status}): `log_search_progress` was renamed or removed.",
+            )
+        ]
     if status == "INVALID_SOLVER_PARAMETERS":
         return [
             PreflightFailure(
@@ -357,7 +381,15 @@ def check_preflight_log(
             )
         )
 
-    if not found_solution:
+    if not found_solution and workers is None:
+        failures.append(
+            PreflightFailure(
+                DEFAULTS_CHECK,
+                "CP-SAT at its defaults found no solution at all on a model even "
+                "its fj + ls pairing alone solves in milliseconds.",
+            )
+        )
+    elif not found_solution:
         failures.append(
             PreflightFailure(
                 WORKER_RESTRICTION_CHECK,
@@ -552,7 +584,7 @@ def capture_stdout_fd(sink_path: Path) -> Iterator[None]:
 def solve(
     mps_path: Path, budget: float, workers: int | None, seed: int | None
 ) -> tuple[dict[str, object], list[tuple[float, float]], dict[str, float]]:
-    """Run the LS-only CP-SAT configuration.
+    """Run CP-SAT at its defaults (`workers` None) or restricted to fj + ls.
 
     Returns (result record, incumbent trace, solution values). The values are
     keyed by the MPS column name, empty when the run found nothing; they are what
@@ -609,7 +641,7 @@ def solve(
         trace = parse_trace_file(log_path)
         # The threads the baseline actually ran with: in defaults mode nothing
         # asked for a count, so the log is the only record of it.
-        n_started = workers_started(log_path.read_text(errors="replace"))
+        n_started = workers_started_file(log_path)
     has_solution = status in (
         model_builder.SolveStatus.OPTIMAL,
         model_builder.SolveStatus.FEASIBLE,

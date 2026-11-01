@@ -852,6 +852,25 @@ def test_a_cpuset_that_would_not_give_each_thread_a_core_is_refused(
         assert refused in capsys.readouterr().err
 
 
+@pytest.mark.parametrize(
+    ("overrides", "refused"),
+    [
+        ({"cpsat_workers": 0, "jobs": 2}, True),
+        ({"cpsat_workers": 0, "jobs": 1}, False),
+        ({"cpsat_workers": 0, "jobs": 2, "engines": ["cbls"]}, False),
+        ({"cpsat_workers": 1, "jobs": 2}, False),
+    ],
+    ids=["defaults-concurrent", "defaults-serial", "cbls-only", "fj-ls-concurrent"],
+)
+def test_cp_sat_at_its_defaults_is_refused_concurrent_jobs(
+    capsys: pytest.CaptureFixture[str], overrides: dict[str, object], refused: bool
+) -> None:
+    """It starts a worker per core, so two solves at once would share them (#284)."""
+    args = _driver_args(**overrides)
+    assert run_benchmark.check_arguments(args) == (2 if refused else None)
+    assert ("needs --jobs 1" in capsys.readouterr().err) == refused
+
+
 def test_a_cpuset_without_taskset_is_refused(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

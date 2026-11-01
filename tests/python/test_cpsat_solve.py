@@ -17,6 +17,7 @@ import pytest
 pytest.importorskip("ortools", reason="ortools is in the 'benchmarks' extra, not 'dev'")
 
 from benchmarks.mipfeas.cpsat_solve import (  # noqa: E402
+    DEFAULTS_CHECK,
     LOG_FORMAT_CHECK,
     PREFLIGHT_COLUMNS,
     PREFLIGHT_ROWS,
@@ -33,6 +34,7 @@ from benchmarks.mipfeas.cpsat_solve import (  # noqa: E402
     run_preflight,
     status_note,
     workers_started,
+    workers_started_file,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -358,6 +360,28 @@ def test_defaults_mode_preflight_still_needs_the_improving_solution_lines() -> N
 )
 def test_workers_started_reads_the_count_cp_sat_started(log: str, started: int | None) -> None:
     assert workers_started(log) == started
+
+
+def test_workers_started_file_streams_the_count_off_a_log(tmp_path: Path) -> None:
+    log = tmp_path / "solve.log"
+    log.write_text(DEFAULTS_LOG)
+    assert workers_started_file(log) == 32
+
+
+@pytest.mark.parametrize(
+    ("status", "found_solution"),
+    [("INVALID_SOLVER_PARAMETERS", False), ("UNKNOWN", False)],
+    ids=["rejected", "cannot-search"],
+)
+def test_defaults_mode_failures_do_not_blame_a_restriction_it_never_set(
+    status: str, found_solution: bool
+) -> None:
+    failures = check_preflight_log(
+        DEFAULTS_LOG, status=status, workers=None, found_solution=found_solution
+    )
+
+    assert _checks(failures) == {DEFAULTS_CHECK}
+    assert all("filter_subsolvers" not in f.message for f in failures)
 
 
 def test_report_preflight_in_defaults_mode_says_so(capsys: pytest.CaptureFixture[str]) -> None:

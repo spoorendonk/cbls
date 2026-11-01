@@ -1148,6 +1148,17 @@ def check_arguments(args: argparse.Namespace) -> int | None:
             file=sys.stderr,
         )
         return 2
+    if args.jobs != 1 and args.cpsat_workers == 0 and "cpsat" in args.engines:
+        # CP-SAT at its defaults starts a worker per core it sees, so two solves
+        # at once oversubscribe the machine: each row's `workers_started` would
+        # record threads that never got their CPU, and the wall-clock integrals
+        # beside them would read the contention as search.
+        print(
+            f"CP-SAT at its defaults (--cpsat-workers 0) needs --jobs 1 (got {args.jobs}): "
+            "it starts a worker per core, so concurrent solves would share them.",
+            file=sys.stderr,
+        )
+        return 2
     if args.cpuset is not None:
         return check_cpuset(args)
     return None
