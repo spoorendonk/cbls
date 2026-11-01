@@ -10,13 +10,19 @@
 # Sets: dev.csv only, never report.csv. Within each of Hexaly's size bands, in
 # download.py's own order (sha256("cbls-cvrp-dev:196:<name>")), the first two
 # are tuning instances, and so is the third of the two largest bands; the rest
-# (8) are held out for confirm. The screen runs the 12 at 10 s, the
-# intermediate set the same 12 at 30 s (which is what `fidelity` compares), and
-# confirm the 8 at 30 s.
+# (8) are held out for confirm. The screen runs the tuning instances at 10 s,
+# the intermediate set the same ones at 30 s (which is what `fidelity`
+# compares), and confirm the 8 at 30 s.
+#
+# Version 2 (#278): X-n670-k130 and X-n936-k151 are left out of the tuning
+# sets, which leaves 10. The defaults find no feasible solution on either at
+# 10 s or 30 s, and in version 1 their `failed` cost decided the ranking
+# (#277): the top trials bought feasibility there at ~1.6x the gap elsewhere.
+# That feasibility is #204's finding, not something to tune.
 
 [study]
 name = "cbls-cvrp"
-version = 1
+version = 2
 repo = "https://github.com/spoorendonk/cbls.git"
 rev = "main"
 cores = "0-15"
@@ -33,6 +39,11 @@ prune_against = "reference"
 # which resolves to granular_best under a neighbour list.
 [[study.enqueue]]
 params = { selection = "violation_guided" }  # #204's guided arm
+
+# Version 1's trial 19, the only one with a lower gap than the reference on the
+# instances both solved (ratio 0.84 on 10, one seed at 10 s; #277).
+[[study.enqueue]]
+params = { neighbours = 10, selection = "granular_best", sample_gb = 53, perturbation_period = 191, lns = true, lns_interval = 2 }
 
 [build]
 command = "cmake -S {src} -B {build} -DCBLS_BUILD_TESTS=OFF -DCBLS_BUILD_EXAMPLES=OFF -DCBLS_INSTALL_GIT_HOOKS=OFF && cmake --build {build} -j4 --target cbls_cvrp"
@@ -74,7 +85,7 @@ factor = "none"
 min_rho = 0.7
 configs = 4
 
-# Screen: the 12 tuning instances at 10 s.
+# Screen: the 10 tuning instances at 10 s.
 [[instances]]
 id = "X-n200-k36"
 set = "screen"
@@ -124,22 +135,10 @@ seeds = [1]
 params = { instance = "X-n627-k43", secs = 10 }
 
 [[instances]]
-id = "X-n670-k130"
-set = "screen"
-seeds = [1]
-params = { instance = "X-n670-k130", secs = 10 }
-
-[[instances]]
 id = "X-n856-k95"
 set = "screen"
 seeds = [1]
 params = { instance = "X-n856-k95", secs = 10 }
-
-[[instances]]
-id = "X-n936-k151"
-set = "screen"
-seeds = [1]
-params = { instance = "X-n936-k151", secs = 10 }
 
 [[instances]]
 id = "X-n979-k58"
@@ -147,7 +146,7 @@ set = "screen"
 seeds = [1]
 params = { instance = "X-n979-k58", secs = 10 }
 
-# Intermediate: the same 12 at 30 s.
+# Intermediate: the same 10 at 30 s.
 [[instances]]
 id = "X-n200-k36@30s"
 set = "intermediate"
@@ -197,22 +196,10 @@ seeds = [1]
 params = { instance = "X-n627-k43", secs = 30 }
 
 [[instances]]
-id = "X-n670-k130@30s"
-set = "intermediate"
-seeds = [1]
-params = { instance = "X-n670-k130", secs = 30 }
-
-[[instances]]
 id = "X-n856-k95@30s"
 set = "intermediate"
 seeds = [1]
 params = { instance = "X-n856-k95", secs = 30 }
-
-[[instances]]
-id = "X-n936-k151@30s"
-set = "intermediate"
-seeds = [1]
-params = { instance = "X-n936-k151", secs = 30 }
 
 [[instances]]
 id = "X-n979-k58@30s"
