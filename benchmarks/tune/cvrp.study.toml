@@ -35,7 +35,7 @@ prune_against = "reference"
 params = { selection = "violation_guided" }  # #204's guided arm
 
 [build]
-command = "cmake -S {src} -B {build} -DCBLS_BUILD_TESTS=OFF -DCBLS_BUILD_EXAMPLES=OFF -DCBLS_INSTALL_GIT_HOOKS=OFF && cmake --build {build} -j4 --target cbls_cvrp cbls_mipfeas cbls_minlplib cbls_uc_chped"
+command = "cmake -S {src} -B {build} -DCBLS_BUILD_TESTS=OFF -DCBLS_BUILD_EXAMPLES=OFF -DCBLS_INSTALL_GIT_HOOKS=OFF && cmake --build {build} -j4 --target cbls_cvrp"
 
 [run]
 command = "python3 {src}/benchmarks/common/tune_trial.py cvrp --build-dir {build} --out-dir {rundir} --instance {instance} --seed {seed} --threads {threads} --budget {secs} -- {config}"

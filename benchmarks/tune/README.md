@@ -45,5 +45,9 @@ a `version` bump, which starts a new study.
   A flag read under several settings of another param gets one param per
   setting, each with its own `when` (`sample_*`).
 - **Width.** `threads = 16` on cores 0-15, `exclusive = true`: each run is the
-  16-thread `ParallelSearch` portfolio, alone on the machine. The build is the
-  same command in every study, so it is built once per commit.
+  16-thread `ParallelSearch` portfolio, alone on the machine.
+- **Build.** xk keys a build on the study's name as well as the commit, so
+  studies never share one: each builds only its own runner.
+- **Importance.** `xk tune importance` ranks only params present in every
+  complete trial, so a conditional param (`sample_*`, `lns_interval`) is left
+  out; its gate (`selection`, `lns`) is ranked.
