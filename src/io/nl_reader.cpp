@@ -17,6 +17,7 @@
 #include <cctype>
 #include <cmath>
 #include <fstream>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -365,6 +366,7 @@ NlHeaderCounts parse_header(Tokenizer& tok, NlProblem& prob) {
     //    other-linear variables are always continuous and always precede the
     //    trailing nbv+niv block, so they never shift a discrete position.)
     //   #5 -> header line 7: "nbv niv nlvbi nlvci nlvoi"  (discrete counts)
+    //   #8 -> header line 10: "comb comc como comc1 como1" (defined variables)
     NlHeaderCounts h;
     int header_line_after_counts = 0;
     while (true) {
@@ -391,6 +393,14 @@ NlHeaderCounts parse_header(Tokenizer& tok, NlProblem& prob) {
             h.nlvoi = v[4];
             prob.n_discrete_vars =
                 static_cast<int32_t>(h.nbv + h.niv + h.nlvbi + h.nlvci + h.nlvoi);
+        } else if (header_line_after_counts == 8) {
+            const auto v = read_ints(hline, 5);
+            const int64_t total = v[0] + v[1] + v[2] + v[3] + v[4];
+            if (std::any_of(v.begin(), v.end(), [](int64_t n) { return n < 0; }) ||
+                total > std::numeric_limits<int32_t>::max()) {
+                throw std::runtime_error("NL: malformed common-expression line: '" + hline + "'");
+            }
+            prob.n_defined_vars = static_cast<int32_t>(total);
         }
     }
     return h;
@@ -492,6 +502,38 @@ void read_linear_terms(Tokenizer& tok, int64_t k, std::vector<NlLinTerm>& out) {
         term.var = static_cast<int32_t>(tok.next_int());
         term.coef = tok.next_double();
         out.push_back(term);
+    }
+}
+
+// `V`: defined variable <i> (an index past the columns) "<k> <l>", then k
+// linear terms and one expression. `l` says where the variable is used, which
+// does not change its value.
+void read_defined_var(Tokenizer& tok, NlProblem& prob, int64_t i) {
+    const int64_t k = tok.next_int();
+    tok.next_int();  // l
+    const int64_t slot = i - prob.n_vars;
+    if (slot < 0 || slot >= prob.n_defined_vars) {
+        throw std::runtime_error("NL: V-segment index " + std::to_string(i) +
+                                 " is outside the header's defined-variable range");
+    }
+    NlDefinedVar& dv = prob.defined_vars[static_cast<size_t>(slot)];
+    if (dv.defined) {
+        throw std::runtime_error("NL: defined variable " + std::to_string(i) + " defined twice");
+    }
+    if (k < 0) {
+        throw std::runtime_error("NL: V-segment with a negative linear-term count");
+    }
+    read_linear_terms(tok, k, dv.linear);
+    parse_segment_expr(tok, dv.nonlinear);
+    dv.defined = true;
+}
+
+// `d`: initial dual guess, `count` pairs of <conidx> <value>. Not needed by a
+// primal search; consumed to keep the cursor aligned.
+void skip_dual_guess(Tokenizer& tok, int64_t count) {
+    for (int64_t k = 0; k < count; ++k) {
+        tok.next_int();
+        tok.next_double();
     }
 }
 
@@ -618,13 +660,23 @@ void parse_segment(Tokenizer& tok, NlProblem& prob, const std::string& seg) {
             break;
         }
         case 'd':  // dual initial guess: count then pairs
+            skip_dual_guess(tok, segment_index(seg));
+            break;
         case 'V':  // defined variable: index then linear+nonlinear def
+            read_defined_var(tok, prob, segment_index(seg));
+            break;
+        case 'S': {  // suffix block: "S<kind> <n> <name>"
+            // Not skipped: a suffix can be model data. MINLPLib's only ones
+            // are `sosno`/`ref`, which declare SOS constraints, and dropping
+            // them would solve a relaxation. Named in the refusal so a
+            // coverage list can say which suffix stopped the file.
+            tok.next_int();
+            const std::string suffix = tok.next_token();
+            throw std::runtime_error("NL: suffix '" + suffix +
+                                     "' (segment 'S') is not supported by this reader");
+        }
         case 'F':  // imported function declaration
-        case 'S':  // suffix block
-            // These segments are not needed for the CBLS model. They have
-            // file-position-dependent payloads we can't blindly skip, so a
-            // clean error is safer than silent corruption. In practice the
-            // MINLPLib instances we select do not carry them.
+            // An imported (external) function has no DAG op to map onto.
             throw std::runtime_error(std::string("NL: segment '") + kind +
                                      "' is not supported by this reader");
         default:
@@ -647,6 +699,7 @@ NlProblem parse_nl(const std::string& text, const std::string& name) {
     prob.objectives.resize(prob.n_objs);
     prob.var_bounds.assign(prob.n_vars, NlVarBound{});
     prob.initial_x.assign(prob.n_vars, std::numeric_limits<double>::quiet_NaN());
+    prob.defined_vars.resize(static_cast<size_t>(prob.n_defined_vars));
 
     // ---- Segments ----
     while (!tok.eof()) {

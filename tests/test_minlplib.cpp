@@ -22,8 +22,10 @@ using Catch::Matchers::WithinAbs;
 
 // A minimal but realistic header for `nv` vars, `nc` cons, `no` objs. The body
 // segments follow. Counts beyond the first line are cosmetic for the reader
-// (it only reads nvars/ncons/nobjs), so we keep them plausible but simple.
-static std::string nl_header(int nv, int nc, int no) {
+// (it reads nvars/ncons/nobjs, the discrete and the common-expression lines),
+// so we keep them plausible but simple. `ndef` defined variables (V segments)
+// are declared as `comb`.
+static std::string nl_header(int nv, int nc, int no, int ndef = 0) {
     std::string h = "g3 0 1 0\t# header\n";
     h += " " + std::to_string(nv) + " " + std::to_string(nc) + " " + std::to_string(no) +
          " 0 0\t# vars, cons, objs, ranges, eqns\n";
@@ -34,7 +36,7 @@ static std::string nl_header(int nv, int nc, int no) {
     h += " 0 0 0 0 0\t# discrete\n";
     h += " 0 0\t# jacobian/gradient nonzeros\n";
     h += " 0 0\t# max name lengths\n";
-    h += " 0 0 0 0 0\t# common exprs\n";
+    h += " " + std::to_string(ndef) + " 0 0 0 0\t# common exprs\n";
     return h;
 }
 
@@ -306,6 +308,67 @@ TEST_CASE("NL reader refuses a complementarity bound instead of misparsing", "[m
                         Catch::Matchers::ContainsSubstring("not supported by this reader"));
 }
 
+TEST_CASE("NL reader reads a defined variable (V segment)", "[minlplib]") {
+    // v2 := 2*x0 + x1^2 ; minimize 3 * v2.
+    std::string text = nl_header(2, 0, 1, /*ndef=*/1);
+    text += "b\n0 -5 5\n0 -5 5\n";
+    text += "V2 1 0\n0 2\no5\nv1\nn2\n";
+    text += "O0 0\no2\nv2\nn3\n";
+    NlProblem p = parse_nl(text, "defvar");
+    REQUIRE(p.n_defined_vars == 1);
+    REQUIRE(p.defined_vars.size() == 1);
+    const NlDefinedVar& dv = p.defined_vars[0];
+    REQUIRE(dv.defined);
+    REQUIRE(dv.linear.size() == 1);
+    REQUIRE(dv.linear[0].var == 0);
+    REQUIRE_THAT(dv.linear[0].coef, WithinAbs(2.0, 1e-12));
+    REQUIRE(dv.nonlinear.nodes[dv.nonlinear.root].opcode == 5);
+}
+
+TEST_CASE("NL reader refuses a V segment outside the declared range", "[minlplib]") {
+    SECTION("index past the header's count") {
+        std::string text = nl_header(2, 0, 1, /*ndef=*/1);
+        text += "V3 0 0\nn1\nO0 0\nn0\n";
+        REQUIRE_THROWS_WITH(parse_nl(text, "badv"),
+                            Catch::Matchers::ContainsSubstring("defined-variable range"));
+    }
+    SECTION("index naming a column") {
+        std::string text = nl_header(2, 0, 1, /*ndef=*/1);
+        text += "V1 0 0\nn1\nO0 0\nn0\n";
+        REQUIRE_THROWS_WITH(parse_nl(text, "badv"),
+                            Catch::Matchers::ContainsSubstring("defined-variable range"));
+    }
+    SECTION("defined twice") {
+        std::string text = nl_header(2, 0, 1, /*ndef=*/1);
+        text += "V2 0 0\nn1\nV2 0 0\nn2\nO0 0\nn0\n";
+        REQUIRE_THROWS_WITH(parse_nl(text, "twice"),
+                            Catch::Matchers::ContainsSubstring("defined twice"));
+    }
+}
+
+TEST_CASE("NL reader skips a dual initial guess (d segment)", "[minlplib]") {
+    std::string text = nl_header(1, 1, 1);
+    text += "b\n0 0 10\n";
+    text += "r\n1 4\n";
+    text += "d1\n0 0.5\n";
+    text += "J0 1\n0 1\n";
+    text += "O0 0\nn0\n";
+    NlProblem p = parse_nl(text, "dual");
+    REQUIRE(p.constraints[0].linear.size() == 1);
+    REQUIRE_THAT(p.constraints[0].bound.upper, WithinAbs(4.0, 1e-12));
+}
+
+TEST_CASE("NL reader refuses a suffix segment and names the suffix", "[minlplib]") {
+    // MINLPLib's suffixes are SOS declarations (`sosno`, `ref`); skipping them
+    // would solve a relaxation, so the file is refused with the suffix named.
+    std::string text = nl_header(2, 0, 1);
+    text += "S0 2 sosno\n0 1\n1 1\n";
+    text += "O0 0\nn0\n";
+    REQUIRE_THROWS_WITH(parse_nl(text, "sos"),
+                        Catch::Matchers::ContainsSubstring("suffix 'sosno'") &&
+                            Catch::Matchers::ContainsSubstring("not supported by this reader"));
+}
+
 // ---- P4: NL -> Model adapter ----
 
 TEST_CASE("nl_to_model builds a closed model", "[minlplib]") {
@@ -417,6 +480,81 @@ TEST_CASE("nl_to_model maps OP1POW (base^const) to pow", "[minlplib]") {
     r.model.var_mut(0).value = 2.0;
     full_evaluate(r.model);
     REQUIRE_THAT(r.model.node_value(r.objective_node_id), WithinAbs(8.0, 1e-9));
+}
+
+TEST_CASE("nl_to_model inlines a defined variable", "[minlplib]") {
+    // v2 := 2*x0 + x1^2 ; minimize 3 * v2. At x = (1, 3): v2 = 11, obj = 33.
+    std::string text = nl_header(2, 0, 1, /*ndef=*/1);
+    text += "b\n0 -5 5\n0 -5 5\n";
+    text += "V2 1 0\n0 2\no5\nv1\nn2\n";
+    text += "O0 0\no2\nv2\nn3\n";
+    NlToModelResult r = nl_to_model(parse_nl(text, "defvar"));
+    REQUIRE(r.supported);
+    REQUIRE(r.model.num_vars() == 2);  // a defined variable is not a column
+    r.model.var_mut(0).value = 1.0;
+    r.model.var_mut(1).value = 3.0;
+    full_evaluate(r.model);
+    REQUIRE_THAT(r.model.node_value(r.objective_node_id), WithinAbs(33.0, 1e-9));
+}
+
+TEST_CASE("nl_to_model resolves a chain of defined variables", "[minlplib]") {
+    // v2 := x0 + x1 ; v3 := v2 * v2 + 0.5 * v2 (V referencing V, in both parts).
+    // minimize v3 + x0. At x = (1, 2): v2 = 3, v3 = 10.5, obj = 11.5.
+    std::string text = nl_header(2, 0, 1, /*ndef=*/2);
+    text += "b\n0 -5 5\n0 -5 5\n";
+    text += "V2 2 0\n0 1\n1 1\nn0\n";
+    text += "V3 1 0\n2 0.5\no2\nv2\nv2\n";
+    text += "O0 0\nv3\n";
+    text += "G0 1\n0 1\n";
+    NlToModelResult r = nl_to_model(parse_nl(text, "chain"));
+    REQUIRE(r.supported);
+    r.model.var_mut(0).value = 1.0;
+    r.model.var_mut(1).value = 2.0;
+    full_evaluate(r.model);
+    REQUIRE_THAT(r.model.node_value(r.objective_node_id), WithinAbs(11.5, 1e-9));
+}
+
+TEST_CASE("nl_to_model builds a defined variable once for all its uses", "[minlplib]") {
+    // v2 := x0 * x1 bounds two rows: both rows read the same DAG node.
+    std::string text = nl_header(2, 2, 1, /*ndef=*/1);
+    text += "b\n0 0 5\n0 0 5\n";
+    text += "r\n1 4\n2 1\n";
+    text += "V2 0 0\no2\nv0\nv1\n";
+    text += "C0\nv2\nC1\nv2\n";
+    text += "O0 0\nv2\n";
+    NlToModelResult r = nl_to_model(parse_nl(text, "shared"));
+    REQUIRE(r.supported);
+    const ExprNode& c0 = r.model.node(r.constraint_node_ids[0]);
+    const ExprNode& c1 = r.model.node(r.constraint_node_ids[1]);
+    const ChildRef body0 = r.model.children(c0)[0];
+    const ChildRef body1 = r.model.children(c1)[0];
+    REQUIRE_FALSE(body0.is_var);
+    REQUIRE(body0.id == body1.id);
+    REQUIRE(r.model.node(body0.id).op == NodeOp::Prod);
+}
+
+TEST_CASE("nl_to_model reports an undefined or cyclic defined variable", "[minlplib]") {
+    SECTION("declared but never defined") {
+        std::string text = nl_header(1, 0, 1, /*ndef=*/1);
+        text += "b\n0 0 5\nO0 0\nv1\n";
+        NlToModelResult r = nl_to_model(parse_nl(text, "undef"));
+        REQUIRE_FALSE(r.supported);
+        REQUIRE_THAT(r.skipped_reasons[0], Catch::Matchers::ContainsSubstring("no V segment"));
+    }
+    SECTION("refers to itself") {
+        std::string text = nl_header(1, 0, 1, /*ndef=*/1);
+        text += "b\n0 0 5\nV1 0 0\no0\nv1\nv0\nO0 0\nv1\n";
+        NlToModelResult r = nl_to_model(parse_nl(text, "cycle"));
+        REQUIRE_FALSE(r.supported);
+        REQUIRE_THAT(r.skipped_reasons[0], Catch::Matchers::ContainsSubstring("refers to itself"));
+    }
+    SECTION("an unsupported op inside a definition") {
+        std::string text = nl_header(1, 0, 1, /*ndef=*/1);
+        text += "b\n0 0 5\nV1 0 0\no49\nv0\nO0 0\nv1\n";  // atan
+        NlToModelResult r = nl_to_model(parse_nl(text, "defatan"));
+        REQUIRE_FALSE(r.supported);
+        REQUIRE_THAT(r.skipped_reasons[0], Catch::Matchers::ContainsSubstring("49"));
+    }
 }
 
 // ---------------------------------------------------------------------------

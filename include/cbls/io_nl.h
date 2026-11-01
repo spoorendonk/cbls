@@ -92,12 +92,23 @@ struct NlObjective {
     std::vector<NlLinTerm> linear;  ///< linear part from the `G` segment
 };
 
+/// A defined variable (an NL `V` segment, AMPL's common subexpression): its value
+/// is `sum(linear) + nonlinear`. Expressions reference it as `v<n_vars + k>`.
+struct NlDefinedVar {
+    bool defined = false;           ///< false until its `V` segment is read
+    std::vector<NlLinTerm> linear;  ///< linear part (terms may name other defined vars)
+    NlExpr nonlinear;               ///< nonlinear part (may be the constant 0)
+};
+
 struct NlProblem {
     std::string name;
 
     int32_t n_vars = 0;
     int32_t n_cons = 0;
     int32_t n_objs = 0;
+    /// Defined-variable count from the header's common-expression line
+    /// (comb + comc + como + comc1 + como1). Not columns: the model inlines them.
+    int32_t n_defined_vars = 0;
     /// Total integer/binary variable count from the NL header's discrete-variable
     /// line (nbv + niv + nlvbi + nlvci + nlvoi).
     int32_t n_discrete_vars = 0;
@@ -111,6 +122,8 @@ struct NlProblem {
     std::vector<double> initial_x;          ///< size n_vars; from `x`, NaN if unset
     std::vector<NlConstraint> constraints;  ///< size n_cons
     std::vector<NlObjective> objectives;    ///< size n_objs
+    /// size n_defined_vars; entry k is NL variable `n_vars + k`.
+    std::vector<NlDefinedVar> defined_vars;
 };
 
 /// Read an AMPL NL file in TEXT format ('g' header). Throws std::runtime_error
@@ -124,7 +137,9 @@ NlProblem parse_nl(const std::string& text, const std::string& name = "");
 /// Build a closed CBLS `Model` from an `NlProblem`.
 ///
 /// One CBLS variable per NL column: Int for columns flagged in
-/// `var_is_discrete`, Float otherwise. Each constraint body
+/// `var_is_discrete`, Float otherwise. A defined variable (`V` segment) is not
+/// a column: it is inlined, built once as an expression node that every use
+/// shares. Each constraint body
 /// (`nonlinear + linear`) is translated to one or two CBLS comparison
 /// constraints from its `r` bound. The first objective is used; its sense
 /// drives minimize/maximize.

@@ -69,40 +69,116 @@ double clamp_hi(double ub, double inf_clamp) {
     return (std::isnan(ub) || is_unbounded_above(ub)) ? inf_clamp : ub;
 }
 
-// Translate one NL expression tree into a CBLS expression node handle. On the
-// first unsupported opcode, sets `ok=false`, records a reason, and returns a
-// constant 0 (the caller bails out on !ok). `var_handles` maps NL var index to
-// CBLS handle.
+// `coef * h`, without a multiply for the unit coefficients.
+int32_t scaled(Model& m, double coef, int32_t h) {
+    if (coef == 1.0) {
+        return h;
+    }
+    if (coef == -1.0) {
+        return m.neg(h);
+    }
+    return m.prod(m.constant(coef), h);
+}
+
+// The sum of already-built parts, or constant 0 for none.
+int32_t sum_of(Model& m, const std::vector<int32_t>& parts) {
+    if (parts.empty()) {
+        return m.constant(0.0);
+    }
+    if (parts.size() == 1) {
+        return parts[0];
+    }
+    return m.sum(parts);
+}
+
+// Translate NL expression trees into CBLS expression node handles, for one
+// model. On the first unsupported opcode, sets `ok=false`, records a reason,
+// and returns a constant 0 (the caller bails out on !ok). `var_handles` maps an
+// NL column index to its CBLS handle; an index past the columns names a
+// defined variable (`V` segment), which is built on first use and its node
+// shared by every later one, so a common subexpression stays one DAG node.
 class ExprTranslator {
 public:
-    ExprTranslator(Model& m, const NlExpr& e, const std::vector<int32_t>& vh)
-        : m_(m), e_(e), vh_(vh) {}
+    ExprTranslator(Model& m, const NlProblem& prob, const std::vector<int32_t>& vh)
+        : m_(m),
+          prob_(prob),
+          vh_(vh),
+          def_handle_(prob.defined_vars.size(), 0),
+          def_state_(prob.defined_vars.size(), DefState::Unbuilt) {}
 
     [[nodiscard]] bool ok() const { return ok_; }
     [[nodiscard]] const std::string& reason() const { return reason_; }
 
-    int32_t translate(int32_t node_idx) {
+    int32_t translate(const NlExpr& e, int32_t node_idx) {
         if (!ok_) {
             return m_.constant(0.0);
         }
-        const NlExprNode& n = e_.nodes[node_idx];
+        const NlExprNode& n = e.nodes[node_idx];
         switch (n.kind) {
             case NlNodeKind::Num:
                 return m_.constant(n.num);
             case NlNodeKind::Var:
-                if (n.index < 0 || n.index >= static_cast<int32_t>(vh_.size())) {
-                    fail("var index out of range");
-                    return m_.constant(0.0);
-                }
-                return vh_[n.index];
+                return var_handle(n.index);
             case NlNodeKind::Op:
-                return translate_op(n);
+                return translate_op(e, n);
         }
         fail("unknown node kind");
         return m_.constant(0.0);
     }
 
+    /// The handle for NL variable `j`: a column, or a defined variable.
+    int32_t var_handle(int32_t j) {
+        if (j >= 0 && j < static_cast<int32_t>(vh_.size())) {
+            return vh_[j];
+        }
+        const int64_t slot = static_cast<int64_t>(j) - static_cast<int64_t>(vh_.size());
+        if (j < 0 || slot >= static_cast<int64_t>(prob_.defined_vars.size())) {
+            fail("var index out of range");
+            return m_.constant(0.0);
+        }
+        return defined_var(static_cast<std::size_t>(slot));
+    }
+
 private:
+    enum class DefState : std::uint8_t { Unbuilt, Building, Built };
+
+    int32_t defined_var(std::size_t slot) {
+        const std::string label = "defined variable " + std::to_string(vh_.size() + slot);
+        switch (def_state_[slot]) {
+            case DefState::Built:
+                return def_handle_[slot];
+            case DefState::Building:
+                fail(label + " refers to itself");
+                return m_.constant(0.0);
+            case DefState::Unbuilt:
+                break;
+        }
+        const NlDefinedVar& dv = prob_.defined_vars[slot];
+        if (!dv.defined) {
+            fail(label + " has no V segment");
+            return m_.constant(0.0);
+        }
+        def_state_[slot] = DefState::Building;
+        std::vector<int32_t> parts;
+        parts.reserve(dv.linear.size() + 1);
+        for (const NlLinTerm& t : dv.linear) {
+            const int32_t h = var_handle(t.var);
+            if (!ok_) {
+                return m_.constant(0.0);
+            }
+            parts.push_back(scaled(m_, t.coef, h));
+        }
+        if (!dv.nonlinear.empty()) {
+            parts.push_back(translate(dv.nonlinear, dv.nonlinear.root));
+            if (!ok_) {
+                return m_.constant(0.0);
+            }
+        }
+        def_handle_[slot] = sum_of(m_, parts);
+        def_state_[slot] = DefState::Built;
+        return def_handle_[slot];
+    }
+
     void fail(const std::string& why) {
         if (ok_) {
             ok_ = false;
@@ -111,11 +187,11 @@ private:
     }
 
     // Fold an n-ary child list into binary CBLS ops where needed.
-    int32_t translate_op(const NlExprNode& n) {
+    int32_t translate_op(const NlExpr& e, const NlExprNode& n) {
         std::vector<int32_t> kids;
         kids.reserve(n.children.size());
         for (int32_t c : n.children) {
-            kids.push_back(translate(c));
+            kids.push_back(translate(e, c));
             if (!ok_) {
                 return m_.constant(0.0);
             }
@@ -183,13 +259,17 @@ private:
     }
 
     Model& m_;
-    const NlExpr& e_;
+    const NlProblem& prob_;
     const std::vector<int32_t>& vh_;
+    std::vector<int32_t> def_handle_;
+    std::vector<DefState> def_state_;
     bool ok_ = true;
     std::string reason_;
 };
 
-// Build the linear part sum_j coef_j * x_j as a CBLS node (or constant 0).
+// Build the linear part sum_j coef_j * x_j as a CBLS node (or constant 0). A
+// J/G term names a column, never a defined variable; one out of range is
+// dropped (io_nl.h: skip, don't throw).
 int32_t build_linear(Model& m, const std::vector<NlLinTerm>& terms,
                      const std::vector<int32_t>& vh) {
     std::vector<int32_t> parts;
@@ -198,22 +278,9 @@ int32_t build_linear(Model& m, const std::vector<NlLinTerm>& terms,
         if (t.var < 0 || t.var >= static_cast<int32_t>(vh.size())) {
             continue;
         }
-        int32_t vhandle = vh[t.var];
-        if (t.coef == 1.0) {
-            parts.push_back(vhandle);
-        } else if (t.coef == -1.0) {
-            parts.push_back(m.neg(vhandle));
-        } else {
-            parts.push_back(m.prod(m.constant(t.coef), vhandle));
-        }
+        parts.push_back(scaled(m, t.coef, vh[t.var]));
     }
-    if (parts.empty()) {
-        return m.constant(0.0);
-    }
-    if (parts.size() == 1) {
-        return parts[0];
-    }
-    return m.sum(parts);
+    return sum_of(m, parts);
 }
 
 // Combine a (possibly empty) nonlinear node and a linear node into the body
@@ -244,14 +311,14 @@ struct BodyResult {
 /// Translate the nonlinear part, build the linear part and combine them. This is
 /// the same three steps for a constraint and for the objective; only the label
 /// on the failure differs, and that belongs to the caller.
-BodyResult build_body(Model& m, const NlExpr& nonlinear, const std::vector<NlLinTerm>& linear,
+BodyResult build_body(Model& m, ExprTranslator& tr, const NlExpr& nonlinear,
+                      const std::vector<NlLinTerm>& linear,
                       const std::vector<int32_t>& var_handles) {
     BodyResult out;
     int32_t nl_node = 0;
     const bool has_nl = !nonlinear.empty();
     if (has_nl) {
-        ExprTranslator tr(m, nonlinear, var_handles);
-        nl_node = tr.translate(nonlinear.root);
+        nl_node = tr.translate(nonlinear, nonlinear.root);
         if (!tr.ok()) {
             out.ok = false;
             out.reason = tr.reason();
@@ -543,10 +610,13 @@ NlToModelResult nl_to_model(const NlProblem& prob, const NlToModelOptions& opts)
         result.skipped_reasons.push_back(reason);
     };
 
+    // One translator for every body, so a defined variable used in several
+    // rows is built once and shared.
+    ExprTranslator tr(m, prob, result.var_handles);
     result.constraint_node_ids.assign(prob.n_cons, -1);
     for (int32_t i = 0; i < prob.n_cons; ++i) {
         const NlConstraint& c = prob.constraints[i];
-        const BodyResult body = build_body(m, c.nonlinear, c.linear, result.var_handles);
+        const BodyResult body = build_body(m, tr, c.nonlinear, c.linear, result.var_handles);
         if (!body.ok) {
             record_unsupported("constraint " + std::to_string(i) + ": " + body.reason);
             return result;
@@ -557,7 +627,7 @@ NlToModelResult nl_to_model(const NlProblem& prob, const NlToModelOptions& opts)
     // First objective only.
     if (prob.n_objs > 0) {
         const NlObjective& o = prob.objectives[0];
-        const BodyResult body = build_body(m, o.nonlinear, o.linear, result.var_handles);
+        const BodyResult body = build_body(m, tr, o.nonlinear, o.linear, result.var_handles);
         if (!body.ok) {
             record_unsupported("objective: " + body.reason);
             return result;
