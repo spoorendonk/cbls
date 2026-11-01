@@ -726,7 +726,8 @@ solve is running on, and every structural write Python can reach raises
 operators and free functions, and a second solve of the same model.
 `cbls.solve` registers the model **before** it releases the GIL, in the body
 rather than through a `call_guard`, so another thread's builder call cannot
-pass its check in the gap. `tests/python/test_solve_guards.py` pins these in
+pass its check in the gap. The engine's own freeze is a C++ call and never
+passes through the registry. `tests/python/test_solve_guards.py` pins these in
 child interpreters. Value writes (`Variable.value`, `restore_state`) are not
 structural and stay the documented data race.
 
@@ -901,7 +902,7 @@ candidate set, plus its score:
 | Int (window width <= 256), any other column (every Int column by default) | every integer in the sampling window — `domain_window(var)`, which is `[lb, ub]` verbatim whenever both bounds are finite and the width does not overflow (a domain as wide as `[-DBL_MAX, DBL_MAX]` is narrowed to the clamp). Taken only when both endpoints are within ±2^53; past that `v += 1.0` does not advance and the enumeration would not terminate |
 | Int (otherwise) | window endpoints, neighbours `x±1` (clamped to the *declared* bounds, so a value that has drifted outside the window keeps a local move), and a 32-point rounded grid across the window |
 | Float | Newton step toward the root of each violated constraint containing `v` (`x - residual/grad`, gradient from a forward up-cone pass, reverse-mode AD past its budget (#249); up to 4), then midpoint and endpoints. Once the search has stagnated, a Float at a *stationary* point of every violated constraint containing it additionally gets a two-sided local probe at `x ± {1e-6, 1e-2}·(|x|+1)` — see below |
-| Int (otherwise) and Float, on a model with an `Element`/`Ceil`/`Floor`/`Round` node, for a variable `close()` marked as reaching one | additionally, the **breakpoints** (#186) of every such node — where `Ceil`/`Floor` change (the integers), where `Round` changes (the half-integers), and an `Element`'s index values — mapped back to `v` through the argument's slope at the current point (carried forward over the cone part `close()` marked, `breakpoint_flags`, through every op that `carries_slope`), or the exact reciprocal when the argument is `N / D` with `v` in `D` only. **Limitation:** any other nonlinearity is linearised, so a candidate can miss its edge, and a path through a stopping op (structural, user code, a breakpoint op) contributes nothing; candidates are still scored exactly. Each edge yields the values of `v` just either side of it (rounded outward for an Int, `nextafter`-stepped for a Float), plus the edge when it lies in its own plateau. Up to 32 breakpoints per node are offered in full; above that, the ones either side of the current argument, for an `Element` up to 32 representatives of the currently selected line, and a 31-point grid shared by every capped argument — **a deviation** from #186's "all index values", for cost (`kExhaustiveBreakpoints`). Candidates are deduplicated, and come after the Float's Newton candidates, so those still win a tie. Every other variable gets exactly the candidates above |
+| Int (otherwise) and Float, on a model with an `Element`/`Ceil`/`Floor`/`Round` node, for a variable `close()` marked as reaching one | additionally, the **breakpoints** (#186) of every such node — where `Ceil`/`Floor` change (the integers), where `Round` changes (the half-integers), and an `Element`'s index values — mapped back to `v` through the argument's slope at the current point (carried forward over the cone part `close()` marked, `breakpoint_flags`, through every op that `carries_slope`), or the exact reciprocal when the argument is `N / D` with `v` in `D` only. **Limitation:** any other nonlinearity is linearised, so a candidate can miss its edge, and a path through a stopping op (structural, user code, a breakpoint op) contributes nothing; candidates are still scored exactly. Each edge yields the values of `v` just either side of it: for an Int rounded outward, plus the edge itself when it maps to an integer; for a Float `nextafter`-stepped, plus the edge when it lies in its own plateau. An `Element` index gets `k` itself (Int) or the middle of index `k`'s plateau intersected with the range `u` covers (Float). A `Ceil`/`Floor`/`Round` argument offers every breakpoint while there are at most 32, an `Element` every index while there are no more than its capped path would offer; above that, the ones either side of the current argument, for an `Element` up to 32 representatives of the currently selected line, and a 31-point grid shared by every capped argument — **a deviation** from #186's "all index values", for cost (`kExhaustiveBreakpoints`). Candidates are deduplicated, and come after the Float's Newton candidates, so those still win a tie. Every other variable gets exactly the candidates above |
 
 Each candidate is scored with one `weighted_violation_delta` probe — or, when
 every weighted row of `G_v` is a comparison (`Leq`/`Geq`/`Lt`/`Gt`/`Eq`) whose
@@ -1029,7 +1030,7 @@ which no longer re-admits unchanged objective columns after every move, so
 trajectories on models with an objective move. The bump's re-queue needs no
 skip: it visits only violated rows, and an inert row never is. It pays most
 where no feasible point is found and the bound stays `+inf`; the counts and
-regimes are in the comment above `objective_row_inert` and in #210.
+regimes are in the comment above `objective_row_inert` and this file's git history.
 
 ### Two-Phase Linear-First (construction only)
 
@@ -1065,10 +1066,8 @@ The ViolationLS outer loop owns the iteration clock and calls:
   **off**, #217) the scalar half is OR-Tools' kick instead: each scalar w.p.
   0.05 (not `probability`) to `random_near_value`, the reference's
   `RandomValueNearValue` — a side of the value chosen by size, then a
-  log-uniform offset within 20% of that side — so a binary flips ~1% where the
-  default flips 5%, and a column under a 1e7 inf-clamp moves near where it was
-  instead of anywhere in the box. The List/Set half is unchanged. That is
-  OR-Tools' no-restart path (`PerturbateCurrentSolution`).
+  log-uniform offset within 20% of that side — OR-Tools' no-restart path
+  (`PerturbateCurrentSolution`). The List/Set half is unchanged.
 
 **The objective before the first feasible point (#218), on by default.**
 Without help FJ ignores the objective until the first feasible point: the
@@ -1084,15 +1083,12 @@ sweep; on any other objective it does nothing.
   that wins on the objective alone scores `kObjectiveTieScore` (the smallest
   positive double); Q also keeps every variable not at its objective-better
   bound (`objective_scan`, OR-Tools' `HasBetterObjectiveValue`). OR-Tools adds
-  `delta * coefficient / INT64_MAX` to the score instead; in doubles, over
-  fractional weights, that can outweigh a small violation decrease, so here the
-  comparison is lexicographic and the objective can only break a tie -- within a
-  variable's candidates, and between variables in `apply_jump`'s best-of-N,
-  where an exact score tie goes to the larger objective gain (so of several
-  objective-only jumps the largest gain wins, the order OR-Tools' term gives).
-  A weight rescale leaves `kObjectiveTieScore` unscaled: its delta is 0 under
-  any uniform rescale, and scaling the smallest double by <= 0.5 would round it
-  to 0 and drop the column from Q. FJ batches
+  `delta * coefficient / INT64_MAX` to the score instead, which in doubles over
+  fractional weights can outweigh a small violation decrease; here the objective
+  only breaks a tie, within a variable's candidates and between variables in
+  `apply_jump`'s best-of-N (larger objective gain wins). A weight rescale leaves
+  `kObjectiveTieScore` unscaled, since scaling the smallest double would round
+  it to 0 and drop the column from Q. FJ batches
   only, throughout the run; Novelty batches, the exact Int argmin and the LNS
   repair keep their own rules.
 - `set_rho(rho)` — re-randomise the GLS decay between batches.
