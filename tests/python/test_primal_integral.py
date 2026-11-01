@@ -1079,6 +1079,18 @@ def test_a_table_whose_cp_sat_rows_were_all_killed_still_names_its_mode(
     assert versions_line(rows) == "CBLS commit abc1234; OR-Tools not recorded"
 
 
+def test_a_killed_row_whose_arm_disagrees_with_the_completed_rows_is_refused(
+    tmp_path: Path,
+) -> None:
+    # The killed row's arm names the mode where no completed row does, so a
+    # hand-merged directory must not let it relabel an fj+ls table.
+    fj_ls: dict[str, object] = {"status": "feasible", "objective": 100.0, "workers": 1}
+    _write_result(tmp_path, "cpsat", "fjls", fj_ls, trace=[(1.0, 100.0)])
+    rows = [_killed_cpsat_row(tmp_path, "inst0"), _score(tmp_path, "fjls", engine="cpsat")]
+    with pytest.raises(ValueError, match="cpsat results span 2 values of workers"):
+        check_uniform_configuration(rows)
+
+
 @pytest.mark.parametrize(
     ("workers", "said"),
     [(0, "CP-SAT at its defaults (workers per row)"), (1, "CP-SAT 1 worker(s)")],

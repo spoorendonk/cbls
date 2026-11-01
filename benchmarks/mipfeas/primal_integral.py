@@ -81,6 +81,10 @@ GEOMETRIC_MEAN_SHIFT = 0.001
 
 ENGINES = ("cbls", "cpsat")
 
+#: The config key that names each engine's mode in the table's wording: CBLS's
+#: thread count, CP-SAT's `workers` (0 at its defaults, #284).
+MODE_KEYS = {"cbls": "threads", "cpsat": "workers"}
+
 #: The only verification verdict that lets a feasible row publish its objective.
 #: `fail` is a rejected solution and `error` a check that could not run; both
 #: withhold, and both stay distinguishable in the published row.
@@ -793,6 +797,18 @@ def check_uniform_configuration(rows: list[Scored]) -> None:
                 f"The driver resumes on file existence alone, so a flag changed between "
                 f"invocations lands in the same results directory. Re-run the odd ones "
                 f"out with --force, or score them into separate tables."
+            )
+        # A killed row's arm names the table's mode where no completed row does
+        # (`_config_value`), so it must agree with the completed rows' cells. The
+        # driver refuses a resume across modes; a hand-merged directory does not.
+        key = MODE_KEYS[engine]
+        modes = {_row_config_value(r, key) for r in rows if r.engine == engine} - {None}
+        if len(modes) > 1:
+            raise ValueError(
+                f"{engine} results span {len(modes)} values of {key}: "
+                f"{sorted(m for m in modes if m is not None)}, counting the arms of "
+                f"killed rows. Re-run the odd ones out with --force, or score them "
+                f"into separate tables."
             )
         # CP-SAT at its defaults records `workers=0` whatever count it picked, so
         # a directory resumed on a host with other cores, or under another cgroup
@@ -2080,13 +2096,18 @@ def _config_value(rows: list[Scored], engine: str, key: str) -> str | None:
     table whose rows of one engine were all killed still states their mode.
     """
     for row in rows:
-        cell = row.config or row.arm_config
-        if row.engine != engine or not cell:
-            continue
-        for part in cell.split(";"):
-            name, _, value = part.partition("=")
-            if name == key:
-                return value
+        value = _row_config_value(row, key) if row.engine == engine else None
+        if value is not None:
+            return value
+    return None
+
+
+def _row_config_value(row: Scored, key: str) -> str | None:
+    """The value `key` took in one row's config cell, or in its arm if it was killed."""
+    for part in (row.config or row.arm_config).split(";"):
+        name, _, value = part.partition("=")
+        if name == key:
+            return value
     return None
 
 
