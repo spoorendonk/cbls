@@ -754,8 +754,8 @@ void read_var_bounds(Tokenizer& tok, NlProblem& prob) {
     }
 }
 
-// Dispatch one segment, named by its marker token (e.g. "C0", "O0", "r", "J3"),
-// onto the reader for its payload.
+// Dispatch one segment, named by its tag `kind` (the letter of "C0", "O0", "r",
+// "J3"; any index follows in the stream), onto the reader for its payload.
 void parse_segment(Tokenizer& tok, NlProblem& prob, char kind) {
     switch (kind) {
         case 'C': {  // nonlinear part of constraint <i>
@@ -861,12 +861,14 @@ NlProblem parse_nl(const std::string& text, const std::string& name) {
     if (header.binary) {
         // Binary numbers are in the writer's byte order. Reading them in
         // another would yield garbage that still parses, so a mismatch (or an
-        // undeclared order) is refused.
+        // undeclared order) is refused, worded as a coverage gap ("not
+        // supported by this reader") so the MINLPLib runner buckets it as
+        // skipped, not as a broken file.
         const int64_t host = host_arith();
         if (header.arith != host) {
             throw std::runtime_error("NL: binary file's byte order (arith " +
-                                     std::to_string(header.arith) + ") is not this host's (arith " +
-                                     std::to_string(host) + ")");
+                                     std::to_string(header.arith) + ", this host's is arith " +
+                                     std::to_string(host) + ") is not supported by this reader");
         }
         tok.set_binary();
     }

@@ -85,12 +85,12 @@ struct BinaryNl {
     BinaryNl& f64(double v) { return put(v); }
 };
 
-// minimize x0^2 + x1 ; s.t. x0 + x1 >= 3 ; x in [0,10]^2 -- in both encodings.
+// minimize x0^2 + x1 ; s.t. 2 x0 + 3 x1 >= 3 ; x in [0,10]^2 -- in both encodings.
 static std::string text_twin() {
     std::string text = nl_header(2, 1, 1);
     text += "b\n0 0 10\n0 0 10\n";
     text += "r\n2 3\n";
-    text += "J0 2\n0 1\n1 1\n";
+    text += "J0 2\n0 2\n1 3\n";
     text += "O0 0\n";
     text += "o5\nv0\nn2\n";
     text += "G0 1\n1 1\n";
@@ -101,7 +101,7 @@ static std::string binary_twin() {
     BinaryNl b;
     b.tag('b').tag('0').f64(0).f64(10).tag('0').f64(0).f64(10);
     b.tag('r').tag('2').f64(3);
-    b.tag('J').i32(0).i32(2).i32(0).f64(1).i32(1).f64(1);
+    b.tag('J').i32(0).i32(2).i32(0).f64(2).i32(1).f64(3);
     b.tag('O').i32(0).i32(0);
     b.tag('o').i32(5).tag('v').i32(0).tag('n').f64(2);
     b.tag('G').i32(0).i32(1).i32(1).f64(1);
@@ -122,8 +122,19 @@ TEST_CASE("NL reader reads the binary format ('b' header)", "[minlplib]") {
         }
         REQUIRE(b.constraints[0].bound.type == t.constraints[0].bound.type);
         REQUIRE(b.constraints[0].bound.lower == t.constraints[0].bound.lower);
-        REQUIRE(b.constraints[0].linear.size() == t.constraints[0].linear.size());
-        REQUIRE(b.objectives[0].linear.size() == t.objectives[0].linear.size());
+        // Term by term, so a swapped index and coefficient in binary J or G
+        // (a column-major mix-up the objective value alone would not reveal
+        // for J) fails here.
+        const auto same_terms = [](const std::vector<NlLinTerm>& x,
+                                   const std::vector<NlLinTerm>& y) {
+            REQUIRE(x.size() == y.size());
+            for (std::size_t i = 0; i < x.size(); ++i) {
+                REQUIRE(x[i].var == y[i].var);
+                REQUIRE(x[i].coef == y[i].coef);
+            }
+        };
+        same_terms(b.constraints[0].linear, t.constraints[0].linear);
+        same_terms(b.objectives[0].linear, t.objectives[0].linear);
         const NlExpr& e = b.objectives[0].nonlinear;
         REQUIRE(e.nodes.size() == t.objectives[0].nonlinear.nodes.size());
         REQUIRE(e.nodes[e.root].opcode == 5);
