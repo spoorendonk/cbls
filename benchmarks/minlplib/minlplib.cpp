@@ -43,6 +43,11 @@ namespace {
 // nothing. validate_search_flags() refuses one.
 constexpr unsigned kSearchFlagFamilies = cbls::bench::kScalarRunnerSearchFlags;
 
+// The thread count every MINLPLib campaign runs at: Simon's decision of
+// 2026-11-01, recorded on https://github.com/spoorendonk/cbls/issues/255 and
+// applied to the full campaign, https://github.com/spoorendonk/cbls/issues/256.
+constexpr int kCampaignThreads = 16;
+
 struct Args {
     std::string inst_dir = "benchmarks/instances/minlplib";
     // 60s per instance. The previously published run used 5s, which is a stingy
@@ -58,9 +63,11 @@ struct Args {
     double feas_tol = cbls::kDefaultFeasibilityTolerance;
     bool feas_tol_set = false;
     std::vector<std::string> instances;  // optional override
-    // Portfolio workers. 1 is the single-threaded `solve()` this table has always
-    // measured; >1 runs `ParallelSearch` on that many threads, a different run at
-    // any thread count, so it is not the published protocol (#262).
+    // Portfolio workers (#262). 1 is the single-threaded `solve()` the committed
+    // table was measured with; >1 runs `ParallelSearch` on that many threads.
+    // Every campaign runs at kCampaignThreads (Simon, 2026-11-01, #255, #256).
+    // A run at another count is a different search, so every row records its
+    // count in `search_config` and thread counts are never mixed in one table.
     int threads = 1;
     bool commit_set = false;
     std::string commit_sha = "unknown";
@@ -97,6 +104,14 @@ void check_flag_values(Args& a) {
         std::exit(2);
     }
     a.search_config = cbls::bench::search_config_string(a.search, kSearchFlagFamilies);
+    // The portfolio's size is part of the configuration the row describes, so
+    // the row records it. Written only off the single-threaded default, as the
+    // opt-in search flags are, so a `--threads 1` row's cell is the one the
+    // committed tables hold.
+    if (a.threads != 1) {
+        a.search_config += (a.search_config.empty() ? "" : ";");
+        a.search_config += "threads=" + std::to_string(a.threads);
+    }
     if (a.search.no_time_limit) {
         // The wall-clock-free arm (#136): solve() disables its clock at
         // `time_limit <= 0`, which is what makes an iteration-budgeted run
@@ -179,7 +194,10 @@ void resolve_out_csv(Args& a) {
         why = "--seed";
     } else if (a.feas_tol_set) {
         why = "--feas-tol";
-    } else if (a.threads != 1) {
+    } else if (a.threads != 1 && a.threads != kCampaignThreads) {
+        // 1 is the committed table's count and kCampaignThreads the campaign
+        // protocol's (#255, #256); any other count is neither, and a table
+        // holds one thread count.
         why = "--threads";
     } else {
         why = cbls::bench::first_non_default_search_flag(a.search);

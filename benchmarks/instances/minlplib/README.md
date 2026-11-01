@@ -256,8 +256,16 @@ judged against its own protocol (compound moves off, so there `--compound-moves`
 is the arm and `--novelty-prob` alone is refused), and
 `benchmarks/common/search_config_flags.h` is the single definition of all of
 them. `--threads N` (#262) runs the `ParallelSearch` portfolio on N threads, one
-hook and one LNS per worker; the table measures the single-threaded `solve()`,
-so any N above 1 is refused onto it the same way.
+hook and one LNS per worker, and adds `threads=N` to the row's `search_config`
+cell (left out at 1, so a single-threaded row's cell is unchanged). Every
+campaign runs at 16 threads (Simon, 2026-11-01,
+[#255](https://github.com/spoorendonk/cbls/issues/255),
+[#256](https://github.com/spoorendonk/cbls/issues/256)); the committed tables
+were measured with the single-threaded `solve()`. One table holds one thread
+count: a count other than 1 or 16 is refused onto the published table, and
+`run_benchmark.py --threads N` passes N through, stamps it on the staging
+directory (a resume at another count is refused) and refuses a per-seed table
+whose other seeds ran at another count.
 
 ### The ablation campaign
 
@@ -353,13 +361,15 @@ What the driver refuses, and why each refusal matters:
 | `--instances` with `--out` resolving to `comparison.csv` | same, via a relative path the explicit-`--out` guard would otherwise wave through |
 | a whole-roster run writing exactly one of the two published artifacts | `--out` moved off `comparison.csv` with `--trace-out` left at its default would replace the published anytime trace at exit 0 while reporting a scratch table; the converse republishes `comparison.csv` at this engine beside a trace from the previous one. Refused in both directions (#149) |
 | build dir configured with `CBLS_SANITIZE` or `CBLS_PROFILE` | a sanitizer or profiling build measures a different engine, and both are sticky cache entries a later flag-less `cmake -B build` keeps |
-| a staging directory stamped with another commit, budget, seed or host | resuming it would mix two configurations into one table |
+| a staging directory stamped with another commit, budget, seed, `--threads` or host | resuming it would mix two configurations into one table |
 | a `--seed` other than 1 naming `comparison.csv` or `anytime_trace.csv` | the published table is the pre-registered seed alone; another seed written there would make the published seed whichever ran last (#141) |
 | a `--time-limit` other than 60 onto the default paths | it would publish into `comparison.csv` or `comparison_seeds.csv`, replacing a 60s table or seed block with a smoke run; a non-default budget needs a scratch `--out` |
 | `--inst-dir` naming a roster directory under `benchmarks/instances/` other than this one (e.g. `heldout/`) without scratch `--out` and `--staging-dir`, or any scratch output landing under `benchmarks/instances/` | the held-out roster publishes nothing (HELDOUT.md), and another roster's scratch output must not reach this directory's tables (#144) |
 | another timed driver (`run_benchmark.py` or `run_ablation.py`) holding the wall-clock lock | two timed runs sharing the machine halve each other's iteration counts with nothing in either record saying so |
 | `--trace-out` naming `anytime_trace.csv` while `--out` is scratch | the published trace would describe a run the published table does not |
 | a `comparison_seeds.csv` with another runner's columns, or an unreadable `comparison_seeds.run.json` | this run's seed could not be added beside them, found only after the solves |
+| a `--threads` other than 1 or 16 onto the default paths | one table holds one thread count; 16 is the campaign protocol (#255, #256) and 1 the committed tables', so any other count needs a scratch `--out` |
+| a `comparison_seeds.csv` whose other seeds' run records name another `--threads` | the upsert keeps their rows, so the table would hold two thread counts |
 | missing `scip_baseline.csv` (unless `--no-merge`) | the merge would publish `comparison_all.csv` without SCIP rows |
 | a roster instance whose read, build or solve **throws** (runner exit 3) | its row carries `read-error`/`build-error`/`solve-error` and measures nothing, so publishing it would put a non-result in the table. The staged row is *structurally* complete, so the resume check refuses it by name (#153) and a re-run hits the same throw rather than skipping past it. A coverage gap — `unsupported`, or a missing `.nl` — exits 0 and does **not** trip this |
 

@@ -1153,6 +1153,8 @@ def test_minlplib_runs_an_instance_on_the_portfolio(tmp_path: Path) -> None:
     assert [(r["instance"], r["feasible"], r["note"]) for r in rows] == [
         ("alkylation", "true", "feasible")
     ]
+    # The row records its portfolio size: one table holds one thread count (#299).
+    assert rows[0]["search_config"].endswith(";threads=2"), rows[0]["search_config"]
     incumbents = list(csv.DictReader(trace.read_text().splitlines()))
     assert incumbents, "the portfolio's stream never reached the trace"
 

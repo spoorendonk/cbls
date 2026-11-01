@@ -47,6 +47,7 @@ from benchmarks.minlplib.run_benchmark import (
     publish_seed_rows,
     resolve_paths,
     roster_from_bounds,
+    run_record,
     run_roster,
     runner_command,
     staged_complete,
@@ -103,6 +104,7 @@ def make_args(tmp_path: Path, **overrides: object) -> argparse.Namespace:
         "build_dir": tmp_path / "build",
         "time_limit": 60.0,
         "seed": 1,
+        "threads": 1,
         "build_jobs": 4,
         "instances": [],
         "out": None,
@@ -158,7 +160,7 @@ def test_paths_default_to_the_published_tables_and_a_persistent_staging_dir(
     assert paths.out == paths.published_out
     assert paths.trace_out == tmp_path / "inst" / "anytime_trace.csv"
     root = tmp_path / "state" / "cbls" / "minlplib-rerun"
-    assert paths.stage == root / "abc1234" / "60s" / "seed1"
+    assert paths.stage == root / "abc1234" / "60s" / "threads1" / "seed1"
     assert paths.seeds_out == tmp_path / "inst" / SEEDS_TABLE_NAME
 
 
@@ -372,6 +374,13 @@ def test_preflight(
         ({"seed": 2, "time_limit": 5.0, "out": "s.csv"}, None),
         ({"time_limit": 0.0}, ("--time-limit",)),
         ({"build_jobs": 0}, ("--build-jobs",)),
+        # A table holds one thread count: 1 (the committed tables) or 16 (the
+        # campaign protocol, #255) may publish, any other only to scratch.
+        ({"threads": 16}, None),
+        ({"threads": 3}, ("--threads 3", "comparison.csv")),
+        ({"seed": 2, "threads": 3}, ("--threads 3", "comparison_seeds.csv")),
+        ({"threads": 3, "out": "s.csv", "trace_out": "t.csv"}, None),
+        ({"threads": 0}, ("--threads must be >= 1",)),
     ],
     ids=[
         "subset-without-scratch-out",
@@ -406,6 +415,11 @@ def test_preflight(
         "smoke-budget-another-seed-to-scratch",
         "nonpositive-budget",
         "nonpositive-build-jobs",
+        "campaign-threads-onto-the-published-table",
+        "other-threads-onto-the-published-table",
+        "other-threads-onto-the-per-seed-table",
+        "other-threads-to-scratch",
+        "nonpositive-threads",
     ],
 )
 def test_usage_error(
@@ -550,6 +564,23 @@ def test_a_staging_dir_is_resumed_only_under_its_own_configuration(
     assert stamped in (stage / STAMP_NAME).read_text()
 
 
+def test_a_staging_dir_is_refused_at_another_thread_count(tmp_path: Path) -> None:
+    """A campaign resumed at another --threads would publish two portfolio sizes as one."""
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    assert staging_stamp_conflict(stage, make_args(tmp_path), "abc1234") is None
+    assert "threads=1\n" in (stage / STAMP_NAME).read_text()
+    conflict = staging_stamp_conflict(stage, make_args(tmp_path, threads=16), "abc1234")
+    assert conflict is not None and "threads=16" in conflict
+    assert "threads=1\n" in (stage / STAMP_NAME).read_text(), "the recorded stamp was replaced"
+    # The default staging dir is keyed by thread count, so the two never meet there.
+    one, sixteen = (
+        resolve_paths(make_args(tmp_path, staging_dir=None, threads=t), "abc1234").stage
+        for t in (1, 16)
+    )
+    assert one != sixteen
+
+
 # --- command construction ----------------------------------------------------
 
 
@@ -564,6 +595,18 @@ def test_the_runner_is_asked_for_one_instance_and_a_staged_output(tmp_path: Path
     assert cmd[cmd.index("--out") + 1] == str(tmp_path / "stage" / "nvs01.csv")
     assert cmd[cmd.index("--trace") + 1] == str(tmp_path / "stage" / "nvs01.trace.csv")
     assert "--trace" not in runner_command(make_args(tmp_path, trace=False), "abc1", "n", tmp_path)
+    assert cmd[cmd.index("--threads") + 1] == "1"
+
+
+def test_threads_reach_the_runner_and_the_run_record(tmp_path: Path) -> None:
+    """`--threads 16` (#255's campaign protocol) runs `cbls_minlplib --threads 16`."""
+    args = run_benchmark.parse_args(["--inst-dir", str(tmp_path / "inst"), "--threads", "16"])
+    assert args.threads == 16
+    cmd = runner_command(args, "abc1234", "nvs01", tmp_path / "stage")
+    assert cmd[cmd.index("--threads") + 1] == "16"
+    record = run_record(args, "abc1234", ["nvs01"], {})
+    assert record.concurrency["threads_per_solve"] == 16
+    assert run_benchmark.parse_args([]).threads == 1
 
 
 def test_the_merge_step_solves_nothing(tmp_path: Path) -> None:
@@ -1012,6 +1055,21 @@ def test_the_ablation_drivers_preflight_still_runs(tmp_path: Path) -> None:
     )
     problems = common_preflight(args, "abc1234", ["process"])
     assert any("CMakeCache.txt not found" in p for p in problems)
+
+
+def test_preflight_refuses_a_seed_at_another_thread_count_beside_the_others(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The upsert keeps every other seed's rows, so their thread count must be this run's."""
+    make_inst_dir(tmp_path, ["a", "b"])
+    make_build_dir(tmp_path)
+    monkeypatch.setattr(subprocess, "run", seeded_runner())
+    assert _execute(tmp_path, 2) == 0
+    problems = preflight(make_args(tmp_path, threads=16), "abc1234", ["a", "b"])
+    assert any("seed 2 at 1 thread(s)" in p and "--threads 16" in p for p in problems), problems
+    assert preflight(make_args(tmp_path), "abc1234", ["a", "b"]) == []
+    # Seed 2's own record is the one a re-run replaces, so it does not count.
+    assert preflight(make_args(tmp_path, seed=2, threads=16), "abc1234", ["a", "b"]) == []
 
 
 def test_preflight_refuses_a_seeds_table_the_run_could_not_join(tmp_path: Path) -> None:

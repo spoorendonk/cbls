@@ -73,8 +73,13 @@ Guards, because this file's output is published:
   exit 0 while reporting a scratch table, and the converse publishes
   `comparison.csv` at this engine beside a trace from the previous one (#149);
 * refuses to resume a staging directory written by a different commit, budget,
-  seed, host or roster, and re-solves any individual staged row whose `commit_sha`
-  disagrees;
+  seed, thread count, host or roster, and re-solves any individual staged row
+  whose `commit_sha` disagrees;
+* runs the runner at `--threads N` (default 1; every campaign runs at
+  `CAMPAIGN_THREADS`, Simon, 2026-11-01, #255, #256) and never mixes thread
+  counts in one table: each row's `search_config` cell and each run record carry
+  the count, a count that is neither 1 nor the campaign's may not publish, and a
+  per-seed table already holding another count's seeds is refused;
 * refuses a seed other than `DEFAULT_SEED` writing either published artifact,
   by default or by name, and any scratch output (or its run record) resolving
   to a published file (#141);
@@ -163,12 +168,23 @@ DEFAULT_TIME_LIMIT = 60.0
 #: beside it, as this one does too.
 DEFAULT_SEED = 1
 
-#: Solves per process and processes at a time, as the run record states them.
-#: The runner is single-threaded and the driver runs one instance at a time;
-#: both are recorded rather than implied, because a wall-clock-budgeted number
-#: means nothing without them.
+#: Processes at a time, as the run record states it beside `--threads` (each
+#: solve's portfolio size). The driver runs one instance at a time; both are
+#: recorded rather than implied, because a wall-clock-budgeted number means
+#: nothing without them.
 PARALLEL_SOLVES = 1
-THREADS_PER_SOLVE = 1
+
+#: `--threads` by default: the single-threaded `solve()` the committed tables
+#: were measured with.
+DEFAULT_THREADS = 1
+
+#: The thread count every campaign runs cbls at: Simon's decision of 2026-11-01,
+#: recorded on https://github.com/spoorendonk/cbls/issues/255 for the full
+#: campaign, https://github.com/spoorendonk/cbls/issues/256. A table holds one
+#: thread count, so a count that is neither this nor `DEFAULT_THREADS` may not
+#: publish (`threads_policy_error`), and `cbls_minlplib` refuses it onto its
+#: published table the same way.
+CAMPAIGN_THREADS = 16
 
 #: Where a seed's assembled table and trace land when it is not the published
 #: seed: inside its own staging directory, beside the per-instance files.
@@ -196,8 +212,8 @@ def default_staging_root() -> Path:
     with them. XDG's *state* directory and not its cache: state is defined as
     data that should survive a restart, cache as data that may be deleted at any
     time, and a resumable campaign is the former. Two checkouts sharing it is
-    safe: the stamp refuses to resume rows from another commit, budget, seed or
-    host. Read at call time, so a test can point it elsewhere.
+    safe: the stamp refuses to resume rows from another commit, budget, seed,
+    thread count or host. Read at call time, so a test can point it elsewhere.
     """
     state = os.environ.get("XDG_STATE_HOME", "")
     # The XDG spec ignores a relative value; so does this.
@@ -227,13 +243,18 @@ def resolve_paths(args: argparse.Namespace, sha: str) -> Paths:
     table. A whole-roster run onto the default paths -- at any seed -- also
     publishes its rows into the per-seed table.
 
-    The default staging directory is keyed by commit and budget as well as seed: it
-    outlives every campaign now, and keyed by seed alone the first run after any
-    new commit would hit the stamp's refusal instead of starting fresh.
+    The default staging directory is keyed by commit, budget and thread count as
+    well as seed: it outlives every campaign now, and keyed by seed alone the
+    first run after any new commit would hit the stamp's refusal instead of
+    starting fresh.
     """
     published_out = args.inst_dir / "comparison.csv"
     stage = args.staging_dir or (
-        default_staging_root() / sha / f"{args.time_limit:g}s" / f"seed{args.seed}"
+        default_staging_root()
+        / sha
+        / f"{args.time_limit:g}s"
+        / f"threads{args.threads}"
+        / f"seed{args.seed}"
     )
     preregistered = args.seed == DEFAULT_SEED
     out = args.out or (published_out if preregistered else stage / ASSEMBLED_TABLE)
@@ -344,10 +365,38 @@ def _seeds_table_problems(args: argparse.Namespace) -> list[str]:
         else:
             problems += _seeds_row_problems(seeds_out)
     try:
-        campaign_report.load_seed_run_records(seeds_out)
+        records = campaign_report.load_seed_run_records(seeds_out)
     except ValueError as exc:
         problems.append(str(exc))
+    else:
+        problems += _seeds_threads_problems(seeds_out, records, args)
     return problems
+
+
+def _seeds_threads_problems(
+    seeds_out: Path, records: dict[int, RunRecord], args: argparse.Namespace
+) -> list[str]:
+    """Refuse adding this run's seed beside seeds measured at another thread count.
+
+    `publish_seed_rows` replaces this seed's block and keeps every other seed's,
+    so a 16-thread seed published beside 1-thread ones would put two thread
+    counts in one table. This seed's own record is about to be replaced, so it
+    does not count.
+    """
+    others = {
+        seed: record.concurrency.get("threads_per_solve")
+        for seed, record in records.items()
+        if seed != args.seed
+    }
+    mixed = sorted(seed for seed, threads in others.items() if threads != args.threads)
+    if not mixed:
+        return []
+    shown = ", ".join(f"seed {seed} at {others[seed]}" for seed in mixed)
+    return [
+        f"{seeds_out} holds {shown} thread(s), and this run is at --threads {args.threads}: "
+        "one table holds one thread count. Publish into another --inst-dir, or move the table "
+        "aside (the old campaign stays in the repository's history)"
+    ]
 
 
 #: A seed cell `int()` reads back exactly: ASCII digits only, so `--1` or `²` is
@@ -399,10 +448,13 @@ def usage_error(args: argparse.Namespace, published_out: Path) -> str | None:
         return f"--time-limit must be > 0 (got {args.time_limit})"
     if args.build_jobs < 1:
         return f"--build-jobs must be >= 1 (got {args.build_jobs})"
+    if args.threads < 1:
+        return f"--threads must be >= 1 (got {args.threads})"
     seed_refusal = (
         roster_dir_error(args, published_out)
         or seed_policy_error(args, published_out)
         or budget_policy_error(args, published_out)
+        or threads_policy_error(args, published_out)
     )
     if seed_refusal:
         return seed_refusal
@@ -624,6 +676,27 @@ def budget_policy_error(args: argparse.Namespace, published_out: Path) -> str | 
     return None
 
 
+def threads_policy_error(args: argparse.Namespace, published_out: Path) -> str | None:
+    """Refuse a thread count that is neither 1 nor `CAMPAIGN_THREADS` writing a published table.
+
+    The runner's own guard against it never fires here, because every instance
+    is staged; this is that guard for the driver. 1 is the committed tables'
+    count and 16 the campaign protocol's (#255, #256); a run at any other count
+    must name a scratch `--out`, as a run at another budget must.
+    """
+    if args.threads in (DEFAULT_THREADS, CAMPAIGN_THREADS) or args.instances:
+        return None
+    if args.out is None or args.out.resolve() == published_out.resolve():
+        return (
+            f"--threads {args.threads} is neither the committed tables' {DEFAULT_THREADS} nor "
+            f"the campaign protocol's {CAMPAIGN_THREADS} (#255, #256), and this run would "
+            f"publish into "
+            f"{published_out.name if args.seed == DEFAULT_SEED else SEEDS_TABLE_NAME}; pass a "
+            "scratch --out (and --trace-out) for a run at another thread count"
+        )
+    return None
+
+
 def seed_policy_error(args: argparse.Namespace, published_out: Path) -> str | None:
     """Refuse any route by which a seed other than `DEFAULT_SEED` reaches a published file.
 
@@ -664,10 +737,13 @@ def staging_stamp(args: argparse.Namespace, sha: str) -> str:
 
     The host and the roster are part of it since #141 moved the default staging directory out of
     the build tree: a home directory can be shared between machines, and a
-    campaign resumed on another one would publish one table measured on two.
+    campaign resumed on another one would publish one table measured on two. The
+    thread count since #299: a campaign resumed at another `--threads` would
+    publish one table measured with two portfolio sizes.
     """
     return (
         f"commit={sha}\ntime-limit={args.time_limit:g}\nseed={args.seed}\n"
+        f"threads={args.threads}\n"
         f"host={socket.gethostname()}\nroster={roster_fingerprint(args.inst_dir)}\n"
     )
 
@@ -779,6 +855,7 @@ def runner_command(args: argparse.Namespace, sha: str, name: str, stage: Path) -
         instance=name,
         out=stage / f"{name}.csv",
         solution_dir=stage,
+        threads=args.threads,
         extra=["--trace", str(stage / f"{name}.trace.csv")] if args.trace else [],
     )
 
@@ -862,7 +939,7 @@ def run_record(
         machine=machine,
         concurrency={
             "parallel_solves": PARALLEL_SOLVES,
-            "threads_per_solve": THREADS_PER_SOLVE,
+            "threads_per_solve": args.threads,
             "build_jobs": args.build_jobs,
         },
     )
@@ -1152,6 +1229,13 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--build-dir", type=Path, default=DEFAULT_BUILD_DIR)
     parser.add_argument("--time-limit", type=float, default=DEFAULT_TIME_LIMIT)
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
+    parser.add_argument(
+        "--threads",
+        type=int,
+        default=DEFAULT_THREADS,
+        help=f"portfolio threads per solve; {CAMPAIGN_THREADS} is the campaign protocol "
+        "(#255, #256), and one table holds one thread count",
+    )
     parser.add_argument("--build-jobs", type=int, default=DEFAULT_BUILD_JOBS)
     # nargs="+", not "*": a bare `--instances` would otherwise be an empty list,
     # slip past the subset guard, and run the roster into the published paths.
@@ -1175,7 +1259,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         type=Path,
         default=None,
         help=(
-            "default $XDG_STATE_HOME/cbls/minlplib-rerun/<commit>/<budget>s/seed<N> "
+            "default $XDG_STATE_HOME/cbls/minlplib-rerun/<commit>/<budget>s/threads<T>/seed<N> "
             "(~/.local/state/...)"
         ),
     )
@@ -1229,7 +1313,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"refusing to run: {problem}", file=sys.stderr)
         return 2
 
-    print(f"commit {sha}, {args.time_limit:g}s/instance, seed {args.seed}, serial")
+    print(
+        f"commit {sha}, {args.time_limit:g}s/instance, seed {args.seed}, "
+        f"{args.threads} thread(s), serial"
+    )
     print(f"roster {len(roster)} instance(s) from {args.inst_dir / 'bounds.csv'}")
     print(f"staging {paths.stage}")
     print(f"out {paths.out}")

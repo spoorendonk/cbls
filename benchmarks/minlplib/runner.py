@@ -150,6 +150,7 @@ def runner_command(
     instance: str,
     out: Path,
     solution_dir: Path,
+    threads: int = 1,
     extra: Sequence[str] = (),
 ) -> list[str]:
     """The `cbls_minlplib` invocation for one instance.
@@ -161,6 +162,9 @@ def runner_command(
     `--solution-dir` is always present too, and required of every caller: it
     is where the runner leaves each verified row's assignment, and
     `independent_check.check_rows` refuses a verified row without one (#205).
+
+    `--threads` is always present as well, so the command line states the
+    portfolio size a row was measured with even at the single-threaded 1 (#299).
     """
     return [
         str(build_dir / RUNNER_TARGET),
@@ -177,6 +181,8 @@ def runner_command(
         str(out),
         "--solution-dir",
         str(solution_dir),
+        "--threads",
+        str(threads),
         *extra,
     ]
 
