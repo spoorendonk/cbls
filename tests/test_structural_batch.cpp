@@ -779,8 +779,9 @@ TEST_CASE("the batch scores a two-variable generator through the union path",
 
 TEST_CASE("the batch sums a two-variable move's rows in ascending order", "[structural][moves]") {
     // A transfer from b to a walks b then a, so the rows arrive as G_v(b) =
-    // {1, 2} then G_v(a) = {0}: out of order, and `delta_after_walk` must sort
-    // them to get the full scan's double. The weights make the order DECIDE:
+    // {1, 2} then G_v(a) = {0, 2}, deduplicated to [1, 2, 0]: out of order, and
+    // `delta_after_walk` must sort them to get the full scan's double. The
+    // weights make the order DECIDE:
     //   row 0 (size_a <= 1): a grows 1 -> 2,  +1 at weight 1e17 -> +1e17
     //   row 1 (size_b <= 4): b shrinks 5 -> 4, -1 at weight 1e17 -> -1e17
     //   row 2 (shared):      -4 for any element, at weight 1     -> -4
