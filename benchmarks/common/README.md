@@ -87,3 +87,4 @@ Flags after `--` go to the runner, which is where a study's `{config}` lands.
 All four runners take `--threads N` (`parse_thread_count` in `runner_args.h`),
 the `ParallelSearch` portfolio above 1; `minlplib` and `uc-chped` refuse that
 onto their published tables, which measure the single-threaded `solve()`.
+The study files that call it are in `benchmarks/tune/` (its README).
