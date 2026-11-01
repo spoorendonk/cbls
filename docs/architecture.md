@@ -635,15 +635,12 @@ builds the `var_id -> constraint-index` adjacency (`build_var_constraints`, the
 paper's `G_v`), performs an initial full evaluation, and sets the `closed_`
 flag. After close the ordinary builders — variable and expression creation,
 `add_constraint`, `minimize`/`maximize`, `add_var_sequence`,
-`add_list_partition` — throw `std::logic_error` (#173): a node or row they
-appended then was never placed in the topological order, so no evaluation
-reached it and `solve()` reported feasible over it. `solve()` freezes the model
-it is handed (`Model::freeze()`: close if open, append the objective row, build
-the cone cache), so a model that has been solved refuses the builders too. A
-closed model does not grow, apart from the objective soft constraint, which
-`freeze()` appends (see below). (Growth of
-a closed model, `Model::extend` from #167, was removed in #181 together with its
-only user, column generation, #180.)
+`add_list_partition` — throw `std::logic_error` (#173): a node or row
+appended then would sit outside the topological order, never evaluated.
+`solve()` freezes the model it is handed (`Model::freeze()`: close if open,
+append the objective row, build the cone cache), so a solved model refuses the
+builders too. A closed model does not grow, apart from the objective soft
+constraint `freeze()` appends (see below).
 
 ### Structure vs. state: `ModelStructure` and `freeze()` (#157)
 
@@ -664,40 +661,31 @@ expression creation, `add_constraint`, `minimize`/`maximize`,
 `add_var_sequence`, `reserve`, `close` — and a write to the shared side no longer
 compiles. **`add_objective_soft_constraint` is the one intentional exception**: on
 a frozen model it returns rather than throwing, because `freeze()` has already
-run it and a caller may still call it on a frozen replica (`solve()` did on every
-model it was handed until #271, which made it call `freeze()` instead). Its
+run it and a caller may still call it on a frozen replica. Its
 idempotent early return therefore comes before the frozen check, and
 `tests/test_model_share.cpp` pins that order.
 
 **Copying a frozen model shares its structure**; copying an open one deep-copies
-it, exactly as before. That is the whole mechanism behind the portfolio's memory
+it. That is the whole mechanism behind the portfolio's memory
 behaviour: see [Parallel Search](#parallel-search).
 
-**The freeze point is after the objective row, not at `close()`.** The
-objective row appends two nodes and a constraint and rebuilds the
-back-references, the topological order, `topo_pos` and `G_v` — so a structure
-frozen at `close()` would have N workers re-sorting one shared DAG. `freeze()`
-folds both steps in, then builds the cone cache (see **Evaluation Modes**), and
-`solve()` freezes whatever model it is handed (#271). A model comes back from
-`solve()` frozen; the builders refused it already as a closed model (#173), so
-what it newly refuses is `reserve` and `close`.
+**The freeze point is after the objective row, not at `close()`**, since the
+row rebuilds the back-references, the topological order, `topo_pos` and `G_v`,
+which N workers must not redo on one shared DAG. `freeze()` folds both steps in,
+then builds the cone cache (see **Evaluation Modes**). A model comes back from
+`solve()` frozen, so it newly refuses `reserve` and `close`.
 
 Deliberately **not** copy-on-write: a silent detach would put a worker back on
-its own full copy with every test still green and the memory saving gone, which
-is a failure that reports nothing.
+its own full copy with every test green and the memory saving gone.
 
-One consequence of sharing: `lambda_sum`/`pair_lambda_sum` callables are shared
-too, so several workers invoke the same callable object at once. One carrying
-mutable state of its own is a data race. That is a **new** hazard for state
-captured by value — each replica used to deep-copy the `std::function` — and an
-old one for state captured by reference.
+`lambda_sum`/`pair_lambda_sum` callables are shared too, so several workers
+invoke the same callable object at once; one carrying mutable state of its own
+is a data race.
 
-The guarantee is one-sided, and worth stating plainly: a write to the shared side
-from **outside** `Model` does not compile, because every public accessor is
-`s()`-backed and const. Inside `Model`, `mut()` hands out a mutable reference and
-refuses at *runtime*. That is unavoidable — the builders need a write path — and
-`mut()` is private, so the boundary holds for callers; a future `Model` member
-function is on its honour.
+The guarantee is one-sided: a write to the shared side from **outside** `Model`
+does not compile, because every public accessor is `s()`-backed and const.
+Inside `Model`, the private `mut()` hands out a mutable reference and refuses
+only at *runtime*.
 
 ### Objective as a Soft Constraint
 
@@ -713,17 +701,14 @@ When the model has an objective, `freeze()` -- which `solve()` calls -- calls
 
 `set_objective_bound(bound)` records the bound in the model and recomputes the
 constraint residual in place. It does **not** write the constant node's
-`const_value`: the bound is per-worker mutable state, each worker tightening its
-own on its own incumbents (and, in a portfolio, on the pool's best objective --
-see [Parallel Search](#parallel-search), item 3), so it lives beside the node values and `evaluate()`'s
-`Const` arm reads it back for the one node `objective_bound_node()` names
-(#157). That branch is leaf-only — a `Const` is never in a `delta_evaluate`
-dirty cone — and it is needed rather than tidy: `full_evaluate` runs after every
-`restore_state`, so without it a restart would reset the worker's bound to
-`+inf`. The search tightens the bound to `obj - eps` on
-each new best feasible solution; the GFJ engine then treats meeting that bound
-as just another constraint to satisfy. The bound is released back to `+inf`
-before `solve()` returns so post-solve verifiers don't see it violated.
+`const_value`: the bound is per-worker state (each worker tightens its own, and
+in a portfolio also to the pool's best objective), so it lives beside the node
+values and `evaluate()`'s `Const` arm reads it back for the one node
+`objective_bound_node()` names (#157). That leaf-only branch is needed:
+`full_evaluate` runs after every `restore_state`, and without it a restart
+would reset the bound to `+inf`. The search tightens the bound to `obj - eps`
+on each new best feasible solution, and releases it to `+inf` before `solve()`
+returns so post-solve verifiers don't see it violated.
 
 `has_objective_constraint()`, `objective_constraint_idx()` and
 `objective_bound()` expose this state. "Real feasibility" everywhere means *all
@@ -731,27 +716,19 @@ constraints except* `objective_constraint_idx()`.
 
 ### Mid-solve structural writes (Python)
 
-A bound `cbls.solve` (and `ParallelSearch.solve_master`) releases the GIL for the
-whole search, and writes the model's structure itself under it: the first solve
-of a model freezes it -- closing it if open, appending the objective row and
-building the cone cache (#271) -- as `solve_master` does. A `SolveCallback` runs
-on the search thread, and any other Python thread runs freely, so either can
-reach the model mid-search -- and the search reads the node array, the CSR
-indices and the topological order without a lock. A builder call, `close`,
-`freeze` or a second solve of the same model from there races that write.
-
-So the binding keeps a registry of the models a bound `solve` or `solve_master`
-is running on, and every structural write Python can reach consults it and
-raises `RuntimeError` mid-solve: the `Model` builders, `close`, `freeze`, the
-`Expr` operators and free functions (which build through their model), and a
-second `cbls.solve`/`solve_master` of the same model, nested from a callback or
-from another thread. `cbls.solve` registers the model **before** it releases the
-GIL, in the body rather than through a `call_guard`, so a builder call from
-another thread -- which runs holding the GIL -- cannot pass its check in the gap.
-The engine's own write, the freeze, is a C++ call and never passes
-through the registry. These refusals are pinned in child interpreters by
-`tests/python/test_solve_guards.py`. Value writes (`Variable.value`,
-`restore_state`) are not structural and stay the documented data race.
+A bound `cbls.solve` (and `ParallelSearch.solve_master`) releases the GIL for
+the whole search, and the first solve of a model freezes it under that release.
+A `SolveCallback` or another Python thread can reach the model mid-search,
+while the search reads the node array, the CSR indices and the topological
+order without a lock. So the binding keeps a registry of the models a bound
+solve is running on, and every structural write Python can reach raises
+`RuntimeError` mid-solve: the `Model` builders, `close`, `freeze`, the `Expr`
+operators and free functions, and a second solve of the same model.
+`cbls.solve` registers the model **before** it releases the GIL, in the body
+rather than through a `call_guard`, so another thread's builder call cannot
+pass its check in the gap. `tests/python/test_solve_guards.py` pins these in
+child interpreters. Value writes (`Variable.value`, `restore_state`) are not
+structural and stay the documented data race.
 
 A `ViolationManager` built before the objective row exists is one weight short
 once `freeze()` or the first `solve()` appends it. Its weight-indexed reads
@@ -764,16 +741,11 @@ the manager after the model's last row.
 Python holds nothing a builder can invalidate. `Model.var()`/`var_mut()` return
 a `(model, id)` handle bound as `cbls.Variable`, which resolves through the model
 on every attribute access and keeps the model alive; `node()` returns a copy of
-the node, whose two exposed fields never change. They used to be
-`reference_internal` into `vars_`, which any builder before `close()` can
-reallocate, and writing `.value` through one held across that was a heap
-use-after-free. An `Expr` holds a raw `Model*` too, and nothing tied the model to
-it: `cbls.Model().Float(0, 1)` left the `Expr` reading (and its operators
-building into) freed heap, reused by the next `Model` of the same size. Every
-`Expr` the binding returns now keeps its model's Python object alive -- the model
-itself, not the operand, so a `s = s + x` loop does not chain every intermediate
-to the next. `ViolationManager` had the same hole and now keeps its model alive
-too. The cost: a `lambda_sum` / `pair_lambda_sum` callable that reaches an `Expr`
+the node, whose two exposed fields never change (a `reference_internal` into
+`vars_` would dangle when a builder reallocates it). An `Expr` holds a raw
+`Model*`, so every `Expr` the binding returns keeps its model's Python object
+alive -- the model itself, not the operand, so a `s = s + x` loop does not chain
+every intermediate to the next. `ViolationManager` keeps its model alive too. The cost: a `lambda_sum` / `pair_lambda_sum` callable that reaches an `Expr`
 (or the model) makes a cycle the collector cannot see -- the model holds the
 callable in a C++ `std::function` -- so it pins the model for the process
 lifetime. Capture handles or plain data in such callables.
@@ -835,11 +807,11 @@ Tracks per-constraint violation and the GLS weight vector.
   constraint, the objective term is technically double-counted here; that is
   acceptable for the hook's local polish.)
 - `is_feasible(tol=kDefaultFeasibilityTolerance)` / `violated_constraints(tol)` —
-  convenience predicates. The default is `1e-6` (matching SCIP's
-  `numerics/feastol` and `verify_model`); it is an *absolute* residual, so a much
-  tighter value is not achievable on models whose constraint bodies are large in
-  magnitude. `SearchConfig::feasibility_tolerance` shares the same default.
-  over *all* constraints (including the objective soft constraint).
+  convenience predicates over *all* constraints (including the objective soft
+  constraint). The default is `1e-6` (matching SCIP's `numerics/feastol` and
+  `verify_model`); it is an *absolute* residual, so a much tighter value is not
+  achievable on models whose constraint bodies are large in magnitude.
+  `SearchConfig::feasibility_tolerance` shares the same default.
 - `bump_weights(factor=1.0)` — increments the weight of each currently-violated
   constraint (a simple additive scheme; the GFJ engine uses the
   decay-then-bump GLS update below instead).
@@ -860,68 +832,20 @@ pass) stay `0` under decay and are never bumped, so they remain inactive.
 O(#constraints) per bump, and stays as the public reference. `FeasibilityJump`
 applies the same update through `LazyWeightDecay`: it stores `w' = w / s`, a
 decay is `s *= rho` (O(1)), and a bump adds `1/s` to the rows in V only, so a
-bump costs O(|V|) plus the nonzeros of V's counted rows it requeues. `s` is folded into the stored weights (and
-into the cached jump scores) when it would leave `[1e-30, 1e30]` -- once per
-1347 decays at `rho = 0.95`, never at `rho = 1` -- and on every exit from the
-GLS loop, so `ViolationManager::weights` holds effective weights whenever FJ is
-not running. The algorithm's weights are unchanged; the representation agrees
-with the eager one to rounding, not to the bit (bit-identical at `rho = 1`). A
-positive weight is floored at the smallest subnormal instead of underflowing to
-0 (the eager form at 0.95 sticks at 9 subnormal ulps anyway); only `rho = 0`
-zeroes a weight. Trajectories also move for a second reason: the eager form
-left a cached jump score that the bump did not invalidate at its pre-decay
-scale, stale by `rho^-k` against freshly computed ones, whereas in the scaled
-space a decay leaves every cached score exact. That affects only entries whose
-rows the bump did not touch, which in practice means rows violated by at most
-the tolerance (`GFJConfig::tolerance`): any other valid entry in Q has a positive score, so it sits in a counted
-row and the bump invalidates it. Scores carried across a batch boundary are
-rescaled by the folded factor and match the eager form to rounding.
-
-Measured at `40f39a3` (#174's head, eager decay) against `d424dbd` (lazy),
-Release, one thread, serially on an idle 12-core Ryzen 5 5600H (load 1.0-1.5),
-seeds 1 and 2. `cbls_mipfeas` at 20s, GLS iterations and the final max violation
-(no instance reached feasibility in either arm):
-
-| instance | iterations before (s1 / s2) | after (s1 / s2) | max violation before | after |
-|---|---|---|---|---|
-| cbs-cta | 485,649 / 487,301 | 636,090 / 635,932 | 10.3 / 12.6 | 10.3 / 12.6 |
-| rail01 | 446,319 / 407,655 | 431,537 / 436,548 | 1 / 2 | 1 / 2 |
-| uccase12 | 235,412 / 283,928 | 233,799 / 265,302 | 5.28 / 4.57 | 6.3 / 9.81 |
-| neos-860300 | 14,619 / 19,573 | 16,261 / 16,388 | 1 / 1 | 1 / 1 |
-| rd-rplusc-21 | 7,742 / 7,839 | 7,495 / 7,906 | 1 / 1 | 1 / 1 |
-
-cbs-cta, the instance #175 was found on, runs 31% more iterations on both seeds;
-the others move within their own seed-to-seed spread, which is what a bump that
-was not their bottleneck predicts. uccase12 was worse on both of those seeds, so
-it was re-run on seeds 3-6 the same way (the "after" binary is `d424dbd`; the
-review commits after it change comments only):
-
-| uccase12 seed | 1 | 2 | 3 | 4 | 5 | 6 | mean |
-|---|---|---|---|---|---|---|---|
-| iterations before | 235,412 | 283,928 | 225,114 | 257,532 | 247,597 | 231,948 | 246,922 |
-| iterations after | 233,799 | 265,302 | 255,079 | 255,035 | 240,985 | 241,536 | 248,623 |
-| max violation before | 5.28 | 4.57 | 4.38 | 3.87 | 5.00 | 6.50 | 4.93 |
-| max violation after | 6.30 | 9.81 | 3.63 | 8.27 | 3.75 | 3.95 | 5.95 |
-
-Three seeds worse, three better, and the "after" spread (3.6-9.8) is wider than
-the "before" one (3.9-6.5). The mean is 1.0 worse, carried by seeds 2 and 4; with
-that spread and six pairs this is not distinguishable from trajectory noise, and
-it is not evidence the lazy decay helps uccase12 either. Throughput there is
-unchanged, as expected when the bump was not its bottleneck. `cbls_minlplib` at 5s over
-its 50-instance roster: 46 / 48 feasible in both arms on seeds 1 / 2, 41 / 43
-objectives identical, and of the rest the lazy arm is better on 3 / 4 and worse
-on 2 / 1 (the largest move, kall_ellipsoids_tc02b seed 2, 52.17 -> 77.78, is
-matched by a 52.07 -> 50.48 improvement on seed 1). Two seeds cannot separate
-that from trajectory noise. **This change moves FJ trajectories, so every
-published table recorded before `d424dbd` is at an older engine** (see
-`docs/measuring.md`).
+bump costs O(|V|) plus the nonzeros of V's counted rows it requeues. `s` is
+folded into the stored weights and cached jump scores when it would leave
+`[1e-30, 1e30]` and on every exit from the GLS loop, so
+`ViolationManager::weights` holds effective weights whenever FJ is not running.
+The weights agree with the eager form to rounding (to the bit at `rho = 1`); a
+positive weight is floored at the smallest subnormal, so only `rho = 0` zeroes
+one. Unlike the eager form, a decay leaves every cached score exact, which
+changes trajectories where a cached entry's rows were violated by at most the
+tolerance. On cbs-cta, where the eager decay was the bottleneck, the lazy form
+runs 31% more iterations; elsewhere it moves trajectories within seed noise
+(the A/B tables are in this file's git history).
 
 After a new best feasible solution, the search resets all weights to `1.0`
 (`FeasibilityJump::reset_weights`) — a fresh penalty landscape per the paper.
-
-> **Removed:** the old `AdaptiveLambda` global penalty multiplier (increase when
-> stuck infeasible, decrease when feasible-not-improving) no longer exists. All
-> feasibility pressure is now per-constraint GLS weighting.
 
 ---
 
@@ -945,73 +869,17 @@ The engine's state maps to the paper's `S = <G, X, W, V, Q, J>`:
 | `Q` | scan set of candidate vars | `queue_` / `in_queue_` |
 | `J` | cached per-var best jump | `JumpTable` |
 
-**V is kept incrementally (#174).** Which rows are violated and active used to
-be answered by rescanning: every neighbour `vp` of a committed move re-read all
-of `G_vp` (the two-hop nonzeros per move), and each weight bump, Novelty seed and
-feasibility test swept every row. Now a dense list of violated rows and a
+**V is kept incrementally (#174).** A dense list of violated rows and a
 per-variable count of active violated rows are maintained wherever a row flips,
-so the participation test is O(1) and those scans are O(|V|), plus the variable
-lists of the rows they queue from. A Novelty batch as a whole stays O(#rows),
-through `init_novelty_weights` and the rebuild it ends with -- once per batch
-since #209, which stopped Novelty reseeding its scan set per commit and per
-level (see [Novelty Jump](#novelty-jump)). At #174
-(`f9edd3b`) the scans that queue variables sorted V back into ascending row
-order first, because the scan set's order feeds the RNG draw, and trajectories
-were bit-identical to `c19c982`: an iteration-bounded fingerprint of `solve()`
-and of a direct batch/Novelty/kick driver matched before and after on nine
-MIPfeas instances, two seeds each. That sort cost O(|V| log |V|) per bump
-(capped at O(#rows) by a re-sweep of the flags), and once #175's lazy decay had
-given up bit-identity anyway it bought nothing, so it was dropped: the bump's
-requeue and the Novelty seed now visit V in its list order. That order --
-appends plus swap-removes -- is a deterministic function of the flip history,
-so a seeded run still reproduces, but it is not ascending, and it moved both
-hashes `tests/test_fj_trajectory_fence.cpp` pins (re-recorded; the file says
-which change moved which). The rebuild's enqueue still happens to run
-ascending, because the O(#rows) rebuild lays V out that way. The
-header comment on `violated_` states where it wins and loses and what it costs
-in memory. Measured with `cbls_mipfeas`, 20s budget, one thread, seed 42,
-Release, serially on an idle 12-core Ryzen 5 5600H (load 0.2-1.2), at `c19c982`
-against `f9edd3b`, two passes run in opposite orders:
-
-| instance | GLS iterations before | after |
-|---|---|---|
-| rd-rplusc-21 | 173 / 178 | 9,052 / 8,782 |
-| rail01 | 350,936 / 348,700 | 440,400 / 441,095 |
-| uccase12 | 263,159 / 264,159 | 284,462 / 288,067 |
-| neos-860300 | 12,584 / 11,666 | 17,355 / 17,289 |
-
-The "before" rd-rplusc-21 runs overran the 20s budget to ~32s wall, because a
-single iteration was too expensive for the deadline stride to catch in time. The
-"after" runs stop at 20.1s.
-
-Dropping the sort was measured at `4400a17` (#175's head, sorted V) against
-`ab56e73` (list order; the later commits on top change comments only),
-`cbls_mipfeas` at 20s, one thread, Release, serially and interleaved per
-instance and seed on the same idle 12-core Ryzen 5 5600H (load 0.8-1.1). GLS
-iterations and the final max violation, seeds 1 / 2 (no instance reached
-feasibility in either arm):
-
-| instance | iterations before (s1 / s2) | after (s1 / s2) | max violation before | after |
-|---|---|---|---|---|
-| cbs-cta | 640,645 / 644,304 | 655,416 / 651,123 | 10.3 / 12.6 | 10.3 / 12.6 |
-| rail01 | 440,537 / 450,548 | 442,612 / 479,216 | 1 / 2 | 1 / 1 |
-| uccase12 | 233,494 / 271,229 | 314,318 / 291,426 | 6.3 / 9.81 | 3.6 / 12.9 |
-| neos-860300 | 15,264 / 16,739 | 12,719 / 17,829 | 1 / 1 | 1 / 1 |
-| rd-rplusc-21 | 7,446 / 7,918 | 6,626 / 8,857 | 1 / 1 | 1 / 1 |
-
-neos-860300 and rd-rplusc-21 were slower on seed 1 and faster on seed 2, so
-both were re-run on seeds 3-6 and seed 1 was repeated. The repeat reproduced
-each arm's seed-1 count to within 1-4.3% (neos-860300, after arm only, 12,818 against 12,719;
-rd-rplusc-21 7,123 / 6,466 against 7,446 / 6,626), so the gap is the
-trajectory, not timing noise. Over seeds 1-6 neos-860300 averages 16,794
-before and 16,332 after (paired mean -463, 0.7 standard errors from zero; two
-seeds faster, four slower), and rd-rplusc-21 7,389 before and 8,000 after
-(paired mean +612; four seeds faster, two slower). No instance is measurably slower; the change moves
-trajectories, so the iteration count per seed moves with them, and the
-objective (max violation) moves by seed: uccase12's seed-2 12.9 is outside
-the 3.63-9.81 spread the #175 table above showed for it, on two seeds only, so
-that is unmeasured rather than shown neutral. **Every published table recorded before
-`ab56e73` is therefore at an older engine**, as for `d424dbd` above.
+so the participation test is O(1), and the bump's requeue, the Novelty seed and
+the feasibility test are O(|V|) plus the variable lists of the rows they queue
+from, instead of a sweep of every row. A Novelty batch as a whole stays
+O(#rows), through `init_novelty_weights` and the rebuild it ends with, once per
+batch (see [Novelty Jump](#novelty-jump)). V is visited in list order (appends
+plus swap-removes): a deterministic function of the flip history, so a seeded
+run reproduces, but not ascending; `tests/test_fj_trajectory_fence.cpp` pins the
+resulting hashes. The header comment on `violated_` states where it wins and
+loses and what it costs in memory.
 
 ### JumpTable
 
@@ -1029,11 +897,11 @@ candidate set, plus its score:
 | Type  | Candidates |
 |-------|-----------|
 | Bool  | the flip `1 - x` |
-| Int whose weighted rows of G_v are all linear (`LinearJumpScorer::prepare` succeeded), **only with `SearchConfig::fj_exact_int_jump` on** (`GFJConfig::exact_int_jump`; default off, #216 — off, every Int takes the two rows below) | no candidate set: the **exact argmin** (#208), `LinearJumpScorer::int_argmin`, a port of OR-Tools' `ComputeLinearJump` with two differences: a non-improving column returns `{x, 0}` (the jump table's "no move") where OR-Tools returns the better neighbour, and the breakpoints omit masked (zero-weight) rows' kinks, which OR-Tools' `SlopeBreakpoints` includes, so on a plateau the tie can land elsewhere than OR-Tools' when rows are masked. The weighted violation over a linear column is convex piecewise-linear, so its integer minimum sits at a window end or the floor/ceil of a row's kink. It scores `x − 1`, and if that improves, searches the points left of it; else `x + 1`, and the points right of it. Those points are the side's ends plus every kink's floor and ceil (`SlopeBreakpoints`), searched by `RangeConvexMinimum`, whose binary search also sets the tie rule on a plateau. When neither neighbour improves, `x` is the minimum and the jump is `{x, 0}`. O(\|G_v\| log \|G_v\|) against up to 257 scored candidates. It declines — the rows below then apply — for a window of width 1 (a 0/1 column declared integer, whose one candidate is already the argmin, at less cost), for an `x` outside the window or non-integral, a bound past ±2^53, or a residual that could reach the `kInfPenalty` clamp inside the window (a clamped term is no longer convex). **Known regression:** on `x + y == T`, `x − y ≤ 1`, `y − x ≤ 1` over `[0, 1e7]` (#208's repro) exact jumps land on the rows' kinks and the pair oscillates about `T/2` until the GLS weights break it: 261k–836k iterations to feasible where the grid below took 19–72 (3 seeds, engine `3a42bd2` against this change); CP-SAT's LS-only worker does not solve it in 2 s either |
+| Int whose weighted rows of G_v are all linear (`LinearJumpScorer::prepare` succeeded), **only with `SearchConfig::fj_exact_int_jump` on** (`GFJConfig::exact_int_jump`; default off, #216 — off, every Int takes the two rows below) | no candidate set: the **exact argmin** (#208), `LinearJumpScorer::int_argmin`, a port of OR-Tools' `ComputeLinearJump`. The weighted violation over a linear column is convex piecewise-linear, so it scores `x ± 1` and searches that side's ends plus every kink's floor and ceil (`SlopeBreakpoints`) by `RangeConvexMinimum`; O(\|G_v\| log \|G_v\|). Two differences from OR-Tools: a non-improving column returns `{x, 0}` ("no move"), and masked rows' kinks are omitted, so a plateau tie can land elsewhere. It declines (the rows below apply) for a window of width 1, an `x` outside the window or non-integral, a bound past ±2^53, or a residual that could reach the `kInfPenalty` clamp. **Known regression** on #208's repro (`x + y == T`, `x − y ≤ 1`, `y − x ≤ 1` over `[0, 1e7]`): exact jumps land on the kinks and the pair oscillates about `T/2` until the GLS weights break it, where the grid below solves it in tens of iterations |
 | Int (window width <= 256), any other column (every Int column by default) | every integer in the sampling window — `domain_window(var)`, which is `[lb, ub]` verbatim whenever both bounds are finite and the width does not overflow (a domain as wide as `[-DBL_MAX, DBL_MAX]` is narrowed to the clamp). Taken only when both endpoints are within ±2^53; past that `v += 1.0` does not advance and the enumeration would not terminate |
 | Int (otherwise) | window endpoints, neighbours `x±1` (clamped to the *declared* bounds, so a value that has drifted outside the window keeps a local move), and a 32-point rounded grid across the window |
 | Float | Newton step toward the root of each violated constraint containing `v` (`x - residual/grad`, gradient from a forward up-cone pass, reverse-mode AD past its budget (#249); up to 4), then midpoint and endpoints. Once the search has stagnated, a Float at a *stationary* point of every violated constraint containing it additionally gets a two-sided local probe at `x ± {1e-6, 1e-2}·(|x|+1)` — see below |
-| Int (otherwise) and Float, on a model with an `Element`/`Ceil`/`Floor`/`Round` node, for a variable `close()` marked as reaching one | additionally, the **breakpoints** (#186) of every such node: the argument values where `Ceil`/`Floor` change (the integers) and `Round` changes (the half-integers), and the index values of an `Element`, mapped back to `v`. The map is the argument's derivative in `v` at the current point, carried forward once per call through every op with a `local_derivative` (`carries_slope`; the structural ops, user code and the breakpoint ops stop it) over the part of the cone `close()` marked (`breakpoint_flags`), a Sum naming a child twice counting it twice. It is exact for a single-variable jump whenever the argument is a sum of `c·v` terms with `c` fixed; when the argument is itself `N / D` with `v` in `D` only (the epic's `ceil(cycle / headway)`) the exact reciprocal is used instead. **Limitation:** any other nonlinearity is linearised at the current point, so its candidates can miss the edge they aim at, and a path through a stopping op contributes nothing (`ceil(v + floor(v))` sees slope 1); candidates are still scored exactly. An Int gets the floor of the lower and the ceil of the upper of the two values of `v` landing just either side of each edge (plus the edge itself when it maps to an integer); a Float gets those two values stepped by `nextafter` until strictly on their own side, plus the edge itself when the map puts it in the plateau the edge belongs to; an `Element` index gets `k` itself (Int) or the middle of index `k`'s plateau intersected with the range `u` covers (Float). A `Ceil`/`Floor`/`Round` offers every breakpoint while there are at most 32; an `Element` every index while there are no more than its capped path would offer anyway. Above that: the breakpoints either side of the current argument, for an `Element` the representatives of the line the other index currently selects (up to 32 distinct values at evenly spaced ranks, min and max always included), and a grid whose 31 points are ONE budget shared by every capped argument the walk reaches. That cap is **a deviation** from #186's "all index values", for cost (measured, see `kExhaustiveBreakpoints`). Candidates are deduplicated across nodes and against the Int/Float path's finite ones. After the Float's Newton candidates, so those still win a tie. Every other variable, and every model without such a node, gets exactly the candidates above |
+| Int (otherwise) and Float, on a model with an `Element`/`Ceil`/`Floor`/`Round` node, for a variable `close()` marked as reaching one | additionally, the **breakpoints** (#186) of every such node — where `Ceil`/`Floor` change (the integers), where `Round` changes (the half-integers), and an `Element`'s index values — mapped back to `v` through the argument's slope at the current point (carried forward over the cone part `close()` marked, `breakpoint_flags`, through every op that `carries_slope`), or the exact reciprocal when the argument is `N / D` with `v` in `D` only. **Limitation:** any other nonlinearity is linearised, so a candidate can miss its edge, and a path through a stopping op (structural, user code, a breakpoint op) contributes nothing; candidates are still scored exactly. Each edge yields the values of `v` just either side of it (rounded outward for an Int, `nextafter`-stepped for a Float), plus the edge when it lies in its own plateau. Up to 32 breakpoints per node are offered in full; above that, the ones either side of the current argument, for an `Element` up to 32 representatives of the currently selected line, and a 31-point grid shared by every capped argument — **a deviation** from #186's "all index values", for cost (`kExhaustiveBreakpoints`). Candidates are deduplicated, and come after the Float's Newton candidates, so those still win a tie. Every other variable gets exactly the candidates above |
 
 Each candidate is scored with one `weighted_violation_delta` probe — or, when
 every weighted row of `G_v` is a comparison (`Leq`/`Geq`/`Lt`/`Gt`/`Eq`) whose
@@ -1045,12 +913,7 @@ residual is not affine), in closed form by `LinearJumpScorer`
 (`include/cbls/linear_jump.h`): each such row has a constant slope
 `r = ∂(p − q)/∂v`, cached lazily per row from `compute_partials_sparse` into a
 table laid out parallel to `G_v` (a row's build writes each of its variables'
-slots, so `prepare` reads the k-th row's slope at a fixed position -- #176
-replaced a per-row binary search that was up to 49% of the runner's CPU on
-dense rows; GLS iterations in 20s at one thread went neos-860300 15,340 -> 24,019
-(1.57x), swath3 574,556 -> 723,186 (1.26x), cbs-cta 686,607 -> 818,264 (1.19x),
-means of two runs per arm, `896b683` -> `38a8543` as recorded in each run's
-`commit_sha`), and the candidate costs `Σ_c w_c·(clamped(cmp(p + rΔ, q)) − clamped(old))` — O(|G_v|)
+slots, so `prepare` reads the k-th row's slope at a fixed position, #176), and the candidate costs `Σ_c w_c·(clamped(cmp(p + rΔ, q)) − clamped(old))` — O(|G_v|)
 instead of two `delta_evaluate`s over every row in the column. Same candidates,
 same first-seen rule (except an Int over such rows with `fj_exact_int_jump` on,
 which takes the exact argmin instead -- the same minimum score, not always the
@@ -1059,13 +922,8 @@ the probe to rounding, not to the bit -- so the chosen jump is guaranteed the
 probe's only on integral data, and an ulp can flip a near-tie on fractional
 data -- and a committed jump still goes
 through the DAG walk (`commit_scalar_move`). Any other weighted row, or a non-finite computed side,
-takes the probe. On MIPfeas at a 20s budget, one thread, this raised FJ
-iterations 7–58× (gen-ip002 4,803 → 278,793; neos-860300 1,207 → 8,997;
-n2seq36q 19,504 → 256,589; mas76 142,065 → 1,426,857; binkar10_1 83,917 →
-924,596; swath3 12,152 → 307,857), measured serially, Release, on a 12-core box
-with no other job (load 1.8–4.7, the tail of the preceding build), at `53e0587`
-(cone-restricted AD, the parent) against `cf9da09`; the per-worker memory it
-costs is recorded under the portfolio section below. The Float Newton step reads the
+takes the probe. The scorer's per-worker memory is recorded under the
+portfolio section below. The Float Newton step reads the
 same cache for a row's partial where it is bit-identical to `compute_partial`
 (Leq/Geq/Lt/Gt always; Eq only against a literal side). Newton
 candidates are considered first so that, on a tie in violation delta (a feasible
@@ -1074,97 +932,41 @@ constraint `obj <= bound`, when that constraint is violated its Newton candidate
 pulls the objective *down* — this is how a hook-less continuous model still
 descends the objective.
 
-The probe is exactly antisymmetric and `LinearJumpScorer` is not. On a plateau that is
-balanced over fractional coefficients, a move and its reverse can both score
-+1 ulp, and FJ can bounce between the two. #178 measured this at `c09a8ca`, and
-the ping-pong does occur. On MINLPLib `alkylation`, tiny-score A→B→A reversals
-took up to ~5% of FJ iterations. P, the share of FJ batches that ended flat with
-no bump, rose from 0 to 0.012, under the 0.05 bar. There was no feasibility
-loss and no measurable objective loss, on MINLPLib or on an 8-instance MIPfeas
-extension. uc-chped could not reach it at `c09a8ca`, because its rows are bare
-`Sum` bodies and the eligibility rule then accepted only comparison nodes. #190
-made affine bare bodies eligible and re-ran the counters on all 8 uc-chped files
-at `9292371`: absent. The batch API still never takes the closed form there,
-since every uc-chped column also reads the weighted nonlinear objective row;
-only the `run()` path (warm start, LNS repair) engages.
-
-The batch API bounds such a cycle, but `gls()`/`run()` has no progress exit.
-The LNS repair and Python's `fj_nl_initialize` end a cycle only at their
-iteration or time caps. A default `FeasibilityJump::run()` has neither cap, so
-nothing ends it. See
+The probe is exactly antisymmetric and `LinearJumpScorer` is not: on a plateau
+balanced over fractional coefficients a move and its reverse can both score
++1 ulp, and FJ can bounce between them (#178 found it on MINLPLib `alkylation`
+with no feasibility or objective loss). The batch API bounds such a cycle, but
+`gls()`/`run()` has no progress exit: the LNS repair and Python's
+`fj_nl_initialize` end one only at their iteration or time caps, and a default
+`FeasibilityJump::run()` has neither. Measurements:
 `docs/benchmarks/linear-jump-pingpong.md`.
 
-**The stagnation-gated escape probe (#107).** Every one of the candidates above
-is either a Newton step, whose length is set by the target and which vanishes
-with the gradient, or a constant derived from the box. So a Float sitting at a
-point where every violated constraint containing it is stationary had *no
-candidate that could move it at all* — an empty neighbourhood — and froze there
-for the rest of the run. `Int` has no analogous *stationary-point* problem:
-`int_jump_candidates` always offers `x ± 1`. Float was the one type with no local
-move. `Int` did have its own freeze, from a different cause — `int_jump_candidates`
-truncated the raw bounds with `std::lround`, in `long`, and glibc maps both
-infinities to `LONG_MIN`. On `(-inf, +inf)` and `[lb, +inf)` that collapsed the
-range and produced no candidates at all, `x ± 1` included. On `(-inf, ub]` it did
-not collapse: with `ub >= 0` the width overflowed `long` and wrapped negative, so
-the exhaustive arm ran up from `LONG_MIN` and wedged the solve, while with
-`ub < 0` the width stayed a valid positive `long` and the grid arm returned
-instantly with jumps near -9.2e18. Fixed by reading the bounds as doubles through
-`domain_window` (**#114**); see the guard section below.
-
-The probe supplies that local move, two-sided because at a saddle the descent
-direction is precisely what a zero gradient cannot tell you. It is **off by
+**The stagnation-gated escape probe (#107).** Every candidate above is either
+a Newton step, which vanishes with the gradient, or a constant derived from the
+box, so a Float at a point where every violated constraint containing it is
+stationary has no candidate that moves it. (An Int always has `x ± 1`; its
+bounds are read as doubles through `domain_window`, so infinite bounds still
+give candidates, #114.) The probe supplies a two-sided local move, since at a
+saddle a zero gradient cannot tell the descent direction. It is **off by
 default and armed only once the search is stuck — after `perturbation_period`
-batches without improvement, or, when the caller set a wall clock, after a
-quarter of the budget with no new best (#117), whichever comes first** — then
-disarmed on the next new best. That gating is load-bearing rather than a
-throughput optimisation: "stationary and nothing improving" is the *steady
-state* of local search, and an always-on probe was measured ~9x worse on
-`shiporig` across every seed, because its drip of numerically tiny improvements
-kept the search from ever registering stagnation, so diversification never
-fired. The disarm is what separates this from that regime: every improvement
-clears the flag, so an armed probe cannot drip indefinitely.
+batches without improvement, or, when the caller set a wall clock, after
+`kEscapeArmFraction` (a quarter) of the budget with no new best (#117),
+whichever comes first** — and disarmed on the next new best. The gate is
+load-bearing: "stationary and nothing improving" is the steady state of local
+search, and an always-on probe with no disarm was ~9x worse on `shiporig`,
+because its drip of tiny improvements kept stagnation, and so diversification,
+from ever registering.
 
-The wall-clock condition exists because `perturbation_period` counts *batches*,
-and a batch is `batch_iterations` GLS iterations — microseconds on a small model,
-seconds on an expensive one. Measured on MINLPLib `elec25` at a 60s budget, a
-batch costs ~1.2s, so the run completed 52 batches against a threshold of 100 and
-the probe was never armed at all: the gating above was dead code on exactly the
-models it was meant to rescue, and 12 of the 50 MINLPLib instances complete fewer
-than 100 batches at a 10s budget. *This condition* reads the clock **only** when
-the caller set a wall-clock budget, so a run bounded by `max_iterations` alone
-still lets no clock read influence the search trajectory and stays
-bit-reproducible.
-
-The clock route carries no diversification kick, unlike the stagnation route,
-and an earlier revision of #117 gated it on `budget * batches / elapsed` falling
-below `perturbation_period` for fear of starving diversification. **That gate was
-removed.** The drip it defended against cannot run away: the improvement that
-resets `stagnation` also disarms the probe, so re-arming costs another
-`kEscapeArmFraction` of the budget and the clock route can arm at most
-`1/kEscapeArmFraction` times in a run, each deferring at most one kick. #107's 9x
-regression came from an always-on probe with *no* disarm. Measured on a
-probe-sensitive model of Float double-wells, the gate cost objective quality
-(-2.00 gated against -3.00 ungated at a threshold the batch route could not
-reach) while preventing no starvation, and its predicate compared projected
-*total* batches against a threshold the batch route only reaches after that many
-*consecutive non-improving* ones. The tidier alternative — have the clock route
-set `stagnation = perturbation_period` so the existing site arms and kicks
-together — was considered and deferred: it changes the kick cadence, a tuned
-parameter that #117 scopes out as wanting its own measurement. For the same
-reason diversification itself stays on the batch counter.
-
-Two properties to keep in mind when reading numbers off this. Trajectories become
-*budget-dependent*: a 10s run arms at 2.5s and a 600s run at 150s, so anytime
-traces are no longer comparable across budgets the way they were. And
-`last_improvement` advances only on a real-feasibility improvement, so a run still
-hunting for its first feasible point has by definition never improved — the probe
-arms at 25% of budget and stays armed for the rest of the pre-feasible phase,
-where it makes batches more expensive. #117's "52 batches at 60s" therefore
-describes the *unpatched* engine and cannot be carried over. The measurements
-quoted in that issue (10 of 12 batch-starved instances bit-identical, `eq6_1`
-812.195 → 746.221, `maxmin` 0.11% worse, `shiporig` 2 of 3 seeds bit-identical)
-describe this ungated arming condition, but were taken before the merge of #115
-and #116 and have not been reproduced at this commit.
+The wall-clock route exists because `perturbation_period` counts batches, and a
+batch can take seconds on an expensive model, so the count may never reach the
+threshold. It reads the clock only when the caller set a wall-clock budget, so
+a run bounded by `max_iterations` alone stays bit-reproducible. It arms without
+a diversification kick, at most `1/kEscapeArmFraction` times per run, since each
+improvement disarms it; diversification itself stays on the batch counter.
+**Caveat:** with a wall clock, trajectories are budget-dependent (a 10s run arms
+at 2.5s, a 600s run at 150s), and a run still hunting its first feasible point
+has never improved, so the probe stays armed through the whole pre-feasible
+phase, where it makes batches more expensive.
 
 A single call is *not* a converged 1-D minimiser; the GLS loop iterates these
 cheap jumps. The continuous heavy lifting is left to the
@@ -1191,7 +993,7 @@ iteration, whichever is larger) — see
 [bound 1 of the wall-clock budget](#wall-clock-budget).
 
 `apply_jump` samples up to `sample_size` **distinct** variables from the scan
-set `Q` (best-of-N: `sample_size_general = 5` general (3 until #211),
+set `Q` (best-of-N: `sample_size_general = 5` general,
 `sample_size_linear = 5` linear phase), refreshes any stale `JumpTable` entries via `compute_var_jump`,
 removes non-improving vars from `Q` permanently, and commits the best improving
 jump via `update_var`. A removed var does not count toward `sample_size`, and
@@ -1204,19 +1006,6 @@ and over-bumped their weights (#206). Novelty Jump's `select_novelty_var`
 follows the same rule: only vars passing the filter F count toward its 3, and,
 as in OR-Tools, a var that fails F or is on the move stack leaves `Q'` until a
 move or undo on one of its rows re-queues it.
-
-Measured effect on MIPfeas (#206), single seed (42), so read the objectives as
-anecdote: 60s, one thread, CBLS at `548f57d` (measured on that patch before its rebase onto #201
-and #205) against `1304c43`, serial, 1-minute
-load 1.46-1.49 at each start, on an AMD Ryzen 5 5600H (6 cores, 12 threads).
-Feasibility: the neos-662469 / neos-860300 / cbs-cta trio went 0/3 -> 3/3
-(CP-SAT's `num_violation_ls` worker: 3/3); the 11-instance smoke roster stayed
-8/11, the same 8 as CP-SAT's. Objectives on the 8 feasible smoke instances: better on 4
-(gen-ip054, gen-ip002, mas76, binkar10_1), worse on 3 (markshare2 67 -> 72, pk1
-23 -> 28, mad 0.136 -> 0.190), equal on neos5. GLS iterations in the budget fell
-on every instance (e.g. mad 4.40M -> 0.71M), because a call now scans until it
-holds N improving vars or Q is empty. The first version of this change,
-which kept F-failing vars in `Q'`, was worse on 6 of the 8 at the same seed.
 
 `update_var` writes `X[v]`, delta-evaluates, refreshes the violated set for
 `v`'s constraints, invalidates neighbour jumps, and replenishes `Q` with vars now participating in active violated constraints.
@@ -1238,27 +1027,9 @@ since a jump can turn it NaN. The skip is exact for the jump table up to the
 rounding the closed-form scorer already accepts; what changes is `Q`,
 which no longer re-admits unchanged objective columns after every move, so
 trajectories on models with an objective move. The bump's re-queue needs no
-skip: it visits only violated rows, and an inert row never is. Measured at
-`713bbf2` against `8905532` (MIPfeas, 20s, seed 42, serial, load 1.46-1.49):
-binkar10_1 795k -> 876k GLS iterations with compound moves (1.10x), 1.85M ->
-1.83M without; neos-662469 6.9k -> 10.4k (1.50x), 129k -> 131k without. Those
-compound-on ratios are single-seed and trajectory-confounded, since `Q` changes:
-a counting build at `05d872d` with compound moves on (before #209 reshaped
-Novelty into batches, so these shares no longer describe Novelty) saw the walk skipped on 0.12% of
-binkar10_1's objective-row visits (none in Novelty), so its 1.10x is the moved
-trajectory, not the skip; on neos-662469 it skipped 20% of `update_var`'s and
-13% of Novelty's. Far less than the skip-always probes quoted in the issue,
-because both instances are feasible within 0.5s and the row is then mostly
-tight; the counts and regimes are in the comment above `objective_row_inert`.
-Where no feasible point is found and the bound stays `+inf`, the skip fires on
-every move: on the 11-instance smoke roster at 60s (same seed, `40e04c8`
-against `8905532`, serial, load 1.47-1.49) enlight_hard went 2.43M -> 7.45M
-iterations, atlanta-ip 198k -> 919k and neos-5114902-kasavu 15.8k -> 28.8k,
-still without a solution; the eight feasible instances changed by under 2%.
-Feasibility stayed 8/11, the same 8. Both measured commits predate the
-finite-objective and in-box guards (`05d872d`); on these MIP models the
-objective is finite and every column stays in its box, so the guards never
-change the predicate there and the trajectories are the same.
+skip: it visits only violated rows, and an inert row never is. It pays most
+where no feasible point is found and the bound stays `+inf`; the counts and
+regimes are in the comment above `objective_row_inert` and in #210.
 
 ### Two-Phase Linear-First (construction only)
 
@@ -1266,8 +1037,7 @@ change the predicate there and the trajectories are the same.
 *linear submodel* first: nonlinear constraint weights are masked to `0`, GLS
 satisfies the affine constraints, then the general phase continues from the
 weights the linear phase learned, with the masked rows unmasked at `1`
-(ViolationLS Algorithm 6, lines 18-19, passes one W to both GLS calls; until
-#211 every weight was refilled to `1`). `compute_linear_constraints()` marks each constraint affine by a
+(ViolationLS Algorithm 6, lines 18-19, passes one W to both GLS calls). `compute_linear_constraints()` marks each constraint affine by a
 single topo pass (Const/Neg/Sum affine in affine children; Prod/Div affine with
 a constant factor/divisor; comparisons affine when both sides are). This is the
 default for GFJ-as-solver. As a warm-start (LNS repair, SA-style seeding) the
@@ -1298,22 +1068,16 @@ The ViolationLS outer loop owns the iteration clock and calls:
   log-uniform offset within 20% of that side — so a binary flips ~1% where the
   default flips 5%, and a column under a 1e7 inf-clamp moves near where it was
   instead of anywhere in the box. The List/Set half is unchanged. That is
-  OR-Tools' no-restart path (`PerturbateCurrentSolution`); its restart states
-  redraw near zero or the objective bound, and below 16 workers on one state
-  set it runs no no-restart state, so the mipfeas CP-SAT arm in its fj+ls mode
-  never takes it (#234); at its defaults (#87, #284) it picks its own worker count.
+  OR-Tools' no-restart path (`PerturbateCurrentSolution`).
 
 **The objective before the first feasible point (#218), on by default.**
 Without help FJ ignores the objective until the first feasible point: the
 folded row's bound is +inf, so the row is inert, and the start is the
 closest-to-zero value. `GFJConfig::objective_tie_break` (`SearchConfig::fj_objective_tie_break`,
-default **on** since #226's smoke A/B, which put the gap at the first feasible
-point at 0.75x on MIPfeas; `GFJConfig`'s own default stays off) carries over
+default **on**, #226; `GFJConfig`'s own default stays off) carries over
 what OR-Tools does instead. It needs an affine
 objective, whose coefficients FJ reads once at construction by one reverse
-sweep; on any other objective it does nothing. (#218's second flag, an
-objective-favourable start, was neutral in #226's smoke A/B and was removed;
-so were #221's quadratic roots and #222's equality-balance moves.)
+sweep; on any other objective it does nothing.
 
 - `objective_tie_break`: in `compute_var_jump` an exact tie in the weighted
   violation delta goes to the candidate lowering the objective most, and a jump
