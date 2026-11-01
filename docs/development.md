@@ -64,12 +64,12 @@ fence fails on `CBLS_REQUIRE_BINDINGS=1`.
 and never symlinks another checkout's:
 
 ```bash
-uv sync --extra dev --extra benchmarks
+CMAKE_BUILD_PARALLEL_LEVEL=4 xk lock -- uv sync --extra dev --extra benchmarks
 ```
 
 `--extra benchmarks` is what the ```test fence requires; leave it out only for a
-clone that runs no gate. This builds `cbls` into `.venv` once (under the machine
-lock, like any C++ build) and writes an untracked `uv.lock`, which `.gitignore`
+clone that runs no gate. This builds `cbls` into `.venv` once, a C++ build, hence
+the lock and the job cap, and writes an untracked `uv.lock`, which `.gitignore`
 ignores. No symlink to another clone's venv: it points outside the session's
 working directory, so every command touching `.venv` raises a permission prompt,
 and it forces one set of extras on every clone that shares it.

@@ -33,10 +33,10 @@ endif()
 # a *fresh* gated build (`cmake -B build ...` per CLAUDE.md, passing neither
 # flag) is untouched by them. Both are cache entries, though, so configuring
 # `build/` with one once keeps it there through every later flag-less
-# `cmake -B build`: pre-push drops it (`rm -rf build`), but pre-commit gates on
-# whatever `build/` already is. Each therefore wants its OWN build directory --
-# `build-asan/`, `build-profile/` -- and never `build/`, which the git hooks
-# rebuild and gate on. `.gitignore` covers `build*/`. Recipes: docs/profiling.md.
+# `cmake -B build`. pre-push builds in its own worktree, so it is unaffected,
+# but every by-hand `ctest` and clang-tidy run reads `build/`. Each therefore
+# wants its OWN build directory -- `build-asan/`, `build-profile/` -- and never
+# `build/`. `.gitignore` covers `build*/`. Recipes: docs/profiling.md.
 #
 # Declared here rather than beside the CBLS_BUILD_* options at the bottom of
 # this file because add_compile_options()/add_link_options() reach only targets

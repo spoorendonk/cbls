@@ -67,7 +67,7 @@
 // Registration: hand-registered in tests/CMakeLists.txt with LABELS "timing;slow"
 // and an explicit TIMEOUT. The `timing` label makes them greppable as a class
 // (`ctest -L timing`); the `slow` label keeps their three wall-clock seconds out
-// of the `ctest -LE slow` pre-commit set. pre-push and CI run everything.
+// of the `ctest -LE slow` fast loop. pre-push runs everything.
 
 #include "benchmarks/uc-chped/data.h"
 #include "benchmarks/uc-chped/uc_model.h"
@@ -135,8 +135,8 @@ constexpr double kBudgetSeconds = 1.0;
 // nothing at the failure site to say why. Debug is a documented supported
 // override (README's build section), so these skip rather than fail there:
 // ctest reports "Skipped" via the SKIP_RETURN_CODE 4 already set on all three in
-// tests/CMakeLists.txt. The gates are unaffected either way — pre-commit runs
-// `-LE slow`, which excludes these, and pre-push builds Release.
+// tests/CMakeLists.txt. The gate is unaffected either way: pre-push builds
+// Release.
 //
 // A regression that only shows up unoptimized is not something these can catch,
 // and that is deliberate: the published configuration is the one worth a floor.
