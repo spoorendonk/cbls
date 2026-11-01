@@ -1,0 +1,223 @@
+# xk tune study: UC-CHPED (#266, plan on #261). Run on the workstation's local
+# queue only: XK_SERVER=local XK_PROJECT=cbls-tune (see README.md here).
+#
+# Sets: the constructed instances only (#257); Pedroso's ten are report-only,
+# never tuned or confirmed on. One run is one (file, horizon). The screen is
+# ucp100 and ucp200 at 1/3/6/12/24 periods (10 rows) at 10 s, the
+# intermediate set the same 10 rows at 30 s, and confirm the four long
+# horizons (ucp100/ucp200 at 48 and 168 periods) at 60 s, 2 seeds. The rows
+# have no bound, so the cost is the verified objective's percent change from
+# the reference's on the same row.
+
+[study]
+name = "cbls-uc-chped"
+version = 1
+repo = "https://github.com/spoorendonk/cbls.git"
+rev = "main"
+cores = "0-15"
+threads = 16
+exclusive = true
+trials = 24
+sampler = "tpe"
+sampler_seed = 0
+p_threshold = 0.1
+correction = "pocock"
+prune_against = "reference"
+
+# The reference is the published protocol, compound moves off; this is the
+# engine's default (on), the arm that protocol was chosen against.
+[[study.enqueue]]
+params = { compound = true }
+
+[build]
+command = "cmake -S {src} -B {build} -DCBLS_BUILD_TESTS=OFF -DCBLS_BUILD_EXAMPLES=OFF -DCBLS_INSTALL_GIT_HOOKS=OFF && cmake --build {build} -j4 --target cbls_uc_chped"
+
+[run]
+command = "python3 {src}/benchmarks/common/tune_trial.py uc --build-dir {build} --out-dir {rundir} --instance {instance} --periods {periods} --seed {seed} --threads {threads} --budget {secs} -- {config}"
+timeout = 300
+
+# --no-objective-tie-break is left out: it does nothing on the sine term.
+[space]
+compound = { bool = true, render = false, default = false }
+compound_moves = { choice = ["--compound-moves"], when = "compound", default = "--compound-moves", format = "{value}" }
+novelty_prob = { float = [0.1, 0.9], when = "compound", default = 0.5, format = "--novelty-prob {value}" }
+unproductive_iters = { int = [50, 3000], log = true, default = 300, format = "--unproductive-iters {value}" }
+perturbation_period = { int = [10, 1000], log = true, default = 100, format = "--perturbation-period {value}" }
+lns = { bool = true, render = false, default = true }
+lns_interval = { int = [1, 20], log = true, when = "lns", default = 3, format = "--lns-interval {value}" }
+no_lns = { choice = ["--no-lns"], when = { lns = false }, default = "--no-lns", format = "{value}" }
+float_hook = { bool = true, render = false, default = true }
+no_float_hook = { choice = ["--no-float-hook"], when = { float_hook = false }, default = "--no-float-hook", format = "{value}" }
+near_value = { bool = true, render = false, default = false }
+perturb_near_value = { choice = ["--perturb-near-value"], when = "near_value", default = "--perturb-near-value", format = "{value}" }
+
+[cost]
+json = "cost"
+file = "{rundir}/cost.json"
+relative = "reference"
+failed = 1000.0  # percent: worse than any verified run
+
+[elites]
+top = 3
+keep = 2
+alpha = 0.05
+
+[confirm]
+rule = "wilcoxon"
+alpha = 0.05
+
+[fidelity]
+set = "intermediate"
+factor = "none"
+min_rho = 0.7
+configs = 4
+
+# Screen: ucp100 and ucp200 at 1/3/6/12/24 periods, 10 s.
+
+[[instances]]
+id = "ucp100-1p"
+set = "screen"
+seeds = [1]
+params = { instance = "ucp100", periods = 1, secs = 10 }
+
+[[instances]]
+id = "ucp100-3p"
+set = "screen"
+seeds = [1]
+params = { instance = "ucp100", periods = 3, secs = 10 }
+
+[[instances]]
+id = "ucp100-6p"
+set = "screen"
+seeds = [1]
+params = { instance = "ucp100", periods = 6, secs = 10 }
+
+[[instances]]
+id = "ucp100-12p"
+set = "screen"
+seeds = [1]
+params = { instance = "ucp100", periods = 12, secs = 10 }
+
+[[instances]]
+id = "ucp100-24p"
+set = "screen"
+seeds = [1]
+params = { instance = "ucp100", periods = 24, secs = 10 }
+
+[[instances]]
+id = "ucp200-1p"
+set = "screen"
+seeds = [1]
+params = { instance = "ucp200", periods = 1, secs = 10 }
+
+[[instances]]
+id = "ucp200-3p"
+set = "screen"
+seeds = [1]
+params = { instance = "ucp200", periods = 3, secs = 10 }
+
+[[instances]]
+id = "ucp200-6p"
+set = "screen"
+seeds = [1]
+params = { instance = "ucp200", periods = 6, secs = 10 }
+
+[[instances]]
+id = "ucp200-12p"
+set = "screen"
+seeds = [1]
+params = { instance = "ucp200", periods = 12, secs = 10 }
+
+[[instances]]
+id = "ucp200-24p"
+set = "screen"
+seeds = [1]
+params = { instance = "ucp200", periods = 24, secs = 10 }
+
+# Intermediate: the same 10 rows at 30 s.
+
+[[instances]]
+id = "ucp100-1p@30s"
+set = "intermediate"
+seeds = [1]
+params = { instance = "ucp100", periods = 1, secs = 30 }
+
+[[instances]]
+id = "ucp100-3p@30s"
+set = "intermediate"
+seeds = [1]
+params = { instance = "ucp100", periods = 3, secs = 30 }
+
+[[instances]]
+id = "ucp100-6p@30s"
+set = "intermediate"
+seeds = [1]
+params = { instance = "ucp100", periods = 6, secs = 30 }
+
+[[instances]]
+id = "ucp100-12p@30s"
+set = "intermediate"
+seeds = [1]
+params = { instance = "ucp100", periods = 12, secs = 30 }
+
+[[instances]]
+id = "ucp100-24p@30s"
+set = "intermediate"
+seeds = [1]
+params = { instance = "ucp100", periods = 24, secs = 30 }
+
+[[instances]]
+id = "ucp200-1p@30s"
+set = "intermediate"
+seeds = [1]
+params = { instance = "ucp200", periods = 1, secs = 30 }
+
+[[instances]]
+id = "ucp200-3p@30s"
+set = "intermediate"
+seeds = [1]
+params = { instance = "ucp200", periods = 3, secs = 30 }
+
+[[instances]]
+id = "ucp200-6p@30s"
+set = "intermediate"
+seeds = [1]
+params = { instance = "ucp200", periods = 6, secs = 30 }
+
+[[instances]]
+id = "ucp200-12p@30s"
+set = "intermediate"
+seeds = [1]
+params = { instance = "ucp200", periods = 12, secs = 30 }
+
+[[instances]]
+id = "ucp200-24p@30s"
+set = "intermediate"
+seeds = [1]
+params = { instance = "ucp200", periods = 24, secs = 30 }
+
+# Confirm: the four long horizons at 60 s, 2 seeds.
+
+[[instances]]
+id = "ucp100-48p"
+set = "confirm"
+seeds = [1, 2]
+params = { instance = "ucp100-48p", periods = 48, secs = 60 }
+
+[[instances]]
+id = "ucp100-168p"
+set = "confirm"
+seeds = [1, 2]
+params = { instance = "ucp100-168p", periods = 168, secs = 60 }
+
+[[instances]]
+id = "ucp200-48p"
+set = "confirm"
+seeds = [1, 2]
+params = { instance = "ucp200-48p", periods = 48, secs = 60 }
+
+[[instances]]
+id = "ucp200-168p"
+set = "confirm"
+seeds = [1, 2]
+params = { instance = "ucp200-168p", periods = 168, secs = 60 }

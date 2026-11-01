@@ -10,6 +10,7 @@ reference configuration, the instance sets and the cost. Each trial is one
 | `cvrp.study.toml` | #263 | `gap_percent` to the pinned BKS |
 | `mipfeas.study.toml` | #264 | Primal Integral to the `.solu` optimum (`roster.csv`, `tune_confirm.csv`) |
 | `minlplib.study.toml` | #265 | Primal Integral to `primal_bks` (`heldout/bounds.csv`) |
+| `uc-chped.study.toml` | #266 | verified objective, percent change from the reference on the same row (`relative = "reference"`) |
 
 The plan they follow (shape, params, splits, core-hours) is on #261. Results
 go on each class's issue; a setting that is confirmed lands as an engine or
