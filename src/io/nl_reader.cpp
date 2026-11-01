@@ -619,6 +619,43 @@ int32_t checked_discrete_count(const NlProblem& prob, const NlHeaderCounts& h) {
     return static_cast<int32_t>(discrete);
 }
 
+// Refuse block counts that no valid layout produces (#291). The range check
+// above bounds each count alone; these are the relations Gay's variable
+// ordering (see `mark_discrete_vars`) implies between them. Without them a
+// header such as nlvc=2, nlvb=3, nlvbi=1 still places exactly the declared
+// number of integer columns, so the placement self-check passes and a guessed
+// column becomes integer. Called after `checked_discrete_count`, so every
+// count is within [0, n_vars] and no sum or difference here overflows.
+void check_block_relations(const NlProblem& prob, const NlHeaderCounts& h) {
+    const auto refuse = [](const std::string& what) {
+        throw std::runtime_error("NL: malformed header: " + what +
+                                 " (inconsistent variable-block counts)");
+    };
+    const auto str = [](int64_t v) { return std::to_string(v); };
+    // Variables nonlinear in both are a subset of those nonlinear in constraints.
+    if (h.nlvb > h.nlvc) {
+        refuse("nlvb = " + str(h.nlvb) + " exceeds nlvc = " + str(h.nlvc));
+    }
+    // Each block's integer count fits in that block.
+    if (h.nlvbi > h.nlvb) {
+        refuse("nlvbi = " + str(h.nlvbi) + " exceeds nlvb = " + str(h.nlvb));
+    }
+    if (h.nlvci > h.nlvc - h.nlvb) {
+        refuse("nlvci = " + str(h.nlvci) + " exceeds nlvc - nlvb = " + str(h.nlvc - h.nlvb));
+    }
+    const int64_t obj_only = std::max<int64_t>(h.nlvo - h.nlvc, 0);
+    if (h.nlvoi > obj_only) {
+        refuse("nlvoi = " + str(h.nlvoi) + " exceeds max(nlvo - nlvc, 0) = " + str(obj_only));
+    }
+    // The nonlinear blocks span [0, max(nlvc, nlvo)); the linear discrete
+    // block is the last nbv + niv columns. They must not overlap.
+    const int64_t nonlinear = std::max(h.nlvc, h.nlvo);
+    if (nonlinear + h.nbv + h.niv > prob.n_vars) {
+        refuse("max(nlvc, nlvo) + nbv + niv = " + str(nonlinear + h.nbv + h.niv) + " exceeds " +
+               str(prob.n_vars) + " variables");
+    }
+}
+
 // The last `n_int` columns of [block_start, block_start + block_len) are integer.
 // The arguments are range-checked by `checked_discrete_count`, which keeps the
 // sums below from overflowing and the range inside [0, n_vars). The clip to
@@ -647,6 +684,7 @@ void mark_tail(NlProblem& prob, int64_t block_start, int64_t block_len, int64_t 
 // and the purely-linear discrete columns are the last nbv+niv of the file.
 void mark_discrete_vars(NlProblem& prob, const NlHeaderCounts& h) {
     prob.n_discrete_vars = checked_discrete_count(prob, h);  // refuses before any loop
+    check_block_relations(prob, h);
     prob.var_is_discrete.assign(static_cast<size_t>(prob.n_vars), 0);
     const int64_t cat1 = h.nlvb;                                 // nonlinear in both
     const int64_t cat2 = std::max<int64_t>(h.nlvc - h.nlvb, 0);  // nonlinear in constraints only
@@ -664,10 +702,10 @@ void mark_discrete_vars(NlProblem& prob, const NlHeaderCounts& h) {
     mark_tail(prob, 0, prob.n_vars, h.nbv + h.niv);
 
     // Self-check: the positions we just derived must account for exactly the
-    // count the header declares. A mismatch means the layout assumption above
-    // does not hold for this file (overlapping blocks, or a variable-order
-    // variant we don't model) — fail loudly rather than build a model whose
-    // integrality is quietly wrong.
+    // count the header declares. `check_block_relations` already refuses the
+    // headers known to break this (overlapping or overfull blocks); the check
+    // stays as a backstop for a layout assumption above that does not hold —
+    // fail loudly rather than build a model whose integrality is quietly wrong.
     int32_t marked = 0;
     for (uint8_t f : prob.var_is_discrete) {
         marked += f;

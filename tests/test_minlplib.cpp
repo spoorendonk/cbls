@@ -367,14 +367,54 @@ TEST_CASE("NL reader recovers discrete-variable count and positions", "[minlplib
 }
 
 TEST_CASE("NL reader rejects a header whose discrete counts don't fit the layout", "[minlplib]") {
-    // nlvbi=2 integer "nonlinear in both" variables, but nlvb=0 declares no such
-    // block. Placement can't account for the declared count, so the reader must
-    // fail loudly rather than build a model with silently wrong integrality.
-    std::string text = nl_header_disc(3, 0, 1, /*nlvc=*/0, /*nlvo=*/0, /*nlvb=*/0, 0, 0,
-                                      /*nlvbi=*/2, /*nlvci=*/1, /*nlvoi=*/0);
-    text += bounds_segment(3) + "O0 0\nn0\n";
-    REQUIRE_THROWS_WITH(parse_nl(text, "bad-layout"),
-                        Catch::Matchers::ContainsSubstring("variable ordering"));
+    // #291: each section's counts are within [0, n_vars] on their own (the
+    // #290 range check passes), but no valid variable ordering produces them.
+    // The reader refuses the header before placement rather than build a model
+    // with silently wrong integrality.
+    const auto refuses = [](const std::string& text, const std::string& relation) {
+        REQUIRE_THROWS_WITH(parse_nl(text, "bad-layout"),
+                            Catch::Matchers::ContainsSubstring("malformed header") &&
+                                Catch::Matchers::ContainsSubstring(relation));
+    };
+    const std::string tail4 = bounds_segment(4) + "O0 0\nn0\n";
+    SECTION("nonlinear-in-both block larger than the nonlinear-in-constraints one") {
+        // The issue's scenario: one integer is placed and one declared, so the
+        // placement self-check alone let column 2 become integer.
+        refuses(
+            nl_header_disc(4, 0, 1, /*nlvc=*/2, /*nlvo=*/0, /*nlvb=*/3, 0, 0, /*nlvbi=*/1, 0, 0) +
+                tail4,
+            "nlvb = 3 exceeds nlvc = 2");
+    }
+    SECTION("integers in an empty nonlinear-in-both block") {
+        std::string text = nl_header_disc(3, 0, 1, /*nlvc=*/0, /*nlvo=*/0, /*nlvb=*/0, 0, 0,
+                                          /*nlvbi=*/2, /*nlvci=*/1, /*nlvoi=*/0);
+        refuses(text + bounds_segment(3) + "O0 0\nn0\n", "nlvbi = 2 exceeds nlvb = 0");
+    }
+    SECTION("more constraint-only integers than constraint-only columns") {
+        refuses(nl_header_disc(4, 0, 1, /*nlvc=*/3, 0, /*nlvb=*/2, 0, 0, 0, /*nlvci=*/2, 0) + tail4,
+                "nlvci = 2 exceeds nlvc - nlvb = 1");
+    }
+    SECTION("objective-only integers when nlvo does not pass nlvc") {
+        refuses(nl_header_disc(4, 0, 1, /*nlvc=*/3, /*nlvo=*/2, /*nlvb=*/1, 0, 0, 0, 0,
+                               /*nlvoi=*/1) +
+                    tail4,
+                "nlvoi = 1 exceeds max(nlvo - nlvc, 0) = 0");
+    }
+    SECTION("linear discrete block overlapping the nonlinear blocks") {
+        refuses(nl_header_disc(4, 0, 1, /*nlvc=*/2, /*nlvo=*/3, 0, /*nbv=*/1, /*niv=*/1, 0, 0, 0) +
+                    tail4,
+                "max(nlvc, nlvo) + nbv + niv = 5 exceeds 4 variables");
+    }
+    SECTION("every block full to its bound still reads") {
+        // nlvb=1 (col 0), constraint-only col 1, objective-only col 2, linear
+        // binary col 3: each block's integer count at its maximum.
+        const NlProblem p = parse_nl(nl_header_disc(4, 0, 1, /*nlvc=*/2, /*nlvo=*/3, /*nlvb=*/1,
+                                                    /*nbv=*/1, 0, /*nlvbi=*/1, /*nlvci=*/1,
+                                                    /*nlvoi=*/1) +
+                                         tail4,
+                                     "full");
+        REQUIRE(p.var_is_discrete == std::vector<uint8_t>{1, 1, 1, 1});
+    }
 }
 
 TEST_CASE("nl_to_model builds Int variables for discrete columns", "[minlplib]") {
