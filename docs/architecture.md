@@ -116,8 +116,9 @@ A one-screen map of the pipeline, its files and defaults, the extension points, 
    Callers: `src/cli.cpp`, which loads the model once and passes it as the
    master; Python's `ParallelSearch.solve_master`, likewise; the `cvrp`,
    `uc-chped` and `minlplib` runners at `--threads > 1`, also through the master
-   overload (#262; at `--threads 1` they call `solve()` directly); and
-   `benchmarks/mipfeas/` at `--threads > 1`, through the factory overload over
+   overload (#262; at `--threads 1` they call `solve()` directly);
+   `cbls_minlplib_portfolio` (`benchmarks/minlplib/portfolio_ab.cpp`), the
+   master overload at every thread count; and `benchmarks/mipfeas/` at `--threads > 1`, through the factory overload over
    pre-built copies of its frozen master. That runner freezes the model and replicates it once per worker **before** the solve
    bracket opens, and reports the cost as `replicate_seconds`. That has to stay
    outside the bracket for two reasons: inside it the copies come out of the
@@ -3371,7 +3372,8 @@ the column count, and this roster's `supportcase19` has 2x kasavu's.
 Four things make it cooperative rather than N independent runs, and all four
 are reached through one parameter -- `cbls::solve()`'s trailing
 `SearchCoordination*`, which is null at every call site outside this class
-(every benchmark runner at its default `--threads 1`), leaving the single-threaded trajectory
+(`setcover` always, the other runners at `--threads 1`; the portfolio A/B
+harness `cbls_minlplib_portfolio` never takes this path), leaving the single-threaded trajectory
 bit-identical to what it was before the parameter existed:
 
 1. **Submit when found.** `record_best()` shares each new incumbent into the

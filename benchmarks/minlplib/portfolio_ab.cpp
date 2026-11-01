@@ -1,7 +1,8 @@
 // MINLPLib through the PORTFOLIO, for #179's shared-bound A/B.
 //
-// `cbls_minlplib` runs `cbls::solve()` single-threaded and has no --threads, so
-// it cannot run either arm of a portfolio comparison. This runs ONE instance
+// It predates `cbls_minlplib --threads` (#262) and stays as the A/B harness:
+// it toggles `share_objective_bound` per arm, which the runner does not. This
+// runs ONE instance
 // through `ParallelSearch` on the master model, built exactly as that runner
 // builds it (`read_nl` -> `nl_to_model`), with the runner's per-worker
 // `FloatIntensifyHook` and `LNS(0.3)` at `lns_interval = 3`, and prints one JSON
