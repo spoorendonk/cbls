@@ -574,17 +574,24 @@ TEST_CASE("NL reader refuses nonlinear or discrete counts outside the variable c
                      "hang"),
             Catch::Matchers::ContainsSubstring("malformed header"));
     }
-    SECTION("counts that would wrap the block-offset sums") {
-        // nlvc - nlvb wraps for nlvc = INT64_MAX, nlvb = -1; and a negative
-        // nlvo under a huge nlvc wraps cat3's subtraction.
-        const std::string max = "9223372036854775807";
-        const std::string line5 = GENERATE_COPY(" " + max + " 0 -1", " " + max + " -2 0");
-        REQUIRE_THROWS_WITH(parse_nl(with_lines(line5, " 0 0 0 0 0"), "wrap"),
-                            Catch::Matchers::ContainsSubstring("malformed header"));
-    }
-    SECTION("a negative count") {
-        REQUIRE_THROWS_WITH(parse_nl(with_lines(" 0 0 0", " 0 -1 0 0 0"), "negative"),
-                            Catch::Matchers::ContainsSubstring("malformed header"));
+    SECTION("each count out of range on its own") {
+        // One field at a time, the rest zero, so each field's check alone
+        // decides: a negative value (which would wrap nlvc - nlvb or cat3's
+        // subtraction), one past n_vars = 2, and a hang-sized one.
+        const std::array<const char*, 8> fields = {"nlvc", "nlvo",  "nlvb",  "nbv",
+                                                   "niv",  "nlvbi", "nlvci", "nlvoi"};
+        const auto k = static_cast<std::size_t>(GENERATE(0, 1, 2, 3, 4, 5, 6, 7));
+        const std::string value = GENERATE(as<std::string>{}, "-1", "3", "4000000000000000000");
+        std::array<std::string, 8> v;
+        v.fill("0");
+        v.at(k) = value;
+        const std::string line5 = " " + v[0] + " " + v[1] + " " + v[2];
+        const std::string line7 = " " + v[3] + " " + v[4] + " " + v[5] + " " + v[6] + " " + v[7];
+        CAPTURE(fields.at(k), value);
+        REQUIRE_THROWS_WITH(
+            parse_nl(with_lines(line5, line7), "range"),
+            Catch::Matchers::ContainsSubstring("malformed header") &&
+                Catch::Matchers::ContainsSubstring(std::string(fields.at(k)) + " = " + value));
     }
     SECTION("discrete counts each in range but summing past the variable count") {
         REQUIRE_THROWS_WITH(parse_nl(with_lines(" 0 0 0", " 2 2 0 0 0"), "sum"),

@@ -14,6 +14,7 @@
 #include "cbls/io_nl.h"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cmath>
 #include <cstdint>
@@ -25,6 +26,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace cbls {
@@ -593,9 +595,17 @@ NlHeaderCounts parse_header(Tokenizer& tok, NlProblem& prob) {
 // at most five of them fits int64 and the discrete total fits int32.
 int32_t checked_discrete_count(const NlProblem& prob, const NlHeaderCounts& h) {
     const int64_t n = prob.n_vars;
-    for (const int64_t c : {h.nlvc, h.nlvo, h.nlvb, h.nbv, h.niv, h.nlvbi, h.nlvci, h.nlvoi}) {
+    const std::array<std::pair<const char*, int64_t>, 8> counts = {{{"nlvc", h.nlvc},
+                                                                    {"nlvo", h.nlvo},
+                                                                    {"nlvb", h.nlvb},
+                                                                    {"nbv", h.nbv},
+                                                                    {"niv", h.niv},
+                                                                    {"nlvbi", h.nlvbi},
+                                                                    {"nlvci", h.nlvci},
+                                                                    {"nlvoi", h.nlvoi}}};
+    for (const auto& [field, c] : counts) {
         if (c < 0 || c > n) {
-            throw std::runtime_error("NL: malformed header: nonlinear or discrete variable count " +
+            throw std::runtime_error("NL: malformed header: " + std::string(field) + " = " +
                                      std::to_string(c) + " outside [0, " + std::to_string(n) +
                                      "] (the variable count)");
         }
@@ -610,9 +620,10 @@ int32_t checked_discrete_count(const NlProblem& prob, const NlHeaderCounts& h) {
 }
 
 // The last `n_int` columns of [block_start, block_start + block_len) are integer.
-// The range is clipped to [0, n_vars), so the loop is bounded by the column
-// count itself; the arguments are already range-checked, which keeps the sums
-// below from overflowing.
+// The arguments are range-checked by `checked_discrete_count`, which keeps the
+// sums below from overflowing and the range inside [0, n_vars). The clip to
+// [0, n_vars) is a backstop: it bounds the loop by the column count itself
+// should a caller ever skip that check.
 void mark_tail(NlProblem& prob, int64_t block_start, int64_t block_len, int64_t n_int) {
     const int64_t end = std::min<int64_t>(block_start + block_len, prob.n_vars);
     const int64_t begin = std::max({block_start + block_len - n_int, block_start, int64_t{0}});
