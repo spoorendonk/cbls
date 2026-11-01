@@ -1772,11 +1772,10 @@ iteration-budgeted runs stay bit-identical and deterministic. The reads that do
 remain never reach the search trajectory: `solve()` timestamps entry and exit
 for `time_seconds`; a callback's ~1s progress cadence reads once per batch;
 `SearchResult::time_to_first_feasible` costs one read, latched at the first
-feasible point; the `SearchCounters` timings and, in a portfolio's control arm,
-`bound_behind_global_seconds` are gated the same way.
-`SearchCounters::inner_solver_seconds` is gated on the RUN having a wall clock,
-not on the caller reading it (see [Main Loop](#main-loop)): such a run pays two
-reads per inner-solver call regardless. A `SearchConfig::tracer` is opt-in:
+feasible point. The `SearchCounters` timings (`inner_solver_seconds`;
+`bound_behind_global_seconds`, portfolio control arm only) read the clock only
+on a run with a wall clock, whether or not anyone reads them. A
+`SearchConfig::tracer` is opt-in:
 attached it costs one read per new best and two per inner-solver call.
 
 #### How the bounds are tested
@@ -1798,9 +1797,9 @@ asserts on wall-clock duration, quarantined behind the `[timing]` tag as its own
 labelled ctest entry with an explicit timeout; bound 2 has one such end-to-end
 test too, `timing_inner_solver_hook_deadline`.
 
-Every one of these tests also asserts `SearchResult::termination`, so a test
-whose model converged before the clock mattered cannot pass inertly. The
-work-counting tests fail in the *safe* direction: a slower machine does fewer
+Every `solve()`-level one also asserts `SearchResult::termination`, so a test
+whose model converged before the clock mattered cannot pass inertly. The FJ
+batch and `fj_nl_initialize` tests fail in the *safe* direction: a slower machine does fewer
 iterations and passes more comfortably. Why each test asserts what it does (the
 margins, why the large-structure kicks assert exactly one move, why only the
 small-structure test catches a countdown reloaded with a multiple of the stride)
