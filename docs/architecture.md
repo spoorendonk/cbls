@@ -73,101 +73,26 @@ acceptance rule.
 
 ## Source Map
 
-A one-screen map of the pipeline, its files and defaults, the extension points, build targets and dependencies (moved from CLAUDE.md, #242). The sections after it are the full account.
+A one-screen map of the pipeline, its files, the extension points, build targets and dependencies. The sections after it are the full account; defaults are in the [Parameters Table](#parameters-table).
 
 ### Core pipeline
 
-1. **Model building** (`include/cbls/model.h`, `include/cbls/expr.h`) — Declare typed variables (Bool, Int, Float, List, Set), build expressions via operator overloading, add constraints, set objective, call `close()` which topologically sorts the DAG.
-
-2. **Expression DAG** (`include/cbls/dag.h`, `src/dag.cpp`, `src/dag_ops.cpp`) — Variables use negative handles `-(id+1)`, nodes use non-negative `id`. 35 `NodeOp` operation types. Two evaluation modes:
-   - `full_evaluate`: evaluate all nodes in topo order (initialization)
-   - `delta_evaluate`: recompute only the nodes a move reaches. A one-variable walk on a frozen model reads that variable's cached topo-sorted cone (#271); other walks BFS-mark dirty nodes from the changed variables and sort them. On an FJ commit an incremental Sum (#188, a row read only by top-level comparisons) is moved by its changed terms instead of re-summed, so inside a batch its value may sit within a tracked drift bound of a re-sum; every verdict re-grounds first. A bit-exact delta-vs-full test must allow for that on fractional data. Details under **Evaluation Modes** below
-   - Reverse-mode AD via `compute_all_partials` for the continuous (Newton) jump-value engine
-
-3. **Search** (`src/search.cpp`) — ViolationLS batch outer loop (Davies et al. CPAIOR 2024, Algorithm 6). The objective is folded into the constraints as `obj <= bound`; each batch is a Feasibility Jump, Novelty Jump, or STRUCTURAL batch (selected by config probabilities). The objective bound is tightened on each new real-feasible solution; on stagnation the assignment is perturbed or diversified via LNS. CP-SAT's restart randomisation (`restart_randomization`) and Luby schedule (`luby_restart_unit`) are kept as arms, default **off**: neither separated from the stall trigger in #239's smoke A/B.
-
-4. **Feasibility Jump** (`src/feasibility_jump.cpp`) — Generalised Feasibility Jump: a `JumpTable` of cached per-variable best jumps (score = `-W·δ_G`), best-of-N scan-set sampling, GLS weight dynamics (bump violated + ρ-decay), and Novelty Jump compound moves (Algorithms 4–5). Float jump values come from Newton-toward-violated-root candidates; a row's partial comes from one forward pass over the variable's up-cone (`UpConePartials`, #249), or reverse-mode AD when that cone exceeds n / (log2 n + 1) nodes. A candidate over rows that are all linear (affine comparisons, or affine bare bodies `expr <= 0` since #190) is scored in closed form by `LinearJumpScorer` (`src/linear_jump.cpp`) rather than by a DAG probe; any other column falls back to `weighted_violation_delta`. With `SearchConfig::fj_exact_int_jump` on (default **off**, #216) an Int column over all-linear rows skips the candidates and takes the exact argmin, `LinearJumpScorer::int_argmin` (OR-Tools' `ComputeLinearJump`); it regresses #208's repro, and stays off by #208 (closed not planned) / #216. `SearchConfig::perturb_near_value` (default **off**, #217) makes the diversification kick OR-Tools' (`random_near_value`: p = 0.05, near the current value); it stays off by #219 / #226. Both are kept as arms faithful to their OR-Tools originals. `fj_objective_tie_break` (default **on** in `solve()` since #226, #218; a bare `GFJConfig` keeps it off) carries OR-Tools' use of an affine objective before the first feasible point: a lexicographic objective tie-break plus an objective-improving scan. #218's objective-favourable start, #221's exact quadratic roots and #222's equality-balance moves were measured in #226's smoke A/B, found neutral or worse, and removed. A variable that reaches a `Ceil`/`Floor`/`Round`/`Element` node additionally gets that node's breakpoints — plateau edges and index values, mapped back through the argument's slope — as candidates (#186), since those ops' derivative is 0.
-
-5. **Moves** (`src/moves.cpp`) — typed move generators by variable type (bool flip, int ±1/rand, float perturb, list swap/2opt/relocate/or-opt/insert/exchange/remove, set add/remove/swap), plus the inter-list moves of a `ListPartition` (relocate/swap/2-opt\*, and insert/remove under `Cover::AtMostOnce`). Scalar moves are subsumed by FJ's jump values; the list/set moves feed the STRUCTURAL batch. A structured change is a **positional `ElementEdit`** on the variable's `elements`, not the whole vector — the batch restores the sample's starting assignment before each candidate so an edit lands where it was built. `StructuralSelection::GranularBest` (#203, needs a neighbour list; the default `Auto` selection runs it whenever the config has one, `FirstImprovingSample` otherwise) replaces a partition's sampled moves with the granular complete neighbourhood of one element (every relocate/swap/2-opt/2-opt\* with each of its k nearest neighbours) and commits the best; on the CVRP smoke it beat `ViolationGuided` 15/15.
-
-6. **Inner solver** (`src/inner_solver.cpp`) — `FloatIntensifyHook`: coordinate descent over float variables using Newton steps on violated constraints + backtracking line search on objective. Triggered on each new feasible solution.
-
-7. **LNS** (`src/lns.cpp`) — Every `ListPartition` is ruined and recreated (SISR's string removal and greedy insertion with blinks, #202); every other variable keeps the original pair, destroy 30% and repair via FJ. Fires every N diversification kicks. Accepts on a lexicographic (real-violation, objective) key.
-
-8. **Violation & penalty** (`src/violation.cpp`) — `total_violation = Σ W[c]·max(0, viol_c)` with per-constraint GLS weights `W`. `weighted_violation_delta` is the no-commit counterfactual δ_G. `augmented_objective() = obj + total_violation()` is the penalty-method metric the inner solver descends.
-
-9. **Parallel search** (`src/pool.cpp`) — `SolutionPool` + `ParallelSearch`: a cooperative portfolio. Workers share incumbents through the mutex-guarded pool as they find them, tighten their `obj <= bound` row to the pool's best feasible objective at each batch boundary (#179, `ParallelConfig::share_objective_bound`), restart from the pool on stagnation, are restarted rather than left idle while budget remains, and stop each other once one has solved a pure-feasibility model. All of it reaches the engine through `cbls::solve()`'s trailing `SearchCoordination*`, which is null everywhere else. Nondeterministic by construction; `--threads 1` is the reproducible run (on the same hardware under the same load — it is still wall-clock bounded).
-
-   **Workers share the model's immutable structure** (#157). `ParallelSearch::solve`
-   has two entry shapes: the `Model&` **master** overload freezes the model on
-   the calling thread and hands each worker a copy, which takes the DAG by
-   reference and duplicates only what a search writes; the
-   `std::function<Model()>` **factory** overloads share exactly what the
-   factory's models share — nothing for freshly built ones, the structure for
-   copies of a frozen model. Python binds both: `ParallelSearch.solve_master` is
-   the master overload, `solve_parallel` the factory one. Prefer the master
-   overload. The per-worker memory constant is not zero and will not become
-   zero — the variables, the node values, three `Model::State` snapshots and
-   FJ's tables are all genuinely per worker — and it is a floor rather than a
-   bound, since its largest term scales with the column count. Size a run
-   against "1-worker + N x a measured per-worker constant". **Solution Pool &
-   Parallel Search** below carries the measurements with their commits.
-
-   Callers: `src/cli.cpp`, which loads the model once and passes it as the
-   master; Python's `ParallelSearch.solve_master`, likewise; the `cvrp`,
-   `uc-chped` and `minlplib` runners at `--threads > 1`, also through the master
-   overload (#262; at `--threads 1` they call `solve()` directly);
-   `cbls_minlplib_portfolio` (`benchmarks/minlplib/portfolio_ab.cpp`), the
-   master overload at every thread count; and `benchmarks/mipfeas/` at `--threads > 1`, through the factory overload over
-   pre-built copies of its frozen master. That runner freezes the model and replicates it once per worker **before** the solve
-   bracket opens, and reports the cost as `replicate_seconds`. That has to stay
-   outside the bracket for two reasons: inside it the copies come out of the
-   search's own deadline, and a `bad_alloc` there is parked by `ParallelSearch`,
-   which returns the survivors' result. A worker that dies later, inside the
-   bracket, is not silent either (#170): `SearchResult::workers_completed` and
-   `worker_failures` report it, the runner publishes them per row, and the scorer
-   refuses a row with fewer completed workers than `threads`. It still
-   grows with `--threads`, but with the per-worker mutable side rather than a whole
-   DAG — 0.60s at eight workers against ~1.6s before. CP-SAT runs at its
-   defaults by default (`--cpsat-workers 0`, #284): it picks its own worker
-   count and the table records it per row, uneven by design (Simon,
-   2026-11-01). In the fj+ls mode (`--cpsat-workers N > 0`) the driver still
-   refuses `--cbls-threads != --cpsat-workers` without `--allow-asymmetric-cpu`:
-   CP-SAT at N workers runs N `fj` and N `ls` subsolvers, so an asymmetric split
-   is an N-fold CPU advantage that the table would report as an implementation
-   gap.
-
-   A `SolveCallback` handed to `ParallelSearch` sees the **portfolio's** stream,
-   not worker 0's: every worker reports through one mutex-guarded wrapper that
-   rewrites `time_seconds` onto the portfolio clock (a worker's own solve times
-   from its own start, and a restart starts a second one) and carries the global
-   incumbent in `objective`. Worker 0 additionally keeps the periodic
-   no-new-best tick, so the CLI's liveness row survives.
-
-10. **I/O** (`src/io.cpp`, `src/io/`) — JSONL `.cbls` model format in `src/io.cpp`; `src/io/` holds the MPS reader (`mps_reader.cpp` + `mps_to_model.cpp`, gzip via zlib, optional bzip2), the AMPL `.nl` reader (`nl_reader.cpp` + `nl_to_model.cpp`) and the MIPLIB `.solu` reader. CLI in `src/cli.cpp`.
+1. **Model building** (`include/cbls/model.h`, `include/cbls/expr.h`) — typed variables (Bool, Int, Float, List, Set), expressions by operator overloading, constraints, an objective; `close()` sorts the DAG topologically.
+2. **Expression DAG** (`include/cbls/dag.h`, `src/dag.cpp`, `src/dag_ops.cpp`) — variables have negative handles `-(id+1)`, nodes non-negative ids; 35 `NodeOp` types. `full_evaluate` evaluates everything; `delta_evaluate` recomputes only the nodes a move reaches (see [Evaluation Modes](#evaluation-modes), including the incremental Sum's drift bound). Reverse-mode AD (`compute_all_partials`) serves the continuous jump values.
+3. **Search** (`src/search.cpp`) — the ViolationLS batch outer loop (Davies et al. CPAIOR 2024, Algorithm 6): each batch is Feasibility Jump, Novelty Jump or Structural, chosen by config probabilities; the `obj <= bound` row tightens on each new real-feasible solution; stagnation perturbs or runs LNS.
+4. **Feasibility Jump** (`src/feasibility_jump.cpp`, `src/linear_jump.cpp`) — a `JumpTable` of cached best jumps (score `-W·δ_G`), best-of-N sampling, GLS weight dynamics, and Novelty Jump compound moves (Algorithms 4–5). Float candidates come from Newton steps toward violated roots, plus breakpoints of `Ceil`/`Floor`/`Round`/`Element`; all-linear columns are scored in closed form by `LinearJumpScorer`, others by `weighted_violation_delta`. The default-off arms are listed in the [Parameters Table](#parameters-table).
+5. **Moves** (`src/moves.cpp`) — typed move generators (bool flip, int ±1/rand, float perturb, list and set moves, the inter-list moves of a `ListPartition`). Scalar moves are subsumed by FJ; list/set moves feed the Structural batch as positional `ElementEdit`s. See [Structural Batch](#structural-batch).
+6. **Inner solver** (`src/inner_solver.cpp`) — `FloatIntensifyHook`: coordinate descent over floats (Newton on violated rows, line search on the objective), run on each new feasible solution.
+7. **LNS** (`src/lns.cpp`) — every N-th diversification kick: SISR ruin-and-recreate on each `ListPartition`, destroy 30% and repair by FJ elsewhere; accepted on a lexicographic (real violation, objective) key.
+8. **Violation & penalty** (`src/violation.cpp`) — `total_violation = Σ W[c]·max(0, viol_c)`; `weighted_violation_delta` is the no-commit counterfactual δ_G; `augmented_objective()` is the inner solver's descent metric.
+9. **Parallel search** (`src/pool.cpp`) — `SolutionPool` + `ParallelSearch`, a cooperative portfolio that shares incumbents and the objective bound. Workers share the frozen model's immutable structure (#157) and copy only what a search writes. Nondeterministic; `--threads 1` is the reproducible run. See [Solution Pool & Parallel Search](#solution-pool--parallel-search); the benchmark driver's CPU policy is in `benchmarks/instances/mipfeas/README.md`.
+10. **I/O** (`src/io.cpp`, `src/io/`) — JSONL `.cbls` format; MPS (gzip, optional bzip2), AMPL `.nl` and MIPLIB `.solu` readers. CLI in `src/cli.cpp`.
 
 ### Key extension points
 
-- **`InnerSolverHook`** — subclass to provide domain-specific continuous optimization. The reference implementation is the built-in `FloatIntensifyHook` (`include/cbls/inner_solver.h`, `src/inner_solver.cpp`); no benchmark currently ships a custom one. `solve()` is handed a `StopRef stop` (#191) that turns true at the search's deadline, a peer's stop or a host cancel: the call is synchronous and cannot be pre-empted, so a hook whose work can outlast the budget **must** poll `stop` and return promptly, leaving the model consistent — an unpolled hook runs the solve past its budget.
-- **New operations** — add to `NodeOp` enum in `dag.h`, implement `evaluate()` in `dag.cpp`, `local_derivative()` for AD, `delta_evaluate` support in `dag_ops.cpp`
-- **`CustomInvariant`** (`include/cbls/custom_invariant.h`, #166) — user code
-  *inside* the DAG, for the cases that do not deserve a core op: a black-box or
-  simulation value, sequence state, an aggregate the op set lacks.
-  `Model::custom(inputs, std::move(inv), name)` gives an ordinary node with an
-  optional incremental `delta`, and a `commit`/`rollback` bracket on the
-  per-candidate scalar probe so that probe costs one delta rather than two. The
-  instance is **per-model** and `clone()`d per portfolio worker — unlike
-  `lambda_funcs`, which every replica invokes concurrently and which therefore
-  cannot carry state. A model holding one cannot be written to `.cbls`, and it
-  is **not** exposed to Python (that waits on #132). The sections below
-  carry the contract table and names the **three** apply-then-revert sites
-  deliberately left unbracketed (the inner solver's is only its multi-variable
-  step since #207). `in.edits(i)` (#172) says *where* a List/Set
-  input moved, as positional edits since the last committed state, so a delta
-  over a List can be O(edits) — but only the structural batch supplies them, only
-  for an invariant that opts in (`wants_positional_edits()`), and on every other
-  path a moved List/Set input reports `available() == false`: re-read then.
-  This is engine capability, not evidence about List performance.
+- **`InnerSolverHook`** — subclass for domain-specific continuous optimization; `FloatIntensifyHook` (`include/cbls/inner_solver.h`) is the reference. Its `solve()` gets a `StopRef stop` and **must** poll it if its work can outlast the budget: the call cannot be pre-empted.
+- **New operations** — add to `NodeOp` in `dag.h`, implement `evaluate()` in `dag.cpp`, `local_derivative()` for AD, and `delta_evaluate` support in `dag_ops.cpp`.
+- **`CustomInvariant`** (`include/cbls/custom_invariant.h`, #166) — user code inside the DAG via `Model::custom(inputs, std::move(inv), name)`: optional incremental `delta`, a `commit`/`rollback` bracket, `clone()`d per portfolio worker. Not writable to `.cbls`, not exposed to Python (#132). Contract under [Expression Nodes](#expression-nodes).
 
 ### Build targets
 
@@ -211,9 +136,9 @@ enum class VarType : uint8_t { Bool, Int, Float, List, Set };
 ```
 
 Each `Variable` stores: `id`, `type`, `value` (scalar), `lb`/`ub` (bounds),
-`elements` (for List/Set), `universe_size`, `min_size`/`max_size` — which mean
-the same thing for **both** structured types since #164: `elements` is drawn from
-`{0..universe_size-1}` and its size stays within `[min_size, max_size]` — plus,
+`elements` (for List/Set), `universe_size`, `min_size`/`max_size` — for both
+structured types `elements` is drawn from `{0..universe_size-1}` and its size
+stays within `[min_size, max_size]` — plus,
 for a List, `list_init` and `partitioned`. It owns no edge storage: the nodes
 that use it are
 `Model::dependents(id)`, a slice of one flat CSR array the model holds.
@@ -222,20 +147,12 @@ Bool, Int and Float are *scalar* (jumpable by GFJ). List and Set are
 *structural* — GFJ leaves them untouched; they are moved only by the
 [structural batch](#structural-batch) and LNS.
 
-> **Neither structural type has a positive result behind it.** List variables
-> were once described here as validated on a published formulation; that claim
-> is **withdrawn**. It rested on pharma-glsp, whose model was a macro-period
-> relaxation of the source paper and which has since been retired (#28), so
-> `List` now has no benchmark evidence in either direction. Set variables are
-> validated for *expressiveness* only: a set-covering model over a `Set`
-> variable produces verified solutions, but well short of the same instance
-> encoded with one Bool per column — see
-> [structure-only models](#structure-only-models-what-the-structural-batch-is-and-is-not)
-> and `benchmarks/instances/setcover/README.md`. Treat "generalises to
-> structured variables" as a claim about modelling reach only, for both types —
-> beyond that `Set` is measured and negative, and `List` has no published
-> result: the CVRP benchmark (`benchmarks/cvrp/`) is in the tree, and #204's
-> campaign will be its first evidence.
+> **Neither structural type has a positive result behind it.** "Generalises to
+> structured variables" is a claim about modelling reach only. `Set` is
+> measured and negative against one Bool per column
+> ([structure-only models](#structure-only-models-what-the-structural-batch-is-and-is-not),
+> `benchmarks/instances/setcover/README.md`); `List` has no evidence yet, and
+> the CVRP benchmark (`benchmarks/cvrp/`) is where #204 will produce it.
 
 ### Handle Encoding
 
@@ -307,13 +224,10 @@ reads as maximally violated (`clamped_node_violation`). `Log(0)` is `-inf`, a
 magnitude is an infinity signed by `num * denom` (`1/-0.0 = -inf`), or NaN when
 the numerator is 0 -- below the threshold the denominator is a zero, so such a
 `Div` is never finite, which `LinearJumpScorer` relies on to keep it off the
-closed form. Before #205
-these read as ordinary numbers — `sqrt(-10)` as `0.0`, every non-finite `pow` as
-`+inf` — and a comparison scored them as satisfiable, so the search reported
-infeasible models feasible. The ops that consume a child also keep a NaN NaN
-instead of turning it back into a defined value: `Min`/`Max` (whose `std::min`
-dropped a NaN anywhere but first), `Neq`, an `If` condition, and an `At` or
-`Element` index (out of range still reads `0.0`).
+closed form. Reading them as ordinary numbers would let an infeasible model
+report feasible. The ops that consume a child also keep a NaN NaN instead of
+turning it back into a defined value: `Min`/`Max`, `Neq`, an `If` condition,
+and an `At` or `Element` index (out of range still reads `0.0`).
 
 **Implicit domain rows (#248).** A NaN reads as the same flat violation at every
 point outside the domain, so it gives the search no way back in. `close()`
@@ -381,9 +295,8 @@ cache too; a portfolio factory that builds a fresh model per call builds one
 cache per worker.
 
 **Incremental Sum** (#177, #188). A committed FJ move changes one term of each
-row it touches, and re-summing a row costs its whole length: 36% of swath3's
-run at `634001b`, where a committed dirty Sum averaged 1315 terms.
-`commit_scalar_move` therefore moves each *incremental* `Sum` by the
+row it touches, and re-summing a row costs its whole length (on long MIP rows,
+a third of the run). `commit_scalar_move` therefore moves each *incremental* `Sum` by the
 differences of its changed terms instead of re-summing it.
 
 - *Incremental* (`ExprNode::kIncSum`, set at `close()` by
@@ -444,82 +357,14 @@ FeasibilityJump acts on no verdict that drift could have flipped:
   test.
 
 **What "exact" means here.** A verdict on a drifting Sum is decided against
-the real sum of its stored terms, within the bound. A Sum just re-summed, with
-a nonzero bound, is decided on the re-sum's value. That is exactly how the
-pre-#177 engine decided every row, and it is the baseline the A/B below
-measures against. So "no phantom bump" and "every Feasible verdict exact"
-hold relative to a re-sum, not relative to exact real arithmetic. The re-sum's
-own rounding is still there, as it always was.
+the real sum of its stored terms, within the bound; a Sum just re-summed is
+decided on the re-sum's value, as every row was before #177. So "no phantom
+bump" and "every Feasible verdict exact" hold relative to a re-sum, not to
+exact real arithmetic.
 
-**Deviations from #188's proposal.**
-
-- The re-sum bound is the re-sum's exact rounding errors, not
-  gamma_{n-1} * sum(|t_i|). It is tighter, and it is 0 when the re-sum is
-  exact; the issue's form is never 0, which would have made every re-summed
-  row count as drifting.
-- There is no margin factor. The bound and the gate's comparison are
-  rounded up, so the bound is rigorous as computed.
-
-**What was measured.**
-
-- *Trajectories.* At a fixed iteration count, main `bf4979f` and `bfe9826` end
-  on identical final assignments on neos-860300 and rail01. rail01's
-  objective took 4,561 inexact updates in that run.
-- *How often the gate fires.* Across #177's 44-instance roster (50,000 fixed
-  iterations, seed 1), 1,600 of 576,711 local minima were gated (0.28%), on 12
-  instances. The highest share is swath3, 1,111 of 6,714. Its big-M rows sit
-  at equality, and it still runs 1.32x the iterations below.
-- *Iterations.* 20 s, one thread, seeds 1 and 2, serial, one pair per instance
-  and seed, 1-minute load 0.81-1.52 (median 1.02). #177's pre-registered
-  roster, `bf4979f` -> `bfe9826`, per instance:
-
-| subset | instances | GLS iterations, geomean | 95% CI | up / down |
-|---|---|---|---|---|
-| all | 44 | 1.082x | [1.038, 1.127] | 31 / 12 |
-| fractional | 26 | 1.124x | [1.053, 1.199] | 23 / 3 |
-| integral | 18 | 1.024x | [1.004, 1.044] | 8 / 9 |
-
-- *Largest gains:* b1c1s1 1.67x, rmatr200-p5 1.53x, savsched1 1.36x, swath3
-  1.32x, s100 and turama 1.27x, cost266-UUE 1.26x.
-- *Losses:* neos-4300652-rahue 0.70x (at seed 1 it now reaches feasibility and
-  spends the run in objective search), mushroom-best 0.90x, ns1116954 0.95x.
-- *Quality*, by #177's per-instance rule: 8 better, 6 worse, 30 tied
-  (sign p = 0.79). Feasible runs 31 -> 32.
-- *MINLPLib*, 50 instances, 20 s, seed 42: feasible 48 -> 48, objective 1
-  better, 2 worse, 47 the same.
-- *MINLPLib re-check* (review round 1, fresh seed 43, head `301ac22`, stated
-  criterion):
-  - Quality passed: 48 feasible in both arms, objective 2 better and 3 worse
-    (p = 1).
-  - The fixed-iteration timing check **failed**. The geomean time ratio
-    passed at 1.008, but two instances exceeded the pre-registered 1.10 cap.
-    eg_all_s is about 14% slower per iteration (base 86.4 s, new 98.7 s at
-    10,000 iterations). ex8_4_5 is 1.13x, one step of a ~0.1 s timing grid
-    both arms land on.
-  - At `301ac22` the MINLPLib no-regression check was therefore not met.
-  - Round 2 re-checked the same rule at `eadd414`. That commit keeps the
-    incremental-Sum rules' cold paths out of line, because inlined they had
-    slowed `delta_walk` on the same trajectory.
-  - Round 2 **passed**: geomean wall ratio 0.975, max 1.009, no capped
-    instance over 1.10, all 50 on the same objective. eg_all_s went from
-    86.8 s to 82.9 s. `eadd414` ends on the same final-assignment hashes as
-    `301ac22` on all 50 instances, so the fresh-seed quality result stands.
-  - The ~0.1 s grid is attributed to the `timeout` wrapper on one
-    reproduction. It turns small wall-time differences into whole ~0.1 s
-    steps, so short runs are read on CPU time.
-  - The MIPfeas figures were measured at `bfe9826`. `eadd414` was checked
-    against it at a fixed iteration count: identical hashes, CPU time within
-    about 1% (record, last section).
-  - Record: `docs/benchmarks/incremental-sum-drift.md`.
-
-An earlier head of the same design lost 7 MINLPLib objectives to a
-per-iteration slowdown. It is recorded with its fixes, and with a fresh-seed
-MINLPLib re-check, in `docs/benchmarks/incremental-sum-drift.md`.
-
-The instances that lost in #177's exact-only A/B (cbs-cta, eilA101-2,
-supportcase33, neos-957323) lost to code layout, not to that change's work.
-Timed at a fixed iteration count under `-falign-functions=64`, the losses
-disappeared while neos-860300's gain held. The build does not set that flag.
+The design's deviations from #188's proposal (an exact re-sum bound, no margin
+factor), its A/B on #177's roster and its MINLPLib no-regression checks are in
+`docs/benchmarks/incremental-sum-drift.md`.
 
 ### Reverse-Mode Automatic Differentiation
 
@@ -556,7 +401,7 @@ through `add_chain_term` (`include/cbls/dag_ops.h`), which skips a zero edge
 rather than multiplying it, so an infinite adjoint or slope never reads
 `inf * 0` across an untaken If branch or a Min's unselected operand (#260).
 
-The built-ins follow the same rule since #205: `Pow`, `SignPower`, `Div` and
+The built-ins follow the same rule (#205): `Pow`, `SignPower`, `Div` and
 `Tan` fold a non-finite partial to 0, `Log`/`Sqrt` return 0 on and below
 their singular point, and an `If` on a NaN condition gives neither branch a slope. No op offers a finite slope where its *value* is NaN — a
 Newton step built from one would aim into a region where the function is not
@@ -573,10 +418,8 @@ equivalent Lambda via table lookup, so round-tripping through JSONL is lossless
 for finite-domain Lambda nodes. A PairLambda is tabulated the same way, as an
 `n x n` matrix, plus the keys that carry its variant: `"mode": "cyclic"` for the
 closing pair and `"head"`/`"tail"` for the fixed-endpoint tables. Each is
-written only when it says something, so an open chain with no endpoints — every
-PairLambda the format could express before those variants existed — still
-serialises to exactly the bytes it did; the reader defaults each absent key to
-that node.
+written only when it says something; the reader defaults an absent key to the
+open chain with no endpoints.
 
 ² **Custom nodes: user code in the DAG (#166).**
 `Model::custom(inputs, std::unique_ptr<CustomInvariant>, name)` appends a node
@@ -593,128 +436,38 @@ a List/Set variable input, the ordered `PositionalEdit`s (Swap, Reverse,
 MoveSegment, Insert, Erase, Assign — each with the element an Erase or Assign
 displaced) that took it from the elements the invariant last **committed** to to
 the ones `elements(i)` returns now. With them a delta over a List is O(edits)
-rather than O(|elements|) — an incremental route cost, a slack propagated from the
-first changed position. `tests/test_custom_invariant_edits.cpp` carries an
-open-route-cost invariant written that way and measures it against a re-reading
-one on the same structural-batch move sequence: ~5.2k against ~156k distance
-evaluations, with |L| between 200 and 300.
+rather than O(|elements|); `tests/test_custom_invariant_edits.cpp` carries an
+open-route-cost invariant written that way.
 
-*How the edits get there.* The structural batch already built positional
-`ElementEdit`s (#164) and dropped them at `delta_evaluate`. It now records each
-candidate's edits as they took effect (an edit the range guard ignores is not
-recorded, so the record replays and inverts exactly) into an `EditJournal`, and
-describes each transition to `delta_evaluate` as *the previous candidate's edits
-inverted, then this one's* — because the batch restores the sample baseline
-before every candidate, so that is exactly what the variable went through. The
-two restores that close a sample (to the last accepted candidate, or to the
-baseline) are described the same way. `delta_evaluate` takes the journal as an
+*How the edits get there.* The structural batch records each candidate's
+positional `ElementEdit`s as they took effect (an edit the range guard ignores
+is not recorded, so the record replays and inverts exactly) into an
+`EditJournal`, and describes each transition to `delta_evaluate` as *the
+previous candidate's edits inverted, then this one's*, since the batch restores
+the sample baseline before every candidate. The two restores that close a
+sample are described the same way. `delta_evaluate` takes the journal as an
 optional last argument; every other caller passes none.
 
-*The fallback is unmistakable.* `edits(i)` returns an `InputEdits`, and when
-there is no positional information `available()` is false and `list()` **throws**
-rather than returning an empty span that would read as "no changes". It is
-unavailable in `evaluate`/`partial`, for a scalar or node input, for any call
-whose caller recorded nothing (the diversification kick, LNS, the inner solver,
-Novelty Jump, a restore, a direct `var_mut`), for a variable that saw a `Replace`
-(the inter-list tail exchange, or a registered generator's), and after an
-exception left a probe open. (A `delta()` that throws on a `Commit` pass is not
-detected: its invariant is behind, and `full_evaluate` is the recovery, as for any
-exception out of the walk.) An input *not* in `changed` reports an available,
-empty list, so a scalar move does not push a List invariant into a re-read.
+*The fallback is unmistakable.* `edits(i)` returns an `InputEdits`; with no
+positional information `available()` is false and `list()` **throws** rather
+than returning an empty span that would read as "no changes". It is unavailable
+in `evaluate`/`partial`, for a scalar or node input, for any call whose caller
+recorded nothing (the diversification kick, LNS, the inner solver, Novelty
+Jump, a restore, a direct `var_mut`), for a variable that saw a `Replace`, and
+after an exception left a probe open. (A `delta()` that throws on a `Commit`
+pass is not detected; `full_evaluate` is the recovery.) An input *not* in
+`changed` reports an available, empty list, so a scalar move does not push a
+List invariant into a re-read.
 
-*Accumulation.* Edits describe the change since the last committed state. On the
-batch every leg is a `Commit`, so "since the previous evaluation" is the same
-thing; a `Probe` needs no edits on its `Rollback` (the node is not re-deltaed, and
-the assignment is back at the committed one); and a stale probe withholds them,
-because the invariant's committed state is then no longer the caller's "since".
+*Accumulation and lifetime.* Edits describe the change since the last committed
+state: on the batch every leg is a `Commit`; a `Probe` needs no edits on its
+`Rollback`; a stale probe withholds them. They are keyed per input, read only
+during the pass, and, like `changed`, valid for the one `delta()` call.
 
-*Lifetime and keying.* Keyed per input, so an invariant over two Lists gets each
-its own list, and a move touching both describes both. The journal is the
-caller's and is only read during the pass, so every custom node in one pass reads
-the same records and no per-node buffer is needed; like `changed`, a list is
-valid for the one `delta()` call.
-
-*Opt in, because it is measurable.* The batch records only while some invariant
-in the model returns true from `wants_positional_edits()`, checked once per
-sweep. Not opting in is still correct — `available()` is false — and costs no
-allocation. Opting in costs ~6% per structural candidate and no allocation.
-
-*Dated record of the no-regression A/B, idle machine* (2026-09-26). Engine
-commits: `7c94461` (base, the parent of #172), `f9d4514` (#172 with its
-cold-review fix) and `b3e5a77` (main at the time, carrying #167, #168 and #173 on
-top). One Release build per commit (`CBLS_SANITIZE` empty), all built before any
-run. Machine: 12-thread AMD Ryzen 5 5600H, `powersave` governor, 1-minute load
-average 0.60-0.90 across both runs (1.13-1.30 during the bisection below) with no
-other job running (top: every other process
-under 6% of one core; a constant ~16% iowait from a process in D state, no CPU).
-Harness, not committed: a scratch program over the library that builds each
-model below, sets a fixed starting assignment, and calls `StructuralBatch::run`
-directly (default `SearchConfig`, i.e. `FirstImprovingSample`) for 200,000 sweeps
-after a 50-sweep warm-up, dividing wall time and a global `operator new` count by
-the batch's own `moves_tried`. Each process pinned with `taskset` (core 5, then
-core 3 for the second run), 9 repeats per side per run, the three sides
-interleaved in rotating order, never concurrent. Medians, run 1 / run 2:
-
-| Model (200-element permutation List / 300-universe Set) | `7c94461` ns/cand | `f9d4514` ns/cand | `b3e5a77` ns/cand | allocations/cand |
-|---|---|---|---|---|
-| `pair_lambda_sum` route, no custom node | 1037.5 / 1036.8 | 1022.0 / 1021.7 | 1075.6 / 1075.2 | 2.000 |
-| `lambda_sum` over a Set, no custom node | 903.7 / 903.2 | 887.6 / 888.3 | 884.3 / 885.2 | 5.667 |
-| re-reading custom route, not opted in | 622.9 / 623.5 | 630.4 / 630.8 | 631.9 / 631.7 | 2.000 |
-| the same invariant, opted in | — | 670.0 / 670.0 | 668.1 / 668.4 | 2.000 |
-
-The within-side spread is tight at the fast end -- in every cell the fastest
-repeat is within 0.4% of the median -- with a slow tail of at most three repeats
-per cell more than 1% slow, the worst +7.2% (`f9d4514`, `pair_lambda_sum`, run
-1). Medians are robust to that tail, and the two runs agree to within 1 ns on
-every median. But code placement alone moves a row by 1.5-5% here (below), so a
-~1% difference between two binaries is not attributable to source changes
-without isolating them. Read against that:
-
-- **#172, models without a custom node: no regression.** Both rows are *faster*
-  on `f9d4514` (-1.5%, -1.8%), in both runs. That path is the pre-#172 one
-  apart from a few predictable `journaling_` branches per candidate and one
-  `wants_journal` scan per sweep, so the gain is code placement, not something
-  #172 did.
-- **#172, a custom node that does not opt in: +1.2% measured, not isolated**
-  (+7.5 ns/candidate, 622.9 → 630.4; run 2 623.5 → 630.8; every base repeat is
-  faster than every #172 repeat in run 1, seven of nine in run 2). Allocations
-  are identical. This row's path is the one #172 did change without opting in:
-  every custom `delta` now builds an `InvariantInputs` carrying the `changed`
-  span and the journal pointer, behind a branch on the stale-probe flag, and
-  `StructuralBatch::run` makes one `wants_positional_edits()` virtual call per
-  custom node per sweep. That is the likely cause, but +1.2% is smaller than
-  the placement shifts the other rows show, and this row itself drifts +0.75%
-  (median 629.9 ns at `f9d4514`, 634.6 ns at `2768314`, 7 repeats each in the
-  bisection run at load 1.1-1.3) with nothing on its path changed -- so read it
-  as the measured difference, not isolated from placement (which moves rows by
-  1.5-5% in either direction here; the same shift the no-custom rows got would
-  put it nearer 3%), rather than as a bound on #172's cost. That it is fixed per
-  custom-node delta and
-  does not grow with the List is argued from the code; only a 200-element List
-  was measured.
-- **Opting in** costs +6.3% over not opting in (630.4 → 670.0) and zero
-  allocations — the journal's buffers are reused.
-- **`b3e5a77` against `f9d4514`**: the Set and custom rows are unchanged within
-  0.5%. The `pair_lambda_sum` row is +5.2% (1022 → 1075), and it is not #172's.
-  Bisected over the same harness (7 repeats, interleaved): `2768314` (end of
-  #167) 1021.0, `99551c9` (end of #168) 1079.9, `3ca0fb7` (#173) 1075.7. So it
-  arrives with #168 — and #168 changed none of the code that row executes
-  (`dag.cpp`, `dag_ops.cpp` and `StructuralBatch`'s logic are untouched;
-  `structural_batch.cpp` gained a comment; its one `moves.cpp` edit, the
-  pinned-Bool guard, is in `bool_moves`, which a List-only model never reaches
-  -- an unlogged spot check with it reverted stayed at ~1071). Attributed to
-  code placement in the static library, not to a cost #168 added; not proven
-  beyond that.
-
-**Verdict against #172's criterion**: no allocation is added per candidate on
-any row, opted in or not. On time, a model with no custom node does not regress;
-a model whose custom node does not opt in measured ~7.5 ns (1.2%) per
-structural candidate, within the code-placement spread seen here. Final elements
-and the constraint body hashed identically on every commit that runs each row. (The earlier, loaded run of this A/B also
-found identical `cbls::solve()` digests at seed 12345, `max_iterations = 4000`,
-for all four models; not repeated here.) Scalar inputs never had the gap:
-`changed` is exactly the inputs that moved, and an O(1) delta over them is what
-the #166 reference fixture does.
+*Opt in.* The batch records only while some invariant returns true from
+`wants_positional_edits()`, checked once per sweep. Not opting in is still
+correct and costs nothing; opting in costs about 6% per structural candidate
+and no allocation (#172's A/B).
 
 The interface is six calls plus a clone:
 
@@ -736,8 +489,7 @@ per-model `std::vector<CustomInvariantSlot>` that the copy constructor
 replica invokes concurrently and which therefore cannot carry state at all.
 
 **The probe bracket, and what is not bracketed.** `delta_evaluate` takes a
-`DeltaMode`: `Commit` (the default, and what every pre-#166 call site means),
-`Probe` and `Rollback`. `Model::weighted_violation_delta` and
+`DeltaMode`: `Commit` (the default), `Probe` and `Rollback`. `Model::weighted_violation_delta` and
 `per_constraint_violation_delta` — the per-candidate scalar probe Feasibility
 Jump runs for every jump value — are bracketed as `Probe` then `Rollback`, so a
 custom node in one of those cones costs **one `delta` and one `rollback`** per
@@ -755,17 +507,10 @@ batch for an invariant that opts in to positional edits, a re-read otherwise).
 Bracketing them is a separate change.
 
 **A model with no custom node is untouched.** `Model::has_custom_nodes()` is
-tested once per `delta_evaluate`/`full_evaluate` call, not per node, and the
-false branch is the pre-#166 loop verbatim, and the dispatch is a template rather
-than a `std::function` so that branch inlines the same `evaluate` call it always
-did — so bit-identical trajectories at one thread follow structurally.
-*Dated record of one run*, not a standing test: at the first #166 commit, two
-`cbls::solve()` runs at seed 12345 with `max_iterations = 4000` and no time limit
-— one mixed-integer/non-convex model, one `pair_lambda_sum` List model — produced
-byte-identical output against `899b5e0` over every `SearchResult` field plus an
-FNV-1a digest of `best_state`. The standing fence is
-`tests/test_structural_equivalence.cpp` and `tests/test_structured_trajectory.cpp`,
-whose digests and signature strings this work leaves unchanged.
+tested once per `delta_evaluate`/`full_evaluate` call, not per node; the false
+branch is the plain loop, and the dispatch is a template rather than a
+`std::function`, so it inlines the same `evaluate` call. The fence is
+`tests/test_structural_equivalence.cpp` and `tests/test_structured_trajectory.cpp`.
 
 **Serialisation refuses.** A `CustomInvariant` is C++ code, not a table of
 numbers the way a `Lambda` is, so `save_model` throws before writing its first
@@ -792,13 +537,10 @@ breaking either is a wrong answer rather than an exception.
 
 **Not exposed to Python.** A Python-subclassable invariant needs the trampoline
 and GIL machinery of #132, so nothing here is bound: `Model::custom` is not
-exposed, and without it no Python caller can make such a node. `NodeOp::Custom`
-is in the binding enum (since #186, which also added the missing `PairLambda`)
-only so that every op a node can carry has a Python name; its presence there
-does not mean a custom node can be built from Python.
+exposed. `NodeOp::Custom` is in the binding enum only so that every op has a
+Python name.
 
-³ **Element, rounding, and lambdas that read other decisions (#186).** Three
-modelling needs of route-network models (#182) that used to take a workaround:
+³ **Element, rounding, and lambdas that read other decisions (#186):**
 
 | Op | Builder | Semantics | Workaround it replaces |
 |----|---------|-----------|------------------------|
@@ -811,16 +553,11 @@ The `extra` handles are children of the node, so a change to one re-evaluates it
 any list edit does too. Both re-sum the list, exactly what a plain `Lambda` does
 on an edit.
 
-**Deviation from #186: a list edit is O(|list|), not O(edits).** #186 asked for
-an edit to stay O(edits) (#172). It does not, for any lambda node: plain
-`Lambda`/`PairLambda` never were O(edits) either — only a `CustomInvariant` is
-handed #172's positional-edit journal — and an incremental floating-point sum
-reopens the drift problem #177 was built to avoid (a running sum no longer
-matches a re-sum bit for bit, so a probe's two legs can disagree near a row's
-bound). #188 contains that drift for a `Sum` that a row reads directly, with a
-per-Sum bound and a local-minimum gate, and none of that machinery covers a
-lambda node. Making all four lambda forms incremental was filed as #189 and
-closed as not planned until a List benchmark exists (epic #182).
+**A list edit is O(|list|), not O(edits)**, for every lambda form (a deviation
+from #186): only a `CustomInvariant` gets the positional-edit journal, and an
+incremental floating-point lambda sum would reopen the drift that #188 contains
+only for a `Sum` a row reads directly. #189 (incremental lambdas) is closed as
+not planned until a List benchmark asks for it.
 
 The two lambda forms cannot be written to `.cbls` — the functor takes
 continuous values and has no finite table — so `save_model` refuses a model
