@@ -574,9 +574,12 @@ TEST_CASE("NL reader refuses nonlinear or discrete counts outside the variable c
                      "hang"),
             Catch::Matchers::ContainsSubstring("malformed header"));
     }
-    SECTION("an INT64_MAX count would wrap the block-offset sums") {
+    SECTION("counts that would wrap the block-offset sums") {
+        // nlvc - nlvb wraps for nlvc = INT64_MAX, nlvb = -1; and a negative
+        // nlvo under a huge nlvc wraps cat3's subtraction.
         const std::string max = "9223372036854775807";
-        REQUIRE_THROWS_WITH(parse_nl(with_lines(" " + max + " 0 " + max, " 0 0 0 0 0"), "wrap"),
+        const std::string line5 = GENERATE_COPY(" " + max + " 0 -1", " " + max + " -2 0");
+        REQUIRE_THROWS_WITH(parse_nl(with_lines(line5, " 0 0 0 0 0"), "wrap"),
                             Catch::Matchers::ContainsSubstring("malformed header"));
     }
     SECTION("a negative count") {

@@ -563,8 +563,8 @@ NlHeaderCounts parse_header(Tokenizer& tok, NlProblem& prob) {
             h.nlvbi = v[2];
             h.nlvci = v[3];
             h.nlvoi = v[4];
-            // `prob.n_discrete_vars` is set by `check_placement_counts` once
-            // n_vars is known to be sane: summed here unchecked it could wrap.
+            // `prob.n_discrete_vars` is set by `mark_discrete_vars` after the
+            // counts are range-checked: summed here unchecked it could wrap.
         } else if (header_line_after_counts == 8) {
             const auto v = read_ints(hline, 5);
             // Range-check each count before summing: five values within
@@ -583,15 +583,15 @@ NlHeaderCounts parse_header(Tokenizer& tok, NlProblem& prob) {
     return h;
 }
 
-// Refuse placement counts (header lines 5 and 7) outside [0, n_vars], then set
-// `prob.n_discrete_vars` (#290). `mark_tail` loops over a block's length, so an
-// unchecked 4e18 there hangs the reader; and the block-offset and discrete sums
-// below would wrap int64. Each count is a number of columns, or (nlvc, nlvo)
-// an index bound one past a column, so none can exceed n_vars in a valid file.
-// Once all are within [0, n_vars] (n_vars <= INT32_MAX, checked by
-// `check_counts_backed`), every sum of at most five of them fits int64, and
-// `mark_tail` runs at most n_vars passes per block.
-void check_placement_counts(NlProblem& prob, const NlHeaderCounts& h) {
+// Refuse placement counts (header lines 5 and 7) outside [0, n_vars] and return
+// the declared discrete count (#290). Unchecked, a 4e18 block length hung
+// `mark_tail`, and the block-offset and discrete sums below could wrap int64.
+// Each count is a number of columns, or (nlvc, nlvo) an index bound one past a
+// column, so none can exceed n_vars in a valid file. `n_vars` is an int32_t
+// (a larger header value fails extraction) that `check_counts_backed` has
+// found non-negative, so once every count is within [0, n_vars], any sum of
+// at most five of them fits int64 and the discrete total fits int32.
+int32_t checked_discrete_count(const NlProblem& prob, const NlHeaderCounts& h) {
     const int64_t n = prob.n_vars;
     for (const int64_t c : {h.nlvc, h.nlvo, h.nlvb, h.nbv, h.niv, h.nlvbi, h.nlvci, h.nlvoi}) {
         if (c < 0 || c > n) {
@@ -606,16 +606,18 @@ void check_placement_counts(NlProblem& prob, const NlHeaderCounts& h) {
                                  " discrete variables declared but only " + std::to_string(n) +
                                  " variables");
     }
-    prob.n_discrete_vars = static_cast<int32_t>(discrete);
+    return static_cast<int32_t>(discrete);
 }
 
 // The last `n_int` columns of [block_start, block_start + block_len) are integer.
+// The range is clipped to [0, n_vars), so the loop is bounded by the column
+// count itself; the arguments are already range-checked, which keeps the sums
+// below from overflowing.
 void mark_tail(NlProblem& prob, int64_t block_start, int64_t block_len, int64_t n_int) {
-    int64_t first = block_start + block_len - n_int;
-    for (int64_t j = std::max<int64_t>(first, block_start); j < block_start + block_len; ++j) {
-        if (j >= 0 && j < prob.n_vars) {
-            prob.var_is_discrete[static_cast<size_t>(j)] = 1;
-        }
+    const int64_t end = std::min<int64_t>(block_start + block_len, prob.n_vars);
+    const int64_t begin = std::max({block_start + block_len - n_int, block_start, int64_t{0}});
+    for (int64_t j = begin; j < end; ++j) {
+        prob.var_is_discrete[static_cast<size_t>(j)] = 1;
     }
 }
 
@@ -633,6 +635,7 @@ void mark_tail(NlProblem& prob, int64_t block_start, int64_t block_len, int64_t 
 // i.e. within each nonlinear block the integer columns are the trailing ones,
 // and the purely-linear discrete columns are the last nbv+niv of the file.
 void mark_discrete_vars(NlProblem& prob, const NlHeaderCounts& h) {
+    prob.n_discrete_vars = checked_discrete_count(prob, h);  // refuses before any loop
     prob.var_is_discrete.assign(static_cast<size_t>(prob.n_vars), 0);
     const int64_t cat1 = h.nlvb;                                 // nonlinear in both
     const int64_t cat2 = std::max<int64_t>(h.nlvc - h.nlvb, 0);  // nonlinear in constraints only
@@ -922,7 +925,6 @@ NlProblem parse_nl(const std::string& text, const std::string& name) {
         tok.set_binary();
     }
     check_counts_backed(prob, tok.remaining());
-    check_placement_counts(prob, header);
     mark_discrete_vars(prob, header);
 
     prob.constraints.resize(prob.n_cons);
