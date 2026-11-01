@@ -9,6 +9,7 @@ reference configuration, the instance sets and the cost. Each trial is one
 |---|---|---|
 | `cvrp.study.toml` | #263 | `gap_percent` to the pinned BKS |
 | `mipfeas.study.toml` | #264 | Primal Integral to the `.solu` optimum (`roster.csv`, `tune_confirm.csv`) |
+| `minlplib.study.toml` | #265 | Primal Integral to `primal_bks` (`heldout/bounds.csv`) |
 
 The plan they follow (shape, params, splits, core-hours) is on #261. Results
 go on each class's issue; a setting that is confirmed lands as an engine or
@@ -38,9 +39,10 @@ a `version` bump, which starts a new study.
   instances at a longer one (what `--stage fidelity` compares with the screen),
   `confirm` is held out and never seen while tuning. The wall budget is an
   instance param (`secs`), so one instance can sit in two sets. Exception:
-  MIPfeas's `intermediate` set is #244's 11, other instances than the screen's,
-  so its fidelity rho mixes the longer budget with the change of instances (a
-  low rho does not say which one it is).
+  the `intermediate` sets of MIPfeas (#244's 11) and MINLPLib (15 of
+  `heldout/`) are other instances than the screen's, so their fidelity rho
+  mixes the longer budget with the change of instances (a low rho does not say
+  which one it is).
 - **Reference.** Every param has a `default`; together they render the
   runner's current protocol, which runs as trial 0. Known arms from earlier
   issues are `[[study.enqueue]]`d after it.
