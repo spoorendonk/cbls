@@ -6,7 +6,12 @@ A stub stands in for `reference_solve.py` (no SCIP, no `.nl` files): it takes
 
 from __future__ import annotations
 
+import os
+import signal
+import subprocess
 import sys
+import time
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
@@ -23,7 +28,6 @@ from benchmarks.minlplib.scip_shards import (
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-    from pathlib import Path
 
 SCIP_COLUMNS = (
     "instance,objective,primal_bks,dual_bound,gap_to_bks%,gap_to_dual%,wall_seconds,feasible,"
@@ -31,10 +35,17 @@ SCIP_COLUMNS = (
 )
 
 STUB = f'''
-import sys, time
+import os, sys, time
 name, out, merged, mode = sys.argv[1:5]
+if mode == "abort":
+    os.abort()
+if mode == "slow":
+    time.sleep(0.3)
+    mode = "ok"
 row = (name + ",1,1,NaN,0,NaN,60,true,feasible,NaN,NaN,timelimit,0,0,60,"
        "SCIP 10.0.2 / PySCIPOpt 6.3.0 / 60s / seed 0")
+if mode == "torn":
+    open(out, "w").write("{SCIP_COLUMNS}\\n" + name + ",1,")
 if mode in ("ok", "row-then-exit-3"):
     open(out, "w").write("{SCIP_COLUMNS}\\n" + row + "\\n")
     open(merged, "w").write("merged\\n")
@@ -92,6 +103,44 @@ def test_a_capped_solve_is_a_failure_even_with_a_row_written(tmp_path: Path) -> 
     assert (shards / "a.failed").read_text() == "exit 124\n"
 
 
+def test_a_solve_dying_by_signal_is_recorded_as_sh_reports_it(tmp_path: Path) -> None:
+    shards = tmp_path / "shards"
+    shards.mkdir()
+    rc = solve_shard(shards, "a", stub_command(tmp_path, {"a": "abort"}), cap_seconds=30)
+    assert rc == 134
+    assert (shards / "a.failed").read_text() == "exit 134\n"
+
+
+def test_ctrl_c_starts_no_further_solve(tmp_path: Path) -> None:
+    names = [f"i{k}" for k in range(30)]
+    shards = tmp_path / "shards"
+    script = tmp_path / "drive.py"
+    script.write_text(
+        "import sys\n"
+        "from pathlib import Path\n"
+        "from benchmarks.minlplib.scip_shards import run_shards\n"
+        f"stub = {str(tmp_path / 'stub.py')!r}\n"
+        "def cmd(name, out, merged):\n"
+        "    return [sys.executable, stub, name, str(out), str(merged), 'slow']\n"
+        f"run_shards(Path({str(shards)!r}), {names!r}, cmd, jobs=1, cap_seconds=30)\n"
+    )
+    (tmp_path / "stub.py").write_text(STUB)
+    repo = Path(__file__).resolve().parents[2]
+    env = {**os.environ, "PYTHONPATH": str(repo)}
+    child = subprocess.Popen([sys.executable, str(script)], env=env, cwd=repo)
+    try:
+        deadline = time.monotonic() + 20
+        while not list(shards.glob("*.csv")) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        child.send_signal(signal.SIGINT)
+        child.wait(timeout=20)
+    finally:
+        child.kill()
+    started = len(list(shards.glob("*.log")))
+    assert child.returncode != 0
+    assert 1 <= started < len(names)
+
+
 def test_a_row_from_a_process_that_exited_by_itself_is_kept(tmp_path: Path) -> None:
     shards = tmp_path / "shards"
     shards.mkdir()
@@ -104,14 +153,26 @@ def test_a_row_from_a_process_that_exited_by_itself_is_kept(tmp_path: Path) -> N
 def test_resume_skips_a_row_and_a_retry_clears_the_failure_marker(tmp_path: Path) -> None:
     shards = tmp_path / "shards"
     shards.mkdir()
-    (shards / "done.csv").write_text("kept\n")
+    kept = "h1,h2\nkept,row\n"
+    (shards / "done.csv").write_text(kept)
+    (shards / "torn.csv").write_text("h1,h2\ntorn,")
     (shards / "retry.failed").write_text("exit 134\n")
-    cmd = stub_command(tmp_path, {"done": "nothing", "retry": "ok"})
-    exits = run_shards(shards, ["done", "retry"], cmd, jobs=2, cap_seconds=30)
-    assert exits == {"done": None, "retry": 0}
-    assert (shards / "done.csv").read_text() == "kept\n"
+    cmd = stub_command(tmp_path, {"done": "nothing", "torn": "ok", "retry": "ok"})
+    exits = run_shards(shards, ["done", "torn", "retry"], cmd, jobs=2, cap_seconds=30)
+    assert exits == {"done": None, "torn": 0, "retry": 0}
+    assert (shards / "done.csv").read_text() == kept
+    assert (shards / "torn.csv").read_text().startswith("instance,")
     assert (shards / "retry.csv").exists()
     assert not (shards / "retry.failed").exists()
+
+
+def test_a_torn_row_is_not_published(tmp_path: Path) -> None:
+    shards = tmp_path / "shards"
+    shards.mkdir()
+    rc = solve_shard(shards, "a", stub_command(tmp_path, {"a": "torn"}), cap_seconds=30)
+    assert rc == 0
+    assert not (shards / "a.csv").exists()
+    assert (shards / "a.failed").read_text() == "exit 0\n"
 
 
 def test_the_scorer_reads_the_shards_the_driver_writes(tmp_path: Path) -> None:
@@ -137,7 +198,12 @@ def test_the_real_command_solves_one_instance_into_the_shard_paths(tmp_path: Pat
 
 @pytest.mark.parametrize(
     ("extra", "why"),
-    [(["--cap", "60"], "--cap must exceed"), (["--jobs", "0"], "--jobs must be")],
+    [
+        (["--cap", "60"], "--cap must exceed"),
+        (["--jobs", "0"], "--jobs must be"),
+        (["--time-limit", "0"], "--time-limit must be positive"),
+        (["--seed", "-1"], "--seed must be non-negative"),
+    ],
 )
 def test_bad_limits_are_usage_errors(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], extra: list[str], why: str
