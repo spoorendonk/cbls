@@ -1150,9 +1150,11 @@ def test_minlplib_runs_an_instance_on_the_portfolio(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
 
     rows = list(csv.DictReader(out.read_text().splitlines()))
-    assert [(r["instance"], r["feasible"], r["note"]) for r in rows] == [
-        ("alkylation", "true", "feasible")
-    ]
+    assert [(r["instance"], r["feasible"]) for r in rows] == [("alkylation", "true")]
+    # Which verdict depends on how far a 1 s search gets: a lucky run reaches
+    # the published bound and is `matches-bks`, not `feasible`.
+    feasible_verdicts = ("better-than-bks", "matches-bks", "within-tolerance-of-bks", "feasible")
+    assert rows[0]["note"] in feasible_verdicts, rows[0]["note"]
     # The row records its portfolio size: one table holds one thread count (#299).
     assert rows[0]["search_config"].endswith(";threads=2"), rows[0]["search_config"]
     incumbents = list(csv.DictReader(trace.read_text().splitlines()))
