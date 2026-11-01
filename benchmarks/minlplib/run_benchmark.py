@@ -74,12 +74,16 @@ Guards, because this file's output is published:
   `comparison.csv` at this engine beside a trace from the previous one (#149);
 * refuses to resume a staging directory written by a different commit, budget,
   seed, thread count, host or roster, and re-solves any individual staged row
-  whose `commit_sha` disagrees;
+  whose `commit_sha` or thread count disagrees;
+* sets aside (`.rejected`) the staged row of any solve whose runner exited
+  nonzero, so a resume re-solves it: a solve that lost portfolio workers (#170)
+  writes an ordinary-looking row and says so only in its exit status;
 * runs the runner at `--threads N` (default 1; every campaign runs at
   `CAMPAIGN_THREADS`, Simon, 2026-11-01, #255, #256) and never mixes thread
   counts in one table: each row's `search_config` cell and each run record carry
   the count, a count that is neither 1 nor the campaign's may not publish, and a
-  per-seed table already holding another count's seeds is refused;
+  per-seed table already holding another count's seeds is refused, as is a
+  count above the CPUs this process may run on;
 * refuses a seed other than `DEFAULT_SEED` writing either published artifact,
   by default or by name, and any scratch output (or its run record) resolving
   to a published file (#141);
@@ -439,7 +443,33 @@ def preflight(
     All of them are cheap and all of them would otherwise surface as a wrong or
     half-written published table — some of them 50 minutes in.
     """
-    return common_preflight(args, sha, roster, dirty_paths) + _seeds_table_problems(args)
+    return (
+        common_preflight(args, sha, roster, dirty_paths)
+        + _seeds_table_problems(args)
+        + _cpu_problems(args)
+    )
+
+
+def available_cpus() -> int:
+    """How many CPUs this process may run on (its affinity mask, not the machine's)."""
+    return len(os.sched_getaffinity(0))
+
+
+def _cpu_problems(args: argparse.Namespace) -> list[str]:
+    """Refuse more portfolio threads than CPUs this process may run on.
+
+    Under `taskset -c 0-3` (the local-CI pin) or a unit with a smaller CPU set,
+    sixteen workers time-slice on four cores: each gets a quarter of the budget,
+    and every row still says `threads=16`.
+    """
+    cpus = available_cpus()
+    if args.threads <= cpus:
+        return []
+    return [
+        f"--threads {args.threads} but this process may run on {cpus} CPU(s): the workers "
+        "would share them and each row would measure a fraction of its budget. Widen the "
+        "CPU set (taskset, the unit's AllowedCPUs) or lower --threads"
+    ]
 
 
 def usage_error(args: argparse.Namespace, published_out: Path) -> str | None:
@@ -841,7 +871,29 @@ def staged_complete(args: argparse.Namespace, sha: str, name: str, stage: Path) 
         return False
     if staged_unpublishable(stage / f"{name}.csv"):
         return False
+    if staged_row_threads(stage / f"{name}.csv") != args.threads:
+        return False
     return not args.trace or (stage / f"{name}.trace.csv").exists()
+
+
+#: The thread count `cbls_minlplib` appends to `search_config` off the
+#: single-threaded default; a cell without it is a 1-thread row.
+SEARCH_CONFIG_THREADS = re.compile(r"(?:^|;)threads=([0-9]+)(?:;|$)")
+
+
+def staged_row_threads(path: Path) -> int | None:
+    """The thread count a staged row was solved at, or None when it has no whole row.
+
+    The staging stamp keys a directory to one count, but `--no-resume` rewrites
+    the stamp and leaves the earlier rows in place: an interrupted re-run at
+    another count would otherwise resume onto them and assemble a table holding
+    two counts. The row's own `search_config` is what it was measured at.
+    """
+    row = _staged_row(path)
+    if row is None:
+        return None
+    match = SEARCH_CONFIG_THREADS.search(row.get("search_config", ""))
+    return int(match.group(1)) if match else 1
 
 
 def runner_command(args: argparse.Namespace, sha: str, name: str, stage: Path) -> list[str]:
@@ -1105,6 +1157,8 @@ def run_roster(args: argparse.Namespace, sha: str, roster: Sequence[str], stage:
         print(f"[{index}/{len(roster)}] {name}: {' '.join(cmd)}", flush=True)
         log = stage / f"{name}.log"
         completed = run_process(cmd, log=log)
+        if completed.returncode != 0:
+            quarantine_staged(stage, name)
         if completed.returncode != 0 or not staged_complete(args, sha, name, stage):
             what_next = (
                 "The runner threw on this instance and its staged row carries "
@@ -1119,6 +1173,26 @@ def run_roster(args: argparse.Namespace, sha: str, roster: Sequence[str], stage:
                 f"{name} failed (exit {completed.returncode}); see {log}. {what_next}"
             )
     return resumed
+
+
+#: The suffix a staged file gets when its solve exited nonzero; `staged_complete`
+#: then finds no row, so a re-run solves the instance again.
+REJECTED_SUFFIX = ".rejected"
+
+
+def quarantine_staged(stage: Path, name: str) -> None:
+    """Set aside `name`'s staged row and trace after a nonzero runner exit.
+
+    A row can be whole and carry a stageable note yet measure the wrong thing:
+    a solve that lost portfolio workers (#170) is written as usual and only the
+    exit status says so. Left in place, the next resume would skip the instance
+    and publish that row as a full-thread one. Renamed rather than deleted, so
+    the evidence stays beside the log.
+    """
+    for suffix in (".csv", ".trace.csv"):
+        path = stage / f"{name}{suffix}"
+        if path.exists():
+            path.replace(path.with_name(path.name + REJECTED_SUFFIX))
 
 
 def publish(

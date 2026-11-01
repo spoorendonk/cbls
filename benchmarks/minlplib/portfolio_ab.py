@@ -1,6 +1,7 @@
 """Paired portfolio A/B on MINLPLib: shared objective bound on vs off (#179).
 
-`cbls_minlplib` is single-threaded, so it cannot run a portfolio. This driver
+`cbls_minlplib --threads N` runs a portfolio but cannot switch the shared bound
+off, so it cannot pair the two arms. This driver
 runs `cbls_minlplib_portfolio` (benchmarks/minlplib/portfolio_ab.cpp) instead:
 for every (instance, seed) both arms back to back, serially, holding an
 optional machine-wide lock across the pair, arm order alternating with the

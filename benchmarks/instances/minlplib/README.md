@@ -378,13 +378,17 @@ is about to be labelled with. `--dry-run` prints the plan and exits non-zero if
 any refusal applies, so it works as a precheck.
 
 **Resumable.** Each instance is solved in its own process into
-`$XDG_STATE_HOME/cbls/minlplib-rerun/<commit>/<budget>s/seed<N>/<instance>.csv`
-— by default `~/.local/state/cbls/minlplib-rerun/<commit>/60s/seed1/...` (plus `.trace.csv` and a `.log` holding
+`$XDG_STATE_HOME/cbls/minlplib-rerun/<commit>/<budget>s/threads<T>/seed<N>/<instance>.csv`
+— by default `~/.local/state/cbls/minlplib-rerun/<commit>/60s/threads1/seed1/...` (plus `.trace.csv` and a `.log` holding
 that instance's runner output and tally). A re-invocation skips instances that
 already have a *complete* staged row. Incomplete means any of: a header-only
 file (what a killed job leaves behind), a torn last line, a row stamped with a
-different `commit_sha`, a missing `.trace.csv`, or a row whose note says the
-runner **threw** (`read-error`/`build-error`/`solve-error`) — all are re-solved.
+different `commit_sha` or solved at another thread count, a missing
+`.trace.csv`, or a row whose note says the runner **threw**
+(`read-error`/`build-error`/`solve-error`) — all are re-solved. A solve whose
+runner exited nonzero has its row and trace renamed `*.rejected`, so a re-run
+solves it again: a solve that lost portfolio workers (#170) writes an
+ordinary-looking row and says so only in its exit status.
 The last is there because such a row is whole in every other respect: the run
 that produced it aborted the driver, and without this the next resume would skip
 the instance and publish a row that measured nothing.
@@ -1671,7 +1675,7 @@ a table names its engine commit and the tie-break's state.
 
 ## Portfolio A/B: the shared objective bound (#179)
 
-`cbls_minlplib` is single-threaded, so a portfolio comparison runs through
+`cbls_minlplib --threads N` runs the portfolio but has no shared-bound switch, so a portfolio comparison runs through
 `cbls_minlplib_portfolio` (`benchmarks/minlplib/portfolio_ab.cpp`). It builds the
 model exactly as the runner does and runs `ParallelSearch` with the runner's
 per-worker hook and LNS. `benchmarks/minlplib/portfolio_ab.py` pairs the arms and

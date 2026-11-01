@@ -470,11 +470,15 @@ def test_staged_row_complete(tmp_path: Path, text: str | None, sha: str, complet
 
 
 def _stage(
-    tmp_path: Path, note: str = "feasible", sha: str = "abc1234", trace: bool = True
+    tmp_path: Path,
+    note: str = "feasible",
+    sha: str = "abc1234",
+    trace: bool = True,
+    config: str = DEFAULT_ARM,
 ) -> Path:
     stage = tmp_path / "stage"
     stage.mkdir(exist_ok=True)
-    row = f"a,NaN,1,1,NaN,NaN,0,false,{note},{sha},NaN,0,NaN,NaN,NaN,NaN,{DEFAULT_ARM}"
+    row = f"a,NaN,1,1,NaN,NaN,0,false,{note},{sha},NaN,0,NaN,NaN,NaN,NaN,{config}"
     (stage / "a.csv").write_text(f"{HEADER}\n{row}\n")
     if trace:
         (stage / "a.trace.csv").write_text(TRACE_HEADER + "\n")
@@ -736,6 +740,52 @@ def test_run_roster_stops_on_a_failed_instance_and_says_what_to_do(
         run_roster(make_args(tmp_path), "abc1234", ["a", "b"], stage)
     assert (stage / "a.log").exists()
     assert not (stage / "b.csv").exists(), "the roster went on past a failed instance"
+
+
+def test_a_nonzero_exit_sets_its_row_aside_so_a_resume_solves_it_again(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A solve that lost portfolio workers writes a whole, stageable row and exits 1 (#170).
+
+    Left in place, the next resume would skip the instance and publish that row
+    as a full-thread one.
+    """
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    monkeypatch.setattr(subprocess, "run", fake_runner(returncode=1))
+    with pytest.raises(RuntimeError, match="Re-running resumes"):
+        run_roster(make_args(tmp_path), "abc1234", ["a"], stage)
+    assert not (stage / "a.csv").exists()
+    assert (stage / "a.csv.rejected").exists(), "the evidence was deleted, not set aside"
+    assert (stage / "a.trace.csv.rejected").exists()
+    capsys.readouterr()
+
+    monkeypatch.setattr(subprocess, "run", fake_runner())
+    run_roster(make_args(tmp_path), "abc1234", ["a"], stage)
+    assert "staged already" not in capsys.readouterr().out
+    assert staged_complete(make_args(tmp_path), "abc1234", "a", stage)
+
+
+def test_a_staged_row_at_another_thread_count_is_solved_again(tmp_path: Path) -> None:
+    """`--no-resume` rewrites the stamp but leaves the rows; each row says its own count."""
+    stage = _stage(tmp_path)
+    assert staged_complete(make_args(tmp_path), "abc1234", "a", stage)
+    assert not staged_complete(make_args(tmp_path, threads=16), "abc1234", "a", stage)
+    stage = _stage(tmp_path, config=f"{DEFAULT_ARM};threads=16")
+    assert staged_complete(make_args(tmp_path, threads=16), "abc1234", "a", stage)
+    assert not staged_complete(make_args(tmp_path), "abc1234", "a", stage)
+
+
+def test_preflight_refuses_more_threads_than_the_process_may_run_on(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Sixteen workers on a four-CPU taskset would each measure a quarter of the budget."""
+    make_inst_dir(tmp_path, ["a"])
+    make_build_dir(tmp_path)
+    monkeypatch.setattr(run_benchmark, "available_cpus", lambda: 4)
+    problems = preflight(make_args(tmp_path, threads=16), "abc1234", ["a"])
+    assert any("--threads 16 but this process may run on 4 CPU(s)" in p for p in problems)
+    assert preflight(make_args(tmp_path, threads=4), "abc1234", ["a"]) == []
 
 
 # --- assembly ----------------------------------------------------------------
@@ -1064,6 +1114,8 @@ def test_preflight_refuses_a_seed_at_another_thread_count_beside_the_others(
     make_inst_dir(tmp_path, ["a", "b"])
     make_build_dir(tmp_path)
     monkeypatch.setattr(subprocess, "run", seeded_runner())
+    # The local-CI pin is four CPUs; this test is about the seeds table, not them.
+    monkeypatch.setattr(run_benchmark, "available_cpus", lambda: 32)
     assert _execute(tmp_path, 2) == 0
     problems = preflight(make_args(tmp_path, threads=16), "abc1234", ["a", "b"])
     assert any("seed 2 at 1 thread(s)" in p and "--threads 16" in p for p in problems), problems
