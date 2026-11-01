@@ -718,7 +718,7 @@ TEST_CASE("Real MINLPLib files with x^c and c^x evaluate at their best-known poi
     // Best-known points from minlplib.org/sol/<name>.p1.sol, mapped to NL
     // columns by each instance's .col file; the objectives are the catalogue's
     // primal bounds.
-    SECTION("filter: x^.86 (vcpower)") {
+    SECTION("filter: (a quotient of x)^.86 (vcpower)") {
         // Columns x2, x1.
         check_real_file_at_best_known("tests/data/filter.nl", {10.0, 1290.226825443540065},
                                       8685.277077052489403);

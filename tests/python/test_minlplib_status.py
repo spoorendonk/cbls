@@ -61,7 +61,11 @@ def test_full_selection_needs_a_finite_primal_bound(primal: str) -> None:
 
 
 def _fake_checker(tmp_path: Path) -> Path:
-    """A checker that answers from each file's first word; "crash" kills it."""
+    """A checker that answers from each file's first word.
+
+    "crash" exits 3, "hang" sleeps past any test timeout, "latin" answers with
+    a byte that is not UTF-8 (as a reader message quoting a raw file byte can).
+    """
     script = tmp_path / "checker"
     script.write_text(
         "#!/bin/sh\n"
@@ -69,6 +73,8 @@ def _fake_checker(tmp_path: Path) -> Path:
         '  w=$(head -n1 "$f")\n'
         '  case "$w" in\n'
         "    crash) exit 3;;\n"
+        "    hang) exec sleep 30;;\n"
+        '    latin) printf "%s\\treader-error\\tNL: bad tag \\303\\n" "$f";;\n'
         '    ok) printf "%s\\tmodelled\\n" "$f";;\n'
         '    bad) printf "%s\\treader-error\\tNL: broken\\n" "$f";;\n'
         '    *) printf "%s\\tadapter-unsupported\\topcode 49\\n" "$f";;\n'
@@ -116,16 +122,17 @@ def test_every_instance_gets_the_first_status_that_applies(tmp_path: Path) -> No
         ("bad", "reader-error", "NL: broken"),
         ("atan", "adapter-unsupported", "opcode 49"),
         # The crash takes its batch down; the batch is re-run a file at a
-        # time, so only the crashing file is charged.
-        ("crash", "reader-error", "checker crashed"),
+        # time, so only the crashing file is charged, and not as the reader's.
+        ("crash", "checker-failed", "exit code 3"),
         ("ok2", "modelled", ""),
     ]
     assert status.counts(got) == {
         "unsupported-op": 1,
         "missing-nl": 1,
         "no-primal-bound": 1,
-        "reader-error": 2,
+        "reader-error": 1,
         "adapter-unsupported": 1,
+        "checker-failed": 1,
         "modelled": 2,
     }
 
@@ -146,6 +153,40 @@ def test_the_cli_writes_the_status_table_and_the_modelled_bounds(tmp_path: Path)
         table = list(csv.DictReader(fh))
     assert [r["instance"] for r in table] == [r["name"] for r in rows]
     assert download.read_bounds_names(bounds) == ["ok1", "ok2"]
+
+
+def test_an_undecodable_checker_byte_does_not_stop_the_run(tmp_path: Path) -> None:
+    (tmp_path / "x.nl").write_text("latin\n")
+    got = status.check_files(_fake_checker(tmp_path), [tmp_path / "x.nl"])
+    assert got[str(tmp_path / "x.nl")] == ("reader-error", "NL: bad tag \ufffd")
+
+
+def test_a_hung_file_is_charged_alone(tmp_path: Path) -> None:
+    (tmp_path / "hang.nl").write_text("hang\n")
+    (tmp_path / "ok.nl").write_text("ok\n")
+    files = [tmp_path / "ok.nl", tmp_path / "hang.nl"]
+    got = status.check_files(_fake_checker(tmp_path), files, timeout=0.5)
+    assert got[str(files[0])] == ("modelled", "")
+    assert got[str(files[1])][0] == "checker-failed"
+    assert "timed out" in got[str(files[1])][1]
+
+
+def test_a_checker_that_fails_on_everything_fails_the_run(tmp_path: Path) -> None:
+    nl = tmp_path / "nl"
+    nl.mkdir()
+    rows = [_row("a"), _row("b")]
+    for r in rows:
+        (nl / f"{r['name']}.nl").write_text("ok\n")
+    cat = tmp_path / "instancedata.csv"
+    with open(cat, "w", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=list(rows[0]), delimiter=";")
+        writer.writeheader()
+        writer.writerows(rows)
+    broken = tmp_path / "broken"
+    broken.write_text("#!/bin/sh\nexit 1\n")
+    broken.chmod(0o755)
+    argv = ["--catalogue", str(cat), "--nl-dir", str(nl), "--out", str(tmp_path / "s.csv")]
+    assert status.main([*argv, "--checker", str(broken)]) == 1
 
 
 def test_a_missing_checker_is_refused(tmp_path: Path) -> None:

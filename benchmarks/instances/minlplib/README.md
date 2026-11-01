@@ -94,7 +94,7 @@ selection: every problem type, convex or not, no size budget, `opvcpower` and
 `opcvpower` accepted; only `operrorf`, `opgamma`, `opcentropy` and `opmod`
 exclude, plus the lack of a finite primal bound. `status.py` gives every
 catalogue instance one status, the first that applies: `unsupported-op`,
-`missing-nl`, `no-primal-bound`, `reader-error`, `adapter-unsupported`,
+`missing-nl`, `no-primal-bound`, `reader-error`, `adapter-unsupported`, `checker-failed` (crashed, killed or timed out),
 `modelled`. It reads the NL files from a local directory (the unpacked
 `https://www.minlplib.org/minlplib_nl.zip`) and runs the
 `cbls_minlplib_nl_check` target (read and model, no solve) over them:
