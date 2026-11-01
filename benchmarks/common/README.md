@@ -14,7 +14,7 @@ of reading past `argv` or silently keeping a default that a published table woul
 then be built on. Third `same_file`, the published-table guard's path
 comparison — canonicalised where the file exists, so that naming the published
 table explicitly (which the documented commands do) is held to the same rule as
-defaulting into it. `mipfeas`, `minlplib` and `uc-chped` share the first two;
+defaulting into it. `mipfeas`, `minlplib`, `uc-chped` and `cvrp` share the first two;
 `setcover` deliberately does not, and says why at its own `parse_args`. The
 policy split is deliberate: the rule is a library concern, the policy writes to
 stderr and calls `std::exit` and is pinned by
@@ -24,7 +24,7 @@ tests run.
 `search_config_flags.h` is the per-arm search configuration (#136): the flag
 table, its parse, its validation, its application onto `cbls::SearchConfig` and
 `solve()`'s arguments, and the canonical `search_config` cell every row carries.
-`minlplib` and `uc-chped` share it; `mipfeas` takes five of its flags (#267:
+`minlplib`, `uc-chped` and `cvrp` share it; `mipfeas` takes five of its flags (#267:
 `--no-lns`, `--lns-interval`, `--novelty-prob`, `--unproductive-iters`,
 `--perturbation-period`), parsed and validated here but recorded under its own
 JSON keys. Two rules it exists to enforce: **a flag

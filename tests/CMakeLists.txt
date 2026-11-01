@@ -81,7 +81,7 @@ include(Catch)
 # hang_guard_novelty_zero_move_batch, hang_guard_nonpositive_batch_iterations
 # and hang_guard_nl_placement_counts here, and the two shell gate tests clang_tidy_gate_probe and
 # gate_lib_shell_test in the root CMakeLists.txt)
-# finish in ~12s with `-j`, which is what pre-commit runs via `ctest -LE slow`.
+# finish in ~12s with `-j`, the `ctest -LE slow` loop to run before committing (no hook runs it).
 # pre-push still runs everything.
 #
 # Re-measured 2026-09-26 at 566 tests: only ONE of
@@ -138,7 +138,7 @@ set_tests_properties(timing_structural_batch_deadline
 
 # #191: a FloatIntensifyHook pass that would run for seconds must end at the
 # solve's deadline. LABELS "timing;slow" keeps its wall-clock half-second out of
-# the `ctest -LE slow` pre-commit set, as for the #125 floors below; TIMEOUT 60
+# the `ctest -LE slow` fast set, as for the #125 floors below; TIMEOUT 60
 # so a regression (6.7 s on the pre-#191 engine) fails on the assertion, which
 # names the problem, rather than on the timeout.
 add_test(NAME timing_inner_solver_hook_deadline
@@ -194,7 +194,7 @@ set_tests_properties(hang_guard_nl_placement_counts
 # each floor.
 #
 # LABELS "timing;slow": `timing` keeps the class greppable, `slow` keeps their
-# three wall-clock seconds out of the `ctest -LE slow` pre-commit set (the issue
+# three wall-clock seconds out of the `ctest -LE slow` fast set (the issue
 # asks for that explicitly). They are therefore counted by `ctest -L slow` while
 # carrying no Catch2 [slow] tag — the tag and the ctest label are different
 # things here, which is why the two roster counts differ.

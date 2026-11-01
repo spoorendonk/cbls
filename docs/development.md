@@ -11,7 +11,9 @@ Release when the caller sets none, so the ```build fence (pre-push's local CI) a
 both gate the same binaries from one place. An explicit `-DCMAKE_BUILD_TYPE=Debug`
 still overrides it. The suite is mostly real solver runs, so the type is not
 cosmetic: the full `ctest` is ~490s at the old empty default and ~25s at
-Release (both re-measured 2026-09-26 at 566 tests, `-j12`, on an idle machine).
+Release (both re-measured 2026-09-26 at 566 tests, `-j12`, on an idle machine;
+the gate now runs pinned to 4 CPUs by `hooks.localCiCpus`, so expect its
+wall-clock to be longer than the `-j12` figures in this file).
 
 `CMakeLists.txt` also picks up `ccache` as a compiler launcher when the machine
 has it (`apt install ccache`), which matters because pre-push's ```clean fence is
@@ -20,7 +22,8 @@ has it (`apt install ccache`), which matters because pre-push's ```clean fence i
 without it just builds normally. pre-push builds in a worktree under
 `~/.cache/local-ci`, a different path for every push, so ccache only hits there
 with `base_dir` set (e.g. `ccache -o base_dir=$HOME`); without it each push is a
-cold build.
+cold build. `git config hooks.localCiWorktree <path>` instead keeps one warm
+worktree between pushes and skips its ```clean fence (#183; `.githooks/pre-push`).
 
 **Why the fences look for `python` on PATH when `.venv/` is missing.** `.githooks/pre-push`
 runs these fences (`clean`, `build`, `test`) as a local CI in a fresh worktree
@@ -144,17 +147,14 @@ Update all six in the same commit as any change to the test roster, and
 re-derive every number from `ctest -N` / `pytest --collect-only` rather than
 incrementing the one you find.
 
-All timings here are **Release**, the build type `CMakeLists.txt` defaults to.
-The tag was re-derived at `-O3`: 16 tests that earned it at `-O0` no longer come
-close to the threshold, and carrying them cost pre-push a roster it did not need
-while hiding them from the inner loop. That move is what took pre-commit from
-~2s to ~8s — the fast set is no longer trivially fast, and the 6 that remain are
-the only ones where the split still pays.
+All timings here are **Release**, the build type `CMakeLists.txt` defaults to,
+and `[slow]` is earned at Release: the 6 tagged tests are the only ones where
+the fast/slow split pays.
 
 Measure both ways before tagging. These tests run under `-j$(nproc)`, and
-contention inflates a solve by 1.4-1.7x: `UC-CHPED 40-unit 1-period feasibility`
-is 9.95s alone and 17.1s under `-j12`. Tag if it exceeds ~10s on **either**
-basis. Don't tag one just to get a green commit — pre-push will still run it.
+contention inflates a solve (by 1.4-1.7x at `-j12`: `UC-CHPED 40-unit 1-period
+feasibility` was 9.95s alone and 17.1s contended). Tag if it exceeds ~10s on
+**either** basis. Don't tag one just to get a green commit — pre-push will still run it.
 
 ## LSP
 
@@ -170,7 +170,7 @@ Install `pyright-lsp@claude-plugins-official`. Pyright reads `[tool.mypy]` and p
 
 ## Git Workflow
 
-Trunk-based development with linear history on main. Commit directly to main and push when local gates pass. There are currently no other worktrees or long-lived branches.
+Trunk-based development with linear history on main. Commit directly to main and push when local gates pass.
 
 Feature branches are optional for larger changes:
 - Always branch from main. Run `git checkout main && git pull` first.
@@ -198,7 +198,7 @@ Issues get picked up later in fresh sessions, often by a different agent with no
 - **Self-contained.** Body must carry all needed context: problem, motivation, acceptance criteria, repro steps. Don't assume the reader has the current conversation.
 - **No local references.** No local file paths, local repo paths, or machine-specific locations (`/home/user/...`, `~/code/foo/bar.py`, "see my other checkout"). Dead links in a fresh session.
 - **Prefer stable external links.** GitHub permalinks, paper URLs, RFCs, official docs.
-- **Be vague about local code context.** Describe the concept rather than the path; hint that the agent can search under `..`, `../..`, or `~/code/`.
+- **Name code by repository path, not machine path.** `src/search.cpp` or a GitHub permalink is stable; a checkout's absolute path is not.
 
 ## Parallel Issue Workflow
 
@@ -233,7 +233,7 @@ When the user brings multiple gh issues to work on at once:
    at these two issues" — ask before merging.
 6. **Final combined review, then push.** The orchestrator merges every approved
    branch into local main, has **one** reviewer make a single pass over the merged
-   result (not `/review`'s three-agent fan-out), and only then
+   result (not a multi-agent fan-out), and only then
    runs `git push origin main`. No pushes — of main or of a feature branch —
    happen before that final review. Then close the issues the push resolved and
    delete the branches and worktrees, per **Git Workflow**.
@@ -245,114 +245,49 @@ must not say otherwise.
 
 A subagent worktree may READ sibling worktrees to understand patterns, but must never WRITE to one or to its git branch. A fresh worktree has no `.venv`; see **Build & Test, in detail** above for the symlink it needs before building or testing (a worktree only — a full clone makes its own).
 
-## Conventions in full
+## Conventions: the reasons
 
-CLAUDE.md states these rules in short form; this is the original text, with the reasons.
+CLAUDE.md states the conventions; this section keeps only the reasons it
+leaves out.
 
-### C++
-
-- **C++17** (`CMAKE_CXX_STANDARD 17`). `std::expected`, concepts and ranges are *not* available here; don't reach for them.
-- Style: Google-based, enforced by `.clang-format` and `.clang-tidy` at the repo root. Both tools are **pinned PyPI wheels in `.venv/`** (`clang-format==22.1.8`, `clang-tidy==22.1.8`), not system packages — `uv sync --extra dev --extra benchmarks` (**Build & Test, in detail** above) installs them, and the hooks prefer `.venv/bin` over `PATH`. The `benchmarks` extra is in that command because the gated test fence requires it. The exact pin keeps formatter and tidy output identical across checkouts.
-- Naming is **not** Google's default — `.clang-tidy` encodes what this codebase actually does:
-
-  | Kind | Style | Example |
-  |---|---|---|
-  | Functions (free and member) | `lower_case` | `full_evaluate`, `weighted_violation_delta` |
-  | Locals, parameters, `const` locals | `lower_case` | `total_violation`, `node_id` |
-  | Private members | trailing `_` | `out_`, `model_` |
-  | File-scope / static / class / `constexpr` constants | `k` + `CamelCase` | `kVersion`, `kEps`, `kMpsInf` |
-  | Classes | `CamelCase` | `Model`, `JumpTable` |
-  | Namespaces | `lower_case` | `cbls` |
-
-  Two exceptions: `Model::Bool/Int/Float/List/Set/Constant` stay CamelCase because they name the type they create (and `bool`/`int`/`float` cannot be lowercased without hitting a keyword), and `src/io/.clang-tidy` disables the naming check for that directory because `mps_reader.cpp` and `solu_reader.cpp` are vendored from `spoorendonk/mipx` and must stay diff-clean against upstream. The three native adapters there (`mps_to_model.cpp`, `nl_reader.cpp`, `nl_to_model.cpp`) lose naming coverage as a side effect — keep an eye on new code in that directory.
-
-  That directory config **must** carry `InheritParentConfig: true`. Without it clang-tidy *replaces* the root `Checks:` instead of appending to it, leaving only the always-on `clang-diagnostic-*` — the directory then runs no registered check at all and clang-tidy exits 1 with `Error: no checks enabled.` Verify any edit to **either** `.clang-tidy` with `cd src/io && ../../.venv/bin/clang-tidy --dump-config` and confirm the root's check list is actually present. This is the same verification `docs/git-hooks.md` demands for the root file's folded-scalar hazard, and for the same reason: both failures fail open.
-- Use `#pragma once` for include guards.
-- Minimize includes in headers. Forward-declare where possible.
-
-### Python
-
-- Style: enforced by `ruff` (format + lint) and `mypy --strict`, configured in `pyproject.toml`.
-- All functions must have full type annotations (mypy strict mode).
-- Use built-in generics (`list[int]`, `dict[str, Any]`) and `|` union syntax.
-- Pin dependencies with `>=` lower bounds in `pyproject.toml`. Use `uv`; change the venv with `uv sync`, never `pip`.
-
-### nanobind Bindings
-
-- Bindings live in `python/bindings.cpp` — a single `NB_MODULE(_cbls_core, ...)` built by `nanobind_add_module` in `python/CMakeLists.txt`, gated on `CBLS_BUILD_PYTHON`. Keep binding glue out of `src/`; a new binding source must be added to that call or it is never compiled.
-- C++ `camelCase` methods → Python `snake_case` via nanobind. Use `nb::arg("name")` for Python-friendly parameter names.
-
-#### Ownership and Lifetime
-
-- Default: nanobind manages ownership. Use `nb::rv_policy::reference` only when C++ retains ownership and guarantees the object outlives Python references.
-- Never return raw pointers without explicit lifetime annotation.
-- Prefer returning by value or `std::shared_ptr`. Document ownership on each binding that transfers or shares it.
-
-#### Type Conversions
-
-- Use automatic conversions for standard types (`std::string` ↔ `str`, `std::vector` ↔ `list`).
-- Use `nb::ndarray` for NumPy interop — specify dtype and shape constraints.
-- **A `def_rw` on a vector the engine indexes unchecked is a segfault, and so is
-  a raw `int32_t` handle.** Python supplies both without a type system in the
-  way, and the hot paths index by constraint or variable id without bounds
-  tests. Three crashes of exactly this shape were found in one review pass
-  (#156): `ModelState.elements`, `ViolationManager.weights`, and child handles
-  into every builder. Validate where the caller hands the value over — a
-  `def_prop_rw` setter that checks the length, or a check at node creation —
-  rather than per read on a hot path, and pin it with a child-process test
-  (`tests/python/test_model_handles.py`), since the unguarded state crashes the
-  interpreter rather than failing a test.
-- **Never return `reference_internal` to an element of a container the owner
-  can grow.** `keep_alive` keeps the *owner* alive, not the element: before
-  `close()` every variable builder appends to the model's variable array and
-  can reallocate it,
-  so a `m.var_mut(i)` held across one writes into freed heap and the write is
-  silently lost (first found through the since-removed `Model.extend`, #167's
-  cold review). Return an
-  (owner, index) handle that resolves on every access — `VariableRef`, bound as
-  `cbls.Variable`, is the pattern — or a copy.
-
-### Testing
-
-C++ tests use **Catch2** (not GoogleTest): files in `tests/`, registered in `tests/CMakeLists.txt`, run via `ctest` (the two shell tests pinning the git-hook gates, in the root `CMakeLists.txt`, are the only non-Catch2 ctest entries). Python tests use **pytest**: `test_<module>.py` under `tests/python/`, `conftest.py` for shared fixtures, `pytest.mark.parametrize` for data-driven cases.
-
-- Name tests descriptively — `returns_optimal_for_feasible_input`, `test_solver_returns_optimal_for_feasible_input`.
-- Test nanobind bindings from Python with pytest, not from C++ — the binding is an implementation detail. Include round-trip tests: create in Python → pass to C++ → get result back.
-- An `std::optional` guarded by `REQUIRE(o.has_value())` still trips `bugprone-unchecked-optional-access`, which is enabled: the check cannot see through Catch2's expression templates, and `.value()` reads the same way to it. Write `if (!o.has_value()) { FAIL("..."); return; }` instead — the `return` is what makes the flow analysis see the guard, even though `FAIL` throws. Do **not** reach for a `NOLINT` or add the check to `.clang-tidy`'s disabled list; both routes are closed (see `docs/git-hooks.md`).
-- A Python test that could **deadlock the interpreter** — anything handing a Python callable to C++ that spawns threads — must run its scenario in a **child process** under a wall-clock timeout. No in-process deadline can report it: `pytest-timeout`'s `thread` method runs its timer on a Python thread that needs the very GIL the test is starving, and its `signal` method only takes effect at the next bytecode in a main thread parked inside a C++ `join()`. `tests/python/test_pool.py` is the pattern — scenarios in a `__main__` block, `subprocess.run(..., timeout=...)` in the test.
-- A test that spawns `git` must not inherit a hook's `GIT_*` variables: pre-commit exports `GIT_DIR` and `GIT_INDEX_FILE`, and a `git init` in a tmp dir once re-initialised the real repository (`core.bare = true` for every worktree, #160). `tests/python/conftest.py` strips every `GIT_*` variable before each test; don't work around it.
-- Terse output is not configured anywhere — pass the flags. `ctest --progress` collapses the running list, `--tb=short -q` keeps pytest failures short, as CLAUDE.md's `## Build & Test` blocks already do. `pyproject.toml` sets `testpaths`, ruff's rule set and `mypy strict`, but no `addopts`, `pretty` or `output-format`.
-
-### Code Navigation
-
-Prefer narrow queries over full-file reads:
-
-1. **LSP** for symbol questions. `goToDefinition`, `hover`, `documentSymbol`, `workspaceSymbol` answer "where is X / what's its signature" in a few tokens. Use before `Read`.
-2. **Grep with `head_limit` (small) + `-n`** to locate lines. Start with `head_limit: 20`; raise only if inconclusive.
-3. **Read with `offset`/`limit`** to fetch a slice around the hit. Full-file `Read` is fine for files under ~200 lines or when structure matters.
-
-Know the symbol → LSP. Know a string, not its location → Grep. Full-file Read is the last mile. This is a preference, not a prohibition: shelling out to `grep`/`rg` is fine when the built-in can't do the job (filtering a pipe like `git log | grep`, or a session without the `Grep` tool). What matters is bounding output, not which binary produces it.
-
-### Complexity
-
-When a complexity warning fires, don't extract methods mechanically. Ask: what are the independent responsibilities here? Split along those boundaries. If the function is genuinely complex because the domain is, say why in a comment directly above it and suppress that one warning with `NOLINTNEXTLINE(readability-function-cognitive-complexity)`.
-
-This is the **only** check a `NOLINT` is sanctioned for — plus one pre-existing `bugprone-float-loop-counter` — and only with the reason written at the site; `docs/git-hooks.md` names all five in-tree examples. Every other clang-tidy finding gets fixed, not suppressed, and adding the check to `.clang-tidy`'s disabled list is not an option either.
-
-### Plan Adherence
-
-**Follow the agreed plan.** If you think a plan should change, stop and discuss — don't silently diverge. The same goes outside a written plan: if your current approach isn't working, say so out loud — don't quietly switch strategies. Implement everything specified; don't leave TODO placeholders or stub implementations unless explicitly asked.
-
-### Reference Correctness
-
-When implementing from papers, pseudocode, or open-source references:
-- Match the reference algorithm exactly. No early exits, iteration limits, size caps, or "optimization" shortcuts that change behavior.
-- Only introduce heuristic approximations when explicitly asked.
-- Implement edge cases and special handling — don't simplify them away.
-- When in doubt, be faithful to the reference and let tests verify correctness.
-
-### Common Mistakes
-
-- **Don't invent APIs — verify they exist.** Check that functions, flags, and methods actually exist before using them.
-- **Don't ignore type errors.** If mypy/clang-tidy flags something, fix the root cause — don't suppress. Silencing either — by disabling a clang-tidy check or by widening `[tool.mypy] exclude` — is the route explicitly closed (see `docs/git-hooks.md`).
-- **Don't use deprecated patterns.** Check current docs, not training data.
+- **`src/io/` naming.** `mps_reader.cpp` and `solu_reader.cpp` are vendored
+  from `spoorendonk/mipx` and stay diff-clean, so `src/io/.clang-tidy` disables
+  the naming check for the directory. The native adapters there
+  (`mps_to_model.cpp`, `nl_reader.cpp`, `nl_to_model.cpp`) lose naming coverage
+  as a side effect: watch new code in that directory.
+- **`InheritParentConfig: true` in `src/io/.clang-tidy`.** Without it
+  clang-tidy *replaces* the root `Checks:` instead of appending to it, leaving
+  only `clang-diagnostic-*`: the directory runs no registered check and
+  clang-tidy exits 1 with `Error: no checks enabled.` Verify an edit to either
+  `.clang-tidy` with `cd src/io && ../../.venv/bin/clang-tidy --dump-config`.
+  Like the root file's folded-scalar hazard (`docs/git-hooks.md`), it fails
+  open.
+- **Validate Python-supplied indices where they are handed over.** The hot
+  paths index by constraint or variable id without bounds tests, and Python
+  supplies both with no type system in the way. One review pass (#156) found
+  three crashes of this shape: `ModelState.elements`,
+  `ViolationManager.weights`, and child handles into every builder. Check in a
+  `def_prop_rw` setter or at node creation, not per read on a hot path, and pin
+  it with a child-process test (`tests/python/test_model_handles.py`), since the
+  unguarded state crashes the interpreter rather than failing a test.
+- **No `reference_internal` to an element of a growable container.**
+  `keep_alive` keeps the *owner* alive, not the element: before `close()`
+  every variable builder appends to the model's variable array and can
+  reallocate it, so a `m.var_mut(i)` held across one writes into freed heap and
+  the write is silently lost (#167). `VariableRef`, bound as `cbls.Variable`,
+  resolves (owner, index) on every access.
+- **`bugprone-unchecked-optional-access` and `REQUIRE`.** The check cannot see
+  through Catch2's expression templates. In
+  `if (!o.has_value()) { FAIL("..."); return; }` the `return` is what makes the
+  flow analysis see the guard, even though `FAIL` throws.
+- **Deadlock-prone Python tests run in a child process.** No in-process
+  deadline can report a deadlock: `pytest-timeout`'s `thread` method needs the
+  GIL the test is starving, and its `signal` method only takes effect at the
+  next bytecode in a main thread parked in a C++ `join()`. `tests/python/test_pool.py`
+  is the pattern.
+- **Tests spawning `git` strip `GIT_*`.** pre-commit exports `GIT_DIR` and
+  `GIT_INDEX_FILE`; a `git init` in a tmp dir once re-initialised the real
+  repository (`core.bare = true` for every worktree, #160).
+- **Terse output is not configured anywhere.** `pyproject.toml` sets
+  `testpaths`, ruff's rules and mypy strict, but no `addopts`; pass
+  `ctest --progress` and pytest `--tb=short -q` yourself.

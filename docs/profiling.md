@@ -6,8 +6,9 @@ It exists because performance and memory claims in this repository have been
 made by arithmetic and subtraction rather than by measurement, and were wrong
 often enough to matter — a published pass cost that was pure run-to-run noise
 (off by ~8x once timed directly), a several-hundred-MB "memory risk" that
-measurement showed did not exist, and a MIPfeas reader that reportedly reaches
-the whole process's peak RSS with nothing attributed to it (issue #122).
+measurement showed did not exist, and a ~3.2 GB "MIPfeas reader peak" that
+turned out to be the reference solver's peak on another instance (issue #122;
+see [The MIPfeas reader peak](#the-mipfeas-reader-peak-settled-without-a-run)).
 Subtraction of two whole-program timings is not a measurement; neither is a
 review estimate of an allocation.
 
@@ -28,10 +29,11 @@ written from memory of what a tool usually does.
 
 Two rules apply to every recipe here:
 
-- **Never configure a sanitizer or profiling build in `build/`.** That directory
-  is what the git hooks rebuild and gate on, and both flags are *cache* entries:
-  set one there once and every later flag-less `cmake -B build` keeps it, with
-  pre-commit gating on the result. Measurement builds get their own directory
+- **Never configure a sanitizer or profiling build in `build/`.** Both flags are
+  *cache* entries: set one there once and every later flag-less `cmake -B build`
+  keeps it, so your everyday build and test loop silently runs instrumented.
+  (Pre-push's local CI is unaffected: it builds in its own worktree, never in
+  your `build/`.) Measurement builds get their own directory
   (`build-asan/`, `build-profile/`); `.gitignore` covers `build*/`.
 - **Never run a profile next to a benchmark comparison, a parallel build, or
   another profile.** CLAUDE.md already forbids concurrent time-limited
@@ -54,7 +56,7 @@ The profiling build:
 
 ```bash
 cmake -B build-profile -DCBLS_PROFILE=ON
-cmake --build build-profile -j"$(nproc)"
+xk lock -- cmake --build build-profile -j4
 ```
 
 **State the build type in any profile you publish.** `CMakeLists.txt` defaults
@@ -68,7 +70,9 @@ Release drops.
 
 Measured 2026-09-02 on Ubuntu 26.04, kernel 7.0.0-30-generic, GCC 15.2.0. Every
 "present" row below was exercised, not just `command -v`'d; every "absent" row
-carries the exact install command. Re-check on a different machine rather than
+carries the exact install command. Rechecked 2026-11-01 on kernel
+7.0.0-38-generic: the same GCC, presence and absence, `perf_event_paranoid`
+still `4` (presence checked, the tools not re-exercised). Re-check on a different machine rather than
 trusting this table.
 
 | Tool | State | Notes |
@@ -89,7 +93,7 @@ trusting this table.
 describe the program that actually runs.
 
 ```bash
-cmake -B build && cmake --build build -j"$(nproc)"
+cmake -B build && xk lock -- cmake --build build -j4
 # Instances are downloaded, not tracked. `--subset smoke` fetches 11 named
 # instances and 50v-10 is NOT one of them, so either take the full roster
 # (~546 MiB) or point --inst-dir at a checkout that already has it:
@@ -139,8 +143,8 @@ one limit worth knowing: jemalloc does not unmap on free, so a later live-bytes
 peak that fits inside already-mapped space triggers no dump. Take the magnitude
 from `/usr/bin/time -v` and the attribution from the dumps. This is the setting that matters and the easy one to get wrong:
 `prof_final` alone dumps what is *live at exit*, which by construction misses
-every transient that was freed before then — i.e. exactly the shape the MIPfeas
-reader question has. Verified on a synthetic two-phase program (a 300 MB
+every transient that was freed before then — i.e. exactly the shape a
+read-then-build peak has. Verified on a synthetic two-phase program (a 300 MB
 transient that is freed, then a 40 MB live footprint): the final dump attributed
 36 MB to the surviving phase and the peak gdump attributed 268 MB to the freed
 one.
@@ -172,8 +176,8 @@ cbls::Model::constant(double)             src/model.cpp:115
 cbls::mps_to_model(...)                   src/io/mps_to_model.cpp:232
 ```
 
-— i.e. call-site attribution of the kind issue #122 point 3 asks for, on an
-instance small enough to run anywhere — `/usr/bin/time -v` on the plain
+— i.e. call-site attribution on an instance small enough to run anywhere, and
+it lands in the MPS-to-model adapter's node construction, not the reader — `/usr/bin/time -v` on the plain
 Release binary puts its whole-process peak at 6.3 MB.
 
 ### Symbolising a heap dump
@@ -239,7 +243,7 @@ If root is not available, use [gprof](#gprof-the-no-privilege-fallback) instead;
 With the sysctl set, on the profiling build:
 
 ```bash
-cmake -B build-profile -DCBLS_PROFILE=ON && cmake --build build-profile -j"$(nproc)"
+cmake -B build-profile -DCBLS_PROFILE=ON && xk lock -- cmake --build build-profile -j4
 perf record -g --call-graph=fp -F 999 -o /tmp/perf.data -- \
     ./build-profile/cbls_mipfeas --instance 50v-10 \
     --inst-dir benchmarks/instances/mipfeas --out-dir /tmp/prof --budget 60
@@ -260,7 +264,7 @@ it changes codegen and needs to reach the linker too:
 ```bash
 cmake -B build-gprof -DCMAKE_CXX_FLAGS="-pg -g -fno-omit-frame-pointer" \
       -DCMAKE_EXE_LINKER_FLAGS="-pg"
-cmake --build build-gprof -j"$(nproc)"
+xk lock -- cmake --build build-gprof -j4
 cd /tmp/prof && /path/to/build-gprof/cbls_mipfeas ... # writes ./gmon.out
 gprof /path/to/build-gprof/cbls_mipfeas gmon.out | head -40
 ```
@@ -305,7 +309,7 @@ usable only on a small instance or a heavily reduced budget. Pointing it at a
 prevent. Not installed: `sudo apt install valgrind`, then
 
 ```bash
-valgrind --tool=callgrind --callgrind-out-file=/tmp/cg.out ./build-profile/cbls_cli --threads 1 ...
+valgrind --tool=callgrind --callgrind-out-file=/tmp/cg.out ./build-profile/cbls --threads 1 ...
 callgrind_annotate /tmp/cg.out | head -40
 ```
 
@@ -317,7 +321,7 @@ does not have.
 
 ```bash
 cmake -B build-asan -DCBLS_SANITIZE=address,undefined,float-cast-overflow
-cmake --build build-asan -j4
+xk lock -- cmake --build build-asan -j4
 UBSAN_OPTIONS=print_stacktrace=1 ctest --test-dir build-asan -LE slow --output-on-failure -j4
 ```
 
@@ -386,7 +390,7 @@ mutually exclusive, so it needs its own build directory:
 
 ```bash
 cmake -B build-tsan -DCMAKE_BUILD_TYPE=Release -DCBLS_SANITIZE=thread -DCBLS_BUILD_PYTHON=OFF
-cmake --build build-tsan -j$(nproc)
+xk lock -- cmake --build build-tsan -j4
 TSAN_OPTIONS="halt_on_error=0 second_deadlock_stack=1" ./build-tsan/tests/cbls_tests "[parallel],[pool]"
 ```
 
@@ -406,7 +410,7 @@ tuned to whatever changed.
 
 **Verified state.** At `766ad46` (the commit that introduced the cooperative
 portfolio), both were clean: `[parallel],[pool]` was 17/17 green with zero TSan
-reports (17 tests carried those tags at that commit; it is 30 now -- this is a
+reports (17 tests carried those tags at that commit; this is a
 record of that run, not a current count), and the stress harness above — 12 workers, a 12s objective-model arm
 with hook + LNS + constant restarts and adoptions, then 25 rounds of the
 stop-flag race — reported nothing. This is a dated record of one run on one
@@ -436,51 +440,16 @@ Per `docs/measuring.md`'s rule that measurements go stale silently:
   indistinguishable from Release in a results table. Published timings come from
   a plain `build/`.
 
-## Open question: the MIPfeas reader peak
+## The MIPfeas reader peak: settled without a run
 
-Issue #122 point 3: on the largest instances in the MIPLIB-based feasibility
-roster, reading the file alone is reported to reach the whole process's peak RSS
-before any model is built, and nothing in the tree says why. The issue puts that
-peak at ~3.2 GB; **that figure has no source in this tree and is not reproduced
-here** — the only 3.2 GB the repository records is CP-SAT's peak on
-`neos-5114902-kasavu` in `benchmarks/instances/mipfeas/README.md`, where CBLS
-peaked at 1.2 GB. Treat the magnitude as unestablished until the capture below
-runs; the recipe settles both the number and its owner. **The profile has not
-been taken yet** — it is tracked as #127, deliberately split out of #122 because
-a capture is a quiet-box measurement run and has to be scheduled against the
-other pending benchmark runs rather than run beside them. Replace this section
-with the finding, and its commit, when #127 executes. All three outcomes are
-publishable: the reader owns the peak, something else does, or there is no such
-peak for this engine and the ~3.2 GB was the reference solver's number.
-
-The capture, on an otherwise idle machine — check `uptime` first, and do not run
-it beside a build:
-
-```bash
-# 1. Profiling build (Release + symbols + frame pointers).
-cmake -B build-profile -DCBLS_PROFILE=ON && cmake --build build-profile -j"$(nproc)"
-
-REPO=$(git rev-parse --show-toplevel)
-
-# 2. Magnitude, on the plain gated Release binary and the unmodified allocator.
-#    square47 carries the roster's most nonzeros (27.4M) and spends ~100-150s in
-#    read + build before its first iteration, so a short budget still covers the
-#    whole reader phase.
-mkdir -p /tmp/prof
-/usr/bin/time -v "$REPO"/build/cbls_mipfeas --instance square47 \
-    --inst-dir "$REPO"/benchmarks/instances/mipfeas --out-dir /tmp/prof --budget 10 \
-    2>&1 | grep -E 'Maximum resident|Elapsed'
-
-# 3. Attribution, jemalloc preload over the profiling build, peak dump.
-mkdir -p /tmp/heapprof && cd /tmp/heapprof
-MALLOC_CONF=prof:true,prof_gdump:true,prof_prefix:jeheap \
-LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libjemalloc.so.2 \
-    "$REPO"/build-profile/cbls_mipfeas --instance square47 \
-    --inst-dir "$REPO"/benchmarks/instances/mipfeas --out-dir . --budget 10
-ls jeheap.*.u*.heap | sort -V | tail -1     # the peak
-```
-
-Then symbolise it ([above](#symbolising-a-heap-dump)) and write the top few
-sites down here with the commit they were measured at. `neos-5114902-kasavu`
-(710k columns, 4.9M nonzeros, ~1.2 GB under CBLS) is the cheaper second data
-point if square47 is too heavy for the machine at hand.
+Issue #122 point 3 said that on the largest MIPfeas instances, reading the file
+alone reached the process's peak RSS (~3.2 GB) with nothing attributed to it.
+That figure has no source in this tree: the only ~3.2 GB the repository records
+is CP-SAT's peak on `neos-5114902-kasavu` in
+`benchmarks/instances/mipfeas/README.md`, where CBLS peaked at 1.2 GB. The one
+verified attribution ([above](#heap-attribution), `50v-10` at `3ef721f`) lands
+in the MPS-to-model adapter's node construction, not in the reader. #127, the
+quiet-box capture on `square47`, was closed as not planned because it would not
+change that answer. If a real memory defect needs attribution, the recipes
+above are how: magnitude from `/usr/bin/time -v` on the plain Release binary,
+then a jemalloc peak dump over `build-profile/`.

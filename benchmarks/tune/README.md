@@ -55,6 +55,11 @@ a `version` bump, which starts a new study.
   16-thread `ParallelSearch` portfolio, alone on the machine.
 - **Build.** xk keys a build on the study's name as well as the commit, so
   studies never share one: each builds only its own runner.
+- **Environment.** Studies run on the workstation under xk, not on the laptop:
+  the laptop's 4-job build and machine-lock rules do not apply to xk's builds
+  there, and a study's `command` runs xk's `python3`, not this checkout's
+  `.venv/bin/python` (`tune_trial.py` puts the source tree on `sys.path`
+  itself).
 - **Importance.** `xk tune importance` ranks only params present in every
   complete trial, so a conditional param (`sample_*`, `lns_interval`) is left
   out; its gate (`selection`, `lns`) is ranked.

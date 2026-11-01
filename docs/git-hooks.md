@@ -6,17 +6,17 @@ Reference for the hooks in `.githooks/` and the gates they enforce. CLAUDE.md ke
 
 The hooks live in **`.githooks/`, tracked in this repo** — that directory is the source, edit it there. Git runs them only once `core.hooksPath` points at that directory, and that setting is per-checkout local config which cannot be committed, so `cmake -B build` sets it (`CBLS_INSTALL_GIT_HOOKS`, default ON). Configuring the project once is all a fresh clone needs; to wire one up by hand, `git config core.hooksPath .githooks`. If `core.hooksPath` already points somewhere else, CMake warns rather than overwriting it.
 
-`core.hooksPath` is shared across every worktree of a checkout, but `.githooks/` is resolved from the working tree — so a branch that does not carry the directory runs **no hooks at all**, silently. Merge main into any long-lived branch before relying on the gates.
+`core.hooksPath` is shared across every worktree of a checkout, but `.githooks/` is resolved from the working tree — so a branch that does not carry the directory runs **no hooks at all**, silently. Branches are short-lived and cut from an up-to-date main, which carries it.
 
-The three hooks are wcp's (see **Hooks Are Files In This Repository**); `gate-lib.sh`, `tidy-probe.sh`, `tidy-probe/` and `tests/` beside them are this project's own and are still exercised by ctest (`gate_lib_shell_test`, `clang_tidy_gate_probe`); `resolve-venv.sh` was used only by the old hooks and nothing calls it now.
+The three hooks are wcp's (see **Hooks Are Files In This Repository**); `gate-lib.sh`, `tidy-probe.sh`, `tidy-probe/` and `tests/` beside them are this project's own and are still exercised by ctest (`gate_lib_shell_test`, `clang_tidy_gate_probe`).
 
-- `pre-commit` — **checks, never rewrites**: `ruff format --check .`, `ruff check .` and `mypy .` (strict, from `pyproject.toml`) over the whole tree, each through `uv run`, and `clang-format --dry-run -Werror` over every tracked C/C++ file, preferring the pinned tools in `.venv/bin`. Any finding blocks the commit; a tool that cannot run is reported on stderr and skipped. It runs **no tests**. A venv made by `uv sync` (CLAUDE.md's **Build & Test**) is already locked and synced, so `uv run` uses it as it is. An older pip-made `.venv/` has no `uv.lock`, and there `uv run` would lock and sync it (writing `uv.lock` and rebuilding `cbls` into the venv) — commit with `UV_NO_SYNC=1` set to have it use the venv as it is.
+- `pre-commit` — **checks, never rewrites**: `ruff format --check .`, `ruff check .` and `mypy .` (strict, from `pyproject.toml`) over the whole tree, each through `uv run`, and `clang-format --dry-run -Werror` over every tracked C/C++ file, preferring the pinned tools in `.venv/bin`. Any finding blocks the commit; a tool that cannot run is reported on stderr and skipped. It runs **no tests**. A venv made by `uv sync` (CLAUDE.md's **Build & Test**) is already locked and synced, so `uv run` uses it as it is.
 - `commit-msg` — Conventional Commits, subject at most 72 characters. Unlike the hook it replaced, it does **not** pass `fixup!`/`squash!`/`amend!` subjects, so `git commit --fixup` is refused.
 - `pre-push` — refuses a merge commit pushed to `main` and a tip without its review receipt, then runs the ```clean, ```build and ```test fences from CLAUDE.md's `## Build & Test` as a local CI in a fresh worktree outside the checkout (skipped for a documentation-only push), each step timed. `git config hooks.localCiCpus 0-3` pins it to fewer CPUs. This local CI is the only gate: there is no GitHub Actions workflow (an unused one was deleted, #246).
 
 **What the hooks before wcp's enforced and these do not** (replaced 2026-10-14; the old scripts are in git history): the `ctest -LE slow` / pytest run at commit; auto-formatting and safe clang-tidy fixes at commit; at push, the **clang-tidy hard block** over the changed files plus a canary per config directory, `tidy-probe.sh` whenever a `.clang-tidy`, a `CMakeLists.txt` or the probe changed, the **block on any first-party compiler warning** in the gated build's log (configured with `CBLS_GATE_PROBE_IN_ALL=1` as its control), the advisory ruff-complexity/shellcheck/mypy pass, and the **Python gate over every tracked `.py`** (now `pre-commit`'s, over the tree). Until those are restored — a ```lint fence under CLAUDE.md's `## Build & Test` is where wcp's pre-push would run them — the clang-tidy and compiler-warning policy below is **policy you check by hand** before pushing (`.venv/bin/clang-tidy -p build <files>`, and the build log), not something a hook enforces.
 
-  clang-tidy blocks because the tree is held at **zero** warnings. Getting there
+  The tree is held at **zero** clang-tidy warnings. Getting there
   took a **ratchet** — a list in `.clang-tidy` of checks disabled by name, each
   with its unfixed finding count — and **that list is now empty** (issue #121,
   closed). Every `bugprone-*`/`modernize-*`/`performance-*`/`readability-*` check
@@ -24,7 +24,7 @@ The three hooks are wcp's (see **Hooks Are Files In This Repository**); `gate-li
   the *check* is wrong for this codebase, with the measurement that says so
   written beside it in the file.
 
-  So a warning at push is new code's doing. **Fix it — do not add the check to
+  So a warning is new code's doing. **Fix it — do not add the check to
   the disabled list.** There is no backlog list left to append to: putting a
   name there now has to clear the same bar as the six, a structural cause plus a
   measurement, which is a case to argue rather than a way to get a push through.
@@ -64,62 +64,42 @@ The three hooks are wcp's (see **Hooks Are Files In This Repository**); `gate-li
   the key. Verify any edit with `clang-tidy --dump-config`, because a corrupted
   list fails open: checks silently stop running and the sweep goes green.
 
-  Because both config hazards fail open, the pre-push clang-tidy step matches
-  `(warning|error):` **case-insensitively** and treats any **nonzero clang-tidy
-  exit** as a finding: a misconfigured directory reports `Error: no checks
-  enabled.` with a capital E, which a lower-case-only pattern misses. It also
-  lints a canary translation unit per config directory whenever a `.clang-tidy`
-  is itself part of the push, since such a change otherwise touches no source
-  file and would skip the step that polices it.
+  Because both config hazards fail open, check clang-tidy's output for
+  `(warning|error):` **case-insensitively** and treat any **nonzero exit** as a
+  finding: a misconfigured directory reports `Error: no checks enabled.` with a
+  capital E. When a push changes a `.clang-tidy`, lint a file in each config
+  directory too, since such a change touches no source file of its own.
 
-  A clean canary cannot tell a gate that sees compiler warnings from one that
-  does not, and for a long time this one did not (#171): clang-tidy prepends
-  `clang-diagnostic-*`, the leading `-*` switched it off, and no target compiled
-  with `-Wall`. Now `clang-diagnostic-*` is named **after** the wildcards, every
-  first-party target gets `-Wall -Wextra` through `cbls_enable_warnings()` in the
-  root `CMakeLists.txt` (a new target needs the call), and
-  **`.githooks/tidy-probe.sh`** proves it: it lints a deliberately dirty TU,
-  `.githooks/tidy-probe/incomplete_switch.cpp`, copied into every config
-  directory of a mirror of the configs (so clang-tidy's real directory lookup
-  applies, and a new config directory is probed automatically), and fails
-  unless its incomplete `enum class` switch, unused local and unused parameter
-  are all reported. It also fails on any first-party compile command missing
-  the flags or cancelling them — **any** `-Wno-*`, `-w` or `-Werror`: a
-  per-target suppression is a NOLINT without a written reason, so fix the code.
-  Flags from the environment (`CXXFLAGS`, which CMake seeds into the cache's
-  `CMAKE_CXX_FLAGS[_<CONFIG>]`) are exempt: the rule polices the project, not
-  the machine. That flag check needs no clang-tidy and always runs. The mirror
-  sits inside the checkout, so each probe copy's `--dump-config` must equal
-  the real directory's — otherwise a missing copy would let the lookup climb
-  into the real tree and pass on the wrong config. Pre-push runs the probe
-  (pinned clang-tidy only, and blocking if it cannot run) when a `.clang-tidy`,
-  a `CMakeLists.txt` or the probe changes; ctest runs it as
-  `clang_tidy_gate_probe` (Skipped, not Passed, without the pinned clang-tidy),
-  and `gate_lib_shell_test` tests the gates' text filters in
-  `.githooks/gate-lib.sh`. Never add a `default:` to a `NodeOp` switch — it is
-  what would hide the case.
+  **The probe.** For a long time clang-tidy saw no compiler warnings at all
+  (#171): clang-tidy prepends `clang-diagnostic-*`, the leading `-*` switched it
+  off, and no target compiled with `-Wall`. Now `clang-diagnostic-*` is named
+  **after** the wildcards, every first-party target gets `-Wall -Wextra`
+  through `cbls_enable_warnings()` in the root `CMakeLists.txt` (a new target
+  needs the call), and **`.githooks/tidy-probe.sh`** proves it. It lints a
+  deliberately dirty TU, `.githooks/tidy-probe/incomplete_switch.cpp`, copied
+  into every config directory of a mirror of the configs, and fails unless its
+  incomplete `enum class` switch, unused local and unused parameter are all
+  reported. It also fails on any first-party compile command missing the flags
+  or cancelling them with `-Wno-*`, `-w` or `-Werror` (flags from the
+  environment are exempt: the rule polices the project, not the machine). ctest
+  runs it as `clang_tidy_gate_probe` (Skipped without the pinned clang-tidy),
+  and `gate_lib_shell_test` tests the text filters in `.githooks/gate-lib.sh`
+  that the old pre-push gates used. Never add a `default:` to a `NodeOp`
+  switch: it is what would hide the case.
 
   **No `-Werror`**: with it in `compile_commands.json` every clang-diagnostic
-  finding becomes a compiler error and clang-tidy exits 1, which the step above
-  reports as a config fault. GCC — the build compiler — has warnings clang lacks
-  (two `-Wrange-loop-construct` at #171), so instead pre-push **blocks on any
-  compiler warning in first-party code in the gated build's output**, and
-  proves that scan can see: it configures with `CBLS_GATE_PROBE_IN_ALL=1`, which
-  puts the probe TU into the fenced build, and blocks unless the scan finds its
-  `-Wswitch` in that same log (colour codes, a translated `warning:`, an
-  unexpected path spelling or a fence that stops sending compiler output there
-  would otherwise make it match nothing). The three probe warnings in pre-push's
-  build output are that control, not findings. That gate
-  follows the local GCC version, so an upgrade can block a push; it cannot
-  break a user's build, which is what `-Werror` would.
+  finding becomes a compiler error and clang-tidy exits 1. GCC, the build
+  compiler, has warnings clang lacks (two `-Wrange-loop-construct` at #171), so
+  read the build log for first-party warnings instead. A GCC upgrade can then
+  surface new ones without breaking anyone's build, which `-Werror` would.
 
 `pre-push` refuses a push whose tip has no review receipt, `refs/reviews/<sha>`, written by a line of plain git (**Self-Review** below), so the check works in every checkout. It proves a review was recorded, not that it was done well; see **Agent Self-Review**.
 
 Gating lives in git hooks only — `.claude/settings.json` carries no `hooks` block, and none should be added. A `PostToolUse` formatter cannot see which file was edited, so it silently formats nothing; formatting belongs at commit time. Don't hand-tune formatting.
 
-Three conventions therefore rest on you rather than on a tool: branch only from main (**Git Workflow** in `docs/development.md`), never invoke `python`/`pytest`/`mypy` outside `.venv/bin/` (a `uv sync` venv has no `pip`; change it with `uv sync`) (CLAUDE.md's **Build & Test**), and prefer the `Grep` tool to shelling out (**Code Navigation** in `docs/development.md`).
+These conventions therefore rest on you rather than on a tool: zero clang-tidy warnings and zero first-party compiler warnings (above), branch only from main (**Git Workflow** in `docs/development.md`), never invoke `python`/`pytest`/`mypy` outside `.venv/bin/` (a `uv sync` venv has no `pip`; change it with `uv sync`; CLAUDE.md's **Python**), and bounded searches (CLAUDE.md's **Code Navigation**).
 
-`.claude/` is gitignored local agent tooling (settings, statusline, the `/review` command). Nothing in it is part of the repo.
+`.claude/` is gitignored local agent tooling (settings, statusline). Nothing in it is part of the repo.
 
 ## The Python gate
 
@@ -166,8 +146,9 @@ errors and 9 ruff errors accumulated with every gate green throughout (#154).
 
 ## Self-Review
 
-**Code you produced gets reviewed before it lands on main.** Run `/code-review`
-on your own changes and act on what it finds; the review is not a formality you
+**Code you produced gets reviewed before it lands on main.** A fresh, cold
+subagent runs `/code-review` on your unpushed commits, and you act on what it
+finds; the review is not a formality you
 report having done. The pre-push hook is the backstop, not the review.
 
 **Then record the review, and push it with the commit**, or `pre-push` will
@@ -179,10 +160,9 @@ git push --atomic origin HEAD "refs/reviews/$(git rev-parse HEAD)"
 ```
 
 The receipt is a ref named by the reviewed commit, `refs/reviews/<sha>`, and it
-travels with the push, so a CI step can check every commit that reaches the
-trunk — including one pushed with `--no-verify`, or from a clone whose hooks
-never ran. wcp's README has the step to paste into the project's CI.
-`--atomic` lands the branch and its receipt together or not at all.
+travels with the push, so anyone can check after the fact that a commit on the
+trunk has one (this repository has no CI that does). `--atomic` lands the
+branch and its receipt together or not at all.
 
 Plain git, on purpose. No wcp, no harness, nothing installed — so a reviewer on
 any machine can write it, and a clone that has never heard of wcp is still able
@@ -215,12 +195,12 @@ do not matter; staged and unstaged changes to tracked files do.
 
 ## Agent Self-Review
 
-**Code produced by any agent or agent team must be reviewed before it can merge to main** — solo work by `/review`, a team run by one cold reviewer per issue (below). No subagent returns unreviewed work; no orchestrator merges unreviewed work. This applies to every agent team, not just the parallel-issue workflow.
+**Code produced by any agent or agent team must be reviewed before it can merge to main** — solo work by one cold reviewer running `/code-review` on the commits, a team run by one cold reviewer per issue (below). No subagent returns unreviewed work; no orchestrator merges unreviewed work. This applies to every agent team, not just the parallel-issue workflow.
 
 **One reviewer per issue** (user decision, 2026-10-03). In a team run, each
 issue gets exactly **one** cold reviewer: a separate agent that did not write
 the code, reading the issue's acceptance criteria literally. That reviewer *is*
-the issue's review — the implementer does not also fan out `/review`'s three
+the issue's review — the implementer does not also fan out further
 reviewers, and the orchestrator does not add a second reviewer per issue. The
 cold review runs **at most two rounds**: review, a fix round, re-review. A
 finding still open after round two goes to the orchestrator to fix or to file;
@@ -235,7 +215,7 @@ reviewer.
 The git hooks live in `.githooks/` as ordinary shell scripts, committed like any other file. `wcp init` copies them there and points `core.hooksPath` at them; wcp installs no Claude Code hooks at all. The gate is those files and nothing else, so a clone without wcp installed is still gated — including the review receipt, which is a line of plain git the Self-Review section documents rather than anything wcp runs.
 
 - **They are yours to read, and yours to edit.** Each hook carries a `# wcp:` line recording the digest of the bytes wcp wrote. That is what lets `wcp doctor` tell an edit you made from a version wcp has moved past: an untouched hook is refreshed silently, an edited one is left alone, and one that moved on both sides is reported rather than overwritten. Edit them when the project needs something different — and say so upstream if the default was wrong for everyone.
-- **A clone is not gated until someone runs `wcp init` in it.** git clones neither a hooks directory nor local config, so the files arriving with the clone is not the same as git running them. `wcp doctor` reports an unset `core.hooksPath` as an error for exactly this reason.
+- **A clone is not gated until `core.hooksPath` is set in it.** git clones no local config, so the files arriving with the clone is not the same as git running them. Here the first `cmake -B build` sets it (**Git Hooks** above); `wcp init` does too, and `wcp doctor` reports an unset `core.hooksPath` as an error.
 - **They call no wcp.** A hook that shelled out to a missing tool would exit 127, which git reads as a refusal — so a machine without wcp could not commit, and could not commit the fix either. What the hooks do call is the project's own toolchain, and there they fail open and say so on stderr.
 - **Never use `git push --no-verify` or `git commit --no-verify`** unless explicitly asked. A failing hook is a signal — fix the root cause, or change the hook deliberately and commit that.
 
@@ -256,6 +236,6 @@ uv tool install --force git+https://github.com/spoorendonk/wcp@vX.Y.Z   # to mov
 wcp --help                                                # the commands; `wcp <command> --help` for each one
 ```
 
-- **Run `wcp doctor`** after pulling, after updating wcp, and before editing the hooks or CLAUDE.md. It changes nothing, and every finding names the command that fixes it. It exits 1 only when the gate does not work, e.g. `core.hooksPath` is unset, which is how every fresh clone starts until someone runs `wcp init` in it.
+- **Run `wcp doctor`** after pulling, after updating wcp, and before editing the hooks or CLAUDE.md. It changes nothing, and every finding names the command that fixes it. It exits 1 only when the gate does not work, e.g. `core.hooksPath` is unset, which is how every fresh clone starts until its first `cmake -B build` (or `wcp init`).
 - **Files wcp wrote carry a `wcp:` provenance line**: `# wcp:` in each hook, and the comment at the top of CLAUDE.md. Edit the files when the project needs to, but leave that line in place. It is how `wcp doctor` tells your edits apart from a newer wcp version.
 - **If `wcp` is not on PATH**, say so rather than installing it unasked. Installing it is a machine-wide change.

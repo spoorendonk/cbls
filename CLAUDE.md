@@ -278,7 +278,7 @@ Detail: `docs/benchmarks/README.md`. Comparative benchmarks, worked top down:
   or non-convex continuous). Nothing outside the table is comparative.
 - Worked examples per structured type, not comparative: `Set` → `setcover`
   (measured, negative; don't build another `Set` benchmark), `List` → CVRP
-  (epic #182; unpublished until #204).
+  (epic #182, closed; unpublished until #204).
 - **Never write that `List` is validated on a published formulation**: there
   is no `List` evidence until #204. List engine work is filed against measured
   CVRP data; don't reopen #183-#185, #187, #189.

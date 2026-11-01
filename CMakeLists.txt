@@ -293,14 +293,12 @@ if(CBLS_BUILD_TESTS)
     # target exists so the probe has a real entry in compile_commands.json,
     # with the same flags as every other first-party target.
     #
-    # The pre-push hook alone configures with CBLS_GATE_PROBE_IN_ALL=1 in the
-    # environment, which puts the probe INTO the gated build. Its three
-    # warnings then pass through exactly the output path of every other TU,
-    # and the hook's compiler-warning scan must find them in that same log
-    # before it may trust a clean result: a fence change that stops compiler
-    # output reaching the log blinds the scan and the control together. The
-    # hook reconfigures without the variable afterwards, so build/ is left
-    # building the probe only on request.
+    # CBLS_GATE_PROBE_IN_ALL=1 in the environment puts the probe INTO the
+    # build, so its three warnings pass through exactly the output path of
+    # every other TU: a compiler-warning scan of the build log can use them as
+    # its control. The pre-wcp pre-push hook did that; today's hooks set the
+    # variable nowhere (docs/git-hooks.md), so the probe builds only on
+    # request.
     if("$ENV{CBLS_GATE_PROBE_IN_ALL}" STREQUAL "1")
         add_library(cbls_tidy_probe STATIC .githooks/tidy-probe/incomplete_switch.cpp)
     else()
