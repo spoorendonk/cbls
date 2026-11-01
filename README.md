@@ -44,7 +44,7 @@ m.close();
 - **Feasibility Jump** construction heuristic (greedy violation reduction)
 - **Gradient-based intensification**: Newton steps and backtracking line search on continuous variables
 - **Large neighborhood search**: destroy-repair diversification
-- **Delta evaluation**: incremental DAG update via BFS dirty-marking
+- **Delta evaluation**: incremental DAG update; a one-variable move re-evaluates a topologically sorted cone cached (within a memory budget) when the model is frozen, and a probe rolls back from an undo log
 - **Reverse-mode AD**: sparse automatic differentiation for gradient moves
 - **Multi-threaded** cooperative portfolio: workers share incumbents through a solution pool and restart stalled searches from it
 - **Python bindings** via nanobind
@@ -84,25 +84,29 @@ uv sync --extra dev --extra benchmarks   # names both: uv sync drops an unnamed 
 CBLS_REQUIRE_BENCHMARKS=1 .venv/bin/pytest   # turns that skip into an error
 ```
 
-Or install as a Python package:
+To use CBLS from another project, install it as a Python package
+(this repository's own venv is managed by `uv sync` only):
 
 ```bash
 pip install .
 ```
 
-## What works
+## Scope
 
-- Small-to-medium nonlinear mixed-integer problems
-- Problems where escaping local optima matters (nonconvex, discontinuous) — GLS reweighting reshapes the landscape on stagnation, and diversification kicks or LNS restart the search from a perturbed copy of the point it is exploring around — its own incumbent, or a peer's state under the multi-threaded portfolio, and the live assignment itself until the first feasible solution
-- Problems where exact solvers time out (CBLS finds feasible solutions on instances where SCIP cannot within time limits)
+CBLS is built for small-to-medium mixed discrete-continuous models whose terms an
+exact MIP or CP solver cannot take as written: non-convex, transcendental or
+discontinuous ones. GLS reweighting reshapes the landscape on stagnation, and
+diversification kicks or LNS restart the search from a perturbed copy of the
+point it is exploring around — its own incumbent, a peer's state under the
+multi-threaded portfolio, or the live assignment until the first feasible
+solution. How it fares against SCIP and CP-SAT is what the benchmarks below
+measure; their full-scale tables are not published yet (#253).
 
 ## Known limitations
 
-- Tightly-coupled multi-period problems with long-range constraints (e.g., min up/down times spanning many periods) are hard for a jump-based search — a single-variable jump sees one period at a time, so reaching a first feasible solution is slow
-- Solution quality gaps of 15-40% vs exact solvers on problems where MIP works well
-- Benchmark models may be simplified relative to their source papers, so a "BKS gap" is not always apples-to-apples; where that applies (uc-chped) the deviation is audited equation by equation in the benchmark's `FIDELITY.md` and its comparison table states what it may and may not claim
-- No constraint propagation, cutting planes, or LP relaxation — this is pure local search
-- **Set variables are expressible, not yet competitive; List variables have no published result.** A model whose only variables are structured (List/Set) is searched by the structural batch alone. For a `Set` or `List` searched without a neighbour list (every model the set-covering runner builds), that batch is a first-improvement hill climber over a small random move sample, with no Feasibility Jump and no compound moves (since #201 the default makes every batch on such a model structural, rather than two thirds of them being empty FJ batches). Diversification reaches it, but only with the same unguided moves. On the weighted OR-Library set-covering instances the `Set` encoding lands at 3.4-5.1x the proven optimum while the same instance encoded with one Bool per column is within 4-9% (engine `35ec07c`; see `benchmarks/instances/setcover/`); on unicost instances the two nearly converge. `List` variables have **no published result** in this respect: the CVRP benchmark (`benchmarks/cvrp/`: CVRPLIB X set, scored as gap to the best-known values, with PyVRP as context) is in the tree, but until its campaign publishes (#204) there is no measured evidence either way. A partitioned `List` is searched differently from the above in two ways: with a neighbour list the default selection takes the best move of one element's granular neighbourhood (#203), and whenever LNS is on it ruins and recreates every partition with SISR, neighbour list or not (#202) — so for a partition the diversification above is not only unguided moves. The mechanical cause is shared and has two halves: Feasibility Jump's jumpable-variable whitelist is scalar-only, so no structured variable gets a jump-table entry, and `local_derivative` returns `0.0` for every structural op, so there is no AD signal to build one from. That is reason to expect `List` behaves like `Set` here, not to assume it does not. Since #165 the structural batch is a pluggable pipeline — registered `MoveGenerator`s, granular neighbour lists and a `BestOfSample` / `ViolationGuided` selection policy — and the guided policy has been A/B'd on this roster at 20 seeds per arm, under #164's positional move representation: paired per seed it is 2.6% better than the default on the weighted instances with a 95% CI of **[−5.6%, +0.3%]**, i.e. **not demonstrably better** (engine commit `8dc906b`; table in `benchmarks/instances/setcover/README.md`). For a model searched without a neighbour list, which includes every set-covering run here, the default is unchanged, and the numbers above still describe what a user gets with `Set`. The Bool-encoding figure predates two defaults that act on it: it was measured with compound moves off (the default until 2026-10-07) and with the FJ objective tie-break off (on since #226; setcover's Bool objective is affine).
+- Pure local search: no constraint propagation, cutting planes or LP relaxation, so no bound and no proof of optimality or infeasibility.
+- Benchmark models may be simplified relative to their source papers, so a "BKS gap" is not always apples-to-apples; where that applies (uc-chped) the deviation is audited equation by equation in [`benchmarks/uc-chped/FIDELITY.md`](benchmarks/uc-chped/FIDELITY.md), and the comparison table states what it may and may not claim.
+- **`Set` variables are expressible, not competitive; `List` variables have no published result.** On weighted OR-Library set covering the `Set` encoding lands several times further from the optimum than the same model in Bools. No `List` result is published until the CVRP campaign (#204). The evidence and its mechanical cause are in [docs/benchmarks/README.md](docs/benchmarks/README.md#structured-variables-the-claim-is-currently-unsupported).
 
 ## Benchmarks
 
@@ -112,7 +116,7 @@ directories for details.
 | # | Benchmark | Runner | Compared against | What it establishes |
 |---|-----------|--------|------------------|---------------------|
 | 1 | MIPfeas (MIPLIB 2017) | `cbls_mipfeas` | OR-Tools CP-SAT at its default parameters | how this implementation of the jump-based algorithm fares against CP-SAT as it ships, whose `fj`/`ls` workers are the reference implementation of the same algorithm. Pure MILP, so no expressiveness claim |
-| 2 | MINLPLib subset | `cbls_minlplib` | SCIP (nonlinear) | non-convex MINLP — the regime CP-SAT's LS worker cannot express. This is the headline claim |
+| 2 | MINLPLib | `cbls_minlplib` | SCIP (nonlinear) | non-convex MINLP — the regime CP-SAT's LS worker cannot express |
 | 3 | UC-CHPED | `cbls_uc_chped` | Pedroso et al. 2014 | a published unit-commitment formulation whose valve-point `\|d·sin(e·(Pmin−P))\|` term is likewise inexpressible in CP-SAT |
 
 A benchmark earns a place on that list on one of two grounds: it contains terms
@@ -124,12 +128,20 @@ nothing is restricted or evened out, and the differences are reported, not
 corrected for (Simon, 2026-11-01,
 [#87](https://github.com/spoorendonk/cbls/issues/87#issuecomment-6558356494)).
 
-Two further directories are **not** benchmarks in that sense:
+The other directories under `benchmarks/` are **not** comparative benchmarks:
 
 | Directory | Runner | What it is |
 |-----------|--------|------------|
-| `benchmarks/setcover/` | `cbls_setcover` | the scoped coverage check the `Set` variable type was missing — ten OR-Library instances under both a `Set` and a Bool encoding. Its result is a documented limitation, not a comparative claim |
-| `benchmarks/chped/` | none — consumed by the `cbls_chped` example | reference-only: model builder, data and a SCIP baseline for CHPED dispatch. Benchmark 1 was dropped as active work; `examples/chped.cpp` includes the model header, so it survives as a worked modelling example with no runner or comparison table |
+| `benchmarks/cvrp/` | `cbls_cvrp` | the worked example for `List` variables: CVRPLIB X set, scored as gap to the best-known values, with PyVRP and OR-Tools as context. Unpublished until #204 |
+| `benchmarks/setcover/` | `cbls_setcover` | the worked example for `Set` variables: ten OR-Library instances under both a `Set` and a Bool encoding. Its result is a documented limitation, not a comparative claim |
+| `benchmarks/chped/` | none | CHPED dispatch model, data and SCIP reference. `examples/chped.cpp` uses the model; `reference_solve.py --uc` is UC-CHPED's SCIP reference |
+| `benchmarks/tune/` | none | `xk tune` (Optuna) parameter studies, one per benchmark class |
+| `benchmarks/common/` | none | headers and Python helpers the runners share |
+| `benchmarks/instances/miplib-fj/` | none | a retired benchmark's instances, kept because tests read them |
+
+Each benchmark's data, rosters and results write-up live in
+`benchmarks/instances/<name>/`; [docs/benchmarks/README.md](docs/benchmarks/README.md)
+is the index.
 
 ## Architecture
 
