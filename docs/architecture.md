@@ -1285,8 +1285,8 @@ whose batch would propose nothing never spends an iteration on one. When the
 batch would build a generator but FJ has nothing to jump -- no Bool/Int/Float
 variable with two values in its domain that some row reads, as on a List-only
 CVRP model or a mixed one whose every scalar is fixed or unread -- the automatic
-setting is `1.0` (#201): an FJ batch there does no work, reports itself stuck
-and takes the unproductive kick, which re-randomises every List. An explicit
+setting is `1.0` (#201): there an FJ batch would do no work, report itself stuck
+and take the unproductive kick, which re-randomises every List. An explicit
 probability is honoured, as the control arm, but on such a model its empty
 FJ/Novelty batches neither kick nor count toward `perturbation_period`. A model
 FJ has work in keeps its mix and RNG draws exactly -- which is not the same as
