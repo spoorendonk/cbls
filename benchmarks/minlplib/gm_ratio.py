@@ -13,10 +13,12 @@ Usage, from any directory:
 
     .venv/bin/python3 benchmarks/minlplib/gm_ratio.py \\
         --bounds BOUNDS.csv --cbls comparison.csv --scip-shards SCIP_DIR \\
-        --budget "60 s" --memory-cap "110G cgroup" [--json summary.json]
+        [--budget 60] --memory-cap "110G cgroup" [--json summary.json]
 
 `--cbls-staging DIR` reads the driver's staging directory instead of the
-assembled table, for interim scoring with `--partial`.
+assembled table, and only with `--partial`: the driver demotes a staged row to
+`VERIFY-FAILED` only once the whole roster is solved (`verify_staged` in
+`run_benchmark.py`), so no staged row has passed the independent SCIP check yet.
 
 THE MEASURE, kept exactly as #228's smoke defined it (`MEASURE_RULE` below
 states it in every output):
@@ -24,21 +26,34 @@ states it in every output):
 * gap+1 of a solver's row is `max(gap_to_bks%, 0) + 1`: a row better than the
   published bound scores as matching it. Below |BKS| 1e-12 the runner's gap
   column is an absolute residual (`reference_solve.safe_gap`), used as written.
+* `runner.CLAIM_EXCLUDED` instances are out of every count and aggregate (the
+  smoke's n=48 of 50), and are listed by name on their own line.
 * GM is the geometric mean of gap+1 over the GM POOL: instances both solvers
-  solved, with a finite `primal_bks` in `bounds.csv`, not in
-  `runner.CLAIM_EXCLUDED`. The ratio is GM_cbls / GM_SCIP; below 1 is cbls ahead.
+  solved, with a finite `primal_bks` in `bounds.csv`. The ratio is
+  GM_cbls / GM_SCIP; below 1 is cbls ahead.
 * Over the same pool, cbls WINS an instance when its gap+1 is more than 1%
   smaller than SCIP's (`(gc+1) < (gs+1) / WIN_FACTOR`), LOSES when SCIP's is more
   than 1% smaller, and ties otherwise. Instances only one solver solved are
   counted beside them in brackets (only-cbls, only-SCIP); those need no gap, so
-  instances without a finite BKS are in the brackets, and claim-excluded ones
-  are not.
+  instances without a finite BKS are in the brackets.
 
-SOLVED means: a cbls row with `feasible == true` whose note is not
-`VERIFY-FAILED` (the runner rejected its own incumbent), and a SCIP shard row
-with `feasible == true`. A SCIP `<instance>.failed` marker (the solve process
-died; it holds e.g. `exit 134`) is SCIP no-solution, and is listed by name with
-its exit -- `scip_solved` is the one place that decides it.
+SOLVED means, the same rule on both sides (decided at the hub, 2026-11-01): a
+row with `feasible == true` (for cbls, also a note that is not `VERIFY-FAILED`).
+Every other scored instance is that solver's NO SOLUTION, listed by name with
+its reason: the row's note (`read-error(...)`, `infeasible`, `no-solution(...)`,
+`CHECK-FAILED(...)`, ...), the exit in a SCIP `<instance>.failed` marker (the
+solve process died after its retry), or, in a cbls staging directory,
+`rejected: <note>` for an instance whose only row is the driver's
+`<instance>.csv.rejected` (its runner exited nonzero). A whole `<instance>.csv`
+beside a `.rejected` is a re-solve and wins. `cbls_solved` and `scip_solved` are
+the one place that decides it.
+
+PROVENANCE comes from the data: the engine commit and thread count from the cbls
+rows, the SCIP version from its rows, and the budget from SCIP's `scip_version`
+cell (`... / 60s / ...`) and the cbls side's record (the staging stamp's
+`time-limit=`, or the run record beside `comparison.csv`). Two budgets that
+disagree are refused, and so is a `--budget` that disagrees with them.
+`--memory-cap` is free text: the cap is not in the data.
 
 COMPLETENESS (CLAUDE.md, Measuring): the roster is read first, and by default a
 roster instance without a cbls row or without a SCIP CSV or failure marker is
@@ -54,6 +69,7 @@ import argparse
 import csv
 import json
 import math
+import re
 import statistics
 import sys
 from dataclasses import asdict, dataclass, field
@@ -68,13 +84,16 @@ from benchmarks.minlplib.campaign_report import (  # noqa: E402
     Row,
     ScipRow,
     load_results,
+    load_run_record,
     load_scip,
 )
 from benchmarks.minlplib.reference_solve import Bound, load_bounds  # noqa: E402
 from benchmarks.minlplib.run_benchmark import (  # noqa: E402
     ASSEMBLED_TABLE,
     ASSEMBLED_TRACE,
+    REJECTED_SUFFIX,
     SEARCH_CONFIG_THREADS,
+    STAMP_NAME,
 )
 from benchmarks.minlplib.runner import CLAIM_EXCLUDED  # noqa: E402
 
@@ -98,14 +117,26 @@ SCIP_FAILED_SUFFIX = ".failed"
 #: Staged per-instance trace files, beside the per-instance rows.
 STAGED_TRACE_SUFFIX = ".trace.csv"
 
+#: A staged row the driver set aside after a nonzero runner exit.
+STAGED_REJECTED_SUFFIX = ".csv" + REJECTED_SUFFIX
+
+#: The budget field of SCIP's `scip_version` cell: `SCIP 10.0.2 / ... / 60s / seed 0`.
+SCIP_BUDGET_FIELD = re.compile(r"/\s*([0-9]+(?:\.[0-9]*)?)s\s*/")
+
+#: The staging stamp's budget line (`run_benchmark.staging_stamp`).
+STAMP_BUDGET_KEY = "time-limit"
+
 NOT_STATED = "not stated"
+NO_NOTE = "no note recorded"
 
 MEASURE_RULE = (
+    f"{', '.join(CLAIM_EXCLUDED)} (claim-excluded) out of every count and aggregate. "
     "GM = geometric mean of (max(gap_to_bks%, 0) + 1) over instances both solvers solved, "
-    f"with a finite BKS, excluding {', '.join(CLAIM_EXCLUDED)}; ratio = GM_cbls / GM_SCIP "
-    "(below 1: cbls ahead). Win/loss: gap+1 more than 1% smaller than the other's, same "
-    "pool; brackets: instances only that solver solved (no BKS needed, claim-excluded out). "
-    "cbls solved = feasible and not VERIFY-FAILED; a SCIP .failed marker is SCIP no-solution."
+    "with a finite BKS; ratio = GM_cbls / GM_SCIP (below 1: cbls ahead). Win/loss: gap+1 "
+    "more than 1% smaller than the other's, same pool; brackets: instances only that solver "
+    "solved (no BKS needed). Solved = a feasible row (cbls: and not VERIFY-FAILED); anything "
+    "else is that solver's no-solution, listed with its reason, on both sides alike: the "
+    "row's note, a SCIP .failed marker's exit, or a cbls staged row the driver rejected."
 )
 
 
@@ -140,8 +171,11 @@ def head_to_head(gap_cbls: float, gap_scip: float) -> int:
     return 0
 
 
-def cbls_solved(row: Row) -> bool:
-    """A cbls row with a verified feasible incumbent."""
+def cbls_solved(name: str, cbls: CblsSide) -> bool:
+    """Whether cbls solved `name`: a verified feasible row. A rejected row is no solution."""
+    if name in cbls.rejected:
+        return False
+    row = cbls.rows[name]
     return row.feasible and not row.verification_failed
 
 
@@ -150,6 +184,26 @@ def scip_solved(name: str, scip: ScipSide) -> bool:
     if name in scip.failures:
         return False
     return scip.rows[name].feasible
+
+
+def cbls_reason(name: str, cbls: CblsSide) -> str:
+    """Why cbls has no solution for `name`: the rejection, else the row's note."""
+    if name in cbls.rejected:
+        return cbls.rejected[name]
+    return cbls.rows[name].note or NO_NOTE
+
+
+def scip_reason(name: str, scip: ScipSide) -> str:
+    """Why SCIP has no solution for `name`: the failure marker's exit, else the row's note."""
+    if name in scip.failures:
+        return scip.failures[name]
+    row = scip.rows[name]
+    return row.note or (f"status {row.status}" if row.status else NO_NOTE)
+
+
+def reason_category(reason: str) -> str:
+    """A reason's prefix before its first `(` or `:`, e.g. `read-error` or `exit 134`."""
+    return re.split(r"[(:]", reason, maxsplit=1)[0].strip() or reason
 
 
 # --------------------------------------------------------------------------
@@ -214,11 +268,23 @@ def load_cbls_table(path: Path, roster: Mapping[str, Bound]) -> dict[str, Row]:
     return {r.instance: r for r in rows}
 
 
+@dataclass(frozen=True)
+class CblsSide:
+    """The cbls rows by instance, and the staged instances whose only row was rejected."""
+
+    rows: dict[str, Row]
+    #: instance -> `rejected: <note of the row inside>`.
+    rejected: dict[str, str] = field(default_factory=dict)
+
+    def present(self) -> set[str]:
+        return set(self.rows) | set(self.rejected)
+
+
 def _staged_csvs(stage: Path) -> list[Path]:
     """The per-instance row files of a staging directory, without traces or assembled tables.
 
     `*.rejected` files (a quarantined row) end in `.rejected`, so a `*.csv` glob
-    never sees them.
+    never sees them; `_staged_rejected` reads those.
     """
     skip = {ASSEMBLED_TABLE, ASSEMBLED_TRACE}
     return sorted(
@@ -228,21 +294,50 @@ def _staged_csvs(stage: Path) -> list[Path]:
     )
 
 
-def load_cbls_staging(stage: Path, roster: Mapping[str, Bound]) -> dict[str, Row]:
-    """The driver's staging directory, by instance; an in-progress file is absent."""
+def _staged_rejected(stage: Path) -> list[Path]:
+    """The quarantined rows (`<instance>.csv.rejected`), without quarantined traces."""
+    return sorted(
+        p
+        for p in stage.glob(f"*{STAGED_REJECTED_SUFFIX}")
+        if not p.name.endswith(STAGED_TRACE_SUFFIX + REJECTED_SUFFIX)
+    )
+
+
+def _staged_row(path: Path, stem: str, roster: Mapping[str, Bound]) -> Row | None:
+    """The one row of a staged file, None while it is header-only or torn."""
+    if stem not in roster:
+        raise RefusedError(f"{path}: instance {stem!r} is not in the roster")
+    if not has_whole_row(path):
+        return None
+    (row,) = load_cbls_table(path, roster).values()
+    _check_stem(path, stem, row.instance, roster)
+    return row
+
+
+def load_cbls_staging(stage: Path, roster: Mapping[str, Bound]) -> CblsSide:
+    """The driver's staging directory, by instance; an in-progress file is absent.
+
+    An instance whose staged row the driver rejected (its runner exited nonzero)
+    is cbls no-solution with the rejected row's note, unless a whole
+    `<instance>.csv` stands beside it: that is a later re-solve, and it wins.
+    """
     if not stage.is_dir():
         raise RefusedError(f"{stage}: not a directory")
     rows: dict[str, Row] = {}
     for path in _staged_csvs(stage):
         stem = path.name.removesuffix(".csv")
-        if stem not in roster:
-            raise RefusedError(f"{path}: instance {stem!r} is not in the roster")
-        if not has_whole_row(path):
+        row = _staged_row(path, stem, roster)
+        if row is not None:
+            rows[stem] = row
+    rejected: dict[str, str] = {}
+    for path in _staged_rejected(stage):
+        stem = path.name.removesuffix(STAGED_REJECTED_SUFFIX)
+        row = _staged_row(path, stem, roster)
+        if stem in rows:
             continue
-        (row,) = load_cbls_table(path, roster).values()
-        _check_stem(path, stem, row.instance, roster)
-        rows[stem] = row
-    return rows
+        note = "no whole row" if row is None else row.note or NO_NOTE
+        rejected[stem] = f"rejected: {note}"
+    return CblsSide(rows=rows, rejected=rejected)
 
 
 @dataclass(frozen=True)
@@ -306,24 +401,98 @@ def _one(values: Iterable[str], what: str) -> str:
 
 
 @dataclass(frozen=True)
+class Budget:
+    """The per-instance budget and where it was read; `seconds` None when nothing says."""
+
+    seconds: float | None = None
+    sources: list[str] = field(default_factory=list)
+
+
+def scip_budget(scip: ScipSide) -> float | None:
+    """The `<N>s` field of SCIP's `scip_version` cells; None when no cell carries one."""
+    found: set[float] = set()
+    for row in scip.rows.values():
+        match = SCIP_BUDGET_FIELD.search(row.version)
+        if match:
+            found.add(float(match.group(1)))
+    if len(found) > 1:
+        raise RefusedError(f"mixed SCIP budgets: {', '.join(f'{b:g}s' for b in sorted(found))}")
+    return found.pop() if found else None
+
+
+def staging_budget(stage: Path) -> float | None:
+    """The `time-limit=` line of a staging directory's stamp; None when it has no stamp."""
+    stamp = stage / STAMP_NAME
+    if not stamp.exists():
+        return None
+    for line in stamp.read_text().splitlines():
+        key, sep, value = line.partition("=")
+        if sep and key.strip() == STAMP_BUDGET_KEY:
+            try:
+                return float(value)
+            except ValueError as exc:
+                raise RefusedError(
+                    f"{stamp}: {STAMP_BUDGET_KEY}={value!r} is not a number"
+                ) from exc
+    raise RefusedError(f"{stamp}: has no {STAMP_BUDGET_KEY}= line")
+
+
+def table_budget(table: Path) -> float | None:
+    """The budget in the run record beside an assembled table; None when it has none."""
+    try:
+        record = load_run_record(table)
+    except ValueError as exc:
+        raise RefusedError(str(exc)) from exc
+    return None if record is None else record.budget_seconds
+
+
+def reconcile_budget(derived: Mapping[str, float | None], stated: float | None) -> Budget:
+    """The one budget the data records, refusing two that differ or a `--budget` that differs.
+
+    `derived` maps a source (`SCIP scip_version`, `cbls staging stamp`, ...) to
+    what it records. A stated budget with nothing in the data to check it is
+    reported as stated.
+    """
+    known = {src: b for src, b in derived.items() if b is not None}
+    if len(set(known.values())) > 1:
+        sides = ", ".join(f"{src} {b:g}s" for src, b in known.items())
+        raise RefusedError(f"the two sides' budgets differ: {sides}")
+    if known:
+        seconds = next(iter(known.values()))
+        if stated is not None and stated != seconds:
+            raise RefusedError(
+                f"--budget {stated:g}s, but the data records {seconds:g}s ({', '.join(known)})"
+            )
+        return Budget(seconds=seconds, sources=list(known))
+    if stated is not None:
+        return Budget(seconds=stated, sources=["--budget, not in the data"])
+    return Budget()
+
+
+@dataclass(frozen=True)
 class Provenance:
     commit_sha: str
     cbls_threads: int | None
     scip_version: str
-    budget: str
+    budget: Budget
     memory_cap: str
 
 
 def provenance(
-    cbls: Mapping[str, Row], scip: ScipSide, budget: str | None, memory_cap: str | None
+    cbls: CblsSide, scip: ScipSide, budget: Budget | None, memory_cap: str | None
 ) -> Provenance:
-    """Read from every row loaded, scored or not: a stray row is still a stray."""
-    threads = _one((str(row_threads(r)) for r in cbls.values()), "cbls thread counts")
+    """Read from every row loaded, scored or not: a stray row is still a stray.
+
+    A rejected staged row is not a result and is not read: an exit-3 row can
+    lack the search configuration a solved row records.
+    """
+    rows = cbls.rows.values()
+    threads = _one((str(row_threads(r)) for r in rows), "cbls thread counts")
     return Provenance(
-        commit_sha=_one((r.commit_sha for r in cbls.values()), "engine commits"),
+        commit_sha=_one((r.commit_sha for r in rows), "engine commits"),
         cbls_threads=None if threads == "none" else int(threads),
         scip_version=_one((r.version for r in scip.rows.values()), "SCIP versions"),
-        budget=budget or NOT_STATED,
+        budget=budget or Budget(),
         memory_cap=memory_cap or NOT_STATED,
     )
 
@@ -336,6 +505,9 @@ def provenance(
 @dataclass(frozen=True)
 class Score:
     n_roster: int
+    #: The roster less its claim-excluded instances: what a complete campaign scores.
+    n_counted: int
+    #: Instances present on both sides, claim-excluded out.
     n_scored: int
     partial: bool
     cbls_feasible: int
@@ -353,8 +525,9 @@ class Score:
     provenance: Provenance
     claim_excluded: list[str] = field(default_factory=list)
     no_bks: list[str] = field(default_factory=list)
-    scip_failures: dict[str, str] = field(default_factory=dict)
-    cbls_verify_failed: list[str] = field(default_factory=list)
+    #: Scored instance -> why that solver has no solution, in roster order.
+    cbls_no_solution: dict[str, str] = field(default_factory=dict)
+    scip_no_solution: dict[str, str] = field(default_factory=dict)
     missing_cbls: list[str] = field(default_factory=list)
     missing_scip: list[str] = field(default_factory=list)
 
@@ -386,37 +559,43 @@ def _pool_gaps(name: str, cbls: Row, scip: ScipRow) -> tuple[float, float]:
 
 def score(
     roster: Sequence[Bound],
-    cbls: Mapping[str, Row],
+    cbls: CblsSide,
     scip: ScipSide,
     *,
     partial: bool = False,
-    budget: str | None = None,
+    budget: Budget | None = None,
     memory_cap: str | None = None,
 ) -> Score:
-    """Score every roster instance present on both sides; refuse a gap unless `partial`."""
-    missing_cbls = _missing(roster, set(cbls))
+    """Score every roster instance present on both sides; refuse a gap unless `partial`.
+
+    Claim-excluded instances are out of every count, as in #228's smoke (n=48
+    of 50), and are listed by name instead.
+    """
+    cbls_present = cbls.present()
     scip_present = scip.present()
+    missing_cbls = _missing(roster, cbls_present)
     missing_scip = _missing(roster, scip_present)
     refusal = completeness_refusal(missing_cbls, missing_scip)
     if refusal is not None and not partial:
         raise RefusedError(refusal)
     prov = provenance(cbls, scip, budget, memory_cap)
-    scored = [b for b in roster if b.instance in cbls and b.instance in scip_present]
+    both = [b for b in roster if b.instance in cbls_present and b.instance in scip_present]
+    scored = [b for b in both if b.instance not in CLAIM_EXCLUDED]
 
-    solved_c = {b.instance for b in scored if cbls_solved(cbls[b.instance])}
+    solved_c = {b.instance for b in scored if cbls_solved(b.instance, cbls)}
     solved_s = {b.instance for b in scored if scip_solved(b.instance, scip)}
-    counted = [b for b in scored if b.instance not in CLAIM_EXCLUDED]
     pool = [
         b
-        for b in counted
+        for b in scored
         if b.instance in solved_c and b.instance in solved_s and math.isfinite(b.primal_bks)
     ]
-    gaps = [_pool_gaps(b.instance, cbls[b.instance], scip.rows[b.instance]) for b in pool]
+    gaps = [_pool_gaps(b.instance, cbls.rows[b.instance], scip.rows[b.instance]) for b in pool]
     verdicts = [head_to_head(c, s) for c, s in gaps]
     gm_c = gm_gap_plus_one([c for c, _ in gaps])
     gm_s = gm_gap_plus_one([s for _, s in gaps])
     return Score(
         n_roster=len(roster),
+        n_counted=sum(1 for b in roster if b.instance not in CLAIM_EXCLUDED),
         n_scored=len(scored),
         partial=partial,
         cbls_feasible=len(solved_c),
@@ -429,15 +608,17 @@ def score(
         wins=verdicts.count(1),
         losses=verdicts.count(-1),
         ties=verdicts.count(0),
-        only_cbls=sum(1 for b in counted if b.instance in solved_c - solved_s),
-        only_scip=sum(1 for b in counted if b.instance in solved_s - solved_c),
+        only_cbls=len(solved_c - solved_s),
+        only_scip=len(solved_s - solved_c),
         provenance=prov,
-        claim_excluded=[b.instance for b in scored if b.instance in CLAIM_EXCLUDED],
+        claim_excluded=[b.instance for b in both if b.instance in CLAIM_EXCLUDED],
         no_bks=[b.instance for b in scored if not math.isfinite(b.primal_bks)],
-        scip_failures={
-            b.instance: scip.failures[b.instance] for b in scored if b.instance in scip.failures
+        cbls_no_solution={
+            b.instance: cbls_reason(b.instance, cbls) for b in scored if b.instance not in solved_c
         },
-        cbls_verify_failed=[b.instance for b in scored if cbls[b.instance].verification_failed],
+        scip_no_solution={
+            b.instance: scip_reason(b.instance, scip) for b in scored if b.instance not in solved_s
+        },
         missing_cbls=missing_cbls,
         missing_scip=missing_scip,
     )
@@ -449,7 +630,7 @@ def score(
 
 
 def partial_banner(s: Score) -> str:
-    return f"PARTIAL: {s.n_scored} of {s.n_roster} instances, not a result"
+    return f"PARTIAL: {s.n_scored} of {s.n_counted} instances, not a result"
 
 
 def _f(value: float) -> str:
@@ -460,22 +641,39 @@ def _listed(label: str, names: Sequence[str]) -> str:
     return f"- {label}: {len(names)}" + (f" ({', '.join(names)})" if names else "")
 
 
+def _no_solution_lines(label: str, reasons: Mapping[str, str]) -> list[str]:
+    """`reasons` grouped by category, largest group first, every name shown."""
+    groups: dict[str, list[str]] = {}
+    for name, why in reasons.items():
+        groups.setdefault(reason_category(why), []).append(name)
+    ordered = sorted(groups, key=lambda cat: (-len(groups[cat]), cat))
+    return [f"- {label}: {len(reasons)}"] + [
+        f"  - {cat}: {len(groups[cat])} ({', '.join(groups[cat])})" for cat in ordered
+    ]
+
+
+def _budget_line(b: Budget) -> str:
+    if b.seconds is None:
+        return f"- budget: {NOT_STATED} (no SCIP budget field, stamp or run record)"
+    return f"- budget: {b.seconds:g}s per instance (from {', '.join(b.sources)})"
+
+
 def render_markdown(s: Score) -> str:
     p = s.provenance
     lines = [partial_banner(s), ""] if s.partial else []
     threads = "none" if p.cbls_threads is None else str(p.cbls_threads)
-    failures = [f"{n} ({why})" for n, why in s.scip_failures.items()]
     lines += [
         "## MINLPLib GM(gap+1): cbls / SCIP",
         "",
         "| measure | value |",
         "|---|---|",
         f"| roster (bounds.csv) | {s.n_roster} |",
+        f"| counted (roster less claim-excluded) | {s.n_counted} |",
         f"| scored | {s.n_scored} |",
         f"| cbls feasible | {s.cbls_feasible} |",
         f"| SCIP feasible | {s.scip_feasible} |",
         f"| both feasible | {s.both_feasible} |",
-        f"| GM pool (both, finite BKS, not claim-excluded) | {s.gm_pool} |",
+        f"| GM pool (both, finite BKS) | {s.gm_pool} |",
         f"| GM(gap+1) cbls | {_f(s.gm_cbls)} |",
         f"| GM(gap+1) SCIP | {_f(s.gm_scip)} |",
         f"| ratio cbls/SCIP | {_f(s.ratio)} |",
@@ -486,13 +684,13 @@ def render_markdown(s: Score) -> str:
         f"- engine commit: {p.commit_sha} (commit_sha column)",
         f"- cbls threads: {threads} (search_config)",
         f"- SCIP: {p.scip_version} (scip_version column), at its defaults",
-        f"- budget: {p.budget}",
+        _budget_line(p.budget),
         f"- memory cap: {p.memory_cap}",
         f"- rule: {MEASURE_RULE}",
-        _listed("claim-excluded (counted, out of GM and win/loss)", s.claim_excluded),
+        _listed("claim-excluded (out of every count)", s.claim_excluded),
         _listed("no finite BKS (out of GM and both-solved win/loss)", s.no_bks),
-        _listed("SCIP failures (no solution)", failures),
-        _listed("cbls VERIFY-FAILED (no solution)", s.cbls_verify_failed),
+        *_no_solution_lines("cbls no solution", s.cbls_no_solution),
+        *_no_solution_lines("SCIP no solution", s.scip_no_solution),
     ]
     if s.partial:
         lines += [
@@ -521,36 +719,63 @@ def to_json(s: Score) -> str:
 # --------------------------------------------------------------------------
 
 
+def budget_seconds(text: str) -> float:
+    """`--budget`: seconds, as `60`, `60s` or `60 s`."""
+    match = re.fullmatch(r"\s*([0-9]+(?:\.[0-9]*)?)\s*s?\s*", text)
+    if match is None:
+        raise argparse.ArgumentTypeError(f"not a budget in seconds: {text!r}")
+    return float(match.group(1))
+
+
+STAGING_NEEDS_PARTIAL = (
+    "--cbls-staging requires --partial: staged rows have not passed the independent SCIP "
+    "check (the driver demotes a row that check rejects to VERIFY-FAILED only once the whole "
+    "roster is solved); score the assembled comparison.csv for a result"
+)
+
+
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--bounds", type=Path, required=True, help="the roster, bounds.csv")
     cbls = parser.add_mutually_exclusive_group(required=True)
     cbls.add_argument("--cbls", type=Path, help="the assembled comparison.csv")
-    cbls.add_argument("--cbls-staging", type=Path, help="the driver's staging directory")
+    cbls.add_argument(
+        "--cbls-staging", type=Path, help="the driver's staging directory (needs --partial)"
+    )
     parser.add_argument(
         "--scip-shards", type=Path, required=True, help="one <instance>.csv or .failed each"
     )
     parser.add_argument("--partial", action="store_true", help="score what is there; no result")
-    parser.add_argument("--budget", help="the campaign's budget, as stated in the report")
+    parser.add_argument(
+        "--budget",
+        type=budget_seconds,
+        help="the campaign's budget in seconds; refused unless the data records the same",
+    )
     parser.add_argument("--memory-cap", help="the campaign's memory cap, as stated")
     parser.add_argument("--json", type=Path, help="also write the score as JSON here")
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.cbls_staging is not None and not args.partial:
+        parser.error(STAGING_NEEDS_PARTIAL)
+    return args
 
 
 def run(args: argparse.Namespace) -> Score:
     bounds = load_roster(args.bounds)
     roster = {b.instance: b for b in bounds}
     if args.cbls is not None:
-        cbls = load_cbls_table(args.cbls, roster)
+        cbls = CblsSide(rows=load_cbls_table(args.cbls, roster))
+        derived = {"cbls run record": table_budget(args.cbls)}
     else:
         cbls = load_cbls_staging(args.cbls_staging, roster)
+        derived = {"cbls staging stamp": staging_budget(args.cbls_staging)}
     scip = load_scip_shards(args.scip_shards, roster)
+    budget = reconcile_budget({"SCIP scip_version": scip_budget(scip), **derived}, args.budget)
     return score(
         bounds,
         cbls,
         scip,
         partial=args.partial,
-        budget=args.budget,
+        budget=budget,
         memory_cap=args.memory_cap,
     )
 

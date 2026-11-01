@@ -15,6 +15,7 @@ import pytest
 
 from benchmarks.minlplib.gm_ratio import (
     EXIT_REFUSED,
+    CblsSide,
     RefusedError,
     Score,
     gap_plus_one,
@@ -27,6 +28,7 @@ from benchmarks.minlplib.gm_ratio import (
     main,
     score,
 )
+from benchmarks.minlplib.run_benchmark import STAMP_NAME
 from benchmarks.minlplib.runner import CLAIM_EXCLUDED, RUNNER_COLUMNS
 
 if TYPE_CHECKING:
@@ -85,10 +87,14 @@ def write_scip(
     *,
     feasible: bool = True,
     version: str = SCIP_VERSION,
+    note: str = "",
+    status: str = "timelimit",
 ) -> None:
+    """A note left empty is the solve's own: `feasible`, or `no-solution(<status>)`."""
     shards.mkdir(exist_ok=True)
     flag = "true" if feasible else "false"
-    row = f"{name},1,1,NaN,{gap},NaN,60,{flag},feasible,NaN,NaN,timelimit,0,0,60,{version}"
+    note = note or ("feasible" if feasible else f"no-solution({status})")
+    row = f"{name},1,1,NaN,{gap},NaN,60,{flag},{note},NaN,NaN,{status},0,0,60,{version}"
     (shards / f"{name}.csv").write_text(f"{SCIP_COLUMNS}\n{row}\n")
 
 
@@ -113,7 +119,9 @@ def campaign(
     shards.mkdir()
     lines = []
     for name, gc, gs in rows:
-        lines.append(cbls_line(name, "NaN" if gc == "-" else gc, feasible=gc != "-"))
+        found = gc != "-"
+        note = "feasible" if found else "infeasible"
+        lines.append(cbls_line(name, gc if found else "NaN", feasible=found, note=note))
         write_scip(shards, name, "NaN" if gs == "-" else gs, feasible=gs != "-")
     table = write_cbls(tmp_path / "comparison.csv", lines)
     return bounds, table, shards
@@ -124,10 +132,22 @@ def scored(bounds: Path, table: Path, shards: Path, *, partial: bool = False) ->
     roster = {b.instance: b for b in roster_list}
     return score(
         roster_list,
-        load_cbls_table(table, roster),
+        CblsSide(rows=load_cbls_table(table, roster)),
         load_scip_shards(shards, roster),
         partial=partial,
     )
+
+
+def write_stamp(stage: Path, time_limit: str = "60") -> None:
+    """The fields `run_benchmark.staging_stamp` writes; only time-limit is read."""
+    stage.mkdir(exist_ok=True)
+    (stage / STAMP_NAME).write_text(
+        f"commit={SHA}\ntime-limit={time_limit}\nseed=0\nthreads=16\nhost=h\nroster=r\n"
+    )
+
+
+def staging_argv(bounds: Path, stage: Path, shards: Path) -> list[str]:
+    return ["--bounds", str(bounds), "--cbls-staging", str(stage), "--scip-shards", str(shards)]
 
 
 # --------------------------------------------------------------------------
@@ -202,18 +222,21 @@ def test_only_one_feasible_instances_are_bracketed_not_won(tmp_path: Path) -> No
     assert (s.only_cbls, s.only_scip) == (2, 1)
 
 
-def test_claim_excluded_instances_are_counted_but_kept_out_of_the_aggregates(
+def test_claim_excluded_instances_are_out_of_every_count_and_listed_by_name(
     tmp_path: Path,
 ) -> None:
+    # #228's smoke: n=48 of 50, the feasible counts without elec too.
     excluded = CLAIM_EXCLUDED[0]
     bounds, table, shards = campaign(
         tmp_path, [("a", 0.0, 0.0), (excluded, 99.0, 0.0), (CLAIM_EXCLUDED[1], 1.0, "-")]
     )
     s = scored(bounds, table, shards)
-    assert (s.cbls_feasible, s.scip_feasible, s.both_feasible) == (3, 2, 2)
+    assert (s.n_roster, s.n_counted, s.n_scored) == (3, 1, 1)
+    assert (s.cbls_feasible, s.scip_feasible, s.both_feasible) == (1, 1, 1)
     assert s.gm_pool == 1
     assert s.gm_cbls == 1.0
     assert (s.wins, s.losses, s.only_cbls) == (0, 0, 0)
+    assert s.scip_no_solution == {}
     assert s.claim_excluded == [excluded, CLAIM_EXCLUDED[1]]
 
 
@@ -242,16 +265,78 @@ def test_a_scip_failure_marker_is_scip_no_solution_listed_with_its_exit(
     s = scored(bounds, table, shards)
     assert s.scip_feasible == 1
     assert s.only_cbls == 1
-    assert s.scip_failures == {"crashed": "exit 134"}
+    assert s.scip_no_solution == {"crashed": "exit 134"}
 
 
 def test_a_verify_failed_cbls_row_is_no_solution(tmp_path: Path) -> None:
+    # As the driver demotes it: feasible=false, the independent check's note.
     bounds, table, shards = campaign(tmp_path, [("a", 0.0, 0.0), ("b", 0.0, 0.0)])
-    write_cbls(table, [cbls_line("a", 0.0), cbls_line("b", 0.0, note="VERIFY-FAILED(x)")])
+    demoted = cbls_line("b", "NaN", feasible=False, note="VERIFY-FAILED(independent: x)")
+    write_cbls(table, [cbls_line("a", 0.0), demoted])
     s = scored(bounds, table, shards)
     assert s.cbls_feasible == 1
     assert s.only_scip == 1
-    assert s.cbls_verify_failed == ["b"]
+    assert s.cbls_no_solution == {"b": "VERIFY-FAILED(independent: x)"}
+
+
+def test_every_cbls_no_solution_row_is_listed_with_its_note(tmp_path: Path) -> None:
+    names = ["a", "rd", "inf", "uns"]
+    bounds, table, shards = campaign(tmp_path, [(n, 0.0, 0.0) for n in names])
+    write_cbls(
+        table,
+        [
+            cbls_line("a", 0.0),
+            cbls_line("rd", "NaN", feasible=False, note="read-error(bad .nl header)"),
+            cbls_line("inf", "NaN", feasible=False, note="infeasible"),
+            cbls_line("uns", "NaN", feasible=False, note="unsupported: erf"),
+        ],
+    )
+    s = scored(bounds, table, shards)
+    assert s.cbls_no_solution == {
+        "rd": "read-error(bad .nl header)",
+        "inf": "infeasible",
+        "uns": "unsupported: erf",
+    }
+    assert len(s.cbls_no_solution) == s.n_scored - s.cbls_feasible
+
+
+def test_scip_read_error_and_check_failed_rows_are_listed_with_their_notes(
+    tmp_path: Path,
+) -> None:
+    names = ["a", "rd", "chk", "lim"]
+    bounds, table, shards = campaign(tmp_path, [(n, 0.0, 0.0) for n in names])
+    write_scip(
+        shards, "rd", "NaN", feasible=False, note="read-error(OSError: x)", status="read-error"
+    )
+    write_scip(
+        shards, "chk", "NaN", feasible=False, note="CHECK-FAILED(SCIP could not re-validate)"
+    )
+    write_scip(shards, "lim", "NaN", feasible=False)
+    s = scored(bounds, table, shards)
+    assert s.scip_no_solution == {
+        "rd": "read-error(OSError: x)",
+        "chk": "CHECK-FAILED(SCIP could not re-validate)",
+        "lim": "no-solution(timelimit)",
+    }
+    assert len(s.scip_no_solution) == s.n_scored - s.scip_feasible
+
+
+def test_markdown_groups_no_solution_instances_by_reason_category(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    names = ["a", "x1", "x2", "y", "z"]
+    bounds, table, shards = campaign(tmp_path, [(n, 0.0, 0.0) for n in names])
+    for name in ("x1", "x2"):
+        write_scip(shards, name, "NaN", feasible=False)
+    (shards / "y.csv").unlink()
+    write_failed(shards, "y", "exit 134")
+    write_scip(shards, "z", "NaN", feasible=False, note="read-error(OSError: x)")
+    argv = ["--bounds", str(bounds), "--cbls", str(table), "--scip-shards", str(shards)]
+    assert main(argv) == 0
+    text = capsys.readouterr().out
+    assert "- SCIP no solution: 4\n" in text
+    assert "  - no-solution: 2 (x1, x2)\n  - exit 134: 1 (y)\n  - read-error: 1 (z)\n" in text
+    assert "- cbls no solution: 0\n" in text
 
 
 # --------------------------------------------------------------------------
@@ -336,7 +421,7 @@ def test_main_partial_prints_the_banner_first_and_records_it_in_json(
     assert main([*argv, "--partial", "--json", str(out), "--budget", "60 s"]) == 0
     text = capsys.readouterr().out
     assert text.splitlines()[0] == "PARTIAL: 1 of 2 instances, not a result"
-    assert "- budget: 60 s" in text
+    assert "- budget: 60s per instance (from SCIP scip_version)" in text
     record = json.loads(out.read_text())
     assert record["partial"] is True
     assert record["n_scored"] == 1
@@ -384,6 +469,26 @@ def test_mixed_scip_versions_are_refused(tmp_path: Path) -> None:
         scored(bounds, table, shards)
 
 
+def test_a_scip_budget_unlike_the_staging_stamp_is_refused_and_agreement_printed(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    bounds, table, shards = campaign(tmp_path, [("a", 0.0, 0.0)])
+    stage = tmp_path / "stage"
+    write_stamp(stage, "30")
+    write_cbls(stage / "a.csv", [cbls_line("a", 0.0)])
+    argv = [*staging_argv(bounds, stage, shards), "--partial"]
+    assert main(argv) == EXIT_REFUSED
+    err = capsys.readouterr().err
+    assert "budgets differ: SCIP scip_version 60s, cbls staging stamp 30s" in err
+
+    write_stamp(stage, "60")
+    assert main(argv) == 0
+    out = capsys.readouterr().out
+    assert "- budget: 60s per instance (from SCIP scip_version, cbls staging stamp)" in out
+    assert main([*argv, "--budget", "45"]) == EXIT_REFUSED
+    assert "--budget 45s, but the data records 60s" in capsys.readouterr().err
+
+
 # --------------------------------------------------------------------------
 # Staging and shard directories.
 # --------------------------------------------------------------------------
@@ -397,9 +502,66 @@ def test_staging_skips_traces_rejected_and_in_progress_files(tmp_path: Path) -> 
     write_cbls(stage / "a.csv", [cbls_line("a", 0.0)])
     (stage / "a.trace.csv").write_text("instance,time_seconds,objective,new_best\n")
     write_cbls(stage / "b.csv", [])  # header only: the solve is still running
-    write_cbls(stage / "c.csv.rejected", [cbls_line("c", 0.0)])
+    write_cbls(stage / "c.trace.csv.rejected", [])
     write_cbls(stage / "comparison.assembled.csv", [cbls_line("a", 0.0)])
-    assert list(load_cbls_staging(stage, roster)) == ["a"]
+    side = load_cbls_staging(stage, roster)
+    assert list(side.rows) == ["a"]
+    assert side.rejected == {}
+
+
+def test_a_rejected_only_instance_is_cbls_no_solution_with_its_note_not_missing(
+    tmp_path: Path,
+) -> None:
+    bounds = write_bounds(tmp_path / "bounds.csv", [("a", "1"), ("c", "1"), ("t", "1")])
+    shards = tmp_path / "scip"
+    for name in ("a", "c", "t"):
+        write_scip(shards, name, 0.0)
+    roster_list = load_roster(bounds)
+    roster = {b.instance: b for b in roster_list}
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    write_cbls(stage / "a.csv", [cbls_line("a", 0.0)])
+    # exit 3: the runner threw; the row it staged says why.
+    write_cbls(
+        stage / "c.csv.rejected",
+        [cbls_line("c", "NaN", feasible=False, note="solve-error(bad_alloc)")],
+    )
+    # lost workers: an ordinary-looking row, rejected on the exit status alone.
+    write_cbls(stage / "t.csv.rejected", [cbls_line("t", 0.0)])
+    side = load_cbls_staging(stage, roster)
+    assert side.rejected == {"c": "rejected: solve-error(bad_alloc)", "t": "rejected: feasible"}
+    s = score(roster_list, side, load_scip_shards(shards, roster))
+    assert s.missing_cbls == []
+    assert s.cbls_feasible == 1
+    assert s.only_scip == 2
+    assert s.cbls_no_solution == side.rejected
+
+
+def test_a_whole_staged_row_beside_a_rejected_one_is_a_re_solve_and_wins(
+    tmp_path: Path,
+) -> None:
+    bounds = write_bounds(tmp_path / "bounds.csv", [("c", "1")])
+    roster = {b.instance: b for b in load_roster(bounds)}
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    write_cbls(stage / "c.csv.rejected", [cbls_line("c", "NaN", feasible=False, note="x")])
+    write_cbls(stage / "c.csv", [cbls_line("c", 2.0)])
+    side = load_cbls_staging(stage, roster)
+    assert side.rejected == {}
+    assert side.rows["c"].gap_pct == 2.0
+
+
+def test_cbls_staging_without_partial_is_a_usage_error_saying_why(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    bounds, _, shards = campaign(tmp_path, [("a", 0.0, 0.0)])
+    stage = tmp_path / "stage"
+    write_stamp(stage)
+    write_cbls(stage / "a.csv", [cbls_line("a", 0.0)])
+    with pytest.raises(SystemExit) as exc:
+        main(staging_argv(bounds, stage, shards))
+    assert exc.value.code == EXIT_REFUSED
+    assert "have not passed the independent SCIP check" in capsys.readouterr().err
 
 
 def test_a_staged_row_filed_under_another_instance_is_refused(tmp_path: Path) -> None:
