@@ -116,6 +116,22 @@ effects hide behind that:
 
 They are separate columns because a row can have one without the other.
 
+Four more columns say what each solve was given and what it used (#285), since
+every comparison solver runs at its own defaults and nothing evens the CPU out:
+
+* **`threads_used`** — the threads the solve actually ran: CBLS's `threads`,
+  CP-SAT's `workers_started`, read off its log (#284). At its defaults CP-SAT
+  picks its own count, so this is the only record of it. The scorer refuses a
+  table whose rows of one engine differ here, so a directory resumed on a host
+  with other cores cannot mix two counts under one `workers=0` cell.
+* **`driver_wall_seconds`**, **`driver_cpu_seconds`**, **`cpu_wall_ratio`** —
+  the driver's own `driver_measured` numbers for the whole job (setup and solve),
+  taken from outside the solver with `wait4`. The ratio is the CPU share the
+  row actually got.
+
+Each is blank where the row did not record it: a result written before the
+field existed, or a job that never ran.
+
 No *aggregate* setup magnitude is quoted for the roster, because no per-row
 figure from a real run is committed: the published smoke table predates the
 measurement and was not regenerated. What is already measured elsewhere in this
@@ -507,7 +523,9 @@ then carries a nested `driver_measured` key, read by the driver with `wait4`:
 `cpu_seconds` (user plus system, the solver and every process it reaped),
 `cpu_wall_ratio` (the cores the solve actually used) and `peak_rss_kib`. A
 solver that uses fewer than N threads shows it in the ratio. The key is nested,
-like `driver_arm`, so the scorer never reads it as configuration.
+like `driver_arm`, so the scorer never reads it as configuration: it copies
+three of its numbers into `comparison.csv` (**Where the time went**) and
+compares none of them across rows.
 
 The replication itself is charged to setup, not to the search: the runner freezes
 the built model and copies it once per worker before the solve bracket opens, and
