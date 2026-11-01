@@ -553,10 +553,22 @@ bool StructuralBatch::take_best(Model& model, ViolationManager& vm, MoveGenerato
 // candidate's walk alone would NOT do: under FirstImprovingSample, once a
 // candidate is kept and re-snapshotted, the next one restores the sample base
 // and so moves the kept candidate's rows away from the snapshot, and the one
-// after it no longer walks them. `differing_` is what carries them. It also
-// carries a row a restore failed to land bit-for-bit, which the scope scan
-// read on every later candidate. It needs no scope, so a generator declaring
-// none no longer falls back to the full scan.
+// after it no longer walks them. `differing_` is what carries them.
+//
+// One trajectory difference is possible, and only from a custom invariant
+// whose restore does not land a row bit-for-bit (a plain Commit re-sums, so
+// no in-tree node does this): that row stays in `differing_` and is summed
+// into every later candidate of the pass, where the scope scan summed it only
+// for generators whose scope's G_v reached it. The full scan before #165 also
+// summed it everywhere. Scoring reads no scope; the scope drives only the
+// skips, and an empty one is still asserted against in Debug.
+//
+// COST of the two trailing calls (after first-improving's final restore and
+// take_best's no-improvement restore): an extra pass over G(base_vars_) or
+// G(dirty_vars_) per generator per sweep, which leaves `differing_` empty on
+// in-tree models. It is small next to the walk over the same variables just
+// before it, and without it `differing_` would be stale for the next
+// generator.
 //
 // Both delta calls self-correct to the current node values (they read the
 // constraint nodes directly), so no explicit invalidate is needed across the

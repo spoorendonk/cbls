@@ -576,7 +576,7 @@ TEST_CASE("a generator whose scope names an unknown variable is refused at regis
 }
 
 // ---------------------------------------------------------------------------
-// The MULTI-VARIABLE union of StructuralBatch::delta_after_walk.
+// The MULTI-VARIABLE union a move over two variables is scored on.
 //
 // The equivalence case above scores against `constraints_of_var(v)` -- one
 // variable's G_v, which the model already stores as an ascending contiguous run.
@@ -588,8 +588,10 @@ TEST_CASE("a generator whose scope names an unknown variable is refused at regis
 //   * ascending order is what makes the restricted sum the same `double` as the
 //     full scan, since floating-point addition is not associative.
 //
-// so both halves are checked here, each against a control that fails if the
-// corresponding step were dropped.
+// The first case builds the union by hand and checks the arithmetic against
+// the full scan; the two after it drive StructuralBatch, so that
+// `delta_after_walk`'s own dedup and its own sort are each pinned by a case
+// whose decision flips if that step were dropped.
 // ---------------------------------------------------------------------------
 struct SharedRowModel {
     Model model;
@@ -773,6 +775,45 @@ TEST_CASE("the batch scores a two-variable generator through the union path",
     }
     REQUIRE(stats->generated > 0);
     REQUIRE(passes_with_commit > 0);
+}
+
+TEST_CASE("the batch sums a two-variable move's rows in ascending order", "[structural][moves]") {
+    // A transfer from b to a walks b then a, so the rows arrive as G_v(b) =
+    // {1, 2} then G_v(a) = {0}: out of order, and `delta_after_walk` must sort
+    // them to get the full scan's double. The weights make the order DECIDE:
+    //   row 0 (size_a <= 1): a grows 1 -> 2,  +1 at weight 1e17 -> +1e17
+    //   row 1 (size_b <= 4): b shrinks 5 -> 4, -1 at weight 1e17 -> -1e17
+    //   row 2 (shared):      -4 for any element, at weight 1     -> -4
+    // Ascending, (+1e17 - 1e17) - 4 = -4: an improvement, kept. In walk order,
+    // (-1e17 - 4) + 1e17 = 0, because the ulp at 1e17 is 16 and the -4 is
+    // rounded away: no improvement, so dropping the sort means no commit.
+    SharedRowModel sr = shared_row_model();
+    set_elements(sr.model, sr.a, {0});
+    set_elements(sr.model, sr.b, {1, 2, 3, 4, 5});
+    set_elements(sr.model, sr.c, {});
+    full_evaluate(sr.model);
+    ViolationManager vm(sr.model);
+    REQUIRE(vm.weights.size() == 4);
+    vm.weights[0] = 1e17;
+    vm.weights[1] = 1e17;
+    vm.weights[2] = 1.0;
+    vm.weights[3] = 1.0;
+    // The premise, in plain doubles: the two orders really give different
+    // answers on either side of the acceptance threshold.
+    REQUIRE((1e17 + -1e17) + -4.0 == -4.0);
+    REQUIRE((-1e17 + -4.0) + 1e17 == 0.0);
+
+    auto stats = std::make_shared<TransferStats>();
+    SearchConfig config;
+    config.default_structural_generators = false;
+    config.move_generators.push_back(std::make_shared<const TransferGenerator>(sr.b, sr.a, stats));
+    StructuralBatch batch(sr.model, config, /*enabled=*/true);
+
+    RNG rng(5);
+    REQUIRE(batch.run(sr.model, vm, rng, false, kNoDeadline));
+    REQUIRE(stats->commits == 1);
+    REQUIRE(sr.model.var(sr.a).elements.size() == 2);
+    REQUIRE(sr.model.var(sr.b).elements.size() == 4);
 }
 
 // ---------------------------------------------------------------------------

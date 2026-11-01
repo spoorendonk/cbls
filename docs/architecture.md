@@ -1815,8 +1815,8 @@ over every route of a CVRP is then scored over the one or two routes a move
 touches, not all of them. The walk's own rows would not be enough: under
 `FirstImprovingSample` a kept candidate's rows differ from the re-taken
 snapshot once the next candidate restores the sample base, and the candidate
-after that does not walk them. No scope is needed, so a generator declaring
-none no longer falls back to the full rescan.
+after that does not walk them. Scoring reads no scope; the scope drives only
+the skips (an empty one is still a contract breach, asserted in Debug).
 
 Moves come from `generate_standard_moves` (`src/moves.cpp`):
 
@@ -1907,10 +1907,12 @@ Three contracts the batch relies on, all stated on the class:
   a generator holds is per-worker state. A clone that shared it would be a data
   race across worker threads (#157); `tests/test_parallel.cpp` pins that the
   registered instance is never the one the search runs.
-- **`scope()` must name every variable the moves can change.** It is what the
-  G_v restriction and `ViolationGuided`'s skip are computed from; a move
-  touching a variable outside the scope is scored *wrongly*, not merely
-  inefficiently.
+- **`scope()` must name every variable the moves can change.** It is what
+  `ViolationGuided`'s and `GranularBest`'s skips are computed from, so a move
+  touching a variable outside the scope can be skipped when it would have
+  helped. Scoring does not read it: since #273 the batch scores the rows each
+  move's own variables reach. Debug and sanitizer builds assert the contract
+  on every move, so a move from an empty scope aborts there.
 
 Not routed through the generator set: the diversification kick's structural half
 (`FeasibilityJump::perturb_structural`). It draws from the same RNG as the rest
