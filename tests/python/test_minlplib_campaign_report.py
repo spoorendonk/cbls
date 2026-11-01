@@ -482,6 +482,14 @@ def test_free_variables_come_from_the_nl_bounds_segment(tmp_path: Path) -> None:
     assert free_variable_instances(tmp_path, ["free", "missing"]) is None
 
 
+def test_a_binary_nl_makes_the_free_variable_split_not_derivable(tmp_path: Path) -> None:
+    # A binary NL file (header 'b', then raw bytes that are not UTF-8) cannot be
+    # scanned as text; the split is reported as not derivable, not raised.
+    (tmp_path / "free.nl").write_text("g3 1 1 0\n 2 0 1 0 0\nb\n0 0 1\n3\n")
+    (tmp_path / "bin.nl").write_bytes(b"b3 1 1 0\n 2 0 1 0 0\n\xff\xfe\x00")
+    assert free_variable_instances(tmp_path, ["free", "bin"]) is None
+
+
 def test_the_cli_writes_strict_json_and_markdown(tmp_path: Path) -> None:
     _write_campaign(tmp_path)
     json_out, md_out = tmp_path / "summary.json", tmp_path / "report.md"

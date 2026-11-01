@@ -435,7 +435,12 @@ def free_variable_instances(inst_dir: Path, instances: Iterable[str]) -> dict[st
         path = inst_dir / f"{name}.nl"
         if not path.exists():
             return None
-        lines = path.read_text().splitlines()
+        data = path.read_bytes()
+        if data.startswith(b"b"):
+            # Binary NL (#282; MINLPLib serves some instances only so): this
+            # text scan cannot read its bounds, so the split is not derivable.
+            return None
+        lines = data.decode().splitlines()
         if not lines or not lines[0].startswith("g"):
             raise ValueError(f"{path}: not a text ('g' header) NL file")
         n_vars = int(lines[1].split()[0])

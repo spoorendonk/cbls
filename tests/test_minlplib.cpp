@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <cstring>
 #include <string>
+#include <vector>
 
 using namespace cbls;
 using Catch::Matchers::WithinAbs;
@@ -647,6 +648,92 @@ TEST_CASE("nl_to_model maps OP1POW (base^const) to pow", "[minlplib]") {
     r.model.var_mut(0).value = 2.0;
     full_evaluate(r.model);
     REQUIRE_THAT(r.model.node_value(r.objective_node_id), WithinAbs(8.0, 1e-9));
+}
+
+// minimize <pow_expr> over one variable in [-10, 10]; the objective's value at x.
+static double pow_objective_at(const std::string& pow_expr, double x) {
+    std::string text = nl_header(1, 0, 1);
+    text += "b\n0 -10 10\n";
+    text += "O0 0\n" + pow_expr;
+    NlToModelResult r = nl_to_model(parse_nl(text, "pow"));
+    if (!r.supported) {
+        FAIL((r.skipped_reasons.empty() ? std::string("unsupported") : r.skipped_reasons[0]));
+    }
+    r.model.var_mut(0).value = x;
+    full_evaluate(r.model);
+    return r.model.node_value(r.objective_node_id);
+}
+
+TEST_CASE("nl_to_model evaluates OPPOW with a constant base or exponent", "[minlplib]") {
+    // MINLPLib's vcpower (x^c) and cvpower (c^x) both reach the NL file as a
+    // plain o5 with one constant operand (#283); Pow takes std::pow's answer
+    // unmodified (#205), NaN for a domain error included.
+    SECTION("constant exponent: x^c") {
+        CHECK_THAT(pow_objective_at("o5\nv0\nn.5\n", 4.0), WithinAbs(2.0, 1e-12));
+        CHECK_THAT(pow_objective_at("o5\nv0\nn3\n", -2.0), WithinAbs(-8.0, 1e-12));
+        CHECK_THAT(pow_objective_at("o5\nv0\nn-1\n", 4.0), WithinAbs(0.25, 1e-12));
+    }
+    SECTION("constant base: c^x") {
+        CHECK_THAT(pow_objective_at("o5\nn2\nv0\n", 3.0), WithinAbs(8.0, 1e-12));
+        CHECK_THAT(pow_objective_at("o5\nn2\nv0\n", -1.0), WithinAbs(0.5, 1e-12));
+        CHECK_THAT(pow_objective_at("o5\nn.5\nv0\n", 2.5), WithinAbs(std::pow(0.5, 2.5), 1e-12));
+    }
+    SECTION("constant base c <= 0") {
+        CHECK_THAT(pow_objective_at("o5\nn0\nv0\n", 2.0), WithinAbs(0.0, 1e-12));
+        CHECK_THAT(pow_objective_at("o5\nn0\nv0\n", 0.0), WithinAbs(1.0, 1e-12));
+        CHECK_THAT(pow_objective_at("o5\nn-2\nv0\n", 3.0), WithinAbs(-8.0, 1e-12));
+        CHECK_THAT(pow_objective_at("o5\nn-2\nv0\n", 2.0), WithinAbs(4.0, 1e-12));
+        CHECK(std::isnan(pow_objective_at("o5\nn-2\nv0\n", 0.5)));
+        CHECK(std::isinf(pow_objective_at("o5\nn0\nv0\n", -1.0)));
+    }
+    SECTION("a negative base under a non-integer exponent is NaN") {
+        CHECK(std::isnan(pow_objective_at("o5\nv0\nn.5\n", -4.0)));
+        CHECK(std::isnan(pow_objective_at("o5\nv0\nn.86\n", -1.0)));
+    }
+}
+
+// Reads and models a vendored MINLPLib file, sets its best-known point (values
+// in NL column order), and checks the objective and that the point is feasible.
+static void check_real_file_at_best_known(const std::string& path, const std::vector<double>& point,
+                                          double objective) {
+    const NlProblem prob = read_nl(path);
+    REQUIRE(prob.n_vars == static_cast<int>(point.size()));
+    NlToModelResult r = nl_to_model(prob);
+    if (!r.supported) {
+        FAIL((r.skipped_reasons.empty() ? std::string("unsupported") : r.skipped_reasons[0]));
+        return;
+    }
+    for (std::size_t j = 0; j < point.size(); ++j) {
+        r.model.var_mut(static_cast<int32_t>(j)).value = point[j];
+    }
+    full_evaluate(r.model);
+    REQUIRE_THAT(r.model.node_value(r.objective_node_id), WithinAbs(objective, 1e-6));
+    ViolationManager vm(r.model);
+    vm.invalidate_cache();
+    REQUIRE_THAT(vm.total_violation(), WithinAbs(0.0, 1e-6));
+}
+
+TEST_CASE("Real MINLPLib files with x^c and c^x evaluate at their best-known points",
+          "[minlplib]") {
+    // Best-known points from minlplib.org/sol/<name>.p1.sol, mapped to NL
+    // columns by each instance's .col file; the objectives are the catalogue's
+    // primal bounds.
+    SECTION("filter: x^.86 (vcpower)") {
+        // Columns x2, x1.
+        check_real_file_at_best_known("tests/data/filter.nl", {10.0, 1290.226825443540065},
+                                      8685.277077052489403);
+    }
+    SECTION("ex8_4_4: .157^x and friends (cvpower)") {
+        // Columns x14 x15 x17 x1 .. x13 x16.
+        check_real_file_at_best_known(
+            "tests/data/ex8_4_4.nl",
+            {0.556760596607749, 1.131808991890020, 0.621898732685481, 5.130141973432660,
+             -4.935270010426710, 2.670723018129510, -2.070270651029460, 1.910958131972460,
+             -1.103776175062120, 1.548384003739780, -0.580941739845044, 1.338122376788280,
+             -0.228239587862993, 1.201670495795650, 0.042017456203428, 0.606297577433204,
+             0.750199691215214},
+            0.212459838698485);
+    }
 }
 
 TEST_CASE("nl_to_model inlines a defined variable", "[minlplib]") {

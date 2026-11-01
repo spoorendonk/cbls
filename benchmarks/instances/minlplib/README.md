@@ -72,7 +72,7 @@ NL reader recovers and reports any mismatch (see below).
 | `opmin`            | `Min` / `Max`          | yes       |
 | `opsignpower` / `oprpower` | `Pow` (NL emits these as standard `OPPOW`; the `SignPower` DAG op added in #72 is available for direct model building / JSONL) | yes |
 | `optanh`           | `Tanh` (added #72)     | yes       |
-| `opcvpower` / `opvcpower` | —               | no (skipped) |
+| `opvcpower` (x^c) / `opcvpower` (c^x) | `Pow` (NL emits both as standard `OPPOW`) | full library only: the roster filter still skips them, as its membership is pinned (#283) |
 | `operrorf` (erf)   | —                      | no (skipped) |
 | `opgamma`          | —                      | no (skipped) |
 | `opcentropy`       | —                      | no (skipped) |
@@ -82,10 +82,30 @@ Piecewise (`OPPLTERM`), function calls (`OPFUNCALL`), and inverse-trig opcodes
 are parsed structurally but rejected by the adapter with a skip reason; the
 runner records these as `skipped(unsupported)`.
 
-The reader also rejects NL `V` (defined-variable / common-subexpression), `S`
-(suffix), `F` (function), and `d` (dual) segments — instances using them are
-reported as `skipped(unsupported)`. The curated roster avoids these; supporting
-`V` (inlining defined variables) is the natural next step to widen coverage.
+The reader inlines `V` (defined-variable) segments and skips `d` (dual initial
+guess) segments (#281). It rejects `S` (suffix; in MINLPLib only the SOS
+suffixes of the `water*` family, which skipping would relax) and `F` (function)
+segments; instances using them are reported as `skipped(unsupported)`.
+
+## Full-library status (#283)
+
+Beside the pinned roster filter, `download.full_instance` is the full-library
+selection: every problem type, convex or not, no size budget, `opvcpower` and
+`opcvpower` accepted; only `operrorf`, `opgamma`, `opcentropy` and `opmod`
+exclude, plus the lack of a finite primal bound. `status.py` gives every
+catalogue instance one status, the first that applies: `unsupported-op`,
+`missing-nl`, `no-primal-bound`, `reader-error`, `adapter-unsupported`,
+`modelled`. It reads the NL files from a local directory (the unpacked
+`https://www.minlplib.org/minlplib_nl.zip`) and runs the
+`cbls_minlplib_nl_check` target (read and model, no solve) over them:
+
+    .venv/bin/python3 benchmarks/instances/minlplib/status.py \
+        --catalogue instancedata.csv --nl-dir minlplib/nl \
+        --out status.csv --bounds minlplib/nl/bounds.csv
+
+`--bounds` writes the modelled set as a `bounds.csv` for `cbls_minlplib`,
+which takes one instance directory, so it goes next to the NL files. Counts per
+status for a given catalogue and engine commit are recorded on #280.
 
 ## Yuck / fzn-oscar-cbls coverage
 

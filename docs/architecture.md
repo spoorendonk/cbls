@@ -181,6 +181,7 @@ A one-screen map of the pipeline, its files and defaults, the extension points, 
 | `cbls_mipfeas` | `benchmarks/mipfeas/` | MIPfeas runner (one instance per process) |
 | `cbls_minlplib` | `benchmarks/minlplib/` | MINLPLib benchmark runner |
 | `cbls_minlplib_portfolio` | `benchmarks/minlplib/portfolio_ab.cpp` | MINLPLib portfolio A/B harness (shared-bound on/off, #179) |
+| `cbls_minlplib_nl_check` | `benchmarks/minlplib/nl_check.cpp` | reads and models NL files, no solve; per-instance status for `status.py` (#283) |
 | `cbls_setcover` | `benchmarks/setcover/` | OR-Library set-covering runner (the `Set`-variable example) |
 | `cbls_cvrp` | `benchmarks/cvrp/` | CVRPLIB X-set CVRP runner (the `List`-variable example, one instance per process) |
 

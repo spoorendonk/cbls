@@ -364,6 +364,11 @@ if(CBLS_BUILD_BENCHMARKS)
     target_link_libraries(cbls_minlplib_portfolio PRIVATE cbls_lib)
     cbls_enable_warnings(cbls_minlplib_portfolio)
     target_include_directories(cbls_minlplib_portfolio PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    # #283's per-instance status: read + model each NL file, no solve
+    # (benchmarks/instances/minlplib/status.py runs it).
+    add_executable(cbls_minlplib_nl_check benchmarks/minlplib/nl_check.cpp)
+    target_link_libraries(cbls_minlplib_nl_check PRIVATE cbls_lib)
+    cbls_enable_warnings(cbls_minlplib_nl_check)
 
     add_executable(cbls_setcover benchmarks/setcover/setcover.cpp)
     target_link_libraries(cbls_setcover PRIVATE cbls_lib)

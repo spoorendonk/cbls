@@ -87,6 +87,12 @@ UNSUPPORTED_OP_COLUMNS: frozenset[str] = frozenset(
 
 ALL_OP_COLUMNS: frozenset[str] = SUPPORTED_OP_COLUMNS | UNSUPPORTED_OP_COLUMNS
 
+# The full-library selection (#283, status.py) excludes only these. vcpower
+# (x^c) and cvpower (c^x) reach the NL file as plain OPPOW and are modelled as
+# Pow; the roster filter above still excludes them, because its membership is
+# pinned (HELDOUT.md) and must not change.
+FULL_EXCLUDED_OP_COLUMNS: frozenset[str] = frozenset({"opcentropy", "operrorf", "opgamma", "opmod"})
+
 # Problem types we accept (continuous + mixed-integer nonlinear / quadratic).
 ACCEPTED_PROBTYPES: frozenset[str] = frozenset(
     {"NLP", "MINLP", "QCP", "QCQP", "QP", "MIQCP", "MIQCQP", "MIQP", "BQP", "BQCP"}
@@ -238,6 +244,44 @@ def row_to_instance(row: dict[str, str]) -> Instance | None:
     if primal is None or not math.isfinite(primal):
         return None  # need a *finite* primal BKS for gap reporting ("inf" parses)
 
+    return Instance(
+        name=row["name"].strip(),
+        nvars=nvars,
+        ncons=ncons,
+        primalbound=primal,
+        dualbound=_to_float(row.get("dualbound", "")),
+        objsense=row.get("objsense", "").strip(),
+        structure=classify_structure(row),
+        ndiscvars=(_to_int(row.get("nbinvars", "0")) or 0)
+        + (_to_int(row.get("nintvars", "0")) or 0),
+    )
+
+
+def full_excluded_ops(row: dict[str, str]) -> list[str]:
+    """The full-library selection's excluded operator columns this row uses, sorted."""
+    return sorted(c for c in FULL_EXCLUDED_OP_COLUMNS if _is_true(row.get(c, "")))
+
+
+def finite_primal(row: dict[str, str]) -> float | None:
+    """The catalogue's primal bound if it is finite, else None ("inf" parses)."""
+    primal = _to_float(row.get("primalbound", ""))
+    return primal if primal is not None and math.isfinite(primal) else None
+
+
+def full_instance(row: dict[str, str]) -> Instance | None:
+    """The full-library selection (#283): any problem type, convex or not, no size budget.
+
+    Excludes only rows using an operator in FULL_EXCLUDED_OP_COLUMNS and rows
+    without a finite primal bound (the runner reports gaps against it). The
+    published and held-out rosters use `row_to_instance` instead.
+    """
+    if full_excluded_ops(row):
+        return None
+    primal = finite_primal(row)
+    nvars = _to_int(row.get("nvars", ""))
+    ncons = _to_int(row.get("ncons", ""))
+    if primal is None or nvars is None or ncons is None:
+        return None
     return Instance(
         name=row["name"].strip(),
         nvars=nvars,
