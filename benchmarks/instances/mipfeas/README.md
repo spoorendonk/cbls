@@ -129,8 +129,10 @@ every comparison solver runs at its own defaults and nothing evens the CPU out:
   taken from outside the solver with `wait4`. The ratio is the CPU share the
   row actually got.
 
-Each is blank where the row did not record it: a result written before the
-field existed, or a job that never ran.
+Each is blank where the row did not record it: a job that never ran, or a
+result written before the field existed. `threads_used` alone is also blank on
+a row the driver wrote for a killed job (its arm is nested under `driver_arm`)
+and on a CP-SAT row whose log printed no worker count.
 
 No *aggregate* setup magnitude is quoted for the roster, because no per-row
 figure from a real run is committed: the published smoke table predates the
