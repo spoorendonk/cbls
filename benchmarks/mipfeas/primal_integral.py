@@ -1435,7 +1435,7 @@ def _scope_banners(
     produce a report that otherwise reads as a result.
     """
     banners: list[str] = []
-    if held_out is not None and _is_held_out_table(parity.roster_size, held_out):
+    if held_out is not None and _is_held_out_table(rows, parity.roster_size, held_out):
         banners += [
             f"> **Held-out roster.** {parity.roster_size} of the {FULL_ROSTER_SIZE} MIPfeas "
             f"instances. The other {len(held_out.names)} are the instances settings were "
@@ -1716,7 +1716,7 @@ def render_report(
     out: list[str] = [
         "# MIPfeas parity report",
         "",
-        f"Roster `{roster_path.name}` ({parity.roster_size} instances), "
+        f"Roster: {_roster_label(roster_path, rows, parity.roster_size, held_out)}, "
         f"{budget}s per instance-engine pair. Table: `{table_path.name}`.",
         "",
         "CBLS against CP-SAT restricted to its `fj` + `ls` subsolvers under",
@@ -1988,12 +1988,31 @@ def held_out_problems(full_roster: list[str], held_out: HeldOut) -> list[str]:
     return problems
 
 
-def _is_held_out_table(instances: int, held_out: HeldOut | None) -> bool:
+def _is_held_out_table(rows: list[Scored], instances: int, held_out: HeldOut | None) -> bool:
+    """Whether the scored rows are the full roster minus exactly the held-out names.
+
+    The count alone would stamp "no scored instance was used for tuning" on rows
+    that score a tuned instance, so the names must also be absent from the rows.
+    """
     return (
         held_out is not None
         and bool(held_out.names)
         and instances + len(held_out.names) == FULL_ROSTER_SIZE
+        and set(held_out.names).isdisjoint(r.instance for r in rows)
     )
+
+
+def _roster_label(
+    roster_path: Path, rows: list[Scored], instances: int, held_out: HeldOut | None
+) -> str:
+    """The roster a table scored, named so the count is true of the named file."""
+    if _is_held_out_table(rows, instances, held_out):
+        assert held_out is not None
+        return (
+            f"{roster_path.name} minus {held_out.path.name} "
+            f"({instances} of {FULL_ROSTER_SIZE} instances)"
+        )
+    return f"{roster_path.name} ({instances} instances)"
 
 
 def _config_value(rows: list[Scored], engine: str, key: str) -> str | None:
@@ -2138,7 +2157,8 @@ def write_comparison(
         "# default portfolio, and every other MIP solver, are deliberately out of scope",
         "# (epic #87). A gap in either direction is informative about the reimplementation.",
         "#",
-        f"# Roster:  {roster_path.name} ({len(rows) // max(len(summaries), 1)} instances)",
+        "# Roster:  "
+        + _roster_label(roster_path, rows, len(rows) // max(len(summaries), 1), held_out),
         f"# Budget:  {budget}s per instance-solver pair — the budget this table was scored at.",
         "#          Primal Integrals are budget-relative, so a table is comparable only",
         "#          to another scored at the same budget.",
@@ -2188,7 +2208,7 @@ def write_comparison(
             "# verdict; the 'Verified:' note above does not hold for them.",
             "#",
         ]
-    if held_out is not None and _is_held_out_table(instances, held_out):
+    if held_out is not None and _is_held_out_table(rows, instances, held_out):
         header += [
             f"# HELD-OUT ROSTER: {instances} of the {FULL_ROSTER_SIZE} MIPfeas instances.",
             f"# The other {len(held_out.names)}, listed in {held_out.path.name}, are the",

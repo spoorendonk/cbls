@@ -823,15 +823,21 @@ def test_partial_roster_table_is_still_banner_stamped(tmp_path: Path, budget: fl
 
 @pytest.mark.parametrize(
     ("held", "held_out_label"),
-    [(22, True), (21, False)],
-    ids=["completes-the-roster", "falls-short"],
+    [
+        ([f"t{k}" for k in range(22)], True),
+        ([f"t{k}" for k in range(21)], False),
+        ([*(f"t{k}" for k in range(21)), "i0"], False),
+    ],
+    ids=["completes-the-roster", "falls-short", "names-a-scored-instance"],
 )
 def test_held_out_roster_is_labelled_only_when_it_completes_the_full_one(
-    tmp_path: Path, held: int, held_out_label: bool
+    tmp_path: Path, held: list[str], held_out_label: bool
 ) -> None:
     # #255 reports 211 instances and leaves out the 22 it tuned on. That table is
     # not a wiring check; one whose held-out list does not make up the difference
-    # still is, in the CSV header and in the report alike.
+    # still is, in the CSV header and in the report alike. Nor is one whose count
+    # adds up but whose list names an instance the table scored: "no scored
+    # instance was used for tuning" would be false of it.
     _write_result(tmp_path, "cbls", "inst", {"status": "feasible", "objective": 10.0})
     scored = _score(tmp_path, reference=10.0)
     rows = [
@@ -840,15 +846,19 @@ def test_held_out_roster_is_labelled_only_when_it_completes_the_full_one(
         for k in range(FULL_ROSTER_SIZE - 22)
     ]
     summaries = [summarize(rows, engine) for engine in ENGINES]
-    held_out = HeldOut(tmp_path / "tuned.txt", tuple(f"t{k}" for k in range(held)))
+    held_out = HeldOut(tmp_path / "tuned.txt", tuple(held))
     out = tmp_path / "comparison.csv"
     write_comparison(out, rows, summaries, 60.0, tmp_path / "r.csv", held_out)
     table = out.read_text()
     report = render_report(rows, summaries, 60.0, tmp_path / "r.csv", out, held_out=held_out)
 
+    # The roster line names the file it read, so its count must be true of that
+    # file: r.csv has the full roster, the table scored it minus the tuned list.
+    roster_line = "r.csv minus tuned.txt (211 of 233 instances)" if held_out_label else "r.csv (211"
     for text in (table, report):
         assert ("WIRING CHECK" in text) is not held_out_label
         assert ("tuned.txt" in text) is held_out_label
+        assert roster_line in text
     assert ("# HELD-OUT ROSTER: 211 of the 233" in table) is held_out_label
     assert ("**Held-out roster.** 211 of the 233" in report) is held_out_label
     assert ("t21" in report) is held_out_label
