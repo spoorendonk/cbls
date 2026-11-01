@@ -322,7 +322,7 @@ does not have.
 ```bash
 cmake -B build-asan -DCBLS_SANITIZE=address,undefined,float-cast-overflow
 xk lock -- cmake --build build-asan -j4
-UBSAN_OPTIONS=print_stacktrace=1 ctest --test-dir build-asan -LE slow --output-on-failure -j4
+UBSAN_OPTIONS=print_stacktrace=1 xk lock -- ctest --test-dir build-asan -LE slow --output-on-failure -j4
 ```
 
 The sanitizer build adds **`-UNDEBUG`**, so `assert()` is live at whatever `-O`
@@ -391,7 +391,7 @@ mutually exclusive, so it needs its own build directory:
 ```bash
 cmake -B build-tsan -DCMAKE_BUILD_TYPE=Release -DCBLS_SANITIZE=thread -DCBLS_BUILD_PYTHON=OFF
 xk lock -- cmake --build build-tsan -j4
-TSAN_OPTIONS="halt_on_error=0 second_deadlock_stack=1" ./build-tsan/tests/cbls_tests "[parallel],[pool]"
+TSAN_OPTIONS="halt_on_error=0 second_deadlock_stack=1" xk lock -- ./build-tsan/tests/cbls_tests "[parallel],[pool]"
 ```
 
 `CBLS_BUILD_PYTHON=OFF` for the same reason ASan wants it off, and because

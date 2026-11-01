@@ -8,7 +8,7 @@ The hooks live in **`.githooks/`, tracked in this repo** — that directory is t
 
 `core.hooksPath` is shared across every worktree of a checkout, but `.githooks/` is resolved from the working tree — so a branch that does not carry the directory runs **no hooks at all**, silently. Branches are short-lived and cut from an up-to-date main, which carries it.
 
-The three hooks are wcp's (see **Hooks Are Files In This Repository**); `gate-lib.sh`, `tidy-probe.sh`, `tidy-probe/` and `tests/` beside them are this project's own and are still exercised by ctest (`gate_lib_shell_test`, `clang_tidy_gate_probe`).
+The three hooks are wcp's (see **wcp's files in this repository**); `gate-lib.sh`, `tidy-probe.sh`, `tidy-probe/` and `tests/` beside them are this project's own and are still exercised by ctest (`gate_lib_shell_test`, `clang_tidy_gate_probe`).
 
 - `pre-commit` — **checks, never rewrites**: `ruff format --check .`, `ruff check .` and `mypy .` (strict, from `pyproject.toml`) over the whole tree, each through `uv run`, and `clang-format --dry-run -Werror` over every tracked C/C++ file, preferring the pinned tools in `.venv/bin`. Any finding blocks the commit; a tool that cannot run is reported on stderr and skipped. It runs **no tests**. A venv made by `uv sync` (CLAUDE.md's **Build & Test**) is already locked and synced, so `uv run` uses it as it is.
 - `commit-msg` — Conventional Commits, subject at most 72 characters. Unlike the hook it replaced, it does **not** pass `fixup!`/`squash!`/`amend!` subjects, so `git commit --fixup` is refused.
@@ -16,20 +16,14 @@ The three hooks are wcp's (see **Hooks Are Files In This Repository**); `gate-li
 
 **What the hooks before wcp's enforced and these do not** (replaced 2026-10-14; the old scripts are in git history): the `ctest -LE slow` / pytest run at commit; auto-formatting and safe clang-tidy fixes at commit; at push, the **clang-tidy hard block** over the changed files plus a canary per config directory, `tidy-probe.sh` whenever a `.clang-tidy`, a `CMakeLists.txt` or the probe changed, the **block on any first-party compiler warning** in the gated build's log (configured with `CBLS_GATE_PROBE_IN_ALL=1` as its control), the advisory ruff-complexity/shellcheck/mypy pass, and the **Python gate over every tracked `.py`** (now `pre-commit`'s, over the tree). Until those are restored — a ```lint fence under CLAUDE.md's `## Build & Test` is where wcp's pre-push would run them — the clang-tidy and compiler-warning policy below is **policy you check by hand** before pushing (`.venv/bin/clang-tidy -p build <files>`, and the build log), not something a hook enforces.
 
-  The tree is held at **zero** clang-tidy warnings. Getting there
-  took a **ratchet** — a list in `.clang-tidy` of checks disabled by name, each
-  with its unfixed finding count — and **that list is now empty** (issue #121,
-  closed). Every `bugprone-*`/`modernize-*`/`performance-*`/`readability-*` check
-  is enabled except six structural exemptions, and each of those is off because
-  the *check* is wrong for this codebase, with the measurement that says so
-  written beside it in the file.
-
-  So a warning is new code's doing. **Fix it — do not add the check to
-  the disabled list.** There is no backlog list left to append to: putting a
-  name there now has to clear the same bar as the six, a structural cause plus a
-  measurement, which is a case to argue rather than a way to get a push through.
-  `.clang-tidy` is the source of truth and carries its own sweep recipe — read
-  the file rather than a count restated somewhere else.
+  The tree is held at **zero** clang-tidy warnings. Every
+  `bugprone-*`/`modernize-*`/`performance-*`/`readability-*` check is enabled
+  except six structural exemptions, each off because the *check* is wrong for
+  this codebase, with the measurement written beside it in `.clang-tidy` (the
+  ratchet list that got the tree there is empty, #121). So a warning is new
+  code's doing: **fix it — do not add the check to the disabled list**; a
+  seventh exemption needs a structural cause plus a measurement. `.clang-tidy`
+  is the source of truth and carries its own sweep recipe.
 
   In-tree suppression is **sanctioned only where the reason is written at the
   site**, and the tree has exactly five, across two checks —
@@ -70,10 +64,8 @@ The three hooks are wcp's (see **Hooks Are Files In This Repository**); `gate-li
   capital E. When a push changes a `.clang-tidy`, lint a file in each config
   directory too, since such a change touches no source file of its own.
 
-  **The probe.** For a long time clang-tidy saw no compiler warnings at all
-  (#171): clang-tidy prepends `clang-diagnostic-*`, the leading `-*` switched it
-  off, and no target compiled with `-Wall`. Now `clang-diagnostic-*` is named
-  **after** the wildcards, every first-party target gets `-Wall -Wextra`
+  **The probe.** `clang-diagnostic-*` is named **after** the wildcards in
+  `Checks:` (a leading `-*` switches it off, #171), every first-party target gets `-Wall -Wextra`
   through `cbls_enable_warnings()` in the root `CMakeLists.txt` (a new target
   needs the call), and **`.githooks/tidy-probe.sh`** proves it. It lints a
   deliberately dirty TU, `.githooks/tidy-probe/incomplete_switch.cpp`, copied
@@ -116,33 +108,16 @@ Because they block, `ruff` and `mypy` are **pinned exactly** in
 turns "these files are at zero" into "at zero on whichever version this checkout
 resolved".
 
-It was scoped narrower once. #154 gated everything except `benchmarks/`, because
-that tree carried 22 ruff findings, 5 unformatted files and 37 `mypy --strict`
-errors, plus an `__init__.py` inside the hyphenated `benchmarks/instances/uc-chped/`
-which made mypy abort the whole run on the package name before checking anything.
-#155 cleared all of it and emptied the exclusion. Two things are worth keeping
-from that episode:
-
-- **A partial exclusion was never the safety it looked like.** `mypy` follows
-  imports, so every benchmark module reachable from a gated test file was
-  hard-gated anyway. The tree was green only because the three files carrying
-  errors happened to be ones nothing gated imported — and one new test importing
-  any of them would have blocked a push on errors nobody in that push wrote.
-- **Two naming waivers survive, scoped per file and per rule** in
-  `pyproject.toml`'s `[tool.ruff.lint.per-file-ignores]`: `N803`/`N806` on
-  `benchmarks/chped/reference_solve.py` and `N806` on
-  `benchmarks/instances/uc-chped/data.py`. `P`, `A`, `T` and `base_T` are the
-  published unit-commitment formulation's own symbols, and those solvers exist to
-  be audited line-by-line against the paper whose numbers they reproduce. Same
-  argument, and the same shape, as `src/io/.clang-tidy` waiving the naming check
-  for the vendored readers. A third waiver needs the same standard.
-
-Both escape routes that let the five binding-test modules rot are closed, and
-both mattered: the pre-commit of the time linted only **staged** files — and its
-ruff step auto-fixed rather than blocked, so a non-fixable finding like `E741`
-survived staging however often the file was edited — while pre-push's other
-Python steps saw only the pushed file list and merely warned. That is how 139 `mypy --strict`
-errors and 9 ruff errors accumulated with every gate green throughout (#154).
+**Two naming waivers exist, scoped per file and per rule** in
+`pyproject.toml`'s `[tool.ruff.lint.per-file-ignores]`: `N803`/`N806` on
+`benchmarks/chped/reference_solve.py` and `N806` on
+`benchmarks/instances/uc-chped/data.py`. `P`, `A`, `T` and `base_T` are the
+published unit-commitment formulation's own symbols, and those solvers exist to
+be audited line-by-line against the paper whose numbers they reproduce. Same
+argument, and the same shape, as `src/io/.clang-tidy` waiving the naming check
+for the vendored readers. A third waiver needs the same standard. A directory
+exclusion is no substitute: `mypy` follows imports, so an excluded module that a
+gated file imports is checked anyway (#154, #155).
 
 ## Self-Review
 
@@ -210,32 +185,17 @@ reviewer.
 
 ## wcp's files in this repository
 
-### Hooks Are Files In This Repository
+The hooks in `.githooks/` and the top line of CLAUDE.md were written by wcp
+(`https://github.com/spoorendonk/wcp`), a command-line tool installed once per
+machine. What matters here:
 
-The git hooks live in `.githooks/` as ordinary shell scripts, committed like any other file. `wcp init` copies them there and points `core.hooksPath` at them; wcp installs no Claude Code hooks at all. The gate is those files and nothing else, so a clone without wcp installed is still gated — including the review receipt, which is a line of plain git the Self-Review section documents rather than anything wcp runs.
-
-- **They are yours to read, and yours to edit.** Each hook carries a `# wcp:` line recording the digest of the bytes wcp wrote. That is what lets `wcp doctor` tell an edit you made from a version wcp has moved past: an untouched hook is refreshed silently, an edited one is left alone, and one that moved on both sides is reported rather than overwritten. Edit them when the project needs something different — and say so upstream if the default was wrong for everyone.
-- **A clone is not gated until `core.hooksPath` is set in it.** git clones no local config, so the files arriving with the clone is not the same as git running them. Here the first `cmake -B build` sets it (**Git Hooks** above); `wcp init` does too, and `wcp doctor` reports an unset `core.hooksPath` as an error.
-- **They call no wcp.** A hook that shelled out to a missing tool would exit 127, which git reads as a refusal — so a machine without wcp could not commit, and could not commit the fix either. What the hooks do call is the project's own toolchain, and there they fail open and say so on stderr.
-- **Never use `git push --no-verify` or `git commit --no-verify`** unless explicitly asked. A failing hook is a signal — fix the root cause, or change the hook deliberately and commit that.
-
-### CLAUDE.md Carries A Provenance Line
-
-The comment at the top of CLAUDE.md is wcp's record of the bytes it wrote, in the same scheme the hooks use. `wcp doctor` reads it to tell an edit you made from a version wcp has moved past, and it is where this project's type is recorded — there is no `.wcp/` directory and no config file beside it.
-
-**The prose is yours.** wcp writes CLAUDE.md once and never rewrites it unasked; edit it freely. When wcp adds or changes a section you have not edited, `wcp doctor` names it and `wcp init --interactive` offers it, one section at a time; answering `n` declines that version for good. Leave the top line in place, and the tooling stays able to tell your changes from its own.
-
-### Running wcp
-
-wcp is a command-line tool installed once per machine, outside any repository. The hooks never call it, so a machine without it is still gated.
-
-```sh
-uv tool install git+https://github.com/spoorendonk/wcp   # once per machine; @vX.Y.Z for a release
-uv tool upgrade wcp                                       # to update an install without a tag
-uv tool install --force git+https://github.com/spoorendonk/wcp@vX.Y.Z   # to move a tagged one
-wcp --help                                                # the commands; `wcp <command> --help` for each one
-```
-
-- **Run `wcp doctor`** after pulling, after updating wcp, and before editing the hooks or CLAUDE.md. It changes nothing, and every finding names the command that fixes it. It exits 1 only when the gate does not work, e.g. `core.hooksPath` is unset, which is how every fresh clone starts until its first `cmake -B build` (or `wcp init`).
-- **Files wcp wrote carry a `wcp:` provenance line**: `# wcp:` in each hook, and the comment at the top of CLAUDE.md. Edit the files when the project needs to, but leave that line in place. It is how `wcp doctor` tells your edits apart from a newer wcp version.
-- **If `wcp` is not on PATH**, say so rather than installing it unasked. Installing it is a machine-wide change.
+- **The hooks call no wcp.** They are plain shell scripts committed like any
+  other file, so a clone without wcp is still gated once `core.hooksPath` is set
+  (the first `cmake -B build` sets it, **Git Hooks** above). A hook that shelled
+  out to a missing tool would exit 127, which git reads as a refusal.
+- **They are ours to edit**, as is CLAUDE.md's prose. Each hook's `# wcp:` line
+  and CLAUDE.md's top comment record the bytes wcp wrote; leave them in place so
+  `wcp doctor` can tell a local edit from a newer wcp version.
+- **Run `wcp doctor`** after pulling or updating wcp and before editing the
+  hooks or CLAUDE.md. It changes nothing; `wcp --help` lists the rest.
+- **If `wcp` is not on PATH**, say so rather than installing it unasked.

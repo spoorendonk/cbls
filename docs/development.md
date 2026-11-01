@@ -23,7 +23,7 @@ without it just builds normally. pre-push builds in a worktree under
 `~/.cache/local-ci`, a different path for every push, so ccache only hits there
 with `base_dir` set (e.g. `ccache -o base_dir=$HOME`); without it each push is a
 cold build. `git config hooks.localCiWorktree <path>` instead keeps one warm
-worktree between pushes and skips its ```clean fence (#183; `.githooks/pre-push`).
+worktree between pushes and skips its ```clean fence (`.githooks/pre-push`).
 
 **Why the fences look for `python` on PATH when `.venv/` is missing.** `.githooks/pre-push`
 runs these fences (`clean`, `build`, `test`) as a local CI in a fresh worktree
@@ -70,12 +70,9 @@ uv sync --extra dev --extra benchmarks
 `--extra benchmarks` is what the ```test fence requires; leave it out only for a
 clone that runs no gate. This builds `cbls` into `.venv` once (under the machine
 lock, like any C++ build) and writes an untracked `uv.lock`, which `.gitignore`
-ignores. Verified in a fresh clone (#227): the ```build and ```test fences then
-pass with the full roster. A symlink into another clone points outside the
-session's working directory, so every command touching `.venv` raises a
-permission prompt and the session stalls until a human answers; it also forces
-one set of extras on every clone that shares it (#226 needed `benchmarks` where
-the main checkout's env lacked it).
+ignores. No symlink to another clone's venv: it points outside the session's
+working directory, so every command touching `.venv` raises a permission prompt,
+and it forces one set of extras on every clone that shares it.
 
 **Only a subagent git worktree under this checkout** borrows the checkout's venv
 by symlink, since it has none and is torn down with the run:
@@ -183,15 +180,7 @@ After a successful push:
 - **Close any gh issue the work resolved**: `gh issue close <num> -c "<one-line note>"`. Do this for every issue covered by the push.
 - **Delete the feature branch** if one was used: `git branch -d <branch>` locally, plus `git push origin --delete <branch>` if it was pushed. Don't leave stale branches behind.
 
-## Issue Tracking
-
-GitHub Issues is the tracker. Use the `gh` CLI.
-
-- **Default to HTTPS** for GitHub remotes (`https://github.com/...`), not SSH.
-- **Read an issue** with `gh issue view <num> --json title,body,labels,state,comments`. Plain `gh issue view <num>` is deprecated for programmatic use.
-- Don't propose deferring work via a new gh issue unless it is substantial. Small follow-ups should be either fixed inline or left alone — don't open an issue just because you noticed something.
-
-### Writing Issues
+## Writing Issues
 
 Issues get picked up later in fresh sessions, often by a different agent with no access to the author's machine. Write them to be picked up cold:
 
