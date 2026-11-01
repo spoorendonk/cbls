@@ -1451,35 +1451,26 @@ Exactly one path initialises each variable, split by type:
 | List, Set | `initialize_structured_random` | a Set: a random subset of an admissible size. A List: whatever its `ListInit` says — a random permutation, empty, or a random subset of a random admissible length. A member of a `ListPartition` is laid out with its whole partition by `randomize_list_partition` instead, which under `Cover::Exact` ignores the per-list `ListInit` because the cover has to hold at the first assignment |
 
 **The scalar starting point does not depend on the seed, and this is deliberate.**
-Feasibility Jump specifies the closest-to-zero start, and the priority-1
-benchmark (`mipfeas`) was built as a head-to-head against another
-implementation of the same algorithm (CP-SAT's `fj` worker), so the start point
-was part of what was compared. Since 2026-11-01 CP-SAT runs there at its
-defaults (#87, #284), but the published start stays. Two seeds
-on a scalar-only model therefore begin at the *same* assignment — if you are
-reading identical results across seeds as evidence that the search converged,
-check whether it simply started there.
+Feasibility Jump specifies the closest-to-zero start, and `mipfeas` was built as
+a head-to-head against CP-SAT's `fj` worker, an implementation of the same
+algorithm, so the start point was part of what was compared. Two seeds on a
+scalar-only model therefore begin at the *same* assignment — if you are reading
+identical results across seeds as evidence that the search converged, check
+whether it simply started there.
 
 The seed still drives everything else: List/Set initialisation, best-of-N
 scan-set sampling, diversification kicks, the per-batch `rho` draw, LNS destroy
 sets and Novelty Jump.
 
-Do **not** over-read that as "a random start is reachable anyway". `perturb()`
+Diversification is not a substitute for a randomised start: `perturb()`
 randomises each jumpable variable only with probability `perturbation_probability`
-(default **0.1**), not all of them, and moves each List/Set variable by only
-`round(p * |elements|)` local structural moves (#111); it runs only after
-`perturbation_period` (default **100**) stagnant batches -- or sooner, on the
-unproductive-batch route in step 8 of the outer loop (#102) -- and when all of
-that happens to move nothing it forces exactly one variable (#109). The *nudge*
-is therefore sparse, and it is not a substitute for a randomised starting point --
-though since #158 the kick as a whole rewrites the assignment before nudging it,
-restoring `kick_origin()` first, so read "sparse" as describing the perturbation
-and not the kick.
+(default **0.1**) and moves each List/Set variable by only
+`round(p * |elements|)` structural moves, and it runs only after
+`perturbation_period` (default **100**) stagnant batches or on the
+unproductive-batch route (step 8 of the [Main Loop](#main-loop)).
 
-`solve()` used to call `initialize_random` (which randomises scalars too) and
-then overwrite every scalar a dozen lines later in `begin()`. The draws were dead
-but still consumed. `initialize_random` remains as a public utility for callers
-who *want* a randomised scalar start; compose it with `skip_init`:
+`initialize_random` (which randomises scalars too) is a public utility for
+callers who *want* a randomised scalar start; compose it with `skip_init`:
 
 ```cpp
 RNG rng(seed);
@@ -1504,17 +1495,11 @@ same *guard* (`domain_window`) without going through `randomize_var`: the move
 generators in moves.cpp, which draw perturbations around a current value rather
 than uniformly over the domain, and `int_jump_candidates` in feasibility_jump.cpp,
 which is not a draw at all — it reads the window to decide which integers are
-worth probing (**#114**). Note nothing gates an unbounded Int *out* of an FJ
+worth probing (#114). Nothing gates an unbounded Int *out* of an FJ
 scan: `movable_domain` guards only the perturbation path, so a variable with no
-jump candidates was still scanned, still found scoreless, and still left where it
-was.
-
-They used to hold three private copies of the same `switch (var.type)`, none of
-them guarded against infinite bounds — so one default-probability kick on a model
-with unbounded Floats turned the assignment NaN, `full_evaluate` propagated it,
-`max_real_violation()` returned `+inf` permanently, and the run could not recover
-while `solve()` still returned an ordinary-looking infeasible result restored
-from the pre-kick closest-approach state (**#112**).
+jump candidates is still scanned, found scoreless, and left where it is.
+Without the guard, one default-probability kick on a model with unbounded
+Floats turned the assignment NaN for the rest of the run (#112).
 
 `domain_window(var)` is the guard. It returns the finite `[lo, hi]` window the
 draw actually samples, always a subset of the variable's domain:
@@ -1527,22 +1512,20 @@ draw actually samples, always a subset of the variable's domain:
   unbounded model lands in the same box a `.nl` one would have — on the columns
   the adapter cannot bound. The parity is `.nl`-only: `MpsToModelOptions` has no
   integer variant, so an unbounded MPS Int column falls back on `inf_clamp`
-  (1e9) where a hand-built one gets `kRandomIntInfClamp` (1e6). Since #120 the adapters reach that
-  fallback only where bound propagation (below) derives nothing, so a loaded
-  model usually arrives here with finite bounds already. Unguarded, `uniform_real_distribution(lb, ub)`
-  breaks its own precondition (`ub - lb <= DBL_MAX`) and libstdc++'s
-  `lb + (ub - lb) * u` returns NaN on `(-inf, +inf)` and +inf on `[0, +inf)`,
-  while an infinite Int bound casts to `INT64_MIN`;
+  (1e9) where a hand-built one gets `kRandomIntInfClamp` (1e6). The adapters
+  reach that fallback only where bound propagation derives nothing. Unguarded,
+  `uniform_real_distribution` returns NaN or +inf on an infinite bound
+  (its precondition is `ub - lb <= DBL_MAX`), and an infinite Int bound casts
+  to `INT64_MIN`;
 - on a **half-infinite** domain the substituted end is pushed past the declared
   one where needed, so the window stays inside the domain even when the declared
   bound lies beyond the clamp magnitude;
 - two finite bounds whose **width** overflows are narrowed to the clamp box.
 
 Nothing else is rewritten, and in particular the window is **not** trimmed to the
-`int64_t`-nameable range. Trimming it there clamped each Int bound independently,
-which is neither inert (`[0, 1e17]` came back `[0, 2^53-1]`) nor a subset
-(`[-1e18, -1e17]` came back as the single point `-2^53`, *above* the declared
-`ub`, which `random_in_domain` then returned). `int_sample_window(var)` does that
+`int64_t`-nameable range: clamping each Int bound independently is neither inert
+nor a subset (`[-1e18, -1e17]` would become the single point `-2^53`, above the
+declared `ub`). `int_sample_window(var)` does that
 trim at the three places that actually cast — `random_in_domain`,
 `random_different_in_domain` and `int_rand` — and reports *empty* when the domain
 lies wholly past 2^53. Each caller decides for itself what that means:
@@ -1556,15 +1539,14 @@ make the engine safe on unbounded domains**, and this section must not be read a
 claiming it does: Float jump candidates are still built from `var.lb`/`var.ub`
 directly, so a model with an unbounded Float can still settle on an infinite
 value — and, because an infinite assignment can satisfy every row, be reported
-`feasible = true` while carrying `±inf`. That path is independent of #112 and
-predates it. The *Int* jump path was a second such route — it froze the variable
-rather than infecting it — and is closed as of **#114**; Float remains open.
+`feasible = true` while carrying `±inf`. The *Int* jump path is closed (#114);
+Float remains open.
 
 `begin()`'s closest-to-zero start is likewise well defined on every domain — a
 genuine advantage of letting FJ own the scalars, but **only for the starting
 point**; the kick and LNS destroy need the window above.
 
-`use_fj` is now vestigial — GFJ is always the engine.
+`use_fj` is vestigial — GFJ is always the engine.
 
 ### Main Loop
 
@@ -1573,30 +1555,28 @@ While time and `max_iterations` remain, each pass:
 1. **Pick the batch kind.** With probability `structural_batch_probability`,
    STRUCTURAL; else with probability `novelty_jump_probability` (only when
    `use_compound_moves`), NOVELTY JUMP; else FEASIBILITY JUMP. All drawn afresh
-   every batch: ViolationLS §5 keeps the algorithm until a new best or a
-   perturbation, and #209's pre-registered A/B rejected that here (see
-   [Novelty Jump](#novelty-jump)). Structural batches mutate state outside FJ's
-   bookkeeping, so they set a `resync` flag; a Novelty batch rebuilds FJ's state
-   itself.
+   every batch, where ViolationLS §5 keeps the algorithm until a new best or a
+   perturbation; #209's pre-registered A/B chose this (see `pick_batch_kind`).
+   Structural batches mutate state outside FJ's bookkeeping, so they set a
+   `resync` flag; a Novelty batch rebuilds FJ's state itself.
 2. **Run the batch.** `fj.batch(batch_iterations)`, `fj.novelty_batch(batch_iterations)`,
    or `StructuralBatch::run(...)`. Just before it, **portfolio only**, sync the
-   shared bound (#179): if the pool's best feasible objective earns a tighter
+   shared bound: if the pool's best feasible objective earns a tighter
    bound than this worker holds, tighten to it (see
-   [Parallel Search](#parallel-search), item 3). A no-op without a pool. Every batch kind is bounded by the wall-clock
-   deadline from *inside*, not just at the loop top: FJ strides a check through
-   its GLS loop, and the structural sweep checks between generators (see
-   [Deadline bound](#deadline-bound)), so a batch entered just before the
-   deadline cannot run to completion past it. LNS repair is bounded separately,
-   by `remaining()` at its call site.
+   [Parallel Search](#parallel-search), item 3). A no-op without a pool. Every
+   batch kind is bounded by the wall-clock deadline from *inside*, not just at
+   the loop top: FJ strides a check through its GLS loop, and the structural
+   sweep checks between generators (see [Deadline bound](#deadline-bound)), so a
+   batch entered just before the deadline cannot run to completion past it. LNS
+   repair is bounded separately, by `remaining()` at its call site.
 3. **On real feasibility**, `record_best()` *first*, banking the feasible point
    before anything can move off it; then run the inner solver hook (if any) to
    polish continuous variables, and `record_best()` again only if the polish
-   stayed feasible. Recording only after the hook silently discarded genuinely
-   feasible solutions whenever the polish left the feasible region.
+   stayed feasible.
 4. **`record_best()`** keeps the assignment if it strictly improves
    `best_feasible_obj`, snapshots the state, and tightens the objective bound to
-   the min of `obj - eps` and, in a portfolio, the shared cap (#179)
-   (`eps = 1` on an integral objective, as CP-SAT's best - 1 (#211), else
+   the min of `obj - eps` and, in a portfolio, the shared cap
+   (`eps = 1` on an integral objective, as CP-SAT's best - 1, else
    `eps = step*(|obj|+1)` with an **adaptive** relative `step` in
    `[1e-6, 1e-3]` (#241): it starts at 1e-3, doubles on each incumbent
    `record_best` records (twice in a batch whose float hook improves on FJ's
@@ -1615,11 +1595,11 @@ While time and `max_iterations` remain, each pass:
    last new best (#117).
 8. **Diversify**, by either of two routes. Both restore `kick_origin()` first
    once there is one — the incumbent, or the state `adopt_from_pool` installed
-   (#158, see [Diversification](#diversification)).
+   (see [Diversification](#diversification)).
    - **`stagnation >= perturbation_period`** — the ordinary one. On a
      continuous objective with an incumbent, first shrink the bound step
      tenfold (floor 1e-6) and re-ground the bound on the incumbent at it,
-     capped by the shared bound (#241): the one deliberate loosening, giving
+     capped by the shared bound: the one deliberate loosening, giving
      up a demand a whole period did not meet (the kick that follows rebuilds
      FJ's tables). Then diversify (below) and reset the stagnation counter.
    - **an unproductive Feasibility-Jump batch** (#102) — the batch reported that
@@ -1644,41 +1624,35 @@ release the objective bound to `+inf`, full-evaluate, and return the best
 feasible objective (or `+inf` / infeasible). `SearchResult::best_violation`
 carries the largest real-constraint residual at the returned assignment.
 `SearchResult::iterations` is the unit `max_iterations` is charged in: the
-larger of the total GLS iteration count and the batch count (#201). The budget
-stops the run when either reaches the limit, so the two agree by construction.
-On a model FJ has work in that is the GLS count, as it always was; on a
-structural-only run, which charges no GLS iteration, it is the batch count
-rather than 0.
+larger of the total GLS iteration count and the batch count, so a
+structural-only run, which charges no GLS iteration, reports its batch count
+rather than 0. The budget stops the run when either reaches the limit, so the
+two agree by construction.
 `SearchResult::termination` says which budget ended the run — see below.
 `SearchResult::first_feasible_objective` and `time_to_first_feasible` record
-where the run *arrived* in the feasible region, as against where the descent
-afterwards left it: they are latched at the first `record_best` on a feasible
-point, before the inner-solver polish in that same batch (#149). Observational
-only — nothing reads them back — so the split between arrival and descent can be
-measured without a bespoke instrumented build.
+where the run *arrived* in the feasible region, latched at the first
+`record_best` on a feasible point, before that batch's inner-solver polish.
 
 `SearchResult::counters` (a `SearchCounters`, `include/cbls/counters.h`) answers
-the question the fields above cannot: not how much work a run did but **on what**
-(#169). Batches bucketed by `BatchKind` — and
+the question the fields above cannot: not how much work a run did but **on what**.
+Batches bucketed by `BatchKind` — and
 `fj_batches + novelty_batches + structural_batches == batches` exactly, since
 `pick_batch_kind` returns one of three and every batch is counted once — the
 structural sweep's candidates tried and committed, one row per generator (keyed
 by `MoveGenerator::name()` plus a `#<index>` suffix wherever one batch built two
 of a kind, since the built-ins name themselves by type), the inner solver's call
-count, and a portfolio's restart count. LNS stays on `lns_repairs` / `lns_repairs_accepted` rather than being
-duplicated here.
+count, and a portfolio's restart count. LNS stays on `lns_repairs` /
+`lns_repairs_accepted` rather than being duplicated here.
 
-Observational only, and one field pays for that explicitly:
-`inner_solver_seconds` is gated on the run having a wall-clock budget and reads
-**0.0** without one, because a clockless run is documented above to read no clock
-at all and that guarantee is worth more than a timing on the one regime where the
-timing is not what anybody is measuring. The call count is always filled.
+Observational only. `inner_solver_seconds` reads **0.0** on a run without a
+wall-clock budget, which reads no clock at all (see
+[Wall-clock budget](#wall-clock-budget)); the call count is always filled.
 
 ### Wall-clock budget
 
-`solve(model, time_limit)` is a promise to return within `time_limit`. The
-budget used to be checked only *between* batches, so any sub-step entered just
-before the deadline could overrun it. Five can, and each is bounded separately:
+`solve(model, time_limit)` is a promise to return within `time_limit`. Five
+sub-steps could overrun it if entered just before the deadline; each is bounded
+separately:
 
 | # | Sub-step | Bound | Where |
 |---|----------|-------|-------|
@@ -1690,140 +1664,86 @@ before the deadline could overrun it. Five can, and each is bounded separately:
 
 Bound 3 has two halves, and only the lower one is about the deadline. The
 `remaining()` half is the deadline bound proper: a kick taken near the end of
-the budget gets only what is left. The `2.0` cap is independent of the deadline
-and predates it — it stops a single kick early in a long run from monopolising
-it, and on any run whose whole budget is under 2s (including every test here) it
-never binds. Only the `remaining()` half is covered by a test.
-
-Bound 3 is floored at `1e-9` rather than clamped to 0 while a deadline exists:
-`remaining()` returns exactly `0.0` once the clock crosses the deadline, and `0`
-means "no wall clock at all" downstream in `fj_nl_initialize` — so clamping to
-zero would hand the repair an *unbounded* run, the opposite of the intent.
+the budget gets only what is left. The `2.0` cap stops a single kick early in a
+long run from monopolising it, and on any run whose whole budget is under 2s
+(including every test here) it never binds. Only the `remaining()` half is
+covered by a test. It is floored at `1e-9` rather than clamped to 0 while a
+deadline exists: `remaining()` returns exactly `0.0` once the clock crosses the
+deadline, and `0` means "no wall clock at all" downstream in
+`fj_nl_initialize` — so clamping to zero would hand the repair an *unbounded*
+run.
 
 ##### Bound 1: why the stride is sized in time (#113)
 
-The GLS loop cannot read the clock every iteration. `steady_clock::now()` costs
-1408 ns/call on this project's reference machine, whose clocksource is **hpet**
-(it is ~20–25 ns through the vDSO on a **tsc** clocksource, which is why the fix
-must not assume either), against GLS iterations that can be a few microseconds.
-Measured on a small Bool model, Release: **2991 → 4816 ns/iteration, a 1.75x
-throughput loss**, for checking every iteration.
+The GLS loop cannot read the clock every iteration: `steady_clock::now()` costs
+~1.4 us on an **hpet** clocksource (~20–25 ns through the vDSO on **tsc**, so
+the stride must not assume either), against GLS iterations that can be a few
+microseconds. A *fixed* iteration stride is not a time bound either: one GLS
+iteration is `O(sampled vars x candidate values x constraints touched)`, so 64
+of them are microseconds on a small model and seconds on a large one.
 
-It used to check on a *fixed* stride of 64 iterations, which is not a time bound
-at all: one GLS iteration is `O(sampled vars x candidate values x constraints
-touched)`, so 64 of them are microseconds on a small model and seconds on a large
-one — and the large ones are exactly the benchmark instances whose wall times
-epic #87 publishes.
+Each check measures the interval since the previous one — the current cost of
+an iteration — and sizes the next stride to `kStrideBudgetFraction` (1/64) of
+the *remaining* budget (remaining, not total, so the bound tightens as the
+deadline approaches). Growth is capped at `kStrideGrowth` (8x) per adjustment so
+the ramp goes through progressively longer and more accurate measurements;
+shrinking is uncapped, so an iteration that got more expensive is caught at the
+very next check.
 
-The stride is now sized in time. Each check measures the interval since the
-previous one — which is the current cost of an iteration — and sizes the next
-stride to `kStrideBudgetFraction` (1/64) of the *remaining* budget (remaining,
-not total, so the bound tightens as the deadline approaches instead of permitting
-`budget/64` right up to it). Growth is capped at `kStrideGrowth` (8x) per
-adjustment so the ramp goes through progressively longer and more accurate
-measurements; shrinking is uncapped, so an iteration that got more expensive is
-caught at the very next check.
-
-An uncapped shrink is **not** what stops the stride ratcheting upward and going
-silent — the failure mode that got an earlier self-tuning stride removed from
-this engine. It cannot be: a shrink is only *applied* at a check, and the next
-check is a whole stride away, so a stride grown while iterations were cheap is
-spent in full on the first expensive one. That is what `kMaxDeadlineStride` is
-for, and it is set to **64** — the fixed stride this replaced — so the worst case
-is no worse than the code being replaced while the time-based shrink still
-delivers the case #113 filed. Uncapped, a model whose iteration cost rises
-mid-run was measured at 9.9x over a 1 s budget (and 9.1x over 2 s, the absolute
-overrun growing with the budget, because a larger budget buys a larger stride to
-go silent with); capped, the same model runs 1.4x and 1.0x, against 2.4x and 1.2x
-for the fixed stride.
+An uncapped shrink does **not** stop the stride ratcheting upward and going
+silent: a shrink is only *applied* at a check, and the next check is a whole
+stride away, so a stride grown while iterations were cheap is spent in full on
+the first expensive one. That is what `kMaxDeadlineStride` (**64**) is for.
 
 **Guarantee: a batch returns at most one stride past the deadline, where a stride
 is at most 64 GLS iterations and at most 1/64 of the remaining budget in
 predicted time — or one GLS iteration, whichever is larger.** The last clause is
 irreducible: an iteration is atomic and cannot be pre-empted from the inside. The
 prediction is from the last measurement, so a cost that rises mid-stride is
-absorbed by the 64-iteration half of the bound, not the time half.
+absorbed by the 64-iteration half of the bound, not the time half. The interval
+between checks can span a batch boundary, so work the outer loop does between
+batches (hook, LNS, structural sweep) is charged to the stride and shrinks it —
+conservative, never the reverse.
 
-Measured on 400 Int vars in 20 000 rows of 8 (Release, hpet, 12-core box under
-concurrent load):
-
-| budget | before | after | iterations before / after |
-|--------|--------|-------|---------------------------|
-| 0.05 s | 7.07 s | 0.22 s | 64 / 1 |
-| 1.00 s | 7.11 s | 1.17 s | 64 / 6 |
-| 3.00 s | 7.03 s | 3.10 s | 64 / 16 |
-
-Before, the overrun was set by the model (always exactly 64 iterations, whatever
-the budget); after, it is a handful of iterations. Note the relative overrun does
-not shrink monotonically with the budget in general — that holds while iteration
-cost is stable, which is the assumption the time half of the bound rests on.
-
-Sizing the stride in time also bounds the clock overhead without measuring the
-clock at all: one read per stride, against a stride costing `budget/64`, is
-1.4 us / (budget/64) even on the expensive clocksource — 0.45% of a 20 ms budget,
-0.009% of a 1 s one. It degrades only for budgets so small (well under a
-millisecond) that the run is over before throughput matters. Measured on the
-cheap-iteration model, Release, hpet: 2915–2994 ns/iteration adaptive against
-2991–3064 fixed-64 and 2929–3008 with no wall clock at all — i.e. at the no-clock
-floor, and no worse than the stride it replaces.
-
-Two honest caveats. The stride is a *prediction* from a measurement, so an
-iteration whose cost jumps mid-stride overruns the target and is corrected only
-at the next check. And the interval between checks can span a batch boundary, so
-work the outer loop does between batches (hook, LNS, structural sweep) is charged
-to the stride and shrinks it — conservative, never the reverse.
+Sizing the stride in time also bounds the clock overhead: one read per stride,
+against a stride costing `budget/64`, is 1.4 us / (budget/64) even on the
+expensive clocksource. It degrades only for budgets well under a millisecond.
+The overrun and throughput measurements are on #113.
 
 ##### Bound 5: why the kick is checked between moves (#115)
 
-The kick's structural half used to check the clock only *between* structural
-variables, and its comments claimed parity with the STRUCTURAL sweep's bound
-(row 4). The parity did not hold, and the difference is the whole issue: the
-sweep caps its overrun at one *move-set evaluation* per variable, which is linear
-in that variable's size, while the kick's per-variable cost is
-`k = round(p * |elements|)` move-set *generations*, quadratic in it. Both checked
-between variables; only one had a per-variable cost small enough for that to
-mean anything. A model whose structure lives in a single large List or Set had no
-effective bound at all — it ran the entire quadratic pass and then consulted the
-clock on its way to a variable that did not exist. Measured: one `perturb(0.1)`
-took 2269 ms on a 41049-element Set and 1021 ms on a 30000-element List, and
-`solve(model, 1.0)` returned in 1.29 s.
+The STRUCTURAL sweep (row 4) caps its overrun at one move-set evaluation per
+variable, linear in that variable's size; the kick's per-variable cost is
+`k = round(p * |elements|)` move-set *generations*, quadratic in it. A check
+between variables therefore bounds nothing on a model whose structure lives in
+one large List or Set, so the check sits *inside* the run, between moves. One
+move — one move-set generation plus one apply, `O(|elements| + universe)`
+element copies — is exactly the unit row 4 caps its overrun at.
 
-So the check moved *inside* the run, between moves. One move — one move-set
-generation plus one apply, `O(|elements| + universe)` element copies — is
-exactly the unit row 4 caps its overrun at, so the kick now has the bound its
-comments used to claim.
-
-A move is not cheap enough to check before every one of them. On the shape the
-between-variables check already handled well, many small structures, a move on a
-100-element List is ~1.5 us against 1408 ns for `steady_clock::now()` on the HPET
-reference machine, so a per-move read would roughly double a kick. The check
-therefore strides, and the stride is the one bound 1 already uses:
-`FeasibilityJump::next_deadline_stride`, sized in time from the last measurement,
-growth capped at 8x, shrink uncapped, hard-capped at `kMaxDeadlineStride`.
-
-Sharing that tuner shares the lesson it encodes. A stride sized in time **alone**
-goes silent exactly when it is needed, because a shrink can only be *applied* at
-a check and the next check is a whole stride away — so a stride grown over many
-cheap small structures would be spent in full on the first move of a large one.
-The hard cap is what bounds that. It is also why the other direction #115 named,
-bounding `k` against the remaining budget, was not taken: `k` is chosen once,
-before the run starts, so a per-move cost that rises *inside* the run is never
-re-observed at all. That is the same defect in a new place, not a fix for it.
+A move is not cheap enough to check before every one (a move on a 100-element
+List costs about one hpet clock read), so the check strides with bound 1's tuner,
+`FeasibilityJump::next_deadline_stride`: sized in time from the last
+measurement, growth capped at 8x, shrink uncapped, hard-capped at
+`kMaxDeadlineStride`. The hard cap matters for the same reason as in bound 1: a
+stride grown over many cheap small structures would otherwise be spent in full
+on the first move of a large one. Bounding `k` against the remaining budget
+instead would not work: `k` is chosen once, before the run, so a per-move cost
+that rises *inside* the run is never re-observed.
 
 **Guarantee: the structural pass applies at most 64 further moves after the
 deadline passes, and a stride costs at most 1/64 of the remaining budget in
 predicted time — or one move, whichever is larger.** The last clause is
-irreducible for the same reason as bound 1's: a move is atomic and cannot be
-pre-empted from the inside. The prediction is from the last measurement, so a
-move whose cost jumps mid-stride is absorbed by the 64-move half, not the time
-half.
+irreducible for the same reason as bound 1's. The prediction is from the last
+measurement, so a move whose cost jumps mid-stride is absorbed by the 64-move
+half, not the time half.
 
 The stride is armed at one move at the top of every kick rather than carried
-across kicks, so the *first* variable is bounded too — the single large structure
-is the case, and a stride inherited from a previous kick would spend itself
-inside it. It is kept separate from the GLS tuner because the two loops advance
-in different units and interleave: a kick runs between batches, so one shared
-tuner would have each mis-size the other's stride.
+across kicks, so the *first* variable is bounded too. It is kept separate from
+the GLS tuner because the two loops advance in different units and interleave:
+a kick runs between batches, so one shared tuner would have each mis-size the
+other's stride. `arm_structural_kick()` runs on every kick, scalar-only models
+included, so a deadline-armed run pays one `steady_clock::now()` per kick
+(gated on `has_deadline_`, so determinism-safe).
 
 Two deliberate exceptions to stopping. The check never fires before the pass has
 applied a move, so a deadline already crossed on entry still leaves a kick
@@ -1832,178 +1752,59 @@ fallback then completes if that one move happened to cancel itself out. And a
 variable whose run was cut short still has its net effect recorded, so a
 truncated kick is not mistaken for a no-op.
 
-One gap the guarantee's unit hides, **pre-existing and deliberately left open**.
-The bound is stated in moves, and the cost model behind it assumes cost is
-proportional to moves — but an *attempted* move that finds no legal candidate is
-not free. `generate_standard_moves` on a Set allocates a `vector<bool>` over the
-universe, copies the membership and builds the complement — `O(|elements| +
-universe)` — before discovering there is nothing legal, and the pass then leaves
-that variable having applied nothing. Because the check short-circuits on "no
-move applied yet" without decrementing, a model of M saturated Sets
+One gap, **deliberately left open**: the bound is stated in moves, but an
+*attempted* move that finds no legal candidate is not free.
+`generate_standard_moves` on a Set allocates a `vector<bool>` over the universe,
+copies the membership and builds the complement — `O(|elements| + universe)` —
+before discovering there is nothing legal. Because the check short-circuits on
+"no move applied yet" without decrementing, a model of M saturated Sets
 (`min_size == max_size == universe_size`) does `O(M * U)` work with zero clock
-reads. The old between-variables check was gated on `changed` and was equally
-blind to it, so this is not a regression, and the cost is linear in the model
-rather than quadratic in one variable — the shape #115 is about. Closing it means
-bounding failed *attempts* as well as moves.
+reads. That is linear in the model rather than quadratic in one variable.
+Closing it means bounding failed *attempts* as well as moves.
+
+##### No clock without a deadline
 
 No clock read influences control flow when `time_limit <= 0` — `past_deadline()`,
 `remaining()`, `StructuralBatch::run`, `perturb_structural` and FeasibilityJump's two
 strided checks all short-circuit on their `has_deadline` flag — so with no
-`SolveCallback` attached
-the loop reads no clock at all, and iteration-budgeted runs stay bit-identical
-and deterministic. (`solve()` still timestamps entry and exit to fill
-`time_seconds`, a callback's ~1s progress cadence reads the clock once per
-batch, and `SearchResult::time_to_first_feasible` costs ONE read, at the first
-feasible point and latched thereafter (#149). Three of those are O(1) per run and
-the callback's is per batch; none of the four reaches the
-search trajectory. #169 adds two more, and neither reaches the trajectory
-either. (#179's `bound_behind_global_seconds` is a third of the same kind:
-two reads per behind batch, control arm of a portfolio only, gated the same
-way.) `SearchCounters::inner_solver_seconds` is gated on `has_deadline_`
-exactly as `last_improvement_` is, so a clockless run reads no clock for it and
-the field reads 0.0 — but the gate is the RUN's, not the caller's: a run that
-*has* a wall clock pays two reads per inner-solver call whether or not anybody
-ever looks at the field. A `SearchConfig::tracer`, by contrast, is opt-in:
-attached it costs one read per new best and two per inner-solver call, and
-unattached neither happens at all.)
+`SolveCallback` attached the loop reads no clock at all, and
+iteration-budgeted runs stay bit-identical and deterministic. The reads that do
+remain never reach the search trajectory: `solve()` timestamps entry and exit
+for `time_seconds`; a callback's ~1s progress cadence reads once per batch;
+`SearchResult::time_to_first_feasible` costs one read, latched at the first
+feasible point; the `SearchCounters` timings and, in a portfolio's control arm,
+`bound_behind_global_seconds` are gated the same way.
+`SearchCounters::inner_solver_seconds` is gated on the RUN having a wall clock,
+not on the caller reading it (see [Main Loop](#main-loop)): such a run pays two
+reads per inner-solver call regardless. A `SearchConfig::tracer` is opt-in:
+attached it costs one read per new best and two per inner-solver call.
 
-#### Why this is tested the way it is
+#### How the bounds are tested
 
-A bug in this class made a 60s budget take 87s and was found only by reading a
-benchmark's `wall_seconds` column by hand. Epic #87 publishes per-instance wall
-times, so a silently overrunning budget corrupts published data — but the suite
-was also deliberately converted to be deterministic (iteration-bounded,
+Benchmarks publish per-instance wall times, so a silently overrunning budget
+corrupts published data; but the suite is deterministic (iteration-bounded,
 `time_limit = 0`), and an `elapsed < X` assertion drags machine speed back in.
+So bounds 1–3 and 5 are tested **without asserting on elapsed time** (#104):
+each test observes its own bound in the unit the guarantee is stated in — work
+done for 1, the call count of a test `InnerSolverHook` and the exact poll
+sequence of `FloatIntensifyHook` under a counting stop for 2, the argument
+handed to a test `LNS` for 3, and for 5 `structural_kick_moves()` /
+`structural_kick_checks()`. The bound-1 tuner exposes
+`deadline_check_stride()` / `deadline_checks()`, and its sizing rule
+`FeasibilityJump::next_deadline_stride` is a pure function tested exhaustively
+over a grid, plus two timing-free tests for the non-stationary (ratcheting)
+case the grid cannot see. Bound 4's symptom really is duration, so its test
+asserts on wall-clock duration, quarantined behind the `[timing]` tag as its own
+labelled ctest entry with an explicit timeout; bound 2 has one such end-to-end
+test too, `timing_inner_solver_hook_deadline`.
 
-So bounds 1–3 are covered **without any assertion on elapsed time** (issue
-#104). Each test observes its own bound directly: work done for 1 (one batch
-cannot have run to completion), the call count of a test `InnerSolverHook` and,
-since #191, the exact poll sequence of `FloatIntensifyHook` under a counting stop
-for 2, and the argument handed to a test `LNS` for 3. Bound 4 has no such seam —
-its symptom really is duration — so its test asserts on wall-clock duration,
-quarantined behind the `[timing]` tag and registered as its own labelled ctest
-entry with an explicit timeout. Bound 2 has one such test too,
-`timing_inner_solver_hook_deadline` (#191), as the end-to-end regression for a
-user-facing budget overrun; its deterministic discriminators are the tests above.
-
-Every one of these tests also asserts `SearchResult::termination`. That is what
-stops a test going quietly inert: a small time budget proves nothing if the
-model converged before the clock ever mattered, which is exactly what had
-happened to the old `fj_nl_initialize` time-limit test (its model converged in
-~2ms against a 50ms cap, so it passed whether or not the limit was honoured).
-
-The two tests that do bound work by counting — 1, and the reworked
-`fj_nl_initialize` test — are not entirely free of machine speed either: they
-need the machine to be unable to spend the whole iteration budget inside the
-time budget. The trade-off is fixed at `margin = (time a regression takes to go
-red) / (time budget)`, so buying margin costs time on the failing path. Both are
-~20ms green and fail in the *safe* direction — a slower or loaded machine does
-fewer iterations and passes more comfortably. They are different models, so
-their measured numbers differ:
-
-| Test | Iterations used | Margin | Time to go red |
-|------|-----------------|--------|----------------|
-| FJ batch bound | 128 of 40k | ~312x | ~10s |
-| `fj_nl_initialize` time limit | 192 of 30k | ~156x | ~4.9s |
-
-The stride sizing under bound 1 (#113) is tested the same way — nothing joins
-`[timing]`. The sizing rule itself is a pure function of `(stride, elapsed,
-target)`, `FeasibilityJump::next_deadline_stride`, so it is tested exhaustively
-and deterministically: it grows only by the cap, shrinks without one, floors at
-one iteration, floors again on a non-finite measurement, stops at
-`kMaxDeadlineStride`, and — asserted over a grid of inputs — never predicts a
-next stride costing more than the target.
-
-That grid assumes iteration cost is *stationary*, which is exactly the assumption
-that fails in the ratcheting case, so it is not the whole guarantee. Two further
-tests cover what it misses, both timing-free: one ramps the stride through an
-arbitrarily long cheap phase and asserts it never exceeds the cap, the other
-walks the countdown arithmetic across a 1e6x cost jump and asserts the iterations
-run past the deadline stay within the cap.
-
-The two live tests then observe the tuner's own state through
-`deadline_check_stride()` and `deadline_checks()` rather than any duration:
-
-| Test | Observes | Margin |
-|------|----------|--------|
-| expensive iterations pin the stride to one | stride 1, one clock read per iteration, `< 64` iterations done | ~32x |
-| cheap iterations let the stride grow | stride > 64, fewer reads than a fixed 64 would make | ~800x |
-| a run with no wall clock reads no clock | `deadline_checks() == 0` | exact |
-
-The first test's margin cannot be raised without lowering the work it does:
-`(iterations that fit in the budget) x margin = 1 / kStrideBudgetFraction`, which
-is 64 whatever budget the test picks. The last one is the determinism claim above
-turned into an assertion — with `time_limit <= 0` the loop makes no clock read at
-all, so nothing timing-derived can reach control flow.
-
-All three go red on restoring a fixed stride of 64: verified by doing exactly
-that (`deadline_check_stride() == 1` → 64, `> 64` → 64, and the end-to-end
-`iterations < 64` → 64).
-
-Bound 5 (#115) is observed the same way, in the unit its guarantee is stated in:
-`structural_kick_moves()` counts the moves a kick applied and
-`structural_kick_checks()` its clock reads, so no test asserts on a duration.
-
-| Test | Observes | Fails if |
-|------|----------|----------|
-| one large List is bounded by the deadline, not by the List | exactly 1 move (unbounded: 10000) | the pass runs the variable out |
-| one large Set is bounded by the deadline, not by the Set | exactly 1 move (unbounded: 8164) | as above |
-| every kick re-arms the stride | 1 clock read per kick, on a 2-move kick | a kick inherits a grown stride |
-| a deadline that expires mid-kick stops it within a stride | `moves <= 64 * checks + 1`, stopped short of 10000 | the pass runs a variable out past its budget, or never reloads the countdown |
-| a kick with no wall clock reads no clock | `structural_kick_checks() == 0` | a clock read reaches control flow |
-| many small structures are not cut short | all 400 moves run, 8 clock reads, `moves <= 64 * checks + 1` | the bound fires on structure count, reads per move, or the countdown is reloaded with a *multiple* of the stride |
-
-Both large-structure models consume their structure through a constraint. An
-unconsumed List or Set would let the engine leave it alone, and the test would
-prove nothing while still passing.
-
-Three of those deserve their reasoning recorded, because each covers a hole the
-obvious version of the test leaves open.
-
-The two large-structure cases assert **exactly one** move rather than "within the
-bound of 65". The guarantee is one capped stride, but the observed value is
-deterministic — the stride is re-armed to 1 at the top of every kick, so the
-first check lands after a single move. Accepting 65 would let the re-arm be
-deleted in silence, and a kick would then inherit a grown stride and spend 64
-moves inside the first large variable (~35 ms rather than ~0.55 ms on #115's 41k
-Set). That is not hypothetical: the same stride-persistence bug already shipped
-once in the structural sweep, where the stride outgrew the model's structured
-variable count and the check went inert on 160 of 170 pharma-glsp instances
-(the benchmark is gone in #28; the bug it exposed is not).
-
-The re-arm has its own test because the two above only *depend* on it. On a
-one-List model with `k = 2`, a re-armed kick reads the clock exactly once (move 1
-is ungated; the check before move 2 finds countdown 1). A kick inheriting the
-previous stride of 8 never exhausts its countdown in 2 moves and reads it zero
-times. The discriminator is the countdown arithmetic, not a duration.
-
-The mid-kick expiry test exists because the expired-deadline tests never reach
-the guarantee's real scenario: with the deadline already gone, the first check
-returns before `next_deadline_stride` is called at all, so the countdown reload
-is dead code in them. Giving the pass a budget it outlives for a while exercises
-the ramp, and `moves <= 64 * checks + 1` is the guarantee in the only form
-observable without a clock.
-
-That assertion is carried in *both* the mid-kick test and the small-structure
-one, and only the second can fail on a countdown reloaded with a **multiple** of
-the stride — an edit that multiplies the real overrun while leaving the reported
-stride untouched. In the mid-kick test the time target is what binds, and the
-tuner absorbs the mutation: measuring the interval it actually got, it sees `4x`
-the elapsed time over `4 * stride` moves and shrinks the stride `4x` to match,
-landing on the same moves-per-check. Only where the 64-move cap binds instead —
-cheap moves, a distant deadline, which is the small-structure model — does the
-mutation surface, as 256 moves between reads against a cap of 64.
-
-The tuner's own ratcheting properties are not retested: bound 5 reuses
-`next_deadline_stride` unchanged, so the exhaustive grid and the two timing-free
-ratchet tests above already cover them. What is new in #115 is *where* the check
-is placed and how the countdown is driven, which is what these observe.
-
-One cost worth naming: `arm_structural_kick()` runs on every kick, including on
-scalar-only models, so a deadline-armed run there now pays one
-`steady_clock::now()` per kick where it paid none before. It is one read per
-`perturbation_period` stagnant batches, and it is determinism-safe (the arm is
-gated on `has_deadline_`), but it is not zero.
+Every one of these tests also asserts `SearchResult::termination`, so a test
+whose model converged before the clock mattered cannot pass inertly. The
+work-counting tests fail in the *safe* direction: a slower machine does fewer
+iterations and passes more comfortably. Why each test asserts what it does (the
+margins, why the large-structure kicks assert exactly one move, why only the
+small-structure test catches a countdown reloaded with a multiple of the stride)
+is in the comments above the tests in `tests/`.
 
 ### Diversification
 
