@@ -8,6 +8,7 @@ reference configuration, the instance sets and the cost. Each trial is one
 | File | Issue | Cost |
 |---|---|---|
 | `cvrp.study.toml` | #263 | `gap_percent` to the pinned BKS |
+| `mipfeas.study.toml` | #264 | Primal Integral to the `.solu` optimum (`roster.csv`, `tune_confirm.csv`) |
 
 The plan they follow (shape, params, splits, core-hours) is on #261. Results
 go on each class's issue; a setting that is confirmed lands as an engine or

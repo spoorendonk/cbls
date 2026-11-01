@@ -411,3 +411,17 @@ def test_a_refused_reference_update_leaves_the_committed_files_alone(tmp_path: P
 
     assert ((here / SOLU_FILENAME).read_bytes(), (here / ROSTER_FILENAME).read_bytes()) == before
     assert verify_references(here) == []
+
+
+def test_tune_confirm_set_is_outside_the_roster_with_its_solu_optima() -> None:
+    # The tuning study's held-out set (#264): a configuration confirmed on it
+    # must not have been seen on the roster, and its references are the pinned
+    # solution file's optima, so a drifted value cannot score a run wrongly.
+    confirm = read_roster_csv(INSTANCE_DIR / "tune_confirm.csv")
+    roster = {entry.instance for entry in read_roster_csv(INSTANCE_DIR / ROSTER_FILENAME)}
+    solu = parse_solu((INSTANCE_DIR / SOLU_FILENAME).read_text())
+    assert len(confirm) == 10
+    for entry in confirm:
+        assert entry.instance not in roster
+        assert entry.reference_kind == "opt"
+        assert solu[entry.instance] == ("=opt=", entry.reference_value)

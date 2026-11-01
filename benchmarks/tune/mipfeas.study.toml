@@ -1,0 +1,269 @@
+# xk tune study: MIPfeas (#264, plan on #261). Run on the workstation's local
+# queue only: XK_SERVER=local XK_PROJECT=cbls-tune (see README.md here).
+#
+# Sets, never the reported comparison: the screen is smoke.csv's 11 at 10 s,
+# the intermediate set #244's held-out 11 at 30 s, and confirm 10 instances
+# of the MIPLIB 2017 collection outside roster.csv, drawn by
+# sha256("cbls-mipfeas-tune:261:<name>") among the =opt= names whose .mps.gz
+# is at most 2 MB, at 30 s and 2 seeds. Their optima are in tune_confirm.csv,
+# copied from the pinned miplib2017-v36.solu. All 32 files are read from the
+# workstation's copy of the collection (/home/simon/data/miplib), which is not
+# in the repository.
+
+[study]
+name = "cbls-mipfeas"
+version = 1
+repo = "https://github.com/spoorendonk/cbls.git"
+rev = "main"
+cores = "0-15"
+threads = 16
+exclusive = true
+trials = 24
+sampler = "tpe"
+sampler_seed = 0
+p_threshold = 0.1
+correction = "pocock"
+prune_against = "reference"
+
+# The reference is the runner's defaults; these are #255's dev arms.
+[[study.enqueue]]
+params = { compound = false }
+
+[[study.enqueue]]
+params = { tie_break = false }
+
+[build]
+command = "cmake -S {src} -B {build} -DCBLS_BUILD_TESTS=OFF -DCBLS_BUILD_EXAMPLES=OFF -DCBLS_INSTALL_GIT_HOOKS=OFF && cmake --build {build} -j4 --target cbls_mipfeas"
+
+[run]
+command = "python3 {src}/benchmarks/common/tune_trial.py mipfeas --build-dir {build} --out-dir {rundir} --instance {instance} --seed {seed} --threads {threads} --budget {secs} --inst-dir /home/simon/data/miplib --roster {src}/benchmarks/instances/mipfeas/{roster} -- {config}"
+timeout = 300
+
+[space]
+compound = { bool = true, render = false, default = true }
+no_compound = { choice = ["--no-compound-moves"], when = { compound = false }, default = "--no-compound-moves", format = "{value}" }
+novelty_prob = { float = [0.1, 0.9], when = "compound", default = 0.5, format = "--novelty-prob {value}" }
+tie_break = { bool = true, render = false, default = true }
+no_tie_break = { choice = ["--no-objective-tie-break"], when = { tie_break = false }, default = "--no-objective-tie-break", format = "{value}" }
+near_value = { bool = true, render = false, default = false }
+perturb_near_value = { choice = ["--perturb-near-value"], when = "near_value", default = "--perturb-near-value", format = "{value}" }
+perturbation_period = { int = [10, 1000], log = true, default = 100, format = "--perturbation-period {value}" }
+lns = { bool = true, render = false, default = true }
+lns_interval = { int = [1, 20], log = true, when = "lns", default = 3, format = "--lns-interval {value}" }
+no_lns = { choice = ["--no-lns"], when = { lns = false }, default = "--no-lns", format = "{value}" }
+unproductive_iters = { int = [50, 3000], log = true, default = 300, format = "--unproductive-iters {value}" }
+
+[cost]
+json = "cost"
+file = "{rundir}/cost.json"
+failed = 3.0  # worse than a run that never finds a solution (2.0)
+
+[elites]
+top = 3
+keep = 2
+alpha = 0.05
+
+[confirm]
+rule = "wilcoxon"
+alpha = 0.05
+
+[fidelity]
+set = "intermediate"
+factor = "none"
+min_rho = 0.7
+configs = 4
+
+# Screen: smoke.csv's 11 at 10 s.
+[[instances]]
+id = "enlight_hard"
+set = "screen"
+seeds = [1]
+params = { instance = "enlight_hard", roster = "roster.csv", secs = 10 }
+
+[[instances]]
+id = "markshare2"
+set = "screen"
+seeds = [1]
+params = { instance = "markshare2", roster = "roster.csv", secs = 10 }
+
+[[instances]]
+id = "gen-ip054"
+set = "screen"
+seeds = [1]
+params = { instance = "gen-ip054", roster = "roster.csv", secs = 10 }
+
+[[instances]]
+id = "gen-ip002"
+set = "screen"
+seeds = [1]
+params = { instance = "gen-ip002", roster = "roster.csv", secs = 10 }
+
+[[instances]]
+id = "pk1"
+set = "screen"
+seeds = [1]
+params = { instance = "pk1", roster = "roster.csv", secs = 10 }
+
+[[instances]]
+id = "mas76"
+set = "screen"
+seeds = [1]
+params = { instance = "mas76", roster = "roster.csv", secs = 10 }
+
+[[instances]]
+id = "neos5"
+set = "screen"
+seeds = [1]
+params = { instance = "neos5", roster = "roster.csv", secs = 10 }
+
+[[instances]]
+id = "mad"
+set = "screen"
+seeds = [1]
+params = { instance = "mad", roster = "roster.csv", secs = 10 }
+
+[[instances]]
+id = "binkar10_1"
+set = "screen"
+seeds = [1]
+params = { instance = "binkar10_1", roster = "roster.csv", secs = 10 }
+
+[[instances]]
+id = "atlanta-ip"
+set = "screen"
+seeds = [1]
+params = { instance = "atlanta-ip", roster = "roster.csv", secs = 10 }
+
+[[instances]]
+id = "neos-5114902-kasavu"
+set = "screen"
+seeds = [1]
+params = { instance = "neos-5114902-kasavu", roster = "roster.csv", secs = 10 }
+
+# Intermediate: #244's held-out 11 (roster.csv outside smoke.csv) at 30 s.
+[[instances]]
+id = "chromaticindex1024-7"
+set = "intermediate"
+seeds = [1]
+params = { instance = "chromaticindex1024-7", roster = "roster.csv", secs = 30 }
+
+[[instances]]
+id = "csched007"
+set = "intermediate"
+seeds = [1]
+params = { instance = "csched007", roster = "roster.csv", secs = 30 }
+
+[[instances]]
+id = "fastxgemm-n2r6s0t2"
+set = "intermediate"
+seeds = [1]
+params = { instance = "fastxgemm-n2r6s0t2", roster = "roster.csv", secs = 30 }
+
+[[instances]]
+id = "neos-3083819-nubu"
+set = "intermediate"
+seeds = [1]
+params = { instance = "neos-3083819-nubu", roster = "roster.csv", secs = 30 }
+
+[[instances]]
+id = "neos-4338804-snowy"
+set = "intermediate"
+seeds = [1]
+params = { instance = "neos-4338804-snowy", roster = "roster.csv", secs = 30 }
+
+[[instances]]
+id = "neos-4763324-toguru"
+set = "intermediate"
+seeds = [1]
+params = { instance = "neos-4763324-toguru", roster = "roster.csv", secs = 30 }
+
+[[instances]]
+id = "neos-957323"
+set = "intermediate"
+seeds = [1]
+params = { instance = "neos-957323", roster = "roster.csv", secs = 30 }
+
+[[instances]]
+id = "rail02"
+set = "intermediate"
+seeds = [1]
+params = { instance = "rail02", roster = "roster.csv", secs = 30 }
+
+[[instances]]
+id = "supportcase18"
+set = "intermediate"
+seeds = [1]
+params = { instance = "supportcase18", roster = "roster.csv", secs = 30 }
+
+[[instances]]
+id = "traininstance2"
+set = "intermediate"
+seeds = [1]
+params = { instance = "traininstance2", roster = "roster.csv", secs = 30 }
+
+[[instances]]
+id = "uct-subprob"
+set = "intermediate"
+seeds = [1]
+params = { instance = "uct-subprob", roster = "roster.csv", secs = 30 }
+
+# Confirm: the 10 drawn outside roster.csv, at 30 s, 2 seeds.
+[[instances]]
+id = "neos-2652786-brda"
+set = "confirm"
+seeds = [1, 2]
+params = { instance = "neos-2652786-brda", roster = "tune_confirm.csv", secs = 30 }
+
+[[instances]]
+id = "mkc1"
+set = "confirm"
+seeds = [1, 2]
+params = { instance = "mkc1", roster = "tune_confirm.csv", secs = 30 }
+
+[[instances]]
+id = "rococoC11-011100"
+set = "confirm"
+seeds = [1, 2]
+params = { instance = "rococoC11-011100", roster = "tune_confirm.csv", secs = 30 }
+
+[[instances]]
+id = "qiu"
+set = "confirm"
+seeds = [1, 2]
+params = { instance = "qiu", roster = "tune_confirm.csv", secs = 30 }
+
+[[instances]]
+id = "cvs16r106-72"
+set = "confirm"
+seeds = [1, 2]
+params = { instance = "cvs16r106-72", roster = "tune_confirm.csv", secs = 30 }
+
+[[instances]]
+id = "neos-3421095-cinca"
+set = "confirm"
+seeds = [1, 2]
+params = { instance = "neos-3421095-cinca", roster = "tune_confirm.csv", secs = 30 }
+
+[[instances]]
+id = "neos-3592146-hawea"
+set = "confirm"
+seeds = [1, 2]
+params = { instance = "neos-3592146-hawea", roster = "tune_confirm.csv", secs = 30 }
+
+[[instances]]
+id = "cvs08r139-94"
+set = "confirm"
+seeds = [1, 2]
+params = { instance = "cvs08r139-94", roster = "tune_confirm.csv", secs = 30 }
+
+[[instances]]
+id = "manna81"
+set = "confirm"
+seeds = [1, 2]
+params = { instance = "manna81", roster = "tune_confirm.csv", secs = 30 }
+
+[[instances]]
+id = "neos-3068746-nene"
+set = "confirm"
+seeds = [1, 2]
+params = { instance = "neos-3068746-nene", roster = "tune_confirm.csv", secs = 30 }
