@@ -1452,8 +1452,9 @@ Exactly one path initialises each variable, split by type:
 
 **The scalar starting point does not depend on the seed, and this is deliberate.**
 Feasibility Jump specifies the closest-to-zero start, and `mipfeas` was built as
-a head-to-head against CP-SAT's `fj` worker, an implementation of the same
-algorithm, so the start point was part of what was compared. Two seeds on a
+a head-to-head against CP-SAT's `fj` worker, so the start point was part of
+what was compared; CP-SAT now runs at its defaults (#284), but the published
+start stays. Two seeds on a
 scalar-only model therefore begin at the *same* assignment — if you are reading
 identical results across seeds as evidence that the search converged, check
 whether it simply started there.
@@ -1797,7 +1798,7 @@ asserts on wall-clock duration, quarantined behind the `[timing]` tag as its own
 labelled ctest entry with an explicit timeout; bound 2 has one such end-to-end
 test too, `timing_inner_solver_hook_deadline`.
 
-Every `solve()`-level one also asserts `SearchResult::termination`, so a test
+Every `[search][deadline]` test also asserts `SearchResult::termination`, so a test
 whose model converged before the clock mattered cannot pass inertly. The FJ
 batch and `fj_nl_initialize` tests fail in the *safe* direction: a slower machine does fewer
 iterations and passes more comfortably. Why each test asserts what it does (the
