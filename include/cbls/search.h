@@ -179,6 +179,13 @@ struct SearchConfig {
     // See kDefaultFeasibilityTolerance for why 1e-6.
     double feasibility_tolerance = kDefaultFeasibilityTolerance;
 
+    // The cap on the per-variable cone cache `solve()` builds when it freezes
+    // the model it is handed (#271; see `Model::freeze`). Bytes of node ids,
+    // shared by every portfolio worker; 0 caches nothing. Changes no value and
+    // no trajectory, only how a one-variable walk finds its cone. A model
+    // frozen before `solve()` keeps the cap it was frozen with.
+    size_t cone_cache_bytes = Model::kDefaultConeCacheBytes;
+
     // End a Feasibility-Jump batch that has run this many GLS iterations without
     // reducing the unweighted violation of the REAL rows, and take the
     // diversification kick as due when that happens rather than waiting out

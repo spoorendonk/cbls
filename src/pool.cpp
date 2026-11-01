@@ -182,7 +182,7 @@ SearchResult ParallelSearch::solve(
     std::function<std::shared_ptr<InnerSolverHook>(Model&)> hook_factory,
     std::function<std::shared_ptr<LNS>()> lns_factory, SolveCallback* callback,
     const ParallelConfig& par_config) {
-    master.freeze();
+    master.freeze(config.cone_cache_bytes);
     return solve(std::function<Model()>([&master]() { return master; }), time_limit, seed, config,
                  std::move(hook_factory), std::move(lns_factory), callback, par_config);
 }

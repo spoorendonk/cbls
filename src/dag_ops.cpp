@@ -237,9 +237,12 @@ void collect_changed_inputs(const Model& model, const ExprNode& node,
 // unreachable in practice before #166 and is a documented surface after it;
 // `tests/test_custom_invariant.cpp`'s throwing-delta case fails without this.
 // The destructor cannot throw: every id in `list` already indexed `flags` on the
-// way in.
+// way in. `List` is the collected `std::vector`, read at destruction so that it
+// covers every id pushed after the guard was armed, or a cached cone's span
+// (#271), whose flags are all set before anything can throw.
+template <typename List>
 struct DirtyFlagGuard {
-    DirtyFlagGuard(std::vector<uint8_t>& f, const std::vector<int32_t>& l) : flags(f), list(l) {}
+    DirtyFlagGuard(std::vector<uint8_t>& f, const List& l) : flags(f), list(l) {}
     DirtyFlagGuard(const DirtyFlagGuard&) = delete;
     DirtyFlagGuard& operator=(const DirtyFlagGuard&) = delete;
     DirtyFlagGuard(DirtyFlagGuard&&) = delete;
@@ -251,7 +254,7 @@ struct DirtyFlagGuard {
     }
 
     std::vector<uint8_t>& flags;
-    const std::vector<int32_t>& list;
+    const List& list;
 };
 
 // The custom-aware evaluator: one dirty node, under the caller's DeltaMode.
@@ -391,6 +394,7 @@ double evaluate_dirty_node(Model& model, int32_t nid, DeltaMode mode,
 namespace {
 
 thread_local IncrementalSumCounters inc_sum_counts;
+thread_local ConeCacheCounters cone_cache_counts;
 
 // The dirty_flags bit beyond 1 ("in the cone"), on an incremental Sum: re-sum
 // it at its turn rather than take it as its updates left it.
@@ -467,9 +471,8 @@ public:
     // nvs14 likewise), on the same trajectory. Out of line, every one of them
     // timed at or below the pre-#188 engine (#188, review round 2). The cost is
     // one call per walk, and one per flagged node, which is a Sum or its term.
-    [[gnu::noinline]] void prepare(const std::vector<int32_t>& dirty_list,
-                                   const int32_t* changed_var_ids, size_t count,
-                                   const double* old_values) {
+    [[gnu::noinline]] void prepare(ConstSpan<int32_t> dirty_list, const int32_t* changed_var_ids,
+                                   size_t count, const double* old_values) {
         switch (rule_) {
             case Rule::Plain:
                 return;
@@ -712,8 +715,8 @@ double objective_value(const Model& model) {
 // written -- an incremental Sum's term pushes included -- so the log holds the
 // committed values, drift and all. O(cone) loads and stores, against the
 // O(cone log cone) collect-sort-evaluate walk the Rollback no longer repeats.
-void arm_probe_undo(Model& model, const std::vector<int32_t>& dirty_list,
-                    const int32_t* changed_var_ids, size_t count) {
+void arm_probe_undo(Model& model, ConstSpan<int32_t> dirty_list, const int32_t* changed_var_ids,
+                    size_t count) {
     ProbeUndo& undo = model.probe_undo();
     const std::vector<double>& values = model.node_values();
     undo.values.clear();
@@ -757,6 +760,75 @@ void roll_back_probe(Model& model, const ProbeUndo& undo) {
 bool undo_matches(const ProbeUndo& undo, const int32_t* changed_var_ids, size_t count) {
     return undo.vars.size() == count &&
            std::equal(undo.vars.begin(), undo.vars.end(), changed_var_ids);
+}
+
+ConstSpan<int32_t> span_of(const std::vector<int32_t>& list) {
+    return {list.data(), list.size()};
+}
+
+// Evaluates a walk's dirty nodes under the incremental-Sum rules, in the order
+// `walk` visits them: `walk(eval_node)` writes `eval_node(nid)` to each node.
+//
+// One test per CALL, not per node: a model with no custom node takes the
+// pre-#166 loop verbatim, which is what keeps criterion 4's bit-identical
+// trajectories bit-identical (#166).
+template <typename Walk>
+void evaluate_with_sums(Model& model, IncSumWalk& sums, DeltaMode mode,
+                        const int32_t* changed_var_ids, size_t count, const EditJournal* journal,
+                        const std::vector<uint8_t>& dirty_flags, Walk walk) {
+    if (model.has_custom_nodes()) {
+        thread_local std::vector<int32_t> changed_inputs;
+        walk([&](int32_t nid) {
+            return sums.eval(nid, [&](int32_t id) {
+                return evaluate_dirty_node(model, id, mode, changed_var_ids, count, dirty_flags,
+                                           changed_inputs, journal);
+            });
+        });
+    } else {
+        walk([&](int32_t nid) {
+            return sums.eval(nid,
+                             [&model](int32_t id) { return evaluate(model.nodes()[id], model); });
+        });
+    }
+}
+
+// A one-variable walk over its cached cone (#271): the cone `freeze()` already
+// collected and sorted, so no BFS and no sort. The same nodes in the same
+// topological order `evaluate_dirty_in_topo_order` reaches by either route,
+// so every value is the one the collecting walk computes.
+//
+// A model with neither an incremental Sum nor a custom node sets no dirty flag
+// at all: only the scan route and those two read them. The others set every
+// flag of the cone up front -- `collect_changed_inputs` and the incremental-Sum
+// pushes read them -- under a guard armed first, as the collecting walk's is.
+double walk_cached_cone(Model& model, const int32_t* var_id, DeltaMode mode,
+                        const EditJournal* journal, const double* old_values,
+                        std::vector<uint8_t>& dirty_flags) {
+    const ConstSpan<int32_t> cone = model.cached_cone(*var_id);
+    if (model.inc_sum_nodes().empty() && !model.has_custom_nodes()) {
+        if (mode == DeltaMode::Probe) {
+            arm_probe_undo(model, cone, var_id, 1);
+        }
+        for (const int32_t nid : cone) {
+            model.set_node_value_unchecked(nid, evaluate(model.nodes()[nid], model));
+        }
+        return objective_value(model);
+    }
+    IncSumWalk sums(model, mode, old_values != nullptr, dirty_flags);
+    const DirtyFlagGuard<ConstSpan<int32_t>> flag_guard(dirty_flags, cone);
+    for (const int32_t nid : cone) {
+        dirty_flags[nid] = 1;
+    }
+    if (mode == DeltaMode::Probe) {
+        arm_probe_undo(model, cone, var_id, 1);  // before `prepare`'s pushes
+    }
+    sums.prepare(cone, var_id, 1, old_values);
+    evaluate_with_sums(model, sums, mode, var_id, 1, journal, dirty_flags, [&](auto eval_node) {
+        for (const int32_t nid : cone) {
+            model.set_node_value_unchecked(nid, eval_node(nid));
+        }
+    });
+    return objective_value(model);
 }
 
 // The one walk behind every entry point. `old_values`, when non-null, holds the
@@ -813,9 +885,20 @@ double delta_walk(Model& model, const int32_t* changed_var_ids, size_t count, De
 
     if (count == 0) {
         if (mode == DeltaMode::Probe) {
-            arm_probe_undo(model, dirty_list, changed_var_ids, count);  // an empty cone
+            arm_probe_undo(model, span_of(dirty_list), changed_var_ids, count);  // an empty cone
         }
         return objective_value(model);
+    }
+
+    // A one-variable walk on a frozen model reads its cone from the cache
+    // (#271); a walk over several variables, an unfrozen model's, or one past
+    // the cache's cap collects and sorts it below.
+    if (count == 1) {
+        if (model.has_cached_cone(changed_var_ids[0])) {
+            ++cone_cache_counts.cached_walks;
+            return walk_cached_cone(model, changed_var_ids, mode, journal, old_values, dirty_flags);
+        }
+        ++cone_cache_counts.fallback_walks;
     }
 
     // A model with neither an incremental Sum nor a custom node -- most of
@@ -825,10 +908,10 @@ double delta_walk(Model& model, const int32_t* changed_var_ids, size_t count, De
     // gear4, whose probe cones are a handful of nodes, merely constructing the
     // incremental-Sum rules per walk cost ~10% of the run (#188).
     if (model.inc_sum_nodes().empty() && !model.has_custom_nodes()) {
-        const DirtyFlagGuard plain_guard(dirty_flags, dirty_list);
+        const DirtyFlagGuard<std::vector<int32_t>> plain_guard(dirty_flags, dirty_list);
         collect_dirty_cone(model, changed_var_ids, count, dirty_flags, dirty_list);
         if (mode == DeltaMode::Probe) {
-            arm_probe_undo(model, dirty_list, changed_var_ids, count);
+            arm_probe_undo(model, span_of(dirty_list), changed_var_ids, count);
         }
         evaluate_dirty_in_topo_order(
             model, dirty_list, dirty_flags, num_nodes,
@@ -839,31 +922,17 @@ double delta_walk(Model& model, const int32_t* changed_var_ids, size_t count, De
 
     // Armed BEFORE the seeding loop, so it covers every flag this call sets --
     // including the ones set before an exception out of the walk below.
-    const DirtyFlagGuard flag_guard(dirty_flags, dirty_list);
+    const DirtyFlagGuard<std::vector<int32_t>> flag_guard(dirty_flags, dirty_list);
     collect_dirty_cone(model, changed_var_ids, count, dirty_flags, dirty_list);
     if (mode == DeltaMode::Probe) {
         // Before `prepare`, whose pushes are the walk's first writes.
-        arm_probe_undo(model, dirty_list, changed_var_ids, count);
+        arm_probe_undo(model, span_of(dirty_list), changed_var_ids, count);
     }
-    sums.prepare(dirty_list, changed_var_ids, count, old_values);
-
-    // One test per CALL, not per node: a model with no custom node takes the
-    // pre-#166 loop verbatim, which is what keeps criterion 4's bit-identical
-    // trajectories bit-identical (#166).
-    if (model.has_custom_nodes()) {
-        thread_local std::vector<int32_t> changed_inputs;
-        evaluate_dirty_in_topo_order(model, dirty_list, dirty_flags, num_nodes, [&](int32_t nid) {
-            return sums.eval(nid, [&](int32_t id) {
-                return evaluate_dirty_node(model, id, mode, changed_var_ids, count, dirty_flags,
-                                           changed_inputs, journal);
-            });
+    sums.prepare(span_of(dirty_list), changed_var_ids, count, old_values);
+    evaluate_with_sums(
+        model, sums, mode, changed_var_ids, count, journal, dirty_flags, [&](auto eval_node) {
+            evaluate_dirty_in_topo_order(model, dirty_list, dirty_flags, num_nodes, eval_node);
         });
-    } else {
-        evaluate_dirty_in_topo_order(model, dirty_list, dirty_flags, num_nodes, [&](int32_t nid) {
-            return sums.eval(nid,
-                             [&model](int32_t id) { return evaluate(model.nodes()[id], model); });
-        });
-    }
 
     // The flags are cleared by `flag_guard` on the way out, which is also what
     // covers a throw from user code inside the walk.
@@ -874,6 +943,10 @@ double delta_walk(Model& model, const int32_t* changed_var_ids, size_t count, De
 
 IncrementalSumCounters& incremental_sum_counters() noexcept {
     return inc_sum_counts;
+}
+
+ConeCacheCounters& cone_cache_counters() noexcept {
+    return cone_cache_counts;
 }
 
 double delta_evaluate(Model& model, const int32_t* changed_var_ids, size_t count, DeltaMode mode,

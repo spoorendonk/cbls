@@ -116,3 +116,75 @@ def test_node_value_range_checks_its_index() -> None:
     for bad in (-1, m.num_nodes(), m.num_nodes() + 1000, -(2**31)):
         with pytest.raises(IndexError):
             m.node_value(bad)
+
+
+def test_freeze_caches_every_variables_cone() -> None:
+    """`freeze()` caches each variable's cone (#271): every one under the
+    default cap, as whole 4-byte node ids. An unfrozen model has none."""
+    m, _x, _row, _s = _closed_model()
+    assert m.num_cached_cones() == 0
+    assert m.cone_cache_bytes() == 0
+
+    m.freeze()
+    assert m.num_cached_cones() == m.num_vars()
+    assert m.cone_cache_bytes() > 0
+    assert m.cone_cache_bytes() % 4 == 0
+
+
+def test_the_first_freezes_cap_holds() -> None:
+    """A cap of 0 caches nothing, and a later `freeze()` is the no-op it always
+    was: it does not build the cache the first call left out."""
+    m, _x, _row, _s = _closed_model()
+    m.freeze(cone_cache_bytes=0)
+    assert m.is_frozen()
+    assert (m.num_cached_cones(), m.cone_cache_bytes()) == (0, 0)
+
+    m.freeze()
+    assert (m.num_cached_cones(), m.cone_cache_bytes()) == (0, 0)
+
+
+def test_a_cached_walk_computes_what_an_uncached_one_does() -> None:
+    """The same one-variable walks on a model frozen with the cache and one
+    frozen without it leave every node with the same value."""
+    cached, x, _row, _s = _closed_model()
+    uncached, _x2, _row2, _s2 = _closed_model()
+    cached.freeze()
+    uncached.freeze(cone_cache_bytes=0)
+    xid = vid(x)
+
+    for value in (3.0, 7.0, 0.0, 12.0):
+        for m in (cached, uncached):
+            m.var_mut(xid).value = value
+            cbls.delta_evaluate(m, [xid])
+        assert [cached.node_value(i) for i in range(cached.num_nodes())] == [
+            uncached.node_value(i) for i in range(uncached.num_nodes())
+        ]
+
+
+def test_solve_freezes_the_model_it_is_handed() -> None:
+    """`solve()` freezes its model (#271), with `SearchConfig.cone_cache_bytes`
+    as the cap, so a structural change after it is refused."""
+    m, _x, _row, _s = _closed_model()
+    config = cbls.SearchConfig()
+    assert config.cone_cache_bytes == 256 << 20
+    config.cone_cache_bytes = 0
+    assert config.cone_cache_bytes == 0
+    config.max_iterations = 100
+
+    cbls.solve(m, 0.0, 1, config=config)
+    assert m.is_frozen()
+    assert m.num_cached_cones() == 0
+    with pytest.raises(RuntimeError, match="frozen"):
+        m.int_var(0, 1)
+
+
+def test_a_negative_cone_cache_cap_is_refused() -> None:
+    """The cap is unsigned on the C++ side; a negative one is a TypeError, not
+    a wrapped-around huge cap."""
+    config = cbls.SearchConfig()
+    with pytest.raises(TypeError):
+        config.cone_cache_bytes = -1
+    m, _x, _row, _s = _closed_model()
+    with pytest.raises(TypeError):
+        m.freeze(cone_cache_bytes=-1)
+    assert not m.is_frozen()

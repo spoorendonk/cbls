@@ -169,3 +169,24 @@ def test_novelty_engagement_is_readable() -> None:
 
     off = cbls.solve(_quadratic(), 0.0, 42, config=_config()).counters
     assert (off.novelty_moves, off.novelty_commits, off.novelty_weight_bumps) == (0, 0, 0)
+
+
+def test_cone_cache_walks_are_counted_and_the_cap_moves_them_to_fallback() -> None:
+    """The cone cache's counters (#271) come back under their C++ names.
+
+    A float-only model walks one variable at a time, so with the default cap
+    every walk the run makes reads a cached cone; with `cone_cache_bytes = 0`
+    every one of them falls back to collecting it. The cap changes no
+    trajectory, so the iterations and the objective come out the same.
+    """
+    cached = cbls.solve(_quadratic(), 0.0, 42, config=_config())
+    off_config = _config()
+    off_config.cone_cache_bytes = 0
+    uncached = cbls.solve(_quadratic(), 0.0, 42, config=off_config)
+
+    assert cached.counters.cone_cache_walks > 0
+    assert cached.counters.cone_fallback_walks == 0
+    assert uncached.counters.cone_cache_walks == 0
+    assert uncached.counters.cone_fallback_walks == cached.counters.cone_cache_walks
+    assert uncached.iterations == cached.iterations
+    assert uncached.objective == cached.objective

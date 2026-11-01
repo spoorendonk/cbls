@@ -351,6 +351,27 @@ an affine bare body), where `LinearJumpScorer`
 jump goes through `commit_scalar_move` -- `delta_evaluate`'s walk, also told the
 variable's old value (below).
 
+**Cone cache** (#271). On a frozen model a one-variable walk -- every FJ probe
+and commit -- neither marks nor sorts its cone: `Model::freeze()` collected each
+variable's cone once and stored it sorted by `topo_pos`
+(`ModelStructure::cone_offsets`/`cone_ids`, CSR, shared by every replica).
+`topo_pos` is a total order, so the cached order is the one the walk sorts to
+and every value is bit-identical. A model with no incremental Sum and no custom
+node sets no dirty flag at all on that path; the others set the cone's flags
+from the span, since `collect_changed_inputs` and the incremental-Sum pushes
+read them. The cache costs 4 bytes per (variable, cone node) pair, O(nodes ×
+vars) on a deep shared chain, so it is capped (`SearchConfig::cone_cache_bytes`,
+256 MiB): variables are cached in id order up to the first whose cone would
+cross the cap, and that one and every later one walk as an unfrozen model's do
+(a prefix, so the build is O(cap), not O(vars × cap)). A walk over several
+variables, an unfrozen model's, and one past the prefix collect and sort as
+above.
+`SearchCounters::cone_cache_walks`/`cone_fallback_walks` give the hit rate;
+`tests/test_cone_cache.cpp` pins the bit-identity against an unfrozen twin.
+`solve()` freezes the model it is handed, so the single-thread path gets the
+cache too; a portfolio factory that builds a fresh model per call builds one
+cache per worker.
+
 **Incremental Sum** (#177, #188). A committed FJ move changes one term of each
 row it touches, and re-summing a row costs its whole length: 36% of swath3's
 run at `634001b`, where a committed dirty Sum averaged 1315 terms.
@@ -894,20 +915,24 @@ writable one, after which every structural method throws — variable and
 expression creation, `add_constraint`, `minimize`/`maximize`,
 `add_var_sequence`, `reserve`, `close` — and a write to the shared side no longer
 compiles. **`add_objective_soft_constraint` is the one intentional exception**: on
-a frozen model it returns rather than throwing, because `solve()` calls it on
-every model it is handed and `freeze()` has already run it. Its idempotent early
-return therefore comes before the frozen check, and
+a frozen model it returns rather than throwing, because `freeze()` has already
+run it and a caller may still call it on a frozen replica (`solve()` did on every
+model it was handed until #271, which made it call `freeze()` instead). Its
+idempotent early return therefore comes before the frozen check, and
 `tests/test_model_share.cpp` pins that order.
 
 **Copying a frozen model shares its structure**; copying an open one deep-copies
 it, exactly as before. That is the whole mechanism behind the portfolio's memory
 behaviour: see [Parallel Search](#parallel-search).
 
-**The freeze point is after the objective row, not at `close()`.** `solve()`
-calls `add_objective_soft_constraint()` on whatever model it is handed, and that
-call appends two nodes and a constraint and rebuilds the back-references, the
-topological order, `topo_pos` and `G_v` — so a structure frozen at `close()`
-would have N workers re-sorting one shared DAG. `freeze()` folds both steps in.
+**The freeze point is after the objective row, not at `close()`.** The
+objective row appends two nodes and a constraint and rebuilds the
+back-references, the topological order, `topo_pos` and `G_v` — so a structure
+frozen at `close()` would have N workers re-sorting one shared DAG. `freeze()`
+folds both steps in, then builds the cone cache (see **Evaluation Modes**), and
+`solve()` freezes whatever model it is handed (#271). A model comes back from
+`solve()` frozen; the builders refused it already as a closed model (#173), so
+what it newly refuses is `reserve` and `close`.
 
 Deliberately **not** copy-on-write: a silent detach would put a worker back on
 its own full copy with every test still green and the memory saving gone, which
@@ -928,8 +953,8 @@ function is on its honour.
 
 ### Objective as a Soft Constraint
 
-When the model has an objective, `solve()` calls `add_objective_soft_constraint()`
-once (idempotent). This:
+When the model has an objective, `freeze()` -- which `solve()` calls -- calls
+`add_objective_soft_constraint()` once (idempotent). This:
 
 - creates a constant node `objective_bound_node_` (initially `+inf`),
 - adds the constraint `obj - bound <= 0` (`objective_constraint_node_`), inert
@@ -960,8 +985,8 @@ constraints except* `objective_constraint_idx()`.
 
 A bound `cbls.solve` (and `ParallelSearch.solve_master`) releases the GIL for the
 whole search, and writes the model's structure itself under it: the first solve
-of a model with an objective appends the objective row (closing an unclosed
-model on the way), and `solve_master` freezes the model. A `SolveCallback` runs
+of a model freezes it -- closing it if open, appending the objective row and
+building the cone cache (#271) -- as `solve_master` does. A `SolveCallback` runs
 on the search thread, and any other Python thread runs freely, so either can
 reach the model mid-search -- and the search reads the node array, the CSR
 indices and the topological order without a lock. A builder call, `close`,
@@ -975,7 +1000,7 @@ second `cbls.solve`/`solve_master` of the same model, nested from a callback or
 from another thread. `cbls.solve` registers the model **before** it releases the
 GIL, in the body rather than through a `call_guard`, so a builder call from
 another thread -- which runs holding the GIL -- cannot pass its check in the gap.
-The engine's own write, the objective row, is a C++ call and never passes
+The engine's own write, the freeze, is a C++ call and never passes
 through the registry. These refusals are pinned in child interpreters by
 `tests/python/test_solve_guards.py`. Value writes (`Variable.value`,
 `restore_state`) are not structural and stay the documented data race.

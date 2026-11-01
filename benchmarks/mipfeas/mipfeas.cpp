@@ -765,10 +765,9 @@ int run_benchmark(int argc, char** argv) {
     // Bound propagation runs inside mps_to_model, so it is inside this number.
     const double build_seconds = seconds_since(t_build);
     // Sampled HERE rather than after the solve. The artificial `obj <= bound` row
-    // -- two nodes -- lands on `built.model` either way now: appended by solve()
-    // single-threaded, and by the freeze() below under the portfolio (#157). Read
-    // afterwards, every instance would publish a DAG two nodes larger than the one
-    // the reader built.
+    // -- two nodes -- lands on `built.model` in the freeze() below, at every
+    // thread count (#157, #271). Read afterwards, every instance would publish a
+    // DAG two nodes larger than the one the reader built.
     const std::size_t n_nodes_built = built.model.num_nodes();
 
     const std::string trace_path = args.out_dir + "/" + args.instance + ".trace.csv";
@@ -819,33 +818,35 @@ int run_benchmark(int argc, char** argv) {
     // ViolationManager vectors and three `Model::State` snapshots. The solve phase
     // sets `peak_rss_kib`, so the whole of #157's saving survives.
     std::vector<cbls::Model> replicas;
-    double replicate_seconds = 0.0;
-    if (args.threads > 1) {
-        const auto t_replicate = std::chrono::steady_clock::now();
-        // Caught and reported like every other failure this runner can hit: a
-        // job that dies without writing a result leaves the driver's resume
-        // waiting on a file that never appears, i.e. indistinguishable from a
-        // job that was never run.
-        try {
-            // Frozen first, on this thread: it is the one
-            // `add_objective_soft_constraint` rebuild, and the copies below share
-            // the result rather than each re-sorting a DAG of their own.
-            built.model.freeze();
+    const auto t_replicate = std::chrono::steady_clock::now();
+    // Caught and reported like every other failure this runner can hit: a job
+    // that dies without writing a result leaves the driver's resume waiting on
+    // a file that never appears, i.e. indistinguishable from a job that was
+    // never run.
+    try {
+        // Frozen first, on this thread, at EVERY thread count: it is the one
+        // `add_objective_soft_constraint` rebuild plus the cone cache (#271),
+        // and the copies below share the result rather than each re-sorting a
+        // DAG of their own. Single-threaded, solve() would freeze inside the
+        // solve bracket instead, and a 1-thread row's search time would carry a
+        // cost an N-thread row reports here.
+        built.model.freeze(cfg.cone_cache_bytes);
+        if (args.threads > 1) {
             replicas.reserve(static_cast<size_t>(args.threads));
             for (int i = 0; i < args.threads; ++i) {
                 replicas.push_back(built.model);
             }
-        } catch (const std::exception& e) {
-            write_result(args, {{"status", "replicate_error"},
-                                {"message", e.what()},
-                                {"read_seconds", read_seconds},
-                                {"build_seconds", build_seconds},
-                                {"replicate_seconds", seconds_since(t_replicate)}});
-            std::fprintf(stderr, "%s: replicate error: %s\n", args.instance.c_str(), e.what());
-            return 1;
         }
-        replicate_seconds = seconds_since(t_replicate);
+    } catch (const std::exception& e) {
+        write_result(args, {{"status", "replicate_error"},
+                            {"message", e.what()},
+                            {"read_seconds", read_seconds},
+                            {"build_seconds", build_seconds},
+                            {"replicate_seconds", seconds_since(t_replicate)}});
+        std::fprintf(stderr, "%s: replicate error: %s\n", args.instance.c_str(), e.what());
+        return 1;
     }
+    const double replicate_seconds = seconds_since(t_replicate);
 
     const auto t0 = std::chrono::steady_clock::now();
     cbls::SearchResult result;

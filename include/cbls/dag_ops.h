@@ -142,6 +142,19 @@ struct IncrementalSumCounters {
 };
 IncrementalSumCounters& incremental_sum_counters() noexcept;
 
+/// One-variable walks on this thread since the caller last assigned it
+/// `ConeCacheCounters{}` (#271): those that read the variable's cone from
+/// `Model::freeze()`'s cache, and those that collected and sorted it -- an
+/// unfrozen model, or a variable past the cache's cap. A Rollback served from
+/// the probe's undo log walks nothing and is in neither; nor is a walk over
+/// several variables, which always collects. `solve()` reports its own run's in
+/// `SearchCounters`.
+struct ConeCacheCounters {
+    uint64_t cached_walks = 0;
+    uint64_t fallback_walks = 0;
+};
+ConeCacheCounters& cone_cache_counters() noexcept;
+
 // Convenience overloads
 inline double delta_evaluate(Model& model, const std::vector<int32_t>& changed_var_ids,
                              DeltaMode mode = DeltaMode::Commit,

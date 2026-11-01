@@ -146,6 +146,16 @@ struct SearchCounters {
     /// succeeded has run one solve, not one solve and a restart.
     int64_t portfolio_restarts = 0;
 
+    /// One-variable DAG walks that read their cone from the model's cone cache,
+    /// and those that collected and sorted it instead because the variable was
+    /// past the cache's cap (#271; see `ConeCacheCounters` in dag_ops.h).
+    /// `cone_cache_walks / (cone_cache_walks + cone_fallback_walks)` is the hit
+    /// rate. Counted on the solving thread between `solve()`'s entry and exit,
+    /// so a walk a user callback makes in between is in it too. Summed over
+    /// workers.
+    int64_t cone_cache_walks = 0;
+    int64_t cone_fallback_walks = 0;
+
     /// Engagement of the shared objective bound (#179). All four are 0 for a
     /// single `cbls::solve()`, which has no pool and so no global best to be
     /// behind; under `ParallelSearch` they are summed over workers.

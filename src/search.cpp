@@ -2163,14 +2163,16 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
     // the run read an unbuilt variable-to-constraint index ("var id out of
     // range"). Closing it explicitly makes both cases the same, and makes the
     // model refuse later builders (#173) instead of accepting unevaluated rows.
-    if (!model.is_closed()) {
-        model.close();
-    }
+    //
+    // And frozen (#271): `freeze()` is that close plus the objective row, the
+    // last structural changes a closed model can take, then the cone cache
+    // every one-variable walk reads. A closed model refuses every builder
+    // already (#173), so the model a caller gets back can do what it could
+    // before, bar `reserve` and `close`.
+    model.freeze(config.cone_cache_bytes);
+    const ConeCacheCounters cones_at_entry = cone_cache_counters();
     const bool has_obj = model.objective_id() >= 0;
     if (has_obj) {
-        if (!model.has_objective_constraint()) {
-            model.add_objective_soft_constraint();
-        }
         model.set_objective_bound(std::numeric_limits<double>::infinity());  // reset for re-solves
     }
     // Before anything reads a row: a domain row's step is set from this solve's
@@ -2220,7 +2222,14 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
 
     ViolationLSLoop loop(model, vm, rng, fj, config, budget, hook, lns, lns_interval, callback,
                          coord);
-    return loop.run();
+    SearchResult result = loop.run();
+    // This run's share of the thread's walks (#271), from the freeze to here.
+    const ConeCacheCounters& cones = cone_cache_counters();
+    result.counters.cone_cache_walks =
+        static_cast<int64_t>(cones.cached_walks - cones_at_entry.cached_walks);
+    result.counters.cone_fallback_walks =
+        static_cast<int64_t>(cones.fallback_walks - cones_at_entry.fallback_walks);
+    return result;
 }
 
 }  // namespace cbls

@@ -500,7 +500,10 @@ the built model and copies it once per worker before the solve bracket opens, an
 reports `replicate_seconds` beside `read_seconds` and `build_seconds`. Since #157
 each copy shares the frozen master's immutable DAG, so the figure grows with
 `--cbls-threads` far more slowly than it used to — but it still grows, and it is
-still outside `wall_seconds`.
+still outside `wall_seconds`. The freeze (the objective row and the cone cache,
+#271) happens there at every thread count, so a 1-thread row's
+`replicate_seconds` is the freeze alone and its search time carries no setup an
+N-thread row's does not.
 
 The anytime trace stays the portfolio's own. Every worker reports through one
 serialized stream whose `time_seconds` is on the portfolio clock and whose

@@ -206,6 +206,16 @@ struct ModelStructure {
     std::vector<std::pair<int, int>> var_to_seq;  // var_id -> (seq_idx, pos), resized lazily
     std::vector<ListPartition> list_partitions;
     std::vector<int32_t> var_to_partition;  // var_id -> partition index (-1), resized lazily
+    /// Each variable's dirty cone in topological order (#271): every node above
+    /// it, the nodes a one-variable walk recomputes. Built by `Model::freeze()`
+    /// only, so an open or merely closed model has none. CSR like the
+    /// back-references, over the first `cone_prefix` variables only: variable
+    /// `v < cone_prefix` has its cone in `cone_ids[cone_offsets[v] ..
+    /// cone_offsets[v + 1])`. Variable `cone_prefix` is the first whose cone
+    /// would have crossed the byte cap; it and every later one have none.
+    std::vector<uint32_t> cone_offsets;
+    std::vector<int32_t> cone_ids;
+    size_t cone_prefix = 0;
 };
 
 /// One incremental Sum's per-model state (#188; see `ExprNode::kIncSum` and
@@ -562,11 +572,11 @@ public:
     /// structure. Idempotent.
     ///
     /// The freeze point is deliberately AFTER the objective row, not at
-    /// `close()`. `solve()` calls `add_objective_soft_constraint()` on whatever
-    /// model it is handed, which appends two nodes and a constraint and rebuilds
-    /// the back-references, the topological order, `topo_pos` and G_v -- so a
-    /// structure frozen at `close()` would have N workers re-sorting one shared
-    /// DAG concurrently.
+    /// `close()`. The objective row appends two nodes and a constraint and
+    /// rebuilds the back-references, the topological order, `topo_pos` and G_v
+    /// -- so a structure frozen at `close()` would have N workers re-sorting one
+    /// shared DAG concurrently. `solve()` freezes whatever model it is handed
+    /// (#271), so a solved model comes back frozen.
     ///
     /// Every structural method throws afterwards: variable and expression
     /// creation, `add_constraint`, `minimize`/`maximize`, `add_var_sequence`,
@@ -575,10 +585,10 @@ public:
     /// green and the memory saving gone.
     ///
     /// **`add_objective_soft_constraint` is the one intentional exception**: on a
-    /// frozen model it RETURNS, it does not throw. `solve()` calls it on every
-    /// model it is handed, a frozen replica included, and `freeze()` has already
-    /// run it -- so its idempotent early return has to come before the frozen
-    /// check or no portfolio worker could start. The `require_open` that follows
+    /// frozen model it RETURNS, it does not throw. `freeze()` has already run it,
+    /// and a caller may still call it on a frozen replica -- `solve()` did on
+    /// every model it was handed until #271 -- so its idempotent early return
+    /// has to come before the frozen check. The `require_open` that follows
     /// that return is therefore unreachable by construction and kept only as a
     /// backstop against a future caller reaching it another way. Do not "fix" the
     /// order; `tests/test_model_share.cpp` pins it.
@@ -600,8 +610,40 @@ public:
     ///    mutable state of its own is a data race -- a NEW one where that state is
     ///    captured by value, since each replica used to deep-copy the
     ///    `std::function`, and an old one where it is captured by reference.
-    void freeze();
+    ///
+    /// It also caches every variable's dirty cone in topological order (#271),
+    /// so a one-variable walk neither collects nor sorts it: up to
+    /// `cone_cache_bytes` of node ids, shared by every replica like the rest of
+    /// the structure. Variables are cached in id order up to the first whose
+    /// cone would cross the cap; it and every later one walk as an unfrozen
+    /// model's do. 0 caches nothing. The cap of the FIRST call holds -- a later
+    /// one is the no-op above. `solve()` freezes the model it is handed with
+    /// `SearchConfig::cone_cache_bytes`.
+    void freeze(size_t cone_cache_bytes = kDefaultConeCacheBytes);
     [[nodiscard]] bool is_frozen() const noexcept { return open_structure_ == nullptr; }
+    /// `freeze()`'s default cone-cache cap: 256 MiB of node ids. A memory guard
+    /// against an O(nodes x vars) cache on a deep shared chain, not a tuned
+    /// value: the cache changes no trajectory, only walk cost. Measured caches
+    /// (#271) are far below it -- atlanta-ip 3.3 MB over 48,738 variables,
+    /// ucp200-168p 10.2 MB over 67,200, every variable cached.
+    static constexpr size_t kDefaultConeCacheBytes = size_t{256} << 20;
+    /// Whether `freeze()` cached `var_id`'s cone; false on an unfrozen model
+    /// and for any id outside the cached prefix, a negative one included.
+    [[nodiscard]] bool has_cached_cone(int32_t var_id) const noexcept {
+        return static_cast<size_t>(var_id) < s().cone_prefix;
+    }
+    /// `var_id`'s cached cone: every node above it, each once, in topological
+    /// order. Only where `has_cached_cone(var_id)`.
+    [[nodiscard]] ConstSpan<int32_t> cached_cone(int32_t var_id) const noexcept {
+        const ModelStructure& st = s();
+        const uint32_t begin = st.cone_offsets[var_id];
+        return {st.cone_ids.data() + begin, st.cone_offsets[var_id + 1] - begin};
+    }
+    /// The cone cache's size: variables cached, and bytes of node ids held.
+    [[nodiscard]] size_t num_cached_cones() const noexcept { return s().cone_prefix; }
+    [[nodiscard]] size_t cone_cache_bytes() const noexcept {
+        return s().cone_ids.size() * sizeof(int32_t);
+    }
 
     // ViolationLS objective-as-soft-constraint (paper §5, P2 #67). Folds the
     // objective into the constraint set as `objective_expr <= bound`, with the
@@ -1085,6 +1127,7 @@ private:
     void rebuild_back_references();
     void rebuild_topo_positions();
     void classify_incremental_sums();
+    void build_cone_cache(size_t cap_bytes);
     int32_t alloc_var(VarType type, double lb, double ub, const std::string& name);
     /// `constant`'s body without its closed-model refusal, for the objective row.
     int32_t push_constant(double val);

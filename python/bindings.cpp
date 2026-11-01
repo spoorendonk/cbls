@@ -259,8 +259,9 @@ private:
 // Structural writes from Python while a bound solve runs on the model.
 //
 // A bound solve releases the GIL and writes the model's structure under it: the
-// first solve of a model with an objective adds the objective row (and closes an
-// unclosed model), and `solve_master` freezes it. A Python builder call from a
+// first solve of a model freezes it -- closing it if open, adding the objective
+// row and building the cone cache (#271) -- as `solve_master` does. A Python
+// builder call from a
 // SolveCallback or from a second thread -- close, freeze, a second solve, any
 // Model builder -- would race that write, and the running search reads the node
 // array, the CSR indices and the topological order without a lock.
@@ -269,8 +270,8 @@ private:
 // Model builders and close/freeze, and the Expr operators and free functions
 // (each of which calls a Model builder). Each check runs holding the GIL, and a
 // bound solve registers holding the GIL before releasing it, so a check and a
-// registration cannot interleave. The engine's own write -- the objective row --
-// is a C++ call that never passes through here, so it is unaffected.
+// registration cannot interleave. The engine's own write -- the freeze -- is a
+// C++ call that never passes through here, so it is unaffected.
 //
 // Value writes (Variable.value, restore_state) are NOT structural and are not
 // refused: they are the data race the `solve` docstring already warns about.
@@ -835,6 +836,8 @@ NB_MODULE(_cbls_core, m) {
         // include/cbls/counters.h. The call count above is always filled.
         .def_ro("inner_solver_seconds", &SearchCounters::inner_solver_seconds)
         .def_ro("portfolio_restarts", &SearchCounters::portfolio_restarts)
+        .def_ro("cone_cache_walks", &SearchCounters::cone_cache_walks)
+        .def_ro("cone_fallback_walks", &SearchCounters::cone_fallback_walks)
         // The shared objective bound's engagement (#179); 0 on a single solve.
         .def_ro("shared_bound_tightenings", &SearchCounters::shared_bound_tightenings)
         .def_ro("own_best_behind_global", &SearchCounters::own_best_behind_global)
@@ -1062,8 +1065,12 @@ NB_MODULE(_cbls_core, m) {
         // RuntimeError rather than corrupting a peer: the refusal is a
         // std::logic_error, which nanobind has no mapping for and so translates to
         // RuntimeError -- see tests/python/test_model_freeze.py.
-        .def("freeze", guarded(&Model::freeze, "Model.freeze"))
+        .def("freeze", guarded(&Model::freeze, "Model.freeze"),
+             nb::arg("cone_cache_bytes") = Model::kDefaultConeCacheBytes)
         .def("is_frozen", &Model::is_frozen)
+        // The cone cache's size (#271): read-only counts, no handle into it.
+        .def("num_cached_cones", &Model::num_cached_cones)
+        .def("cone_cache_bytes", &Model::cone_cache_bytes)
         // Accessors
         // NOT by reference into the model's arrays, which a builder before
         // close() reallocates (#167's review found a held var_mut() writing into
@@ -1506,6 +1513,7 @@ NB_MODULE(_cbls_core, m) {
                     value.has_value() ? std::make_shared<const NeighbourList>(*value) : nullptr;
             })
         .def_rw("feasibility_tolerance", &SearchConfig::feasibility_tolerance)
+        .def_rw("cone_cache_bytes", &SearchConfig::cone_cache_bytes)
         .def_rw("fj_exact_int_jump", &SearchConfig::fj_exact_int_jump)
         .def_rw("perturb_near_value", &SearchConfig::perturb_near_value)
         .def_rw("fj_objective_tie_break", &SearchConfig::fj_objective_tie_break)

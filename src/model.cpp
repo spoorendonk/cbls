@@ -83,7 +83,7 @@ Model::Model(const Model& other)
     }
 }
 
-void Model::freeze() {
+void Model::freeze(size_t cone_cache_bytes) {
     if (is_frozen()) {
         return;
     }
@@ -95,6 +95,8 @@ void Model::freeze() {
         // close(): see the comment on freeze() in the header.
         add_objective_soft_constraint();
     }
+    // After the objective row, the last structural change there is (#271).
+    build_cone_cache(cone_cache_bytes);
     // Dropping the writable handle is what makes every structural method throw,
     // and it leaves `structure_` -- a const handle -- as the only way in.
     open_structure_.reset();
@@ -102,8 +104,9 @@ void Model::freeze() {
 
 void Model::require_open(const char* method) const {
     if (is_frozen()) {
-        throw std::logic_error(std::string(method) +
-                               ": model is frozen, its structure is shared and cannot change");
+        throw std::logic_error(
+            std::string(method) +
+            ": model is frozen (by freeze() or solve()), its structure cannot change");
     }
 }
 
@@ -1150,6 +1153,97 @@ void Model::rebuild_topo_positions() {
     classify_breakpoint_reach();
 }
 
+namespace {
+
+// Collects `var_id`'s cone into `cone`, unsorted, as `collect_dirty_cone` does:
+// its dependents, then every ancestor, each once (`mark[n] == var_id` once a
+// node is taken). Gives up as soon as the cone holds more than `room` nodes and
+// returns false, so a cone too big to cache costs at most `room` nodes plus one
+// node's parents.
+bool collect_cone_within(const Model& model, int32_t var_id, size_t room,
+                         std::vector<int32_t>& mark, std::vector<int32_t>& cone) {
+    cone.clear();
+    for (const int32_t dep : model.dependents(var_id)) {
+        if (mark[dep] != var_id) {
+            mark[dep] = var_id;
+            cone.push_back(dep);
+        }
+    }
+    if (cone.size() > room) {
+        return false;
+    }
+    for (size_t i = 0; i < cone.size(); ++i) {
+        for (const int32_t parent : model.parents(cone[i])) {
+            if (mark[parent] != var_id) {
+                mark[parent] = var_id;
+                cone.push_back(parent);
+            }
+        }
+        if (cone.size() > room) {
+            return false;
+        }
+    }
+    return true;
+}
+
+}  // namespace
+
+// `ModelStructure::cone_offsets`/`cone_ids` (#271): per variable, the nodes a
+// one-variable `delta_evaluate` recomputes -- its dependents and every ancestor
+// -- each once, sorted by topological position. The walk's own collection
+// (`collect_dirty_cone`), done once per variable here instead of on every walk:
+// O(sum of |cone| log |cone|) once, where a search pays the collect-and-sort on
+// each of its millions of probes and commits. The sort is by `topo_pos`, a
+// total order, so the cached order is the one the walk sorts to and every value
+// it computes is bit-identical.
+//
+// It loses on memory where cones are large and many: the cache is the sum of
+// |cone| over the variables, O(nodes * vars) on a deep shared chain. Hence the
+// cap, which bounds the build as well as the cache:
+//  - Variables are taken in id order up to the first whose cone would cross
+//    the cap, which ends the cache. Trying the later ones too could cost a
+//    walk of up to the whole remaining room per variable, O(vars * cap).
+//  - A first pass only sizes that prefix; the second collects it again into
+//    an exactly reserved array. Twice the collection, where growing the array
+//    and shrinking it after held up to three times the cap at once.
+// So the build does O(cap) collection work plus the sort, and at its peak holds
+// the cache, one cone and 4 bytes per node of scratch.
+void Model::build_cone_cache(size_t cap_bytes) {
+    ModelStructure& st = mut();
+    // Reset first, so a build that throws leaves no cached prefix behind.
+    st.cone_prefix = 0;
+    st.cone_offsets.assign(1, 0);
+    st.cone_ids = {};
+    // The offsets are 32-bit, as the back-references' are.
+    const size_t cap_entries =
+        std::min(cap_bytes / sizeof(int32_t), size_t{std::numeric_limits<uint32_t>::max()});
+    if (cap_entries == 0) {
+        return;  // not even a variable with an empty cone: 0 caches nothing
+    }
+    const size_t num_vars = vars_.size();
+    std::vector<int32_t> mark(st.nodes.size(), -1);
+    std::vector<int32_t> cone;
+    size_t total = 0;
+    size_t prefix = 0;
+    while (prefix < num_vars && collect_cone_within(*this, static_cast<int32_t>(prefix),
+                                                    cap_entries - total, mark, cone)) {
+        total += cone.size();
+        ++prefix;
+    }
+    // Pass 1's marks name the same variables pass 2's do.
+    std::fill(mark.begin(), mark.end(), -1);
+    st.cone_ids.reserve(total);
+    st.cone_offsets.reserve(prefix + 1);
+    for (size_t v = 0; v < prefix; ++v) {
+        (void)collect_cone_within(*this, static_cast<int32_t>(v), total, mark, cone);
+        std::sort(cone.begin(), cone.end(),
+                  [&st](int32_t a, int32_t b) { return st.topo_pos[a] < st.topo_pos[b]; });
+        st.cone_ids.insert(st.cone_ids.end(), cone.begin(), cone.end());
+        st.cone_offsets.push_back(static_cast<uint32_t>(st.cone_ids.size()));
+    }
+    st.cone_prefix = prefix;
+}
+
 // `ModelStructure::breakpoint_flags` (#186). One reverse-topological pass, on a
 // model with a breakpoint node only: a node reaches a breakpoint op if it is one,
 // or if it carries a slope and a parent reaches one. Then, on every Sum, a
@@ -1593,9 +1687,9 @@ void Model::add_objective_soft_constraint() {
         throw std::invalid_argument("add_objective_soft_constraint requires an objective");
     }
     // Idempotent, and the early return comes BEFORE the frozen check on purpose:
-    // `solve()` calls this on every model it is handed, a frozen replica
-    // included, and `freeze()` has already run it -- so on a frozen model this
-    // must be a no-op rather than a throw, or no portfolio worker could start.
+    // `freeze()` has already run it, and a caller may still call it on a frozen
+    // replica (`solve()` did on every model it was handed until #271) -- so on a
+    // frozen model this must be a no-op rather than a throw.
     if (objective_constraint_idx_ >= 0) {
         return;
     }

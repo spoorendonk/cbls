@@ -32,6 +32,8 @@ void SearchCounters::merge(const SearchCounters& other) {
     inner_solver_calls += other.inner_solver_calls;
     inner_solver_seconds += other.inner_solver_seconds;
     portfolio_restarts += other.portfolio_restarts;
+    cone_cache_walks += other.cone_cache_walks;
+    cone_fallback_walks += other.cone_fallback_walks;
     shared_bound_tightenings += other.shared_bound_tightenings;
     own_best_behind_global += other.own_best_behind_global;
     bound_behind_global_batches += other.bound_behind_global_batches;
