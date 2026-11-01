@@ -1,8 +1,9 @@
 # xk tune study: MIPfeas (#264, plan on #261). Run on the workstation's local
 # queue only: XK_SERVER=local XK_PROJECT=cbls-tune (see README.md here).
 #
-# Sets, never the reported comparison: the screen is smoke.csv's 11 at 10 s,
-# the intermediate set #244's held-out 11 at 30 s, and confirm 10 instances
+# Sets: the screen is smoke.csv's 11 at 10 s, the intermediate set #244's
+# held-out 11 at 30 s (all 22 are in roster.csv, so a default tuned here is
+# fitted on reported instances, and a table must say so), and confirm 10 instances
 # of the MIPLIB 2017 collection outside roster.csv, drawn by
 # sha256("cbls-mipfeas-tune:261:<name>") among the =opt= names whose .mps.gz
 # is at most 2 MB, at 30 s and 2 seeds. Their optima are in tune_confirm.csv,
@@ -67,6 +68,11 @@ alpha = 0.05
 rule = "wilcoxon"
 alpha = 0.05
 
+# Unlike cvrp.study.toml, the intermediate set is not the screen's instances:
+# rho here tests 10 s on smoke's 11 against 30 s on #244's 11, budget and
+# instances at once (#264). Without a [budget], xk refuses the screen set at
+# the same secs, so a budget-only check would need smoke's 11 at 30 s in the
+# intermediate set too.
 [fidelity]
 set = "intermediate"
 factor = "none"

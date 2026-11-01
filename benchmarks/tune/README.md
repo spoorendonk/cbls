@@ -37,7 +37,10 @@ a `version` bump, which starts a new study.
 - **Sets.** `screen` tunes at a short budget, `intermediate` is the same
   instances at a longer one (what `--stage fidelity` compares with the screen),
   `confirm` is held out and never seen while tuning. The wall budget is an
-  instance param (`secs`), so one instance can sit in two sets.
+  instance param (`secs`), so one instance can sit in two sets. Exception:
+  MIPfeas's `intermediate` set is #244's 11, other instances than the screen's,
+  so its fidelity rho mixes the longer budget with the change of instances (a
+  low rho does not say which one it is).
 - **Reference.** Every param has a `default`; together they render the
   runner's current protocol, which runs as trial 0. Known arms from earlier
   issues are `[[study.enqueue]]`d after it.

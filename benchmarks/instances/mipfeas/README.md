@@ -149,9 +149,10 @@ benchmarks/instances/mipfeas/
   roster.csv           233 instances with reference values  (committed, pinned)
   smoke.csv            11-instance subset for wiring checks (committed, pinned)
   miplib2017-v36.solu  the MIPLIB solution file it derives from (committed, pinned)
-  tune_confirm.csv     the tuning study's held-out 10, outside the roster, with
-                       their .solu optima (committed; benchmarks/tune/, #264)
   references.csv       sha256 + byte size of the three above (committed)
+  tune_confirm.csv     the tuning study's held-out 10, outside the roster, with
+                       their .solu optima (committed, not in references.csv; a
+                       pytest checks them against the .solu; benchmarks/tune/, #264)
   manifest.csv         sha256 + byte size per instance      (committed)
   smoke_comparison.csv the wiring check's output            (committed)
   comparison.csv       scored results                       (committed once a run is published)
