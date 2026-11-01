@@ -385,6 +385,16 @@ class Scored(NamedTuple):
     #: verdict written before the verifier recorded it.
     verification_row_tolerance: float | None
     verification_loosest_row: str
+    #: The threads the solve actually ran (#285): CBLS's `threads`, CP-SAT's
+    #: `workers_started` read off its log (#284). At its defaults CP-SAT picks its
+    #: own count, so this is the only record of it. None where not recorded.
+    threads_used: int | None = None
+    #: What the driver measured from outside the solver (`driver_measured`):
+    #: the whole job's wall and CPU seconds, and their ratio, the CPU share the
+    #: row actually got. None for a row written before the driver measured them.
+    driver_wall_seconds: float | None = None
+    driver_cpu_seconds: float | None = None
+    cpu_wall_ratio: float | None = None
 
 
 def primal_gap(incumbent: float | None, reference: float) -> float:
@@ -623,6 +633,9 @@ def score_instance(
     unbounded = result.get("n_unbounded_columns")
     tightened = result.get("n_bounds_tightened")
     free_cons = result.get("n_free_cons")
+    threads = result.get("threads" if engine == "cbls" else "workers_started")
+    raw_driver = result.get("driver_measured")
+    driver: dict[str, object] = raw_driver if isinstance(raw_driver, dict) else {}
     return Scored(
         instance=instance,
         engine=engine,
@@ -663,7 +676,21 @@ def score_instance(
         checker_n_cons=verification.n_rows,
         verification_row_tolerance=verification.max_row_tolerance,
         verification_loosest_row=verification.loosest_row,
+        threads_used=threads
+        if isinstance(threads, int) and not isinstance(threads, bool)
+        else None,
+        driver_wall_seconds=_measured(driver, "wall_seconds"),
+        driver_cpu_seconds=_measured(driver, "cpu_seconds"),
+        cpu_wall_ratio=_measured(driver, "cpu_wall_ratio"),
     )
+
+
+def _measured(measured: dict[str, object], key: str) -> float | None:
+    """One `driver_measured` number, or None where the driver recorded none."""
+    value = measured.get(key)
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    return None
 
 
 class Summary(NamedTuple):
@@ -759,6 +786,18 @@ def check_uniform_configuration(rows: list[Scored]) -> None:
                 f"The driver resumes on file existence alone, so a flag changed between "
                 f"invocations lands in the same results directory. Re-run the odd ones "
                 f"out with --force, or score them into separate tables."
+            )
+        # CP-SAT at its defaults records `workers=0` whatever count it picked, so
+        # a directory resumed on a host with other cores, or under another cgroup
+        # limit, mixes worker counts under one config cell (#285). The count it
+        # started is the one place that shows. A row that recorded none is not a
+        # mismatch.
+        started = {r.threads_used for r in rows if r.engine == engine} - {None}
+        if len(started) > 1:
+            raise ValueError(
+                f"{engine} results ran at {len(started)} different thread counts: "
+                f"{sorted(n for n in started if n is not None)}. Re-run the odd ones out "
+                f"with --force on one host, or score them into separate tables."
             )
     # The same hazard one layer down: verdicts reached under two different
     # tolerance sets are two different claims, and the table states only one.
@@ -1320,12 +1359,11 @@ def collect_defects(
     )
 
 
-#: How the anytime aggregate is labelled everywhere it appears. Named for the
-#: exact pairing it is measured against rather than "solvers": the only baseline
-#: is CP-SAT's `fj` + `ls` subsolvers under `num_violation_ls`, which is the
-#: reference implementation of the algorithm CBLS reimplements. Anything broader
-#: -- CP-SAT's default portfolio, another MIP solver -- is a different and
-#: rejected question (epic #87).
+#: How the anytime aggregate is labelled for an fj + ls table. Named for the
+#: exact pairing it is measured against rather than "solvers": that baseline is
+#: CP-SAT's `fj` + `ls` subsolvers under `num_violation_ls`, the reference
+#: implementation of the algorithm CBLS reimplements. A CP-SAT-at-defaults table
+#: (#284) is labelled by `anytime_label` instead.
 ANYTIME_LABEL = (
     "Anytime quality vs CP-SAT's fj + ls subsolvers under num_violation_ls "
     "(Primal Integral; shifted geometric mean is the primary ranking)"
@@ -1582,11 +1620,16 @@ def _format_concurrency(record: dict[str, object]) -> str:
     # were absent, so a partial record printed a literal `None` into the published
     # table for the one field criterion 4 names -- and a record carrying only the
     # memory cap reported "not recorded", discarding the cap it did record.
+    # 0 is CP-SAT at its defaults (#284): its own worker count, per row.
+    cpsat = (
+        "CP-SAT at its defaults (workers per row)"
+        if workers == 0
+        else f"CP-SAT {_or_not_recorded(workers)} worker(s)"
+    )
     return (
         f"**{_or_not_recorded(jobs)} job(s) at a time**, "
         f"large instances {_or_not_recorded(large)} at a time, "
-        f"CP-SAT {_or_not_recorded(workers)} worker(s), "
-        + (f"address-space cap {cap} GB" if cap else "no address-space cap")
+        f"{cpsat}, " + (f"address-space cap {cap} GB" if cap else "no address-space cap")
     )
 
 
@@ -1719,10 +1762,9 @@ def render_report(
         f"Roster {_roster_label(roster_path, rows, parity.roster_size, held_out, '`')}, "
         f"{budget}s per instance-engine pair. Table: `{table_path.name}`.",
         "",
-        "CBLS against CP-SAT restricted to its `fj` + `ls` subsolvers under",
-        "`num_violation_ls` -- the reference implementation of the same jump-based",
-        "algorithm. This is a correctness-and-parity sweep against that one worker",
-        "pairing, never a claim against any solver's default portfolio (epic #87).",
+        *_baseline_paragraph(rows),
+        "",
+        f"Versions: {versions_line(rows)}.",
         "",
     ]
     out += _scope_banners(rows, summaries, parity, held_out)
@@ -1841,7 +1883,7 @@ def render_report(
                 f"{_names(health.unrecorded_instances, limit=None)}"
             )
     out += [*named, ""] if named else []
-    out += [f"## 6. {ANYTIME_LABEL}", ""]
+    out += [f"## 6. {anytime_label(rows)}", ""]
     out += _md_table(
         ["engine", "sgm", "mean", "median", "iqr", "scored"],
         [
@@ -2054,8 +2096,66 @@ def _cpu_line(rows: list[Scored]) -> str:
         return f"{engine} {value} {unit}" + ("" if value == "1" else "s")
 
     threads = _config_value(rows, "cbls", "threads")
+    if cpsat_at_defaults(rows):
+        return f"{phrase(threads, 'CBLS', 'thread')}, {baseline_phrase(rows)}"
     workers = _config_value(rows, "cpsat", "workers")
     return f"{phrase(threads, 'CBLS', 'thread')}, {phrase(workers, 'CP-SAT', 'worker')}"
+
+
+def _baseline_paragraph(rows: list[Scored]) -> list[str]:
+    """The report's statement of what CBLS is compared against, per the rows."""
+    if not cpsat_at_defaults(rows):
+        return [
+            "CBLS against CP-SAT restricted to its `fj` + `ls` subsolvers under",
+            "`num_violation_ls` -- the reference implementation of the same jump-based",
+            "algorithm. This is a correctness-and-parity sweep against that one worker",
+            "pairing, never a claim against any solver's default portfolio (epic #87).",
+        ]
+    return [
+        f"CBLS against {baseline_phrase(rows)}: CP-SAT as it ships, full portfolio,",
+        "unpinned. Every comparison solver runs at its own defaults (Simon,",
+        "2026-11-01, #255); threads, CPU and wall time are recorded per row in the",
+        "table, not evened out.",
+    ]
+
+
+def cpsat_at_defaults(rows: list[Scored]) -> bool:
+    """Whether the CP-SAT rows ran at its default parameters (`workers=0`, #284).
+
+    `check_uniform_configuration` has already refused a table mixing the two
+    modes: their config cells differ in `workers` and `parameters`.
+    """
+    return _config_value(rows, "cpsat", "workers") == "0"
+
+
+def baseline_phrase(rows: list[Scored]) -> str:
+    """The baseline as this table's own CP-SAT rows ran it (Simon, 2026-11-01, #255)."""
+    if not cpsat_at_defaults(rows):
+        return "CP-SAT restricted to its fj + ls workers"
+    started = sorted(
+        {r.threads_used for r in rows if r.engine == "cpsat" and r.threads_used is not None}
+    )
+    count = f"{started[0]} workers started" if len(started) == 1 else "workers not recorded"
+    return f"CP-SAT at its default parameters (presolve on, {count})"
+
+
+def versions_line(rows: list[Scored]) -> str:
+    """Each engine's build, as its rows record it: CBLS's commit, OR-Tools' version."""
+    parts = []
+    for engine, label in (("cbls", "CBLS commit"), ("cpsat", "OR-Tools")):
+        seen = sorted({r.provenance for r in rows if r.engine == engine and r.status != "not_run"})
+        parts.append(f"{label} {', '.join(seen) if seen else 'not recorded'}")
+    return "; ".join(parts)
+
+
+def anytime_label(rows: list[Scored]) -> str:
+    """`ANYTIME_LABEL`, or its CP-SAT-at-defaults counterpart for such a table."""
+    if not cpsat_at_defaults(rows):
+        return ANYTIME_LABEL
+    return (
+        "Anytime quality vs CP-SAT at its default parameters "
+        "(Primal Integral; shifted geometric mean is the primary ranking)"
+    )
 
 
 def _tolerance_line(rows: list[Scored]) -> str:
@@ -2123,6 +2223,10 @@ COMPARISON_COLUMNS = (
     "primal_integral",
     "solve_seconds",
     "setup_seconds",
+    "threads_used",
+    "driver_wall_seconds",
+    "driver_cpu_seconds",
+    "cpu_wall_ratio",
     "n_vars",
     "n_cons",
     "n_free_cons",
@@ -2157,14 +2261,28 @@ def write_comparison(
     roster_path: Path,
     held_out: HeldOut | None = None,
 ) -> None:
+    if cpsat_at_defaults(rows):
+        baseline = [
+            "# MIPfeas comparison: CBLS vs CP-SAT at its default parameters.",
+            "#",
+            f"# The baseline is {baseline_phrase(rows)}:",
+            "# CP-SAT as it ships, full portfolio, unpinned. Every comparison solver runs",
+            "# at its own defaults (Simon, 2026-11-01, #255); the threads_used, driver_*",
+            "# and cpu_wall_ratio columns record what each row actually got.",
+        ]
+    else:
+        baseline = [
+            "# MIPfeas comparison: CBLS vs CP-SAT's violation_ls worker.",
+            "#",
+            "# This is an IMPLEMENTATION SANITY CHECK, not a MIP-competitiveness claim.",
+            "# The only baseline is CP-SAT restricted to its fj + ls workers — the reference",
+            "# implementation of the same jump-based algorithm CBLS reimplements. CP-SAT's",
+            "# default portfolio, and every other MIP solver, are deliberately out of scope",
+            "# (epic #87). A gap in either direction is informative about the reimplementation.",
+        ]
     header = [
-        "# MIPfeas comparison: CBLS vs CP-SAT's violation_ls worker.",
-        "#",
-        "# This is an IMPLEMENTATION SANITY CHECK, not a MIP-competitiveness claim.",
-        "# The only baseline is CP-SAT restricted to its fj + ls workers — the reference",
-        "# implementation of the same jump-based algorithm CBLS reimplements. CP-SAT's",
-        "# default portfolio, and every other MIP solver, are deliberately out of scope",
-        "# (epic #87). A gap in either direction is informative about the reimplementation.",
+        *baseline,
+        f"# Versions: {versions_line(rows)}.",
         "#",
         "# Roster:  "
         + _roster_label(roster_path, rows, len(rows) // max(len(summaries), 1), held_out),
@@ -2239,7 +2357,7 @@ def write_comparison(
     # Parity and defects lead, the anytime score follows. The re-scoped run is a
     # correctness sweep, and a reader quoting this file reads the header.
     header += headline_lines(rows, summaries)
-    header.append(f"# {ANYTIME_LABEL}:")
+    header.append(f"# {anytime_label(rows)}:")
     for s in summaries:
         header.append(
             f"#   {s.engine:<6} sgm={s.shifted_geomean:.4f} mean={s.arithmetic_mean:.4f} "
@@ -2271,6 +2389,10 @@ def write_comparison(
                     f"{r.primal_integral:.6g}",
                     _blank(r.solve_seconds, "{:.4f}".format),
                     _blank(r.setup_seconds, "{:.4f}".format),
+                    _blank(r.threads_used),
+                    _blank(r.driver_wall_seconds, "{:.4f}".format),
+                    _blank(r.driver_cpu_seconds, "{:.4f}".format),
+                    _blank(r.cpu_wall_ratio, "{:.3f}".format),
                     _blank(r.n_vars),
                     _blank(r.n_cons),
                     _blank(r.n_free_cons),

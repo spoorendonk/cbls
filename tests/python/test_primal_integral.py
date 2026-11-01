@@ -27,6 +27,7 @@ from benchmarks.mipfeas.primal_integral import (
     read_held_out,
     read_roster,
     render_report,
+    run_record_section,
     score_instance,
     shifted_geometric_mean,
     summarize,
@@ -947,3 +948,113 @@ def test_committed_tuned_list_is_the_tune_studys_roster_instances() -> None:
     tuned = read_held_out(DEFAULT_INSTANCE_DIR / "tuned.txt")
     assert set(tuned.names) == fitted
     assert held_out_problems(roster, tuned) == []
+
+
+# --- #285: per-row threads, CPU and wall; CP-SAT at its defaults ------------
+
+
+def _defaults_rows(
+    tmp_path: Path, started: tuple[int | None, ...] = (32,), measured: bool = True
+) -> list[Scored]:
+    """One CBLS row and one CP-SAT-at-defaults row per entry of `started`."""
+    rows = []
+    for i, workers_started in enumerate(started):
+        instance = f"inst{i}"
+        driver = {"wall_seconds": 61.5, "cpu_seconds": 120.25, "cpu_wall_ratio": 1.955}
+        cbls: dict[str, object] = {
+            "status": "feasible",
+            "objective": 100.0,
+            "commit_sha": "abc1234",
+            "threads": 4,
+        }
+        cpsat: dict[str, object] = {
+            "status": "feasible",
+            "objective": 100.0,
+            "ortools_version": "9.15.6755",
+            "workers": 0,
+            "parameters": "log_search_progress:true",
+        }
+        if workers_started is not None:
+            cpsat["workers_started"] = workers_started
+        if measured:
+            cbls["driver_measured"] = driver
+            cpsat["driver_measured"] = {**driver, "cpu_wall_ratio": 30.0}
+        _write_result(tmp_path, "cbls", instance, cbls, trace=[(1.0, 100.0)])
+        _write_result(tmp_path, "cpsat", instance, cpsat, trace=[(1.0, 100.0)])
+        rows += [_score(tmp_path, instance), _score(tmp_path, instance, engine="cpsat")]
+    return rows
+
+
+def _write_table(tmp_path: Path, rows: list[Scored]) -> tuple[str, list[dict[str, str]]]:
+    out = tmp_path / "comparison.csv"
+    write_comparison(out, rows, [summarize(rows, e) for e in ENGINES], 60.0, tmp_path / "r.csv")
+    text = out.read_text()
+    body = [line for line in text.splitlines() if not line.startswith("#")]
+    return text, list(csv.DictReader(body))
+
+
+def test_the_table_publishes_the_threads_cpu_and_wall_each_row_got(tmp_path: Path) -> None:
+    _, table = _write_table(tmp_path, _defaults_rows(tmp_path))
+    by_engine = {row["engine"]: row for row in table}
+
+    assert by_engine["cbls"]["threads_used"] == "4"
+    assert by_engine["cpsat"]["threads_used"] == "32"
+    assert by_engine["cbls"]["driver_wall_seconds"] == "61.5000"
+    assert by_engine["cbls"]["driver_cpu_seconds"] == "120.2500"
+    assert by_engine["cbls"]["cpu_wall_ratio"] == "1.955"
+    assert by_engine["cpsat"]["cpu_wall_ratio"] == "30.000"
+
+
+def test_a_row_that_recorded_none_of_them_publishes_blanks(tmp_path: Path) -> None:
+    _, table = _write_table(tmp_path, _defaults_rows(tmp_path, (None,), measured=False))
+    cpsat = next(row for row in table if row["engine"] == "cpsat")
+
+    cells = ("threads_used", "driver_wall_seconds", "driver_cpu_seconds", "cpu_wall_ratio")
+    assert [cpsat[c] for c in cells] == ["", "", "", ""]
+
+
+def test_a_defaults_table_says_what_cp_sat_ran_and_each_engines_version(tmp_path: Path) -> None:
+    rows = _defaults_rows(tmp_path)
+    text, _ = _write_table(tmp_path, rows)
+    report = render_report(
+        rows, [summarize(rows, e) for e in ENGINES], 60.0, tmp_path / "r.csv", tmp_path / "t.csv"
+    )
+
+    said = "CP-SAT at its default parameters (presolve on, 32 workers started)"
+    for published in (text, report):
+        assert said in published
+        assert "fj + ls" not in published
+        assert "CBLS commit abc1234; OR-Tools 9.15.6755" in published
+
+
+def test_cp_sat_rows_that_started_different_worker_counts_are_refused(tmp_path: Path) -> None:
+    # `workers=0` is the same cell on every host; the count CP-SAT picked is not.
+    rows = _defaults_rows(tmp_path, (32, 16))
+    with pytest.raises(ValueError, match="2 different thread counts"):
+        check_uniform_configuration(rows)
+    # A row that recorded no count is not a mismatch.
+    check_uniform_configuration(_defaults_rows(tmp_path / "other", (32, None)))
+
+
+def test_a_table_mixing_defaults_and_fj_ls_cp_sat_rows_is_refused(tmp_path: Path) -> None:
+    rows = _defaults_rows(tmp_path)
+    fj_ls = {
+        "status": "feasible",
+        "objective": 100.0,
+        "workers": 1,
+        "seed": 42,
+        "parameters": "num_workers:1,...",
+    }
+    _write_result(tmp_path, "cpsat", "fjls", fj_ls, trace=[(1.0, 100.0)])
+    with pytest.raises(ValueError, match="cpsat results span 2 configurations"):
+        check_uniform_configuration([*rows, _score(tmp_path, "fjls", engine="cpsat")])
+
+
+@pytest.mark.parametrize(
+    ("workers", "said"),
+    [(0, "CP-SAT at its defaults (workers per row)"), (1, "CP-SAT 1 worker(s)")],
+    ids=["defaults", "fj-ls"],
+)
+def test_the_run_record_names_cp_sat_at_its_defaults(workers: int, said: str) -> None:
+    record: dict[str, object] = {"concurrency": {"jobs": 1, "cpsat_workers": workers}}
+    assert said in "\n".join(run_record_section(record, 1))

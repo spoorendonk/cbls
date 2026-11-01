@@ -7,6 +7,8 @@ CBLS against CP-SAT restricted to its `fj` + `ls` subsolvers under
 algorithm. This is a correctness-and-parity sweep against that one worker
 pairing, never a claim against any solver's default portfolio (epic #87).
 
+Versions: CBLS commit fixture; OR-Tools 9.15.6755.
+
 > **WIRING CHECK, NOT A PUBLISHABLE RESULT.** The MIPfeas roster is 233 instances; this report covers 13. These numbers are not comparable to a MIPfeas score, and the two engines' relative standing on a subset need not hold on the full roster.
 
 > **INCOMPLETE RUN** — every aggregate below covers only the jobs that ran: cpsat: 1 not run.
