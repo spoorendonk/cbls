@@ -371,7 +371,8 @@ What the driver refuses, and why each refusal matters:
 | a `--threads` other than 1 or 16 onto the default paths | one table holds one thread count; 16 is the campaign protocol (#255, #256) and 1 the committed tables', so any other count needs a scratch `--out` |
 | a `comparison_seeds.csv` whose other seeds' run records name another `--threads` | the upsert keeps their rows, so the table would hold two thread counts |
 | missing `scip_baseline.csv` (unless `--no-merge`) | the merge would publish `comparison_all.csv` without SCIP rows |
-| a roster instance whose read, build or solve **throws** (runner exit 3) | its row carries `read-error`/`build-error`/`solve-error` and measures nothing, so publishing it would put a non-result in the table. The staged row is *structurally* complete, so the resume check refuses it by name (#153) and a re-run hits the same throw rather than skipping past it. A coverage gap — `unsupported`, or a missing `.nl` — exits 0 and does **not** trip this |
+| a `--threads` above the CPUs the process may run on (its affinity mask) | the workers would share cores and each row would measure a fraction of its budget |
+| a roster instance whose read, build or solve **throws** (runner exit 3) | its row carries `read-error`/`build-error`/`solve-error` and measures nothing, so publishing it would put a non-result in the table. The nonzero exit sets the staged row aside as `<instance>.csv.rejected`, and the resume check also refuses such a row by name (#153), so a re-run hits the same throw rather than skipping past it. A coverage gap — `unsupported`, or a missing `.nl` — exits 0 and does **not** trip this |
 
 It also rebuilds the runner target itself, so the binary cannot lag the SHA it
 is about to be labelled with. `--dry-run` prints the plan and exits non-zero if
