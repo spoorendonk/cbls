@@ -140,13 +140,15 @@ public:
     /// `prepare(var_id, weights)`, which it returns, and in the same pass over
     /// G_v each term's weight under `second` (#272: Novelty scores its W'-argmin
     /// under W). `second_ready()` then says whether `prepare(var_id, second)`
-    /// is known to build the SAME terms: true when every row of G_v has a zero
-    /// weight under `second` exactly where it has one under `weights` -- the
-    /// only thing prepare reads from a weight. Then that prepare would succeed
-    /// exactly when this one did, and `delta_second(j)` is, to the bit, what its
-    /// `delta(j)` would return: the same terms, summed in the same order.
-    /// False (a weight one vector has and the other lacks): call
-    /// `prepare(var_id, second)` instead. `second` is sized like `weights`.
+    /// is known to build the SAME terms: true when every row of G_v up to the
+    /// first refusal (all of G_v when there is none) has a zero weight under
+    /// `second` exactly where it has one under `weights` -- the only thing
+    /// prepare reads from a weight. Then that prepare would succeed exactly
+    /// when this one did (a refusal both weigh refuses both), and
+    /// `delta_second(j)` is, to the bit, what its `delta(j)` would return: the
+    /// same terms, summed in the same order. False (a weight one vector has and
+    /// the other lacks): call `prepare(var_id, second)` instead. `second` is
+    /// sized like `weights`.
     bool prepare(int32_t var_id, const std::vector<double>& weights,
                  const std::vector<double>& second);
     [[nodiscard]] bool second_ready() const { return second_ready_; }

@@ -719,21 +719,40 @@ bool same_zero_pattern(const Model& m, int32_t v, const std::vector<double>& w,
     });
 }
 
+// What second_ready() must say: the patterns agree over G_v up to and including
+// the first row that refuses (ineligible, nonzero weight), or over all of it.
+bool expected_second_ready(const Model& m, int32_t v, const std::vector<double>& w,
+                           const std::vector<double>& second, const std::vector<bool>& eligible) {
+    for (const int32_t ci : m.constraints_of_var(v)) {
+        const auto c = static_cast<size_t>(ci);
+        const bool zero = w[c] == 0.0;
+        if (zero != (second[c] == 0.0)) {
+            return false;
+        }
+        if (!zero && !eligible[c]) {
+            return true;
+        }
+    }
+    return true;
+}
+
 // One variable's dual prepare against two single ones. Returns the candidates
-// compared to the bit; -1 when the patterns differ (and second_ready said so).
+// compared to the bit; -1 when second_ready said to prepare afresh.
 int check_dual_prepare(Model& m, LinearJumpScorer& dual, LinearJumpScorer& single, int32_t v,
-                       const std::vector<double>& w, const std::vector<double>& second, RNG& rng) {
-    const bool same = same_zero_pattern(m, v, w, second);
+                       const std::vector<double>& w, const std::vector<double>& second,
+                       const std::vector<bool>& eligible, RNG& rng) {
+    const bool ready = expected_second_ready(m, v, w, second, eligible);
     const bool ok = dual.prepare(v, w, second);
-    REQUIRE(dual.second_ready() == same);
+    REQUIRE(dual.second_ready() == ready);
     REQUIRE(ok == single.prepare(v, w));
-    if (!same) {
+    if (!ready) {
         if (ok) {
             REQUIRE_THROWS_AS(dual.delta_second(0.0), std::logic_error);
         }
         return -1;
     }
-    // The same pattern: the second prepare succeeds exactly when the first did.
+    // Ready: the second prepare succeeds exactly when the first did -- both
+    // refuse at the same row, or both build the same terms.
     REQUIRE(single.prepare(v, second) == ok);
     int compared = 0;
     for (const double j : ok ? candidates_for(m.var(v), rng) : std::vector<double>{}) {
@@ -748,6 +767,45 @@ int check_dual_prepare(Model& m, LinearJumpScorer& dual, LinearJumpScorer& singl
     return compared;
 }
 
+struct DualTally {
+    int compared = 0;
+    int mismatched = 0;
+    int settled_by_refusal = 0;  // ready although the full patterns differ
+};
+
+// One round of the dual-prepare test: fresh scorers over `eligible`, a random
+// assignment, w and second, then every variable checked.
+void dual_prepare_round(Model& m, int round, RNG& rng, DualTally& tally) {
+    const size_t nc = m.constraint_ids().size();
+    std::vector<bool> eligible(nc, true);
+    for (size_t c = 0; round >= 2 && c < nc; ++c) {
+        eligible[c] = rng.integers(0, 3) != 0;
+    }
+    LinearJumpScorer dual(m);
+    LinearJumpScorer single(m);
+    for (LinearJumpScorer* sc : {&dual, &single}) {
+        sc->resize_rows(nc);
+        for (size_t c = 0; c < nc; ++c) {
+            sc->set_row_eligible(static_cast<int32_t>(c), eligible[c]);
+        }
+    }
+    randomise_assignment(m, rng);
+    const std::vector<double> w = random_weights(nc, rng);
+    std::vector<double> second = random_weights(nc, rng);
+    for (size_t c = 0; round % 2 == 0 && c < nc; ++c) {
+        second[c] = w[c] * rng.uniform(0.001, 3.0);
+    }
+    for (int32_t v = 0; v < static_cast<int32_t>(m.num_vars()); ++v) {
+        if (expected_second_ready(m, v, w, second, eligible) &&
+            !same_zero_pattern(m, v, w, second)) {
+            ++tally.settled_by_refusal;
+        }
+        const int n = check_dual_prepare(m, dual, single, v, w, second, eligible, rng);
+        tally.compared += std::max(n, 0);
+        tally.mismatched += n < 0 ? 1 : 0;
+    }
+}
+
 }  // namespace
 
 TEST_CASE("a dual prepare scores its second weights to the bit of a single prepare (#272)",
@@ -755,35 +813,21 @@ TEST_CASE("a dual prepare scores its second weights to the bit of a single prepa
     // Fractional rows, so a different term set or summation order would show
     // in the last bits. `second` keeps w's zero pattern (w scaled per row, as W'
     // scales W) on even rounds and draws its own on odd ones, where
-    // second_ready() must report whether the patterns agree over G_v.
-    int compared = 0;
-    int mismatched = 0;
+    // second_ready() must report whether the patterns agree over G_v. Rounds 2
+    // and 3 make a third of the rows ineligible: a refusal both vectors weigh
+    // settles second_ready() whatever the rows after it hold.
+    DualTally tally;
     for (uint64_t seed = 201; seed <= 208; ++seed) {
         RandomLinearModel r;
         build_random_linear(r, seed, /*integral=*/false);
-        Model& m = r.m;
-        LinearJumpScorer dual(m);
-        LinearJumpScorer single(m);
-        mark_all_rows(m, dual);
-        mark_all_rows(m, single);
         RNG rng(seed * 6151);
         for (int round = 0; round < 4; ++round) {
-            randomise_assignment(m, rng);
-            const size_t nc = m.constraint_ids().size();
-            const std::vector<double> w = random_weights(nc, rng);
-            std::vector<double> second = random_weights(nc, rng);
-            for (size_t c = 0; round % 2 == 0 && c < nc; ++c) {
-                second[c] = w[c] * rng.uniform(0.001, 3.0);
-            }
-            for (int32_t v = 0; v < static_cast<int32_t>(m.num_vars()); ++v) {
-                const int n = check_dual_prepare(m, dual, single, v, w, second, rng);
-                compared += std::max(n, 0);
-                mismatched += n < 0 ? 1 : 0;
-            }
+            dual_prepare_round(r.m, round, rng, tally);
         }
     }
-    REQUIRE(compared > 200);
-    REQUIRE(mismatched > 0);
+    REQUIRE(tally.compared > 200);
+    REQUIRE(tally.mismatched > 0);
+    REQUIRE(tally.settled_by_refusal > 0);
 }
 
 TEST_CASE("a Float's Newton step reads the cached row partial", "[fj][linear_jump]") {

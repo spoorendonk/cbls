@@ -284,15 +284,16 @@ bool LinearJumpScorer::prepare(int32_t var_id, const std::vector<double>& weight
 // Refused rows first, before anything is built: on a mixed model a variable
 // that falls back anyway should not pay slope sweeps for its linear rows.
 //
-// A dual prepare compares the two zero patterns in this same pass, so it walks
-// all of G_v while the patterns still match even after a refusal: the caller
-// skips the second prepare on a refusal only if they match.
+// A dual prepare compares the two zero patterns in this same pass, and stops
+// at the first refusal like a single one: a row that refuses with a nonzero
+// weight under both vectors refuses `prepare(var_id, second)` too (as does a
+// non-finite x0), so the patterns of the rows after it change nothing.
 bool LinearJumpScorer::refusal_scan(int32_t var_id, const std::vector<double>& weights,
                                     const std::vector<double>* second) {
     const ConstSpan<int32_t> gv = model_.constraints_of_var(var_id);
     bool ok = std::isfinite(x0_);
     second_ready_ = second != nullptr;
-    for (size_t k = 0; (ok || second_ready_) && k < gv.size(); ++k) {
+    for (size_t k = 0; ok && k < gv.size(); ++k) {
         const auto c = static_cast<size_t>(gv[k]);
         const bool zero = weights[c] == 0.0;
         if (second_ready_) {

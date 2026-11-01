@@ -1273,11 +1273,16 @@ namespace {
 // but it comes from the W' pass: the dual prepare weighs every term under both
 // vectors, and every probe the argmin took weighs under both. A second prepare
 // is needed only when W and W' differ in which rows of G_v they zero (W' is
-// W / 1024 on most rows, which is 0 for a positive W only below about 2^-1064),
-// and a second
-// probe only when the jump was not probed (it is x0, or the closed form scored
-// it). The probe restores the assignment to the bit (#270), so a delta taken
-// mid-argmin equals one taken after it.
+// W / 1024 on most rows, which is 0 for a positive W only below about 2^-1064).
+// A second probe is taken only for a jump the argmin never scored, x0 (no
+// candidate improved under W'), when the closed form is out; it stays a probe
+// rather than a literal 0, which would equal it only if re-evaluating the cone
+// at x0 reproduced every committed value -- and a custom node's delta() (#166)
+// need not. The probe restores the
+// assignment to the bit (#270), so a delta taken mid-argmin equals one taken
+// after it. The cost: each dual probe adds one multiply-add per row of G_v,
+// paid on every candidate, winners or not, against the second pass over G_v
+// (closed form) or the second probe (DAG) it saves per sampled var.
 struct NoveltyJump {
     JumpResult novelty;
     double delta_w = 0.0;
