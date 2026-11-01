@@ -327,7 +327,7 @@ TEST_CASE("every list move keeps the extra-lambda forms equal to a full evaluati
         auto moves = generate_standard_moves(m.var(vid(em.lv)), rng);
         REQUIRE_FALSE(moves.empty());
         for (const Move& mv : moves) {
-            seen.push_back(mv.move_type);
+            seen.emplace_back(mv.move_type);
             std::vector<int32_t> changed = apply_move(m, mv);
             delta_evaluate(m, changed.data(), changed.size());
             INFO("move " << mv.move_type);

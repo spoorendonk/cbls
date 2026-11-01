@@ -884,6 +884,19 @@ void partition_swap(const Model& model, int32_t a, int32_t b, RNG& rng,
     push_if_changed(model, std::move(m), out);
 }
 
+/// `x[0, x_end)` then `y[y_from, end)`: one side of a 2-opt* tail exchange,
+/// allocated once at its final size. It is the `replacement` the change owns,
+/// so that one allocation per side is the whole cost; building it from a head
+/// copy, a tail copy and an insert cost three, plus the head's regrowth (#274).
+std::vector<int32_t> head_then_tail(const std::vector<int32_t>& x, size_t x_end,
+                                    const std::vector<int32_t>& y, size_t y_from) {
+    std::vector<int32_t> joined;
+    joined.reserve(x_end + (y.size() - y_from));
+    joined.insert(joined.end(), x.begin(), x.begin() + static_cast<std::ptrdiff_t>(x_end));
+    joined.insert(joined.end(), y.begin() + static_cast<std::ptrdiff_t>(y_from), y.end());
+    return joined;
+}
+
 /// Exchange the tails of `a` and `b` at independently drawn cut points -- the
 /// 2-opt* of the routing literature. Membership over the pair is preserved, but
 /// the two lengths are not, so both bounds are checked before the move is built.
@@ -902,16 +915,8 @@ void partition_two_opt_star(const Model& model, int32_t a, int32_t b, RNG& rng,
     }
     Move m;
     m.move_type = "partition_2opt_star";
-    std::vector<int32_t> new_a(va.elements.begin(),
-                               va.elements.begin() + static_cast<std::ptrdiff_t>(p));
-    new_a.insert(new_a.end(), vb.elements.begin() + static_cast<std::ptrdiff_t>(q),
-                 vb.elements.end());
-    std::vector<int32_t> new_b(vb.elements.begin(),
-                               vb.elements.begin() + static_cast<std::ptrdiff_t>(q));
-    new_b.insert(new_b.end(), va.elements.begin() + static_cast<std::ptrdiff_t>(p),
-                 va.elements.end());
-    m.changes.push_back(replace_change(a, std::move(new_a)));
-    m.changes.push_back(replace_change(b, std::move(new_b)));
+    m.changes.push_back(replace_change(a, head_then_tail(va.elements, p, vb.elements, q)));
+    m.changes.push_back(replace_change(b, head_then_tail(vb.elements, q, va.elements, p)));
     push_if_changed(model, std::move(m), out);
 }
 
@@ -982,18 +987,8 @@ enum class PartitionMoveKind : std::uint8_t { Relocate, Swap, TwoOptStar, Insert
 /// Written into `out`; the return is how many. A fixed array rather than a
 /// vector because this runs once per candidate PROPOSED, and the argument for
 /// the whole positional representation is that a candidate must not cost a heap
-/// allocation.
-///
-/// Honesty about the residual: four of the five names this path assigns to
-/// `Move::move_type` ("partition_relocate", "partition_2opt_star",
-/// "partition_insert", "partition_remove") exceed libstdc++'s 15-character
-/// small-string buffer, so each DOES cost one malloc. Every pre-existing move
-/// name fits, which is why it never showed before. It is one allocation per
-/// candidate proposed, against an O(universe) membership scan on the same path,
-/// and the partition generator proposes at most one candidate per `generate` --
-/// so the array-versus-vector point stands on its own and this is not worth
-/// trading the readable identifiers for. Making `move_type` a `string_view`
-/// is the real answer if it ever shows up in a profile.
+/// allocation. The `Move` itself costs none either since #274: its name is a
+/// view onto a literal and its changes sit inline.
 size_t applicable_kinds(const ListPartition& part, std::array<PartitionMoveKind, 5>& out) {
     size_t n = 0;
     if (part.list_ids.size() >= 2) {
@@ -1099,40 +1094,30 @@ struct ElementSlot {
 /// membership; each is offered only when the two new lengths fit their bounds.
 void granular_two_opt_star(const Variable& va, int32_t i, const Variable& vb, int32_t j,
                            const Model& model, std::vector<Move>& out) {
-    const auto cut = [](const std::vector<int32_t>& v, int32_t from, int32_t to) {
-        return std::vector<int32_t>(v.begin() + from, v.begin() + to);
-    };
     const auto na = static_cast<int32_t>(va.elements.size());
     const auto nb = static_cast<int32_t>(vb.elements.size());
     const auto fits = [](const Variable& v, int32_t len) {
         return len >= v.min_size && len <= v.max_size;
     };
     // e then f: a keeps its head through e, then takes b's tail from f.
+    const auto at = [](int32_t pos) { return static_cast<size_t>(pos); };
     if (fits(va, i + 1 + nb - j) && fits(vb, j + na - i - 1)) {
-        std::vector<int32_t> new_a = cut(va.elements, 0, i + 1);
-        std::vector<int32_t> tail_b = cut(vb.elements, j, nb);
-        new_a.insert(new_a.end(), tail_b.begin(), tail_b.end());
-        std::vector<int32_t> new_b = cut(vb.elements, 0, j);
-        std::vector<int32_t> tail_a = cut(va.elements, i + 1, na);
-        new_b.insert(new_b.end(), tail_a.begin(), tail_a.end());
         Move m;
         m.move_type = "g_2opt_star";
-        m.changes.push_back(replace_change(va.id, std::move(new_a)));
-        m.changes.push_back(replace_change(vb.id, std::move(new_b)));
+        m.changes.push_back(
+            replace_change(va.id, head_then_tail(va.elements, at(i + 1), vb.elements, at(j))));
+        m.changes.push_back(
+            replace_change(vb.id, head_then_tail(vb.elements, at(j), va.elements, at(i + 1))));
         push_if_changed(model, std::move(m), out);
     }
     // f then e: b keeps its head through f, then takes a's tail from e.
     if (fits(vb, j + 1 + na - i) && fits(va, i + nb - j - 1)) {
-        std::vector<int32_t> new_b = cut(vb.elements, 0, j + 1);
-        std::vector<int32_t> tail_a = cut(va.elements, i, na);
-        new_b.insert(new_b.end(), tail_a.begin(), tail_a.end());
-        std::vector<int32_t> new_a = cut(va.elements, 0, i);
-        std::vector<int32_t> tail_b = cut(vb.elements, j + 1, nb);
-        new_a.insert(new_a.end(), tail_b.begin(), tail_b.end());
         Move m;
         m.move_type = "g_2opt_star";
-        m.changes.push_back(replace_change(va.id, std::move(new_a)));
-        m.changes.push_back(replace_change(vb.id, std::move(new_b)));
+        m.changes.push_back(
+            replace_change(va.id, head_then_tail(va.elements, at(i), vb.elements, at(j + 1))));
+        m.changes.push_back(
+            replace_change(vb.id, head_then_tail(vb.elements, at(j + 1), va.elements, at(i))));
         push_if_changed(model, std::move(m), out);
     }
 }

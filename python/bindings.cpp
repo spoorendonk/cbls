@@ -609,6 +609,18 @@ void require_node_id(const Model& model, int32_t expr_id, const char* entry) {
     }
 }
 
+// `Move::changes` is an InlineVector (#274); Python sees a list of copies, as it
+// did through the std::vector caster before.
+std::vector<Move::Change> move_changes(const Move& move) {
+    return {move.changes.begin(), move.changes.end()};
+}
+void set_move_changes(Move& move, const std::vector<Move::Change>& changes) {
+    move.changes.clear();
+    for (const Move::Change& change : changes) {
+        move.changes.push_back(change);
+    }
+}
+
 }  // namespace
 
 NB_MODULE(_cbls_core, m) {
@@ -1412,8 +1424,10 @@ NB_MODULE(_cbls_core, m) {
     // Move
     nb::class_<Move>(m, "Move")
         .def(nb::init<>())
-        .def_rw("changes", &Move::changes)
-        .def_rw("move_type", &Move::move_type)
+        // `move_type` is a view onto a static name, so it is READ-ONLY: a
+        // string set from Python would not outlive the call that set it.
+        .def_prop_rw("changes", &move_changes, &set_move_changes)
+        .def_prop_ro("move_type", [](const Move& move) { return std::string(move.move_type); })
         .def_rw("delta_F", &Move::delta_F);
 
     // SavedValues

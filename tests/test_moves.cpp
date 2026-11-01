@@ -239,3 +239,68 @@ TEST_CASE("apply_move edits the vector already in the variable", "[moves][edits]
     undo_move(m, move, saved);
     REQUIRE(m.var(vid(lv)).elements == std::vector<int32_t>{0, 1, 2, 3, 4, 5});
 }
+
+// #274: `Move::changes` holds two changes inline and spills to the heap past
+// them. An element type that owns heap memory, so a stale or moved-from slot
+// shows up as a wrong value rather than passing by accident.
+using Owning = std::vector<int32_t>;
+
+namespace {
+std::vector<Owning> contents(const InlineVector<Owning, 2>& v) {
+    return {v.begin(), v.end()};
+}
+}  // namespace
+
+TEST_CASE("inline_vector_keeps_order_across_the_spill_and_after_clear", "[moves]") {
+    InlineVector<Owning, 2> v;
+    REQUIRE(v.empty());
+    v.push_back(Owning{1});
+    v.push_back(Owning{2});
+    REQUIRE(contents(v) == std::vector<Owning>{{1}, {2}});
+    // Self-aliasing push at size N: the spill moves v[0] away before the copy
+    // would have been taken.
+    v.push_back(v[0]);
+    v.push_back(Owning{4, 4});
+    REQUIRE(v.size() == 4);
+    REQUIRE(contents(v) == std::vector<Owning>{{1}, {2}, {1}, {4, 4}});
+    REQUIRE(v.front() == Owning{1});
+    REQUIRE(v.back() == Owning{4, 4});
+
+    const InlineVector<Owning, 2> copy = v;
+    REQUIRE(contents(copy) == contents(v));
+
+    v.clear();
+    REQUIRE(v.empty());
+    v.push_back(Owning{7});
+    REQUIRE(contents(v) == std::vector<Owning>{{7}});
+    REQUIRE(contents(copy) == std::vector<Owning>{{1}, {2}, {1}, {4, 4}});
+
+    const InlineVector<Owning, 2> braced{Owning{5}, Owning{6}, Owning{7}};
+    REQUIRE(contents(braced) == std::vector<Owning>{{5}, {6}, {7}});
+}
+
+TEST_CASE("inline_vector_moved_from_is_empty_inline_and_spilled", "[moves]") {
+    for (const size_t n : {size_t{1}, size_t{2}, size_t{3}}) {
+        CAPTURE(n);
+        InlineVector<Owning, 2> src;
+        std::vector<Owning> expected;
+        for (size_t i = 0; i < n; ++i) {
+            src.push_back(Owning{static_cast<int32_t>(i), 9});
+            expected.push_back(Owning{static_cast<int32_t>(i), 9});
+        }
+        // The moved-from state IS the property under test, so it is read
+        // through a reference the move did not name.
+        const InlineVector<Owning, 2>& src_after = src;
+        InlineVector<Owning, 2> moved(std::move(src));
+        REQUIRE(contents(moved) == expected);
+        REQUIRE(src_after.empty());
+        REQUIRE(contents(src_after).empty());
+
+        const InlineVector<Owning, 2>& moved_after = moved;
+        InlineVector<Owning, 2> assigned;
+        assigned.push_back(Owning{8});
+        assigned = std::move(moved);
+        REQUIRE(contents(assigned) == expected);
+        REQUIRE(moved_after.empty());
+    }
+}

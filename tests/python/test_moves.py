@@ -70,6 +70,39 @@ class TestMoves:
         cbls.apply_move(m, by_type["list_swap"])
         assert list(m.var(vid(lv)).elements) == after
 
+    def test_a_python_built_move_round_trips_past_two_changes(self) -> None:
+        """`changes` holds two inline and spills past them (#274); a list of three
+        set from Python reads back in order and applies and undoes as one move.
+        `move_type` views a static name, so Python cannot set it."""
+        m = cbls.Model()
+        xs = [m.float_var(0, 10) for _ in range(3)]
+        m.minimize(m.sum(xs))
+        m.close()
+        for x in xs:
+            m.var_mut(vid(x)).value = 5.0
+        cbls.full_evaluate(m)
+
+        changes = []
+        for i, x in enumerate(xs):
+            change = cbls.MoveChange()
+            change.var_id = vid(x)
+            change.new_value = float(i + 1)
+            changes.append(change)
+        move = cbls.Move()
+        move.changes = changes
+        assert [(c.var_id, c.new_value) for c in move.changes] == [
+            (vid(x), float(i + 1)) for i, x in enumerate(xs)
+        ]
+        assert move.move_type == ""
+        with pytest.raises(AttributeError):
+            move.move_type = "mine"
+
+        saved = cbls.save_move_values(m, move)
+        cbls.apply_move(m, move)
+        assert [m.var(vid(x)).value for x in xs] == [1.0, 2.0, 3.0]
+        cbls.undo_move(m, move, saved)
+        assert [m.var(vid(x)).value for x in xs] == [5.0, 5.0, 5.0]
+
 
 class TestCopyRestore:
     def test_copy_restore_state(self) -> None:

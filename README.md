@@ -54,7 +54,7 @@ m.close();
 ```bash
 cmake -B build
 cmake --build build
-ctest --test-dir build    # 866 C++ tests, ~25s (add -LE slow for the fast 856, ~12s)
+ctest --test-dir build    # 868 C++ tests, ~25s (add -LE slow for the fast 858, ~12s)
 ```
 
 The build type defaults to `Release`; pass `-DCMAKE_BUILD_TYPE=Debug` to override
@@ -73,7 +73,7 @@ With Python bindings (the venv first, which also builds the package into it):
 uv sync --extra dev
 cmake -B build -DCBLS_BUILD_PYTHON=ON -DPython_EXECUTABLE="$PWD/.venv/bin/python"
 cmake --build build
-.venv/bin/pytest          # 1432 tests, 262 of them for the bindings
+.venv/bin/pytest          # 1433 tests, 263 of them for the bindings
 ```
 
 Tests of the benchmark baselines skip themselves when `ortools` or `pyscipopt` is

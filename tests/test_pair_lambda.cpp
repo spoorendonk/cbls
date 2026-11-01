@@ -133,7 +133,7 @@ TEST_CASE("every list move keeps delta evaluation equal to a fresh full evaluati
         auto moves = generate_standard_moves(m.var(vid(lv)), rng);
         REQUIRE_FALSE(moves.empty());
         for (const Move& mv : moves) {
-            seen.push_back(mv.move_type);
+            seen.emplace_back(mv.move_type);
             std::vector<int32_t> changed = apply_move(m, mv);
             delta_evaluate(m, changed.data(), changed.size());
 

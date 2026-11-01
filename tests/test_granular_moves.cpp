@@ -104,7 +104,7 @@ void check_draws(Routing& r, int k, int draws, std::set<std::string>& kinds) {
         const std::vector<int> start = r.coverage();
         for (const Move& move : out) {
             REQUIRE_FALSE(move.changes.empty());
-            kinds.insert(move.move_type);
+            kinds.emplace(move.move_type);
             const SavedValues saved = save_move_values(r.m, move);
             apply_move(r.m, move);
             const std::vector<int> seen = r.coverage();

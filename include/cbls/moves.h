@@ -1,12 +1,13 @@
 #pragma once
 
 #include "element_edit.h"
+#include "inline_vector.h"
 #include "model.h"
 #include "rng.h"
 
 #include <array>
 #include <cstdint>
-#include <string>
+#include <string_view>
 #include <vector>
 
 namespace cbls {
@@ -27,8 +28,14 @@ struct Move {
         std::array<ElementEdit, 2> edits{};
         std::vector<int32_t> replacement;  // EditKind::Replace only
     };
-    std::vector<Change> changes;
-    std::string move_type;
+    /// Two inline: every move a generator builds has one or two changes, and a
+    /// heap vector here was a malloc per candidate proposed (#274).
+    InlineVector<Change, 2> changes;
+    /// The kind's name. A view, so a STRING LITERAL or other static-storage
+    /// string only: assigning a temporary std::string dangles. A std::string
+    /// allocated for every name over libstdc++'s 15-character small buffer
+    /// ("partition_relocate", ...), once per candidate (#274).
+    std::string_view move_type;
     double delta_F = 0.0;
 };
 
