@@ -514,6 +514,42 @@ TEST_CASE("NL reader refuses a V segment outside the declared range", "[minlplib
     }
 }
 
+TEST_CASE("NL reader refuses header counts the file cannot back", "[minlplib]") {
+    // #289: vectors are sized from these counts. ~2e9 of anything in a tiny
+    // file must be a clean refusal, not a multi-GB resize or std::bad_alloc.
+    constexpr int kHuge = 2000000000;
+    const std::string body = "b\n0 0 1\nO0 0\nn0\n";
+    SECTION("variables") {
+        REQUIRE_THROWS_WITH(parse_nl(nl_header(kHuge, 0, 1) + body, "vars"),
+                            Catch::Matchers::ContainsSubstring("malformed header"));
+    }
+    SECTION("constraints") {
+        REQUIRE_THROWS_WITH(parse_nl(nl_header(1, kHuge, 1) + body, "cons"),
+                            Catch::Matchers::ContainsSubstring("malformed header"));
+    }
+    SECTION("objectives") {
+        REQUIRE_THROWS_WITH(parse_nl(nl_header(1, 0, kHuge) + body, "objs"),
+                            Catch::Matchers::ContainsSubstring("malformed header"));
+    }
+    SECTION("defined variables") {
+        REQUIRE_THROWS_WITH(parse_nl(nl_header(1, 0, 1, kHuge) + body, "defvars"),
+                            Catch::Matchers::ContainsSubstring("malformed header"));
+    }
+    SECTION("binary format") {
+        BinaryNl b;
+        b.tag('b').tag('0').f64(0).f64(1).tag('O').i32(0).i32(0).tag('n').f64(0);
+        REQUIRE_THROWS_WITH(parse_nl(nl_header_binary(kHuge, 0, 1) + b.s, "binvars"),
+                            Catch::Matchers::ContainsSubstring("malformed header"));
+    }
+    SECTION("a negative count") {
+        REQUIRE_THROWS_WITH(parse_nl(nl_header(-1, 0, 1) + body, "negative"),
+                            Catch::Matchers::ContainsSubstring("malformed header"));
+    }
+    SECTION("counts the file does back still read") {
+        REQUIRE(parse_nl(nl_header(1, 0, 1) + body, "ok").n_vars == 1);
+    }
+}
+
 TEST_CASE("NL reader skips a dual initial guess (d segment)", "[minlplib]") {
     std::string text = nl_header(1, 1, 1);
     text += "b\n0 0 10\n";

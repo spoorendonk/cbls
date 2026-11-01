@@ -62,6 +62,9 @@ public:
         return true;
     }
 
+    /// Bytes not yet consumed.
+    [[nodiscard]] size_t remaining() const { return text_.size() - pos_; }
+
     bool eof() {
         if (!binary_) {
             skip_ws();
@@ -447,6 +450,29 @@ std::vector<int64_t> read_ints(const std::string& line, int count) {
     for (int k = 0; k < count && (ss >> out[static_cast<size_t>(k)]); ++k) {
     }
     return out;
+}
+
+// Refuse header counts the input cannot back, before anything is sized from
+// them (#289). Each declared item owns at least one byte of segment payload of
+// its own: a variable its `b` record, a constraint its `C` segment, an
+// objective its `O` segment, a defined variable its `V` segment. So their sum
+// cannot exceed the bytes left after the header, and a header claiming 2e9 of
+// anything in a small file is refused here instead of asking `resize` for
+// tens of GB. Every count is non-negative and within int32 by now, so the
+// int64 sum cannot overflow.
+void check_counts_backed(const NlProblem& prob, size_t remaining) {
+    if (prob.n_vars < 0 || prob.n_cons < 0 || prob.n_objs < 0) {
+        throw std::runtime_error(
+            "NL: malformed header: negative variable, constraint or "
+            "objective count");
+    }
+    const int64_t declared = int64_t{prob.n_vars} + prob.n_cons + prob.n_objs + prob.n_defined_vars;
+    if (static_cast<uint64_t>(declared) > remaining) {
+        throw std::runtime_error("NL: malformed header: " + std::to_string(declared) +
+                                 " declared items (variables, constraints, objectives, defined "
+                                 "variables) but only " +
+                                 std::to_string(remaining) + " bytes follow the header");
+    }
 }
 
 // The header counts needed to place the discrete columns. Everything else in
@@ -850,14 +876,10 @@ NlProblem parse_nl(const std::string& text, const std::string& name) {
 
     // ---- Header ----
     const NlHeaderCounts header = parse_header(tok, prob);
-    mark_discrete_vars(prob, header);
 
-    prob.constraints.resize(prob.n_cons);
-    prob.objectives.resize(prob.n_objs);
-    prob.var_bounds.assign(prob.n_vars, NlVarBound{});
-    prob.initial_x.assign(prob.n_vars, std::numeric_limits<double>::quiet_NaN());
-    prob.defined_vars.resize(static_cast<size_t>(prob.n_defined_vars));
-
+    // The byte-order refusal comes first: it is a coverage gap, and a foreign
+    // binary file is otherwise well formed, so it must not be reported as a
+    // malformed header. The size check then precedes every count-sized vector.
     if (header.binary) {
         // Binary numbers are in the writer's byte order. Reading them in
         // another would yield garbage that still parses, so a mismatch (or an
@@ -872,6 +894,14 @@ NlProblem parse_nl(const std::string& text, const std::string& name) {
         }
         tok.set_binary();
     }
+    check_counts_backed(prob, tok.remaining());
+    mark_discrete_vars(prob, header);
+
+    prob.constraints.resize(prob.n_cons);
+    prob.objectives.resize(prob.n_objs);
+    prob.var_bounds.assign(prob.n_vars, NlVarBound{});
+    prob.initial_x.assign(prob.n_vars, std::numeric_limits<double>::quiet_NaN());
+    prob.defined_vars.resize(static_cast<size_t>(prob.n_defined_vars));
 
     // ---- Segments ----
     while (!tok.eof()) {
