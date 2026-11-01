@@ -1965,28 +1965,35 @@ def read_held_out(path: Path) -> HeldOut:
     return HeldOut(path, tuple(names))
 
 
-def held_out_problems(roster_names: list[str], held_out: HeldOut) -> list[str]:
-    """Why `held_out` does not complete `roster_names` to the full roster, if it does not.
+def held_out_problems(full_roster: list[str], held_out: HeldOut) -> list[str]:
+    """Why `held_out` cannot be subtracted from `full_roster`, if it cannot.
 
-    The two must be disjoint and together come to FULL_ROSTER_SIZE: a held-out list
-    that overlaps the roster or falls short of it would label a partial run as the
-    reported half of a tuned campaign.
+    The scored roster is derived, never supplied: the full roster minus the held-out
+    names. So the held-out list must be non-empty and drawn from a roster of
+    FULL_ROSTER_SIZE -- the same test that makes a table a full one -- and then the
+    label is true by construction. A hand-made complement roster could swap in
+    instances from outside MIPfeas and keep the count.
     """
     problems: list[str] = []
-    overlap = sorted(set(roster_names) & set(held_out.names))
-    if overlap:
-        problems.append(f"{held_out.path} names instances the roster scores: {', '.join(overlap)}")
-    total = len(roster_names) + len(held_out.names)
-    if total != FULL_ROSTER_SIZE:
+    if not held_out.names:
+        problems.append(f"{held_out.path} names no instance")
+    if len(full_roster) != FULL_ROSTER_SIZE:
         problems.append(
-            f"the roster ({len(roster_names)}) and {held_out.path} ({len(held_out.names)}) "
-            f"come to {total} instances, not the {FULL_ROSTER_SIZE} of the MIPfeas roster"
+            f"--held-out subtracts from the full MIPfeas roster of {FULL_ROSTER_SIZE} "
+            f"instances; the roster has {len(full_roster)}"
         )
+    unknown = sorted(set(held_out.names) - set(full_roster))
+    if unknown:
+        problems.append(f"{held_out.path} names instances outside the roster: {', '.join(unknown)}")
     return problems
 
 
 def _is_held_out_table(instances: int, held_out: HeldOut | None) -> bool:
-    return held_out is not None and instances + len(held_out.names) == FULL_ROSTER_SIZE
+    return (
+        held_out is not None
+        and bool(held_out.names)
+        and instances + len(held_out.names) == FULL_ROSTER_SIZE
+    )
 
 
 def _config_value(rows: list[Scored], engine: str, key: str) -> str | None:
@@ -2289,10 +2296,9 @@ def main() -> int:
     parser.add_argument(
         "--held-out",
         default=None,
-        help="file naming, one per line, the MIPfeas instances this roster leaves out "
-        "because settings were tuned on them. Must be disjoint from --roster and complete "
-        "it to the full 233; the table is then labelled a held-out roster instead of a "
-        "wiring check",
+        help="file naming, one per line, MIPfeas instances settings were tuned on. They "
+        "are left out of --roster, which must then be the full 233-instance roster; the "
+        "table scores the rest and is labelled a held-out roster instead of a wiring check",
     )
     args = parser.parse_args()
 
@@ -2304,6 +2310,8 @@ def main() -> int:
         problems = held_out_problems([name for name, _, _ in roster], held_out)
         if problems:
             parser.error("; ".join(problems))
+        left_out = set(held_out.names)
+        roster = [entry for entry in roster if entry[0] not in left_out]
 
     rows = [
         score_instance(

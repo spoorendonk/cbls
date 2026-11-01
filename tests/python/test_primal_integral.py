@@ -6,6 +6,8 @@ import csv
 import json
 import math
 import os
+import sys
+import tomllib
 from typing import TYPE_CHECKING
 
 import pytest
@@ -19,6 +21,7 @@ from benchmarks.mipfeas.primal_integral import (
     Scored,
     check_uniform_configuration,
     held_out_problems,
+    main,
     primal_gap,
     primal_integral,
     read_held_out,
@@ -851,20 +854,62 @@ def test_held_out_roster_is_labelled_only_when_it_completes_the_full_one(
     assert ("t21" in report) is held_out_label
 
 
+_FULL = [f"i{k}" for k in range(FULL_ROSTER_SIZE)]
+
+
 @pytest.mark.parametrize(
     ("roster", "held", "complaint"),
     [
-        (["a", "b"], ["b", *(f"t{k}" for k in range(FULL_ROSTER_SIZE - 3))], "names instances"),
-        (["a", "b"], [f"t{k}" for k in range(FULL_ROSTER_SIZE - 3)], "come to 232 instances"),
+        (_FULL, [], "names no instance"),
+        (_FULL[:-1], ["i0"], "the roster has 232"),
+        (_FULL, ["i0", "elsewhere"], "outside the roster: elsewhere"),
     ],
-    ids=["overlaps-the-roster", "short-of-the-full-roster"],
+    ids=["empty-list", "short-roster", "name-outside-the-roster"],
 )
-def test_held_out_list_must_complete_the_roster_disjointly(
+def test_held_out_list_must_be_drawn_from_the_full_roster(
     tmp_path: Path, roster: list[str], held: list[str], complaint: str
 ) -> None:
     problems = held_out_problems(roster, HeldOut(tmp_path / "h.txt", tuple(held)))
     assert len(problems) == 1
     assert complaint in problems[0]
+
+
+def test_scoring_with_held_out_drops_those_instances_from_the_full_roster(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The scored set is derived, not supplied: a hand-made complement roster could
+    # swap in instances from outside MIPfeas and keep the count.
+    roster = tmp_path / "roster.csv"
+    roster.write_text(
+        "instance,reference_value,reference_kind\n" + "".join(f"{name},1.0,opt\n" for name in _FULL)
+    )
+    held = tmp_path / "tuned.txt"
+    held.write_text("# tuned on\ni0\ni1\n")
+    out = tmp_path / "comparison.csv"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "primal_integral.py",
+            "--results-dir",
+            str(tmp_path),
+            "--roster",
+            str(roster),
+            "--budget",
+            "60",
+            "--out",
+            str(out),
+            "--held-out",
+            str(held),
+        ],
+    )
+    main()
+
+    text = out.read_text()
+    scored = {r[0] for r in csv.reader(text.splitlines()) if r and not r[0].startswith("#")}
+    assert scored == {"instance", *_FULL[2:]}
+    assert f"# HELD-OUT ROSTER: {FULL_ROSTER_SIZE - 2} of the {FULL_ROSTER_SIZE}" in text
+    assert "WIRING CHECK" not in text
 
 
 def test_held_out_file_skips_comments_and_refuses_repeats(tmp_path: Path) -> None:
@@ -876,11 +921,19 @@ def test_held_out_file_skips_comments_and_refuses_repeats(tmp_path: Path) -> Non
         read_held_out(path)
 
 
-def test_committed_tuned_list_completes_the_pinned_roster() -> None:
-    # The list #255's reported table is scored against: if it drifts from
-    # roster.csv, scoring that table refuses the flag instead of labelling it.
+def test_committed_tuned_list_is_the_tune_studys_roster_instances() -> None:
+    # tuned.txt is what #255's reported table leaves out. It must name exactly the
+    # roster instances the tune study fits on (its screen and intermediate sets),
+    # or a scored instance was used for tuning while the table says none was.
+    study = tomllib.loads(
+        (DEFAULT_INSTANCE_DIR.parent.parent / "tune" / "mipfeas.study.toml").read_text()
+    )
+    fitted = {
+        arm["params"]["instance"]
+        for arm in study["instances"]
+        if arm["params"].get("roster") == "roster.csv"
+    }
     roster = [name for name, _, _ in read_roster(DEFAULT_INSTANCE_DIR / "roster.csv")]
     tuned = read_held_out(DEFAULT_INSTANCE_DIR / "tuned.txt")
-    reported = [name for name in roster if name not in tuned.names]
-    assert len(tuned.names) == 22
-    assert held_out_problems(reported, tuned) == []
+    assert set(tuned.names) == fitted
+    assert held_out_problems(roster, tuned) == []

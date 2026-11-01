@@ -153,8 +153,9 @@ benchmarks/instances/mipfeas/
   tune_confirm.csv     the tuning study's held-out 10, outside the roster, with
                        their .solu optima (committed, not in references.csv; a
                        pytest checks them against the .solu; benchmarks/tune/, #264)
-  tuned.txt            the 22 roster instances settings were tuned on; a table
-                       of the other 211 scores with --held-out tuned.txt (#255)
+  tuned.txt            the 22 roster instances settings were tuned on (the tune
+                       study's screen + intermediate sets); scoring roster.csv
+                       with --held-out tuned.txt reports the other 211 (#255)
   manifest.csv         sha256 + byte size per instance      (committed)
   smoke_comparison.csv the wiring check's output            (committed)
   comparison.csv       scored results                       (committed once a run is published)
@@ -414,11 +415,13 @@ python benchmarks/mipfeas/primal_integral.py \
 Step 6 writes `comparison_report.md` beside the table; see **What the scorer
 reports** above. It exits non-zero when a solution was rejected.
 
-A roster short of the 233 is stamped a wiring check, except one that leaves out
-exactly the instances settings were tuned on: pass those with `--held-out
-benchmarks/instances/mipfeas/tuned.txt`. The scorer refuses the flag unless the
-list is disjoint from the roster and the two come to 233, and the table is then
-labelled a held-out roster and names what it leaves out (#255).
+A roster short of the 233 is stamped a wiring check. A table that leaves out
+the instances settings were tuned on is not one: score the full `roster.csv`
+with `--held-out benchmarks/instances/mipfeas/tuned.txt`, and the scorer drops
+those names itself, scores the rest, and labels the table and report a held-out
+roster naming what it left out (#255). It refuses the flag unless `--roster` has
+all 233 instances and every held-out name is among them, so the scored set is
+derived rather than hand-made.
 
 **The table is an output, not an artifact to protect.** It is regenerable from a
 results directory at any time and at any budget, so there is nothing in it to
