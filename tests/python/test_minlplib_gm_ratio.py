@@ -26,6 +26,7 @@ from benchmarks.minlplib.gm_ratio import (
     load_roster,
     load_scip_shards,
     main,
+    reason_category,
     score,
 )
 from benchmarks.minlplib.run_benchmark import STAMP_NAME
@@ -324,18 +325,26 @@ def test_scip_read_error_and_check_failed_rows_are_listed_with_their_notes(
 def test_markdown_groups_no_solution_instances_by_reason_category(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    names = ["a", "x1", "x2", "y", "z"]
+    names = ["a", "x1", "x2", "w", "y", "z"]
     bounds, table, shards = campaign(tmp_path, [(n, 0.0, 0.0) for n in names])
     for name in ("x1", "x2"):
         write_scip(shards, name, "NaN", feasible=False)
+    write_scip(shards, "w", "NaN", feasible=False, status="infeasible")
     (shards / "y.csv").unlink()
     write_failed(shards, "y", "exit 134")
     write_scip(shards, "z", "NaN", feasible=False, note="read-error(OSError: x)")
     argv = ["--bounds", str(bounds), "--cbls", str(table), "--scip-shards", str(shards)]
     assert main(argv) == 0
     text = capsys.readouterr().out
-    assert "- SCIP no solution: 4\n" in text
-    assert "  - no-solution: 2 (x1, x2)\n  - exit 134: 1 (y)\n  - read-error: 1 (z)\n" in text
+    assert "- SCIP no solution: 5\n" in text
+    assert (
+        "  - no-solution(timelimit): 2 (x1, x2)\n"
+        "  - exit 134: 1 (y)\n"
+        "  - no-solution(infeasible): 1 (w)\n"
+        "  - read-error: 1 (z)\n"
+    ) in text
+    assert reason_category("read-error(bad .nl header)") == "read-error"
+    assert reason_category("rejected: lost workers") == "rejected"
     assert "- cbls no solution: 0\n" in text
 
 

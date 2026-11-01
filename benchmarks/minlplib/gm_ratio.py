@@ -202,7 +202,15 @@ def scip_reason(name: str, scip: ScipSide) -> str:
 
 
 def reason_category(reason: str) -> str:
-    """A reason's prefix before its first `(` or `:`, e.g. `read-error` or `exit 134`."""
+    """A reason's prefix before its first `(` or `:`, e.g. `read-error` or `exit 134`.
+
+    A one-word parenthetical is a solver status and stays, so `no-solution(timelimit)`
+    and `no-solution(infeasible)` are two groups; free text, as in
+    `read-error(OSError: x)`, is dropped.
+    """
+    status = re.fullmatch(r"([^(:]+\([\w-]+\))", reason.strip())
+    if status:
+        return status.group(1).strip()
     return re.split(r"[(:]", reason, maxsplit=1)[0].strip() or reason
 
 
