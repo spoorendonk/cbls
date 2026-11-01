@@ -1,10 +1,10 @@
 #pragma once
 
-// AMPL NL (text format) reader interface for CBLS.
+// AMPL NL reader interface for CBLS.
 //
-// The NL format is the AMPL solver interface "nl" file. This reader handles the
-// TEXT variant only (header begins with 'g'); the binary variant ('b') is
-// rejected with a clear error. The format is publicly specified by David Gay,
+// The NL format is the AMPL solver interface "nl" file. This reader handles
+// both variants: text (header begins with 'g') and binary ('b'), the latter
+// only in the host's byte order. The format is publicly specified by David Gay,
 // "Writing .nl Files" (https://ampl.github.io/nlwrite.pdf) and "Hooking Your
 // Solver to AMPL" (https://ampl.com/REFS/hooking2.pdf); this is an original
 // implementation from those public specifications and carries no third-party
@@ -126,12 +126,13 @@ struct NlProblem {
     std::vector<NlDefinedVar> defined_vars;
 };
 
-/// Read an AMPL NL file in TEXT format ('g' header). Throws std::runtime_error
-/// on a binary header ('b') or a malformed file.
+/// Read an AMPL NL file, text ('g' header) or binary ('b'). Throws
+/// std::runtime_error on a malformed file or a binary one in a byte order
+/// other than the host's.
 NlProblem read_nl(const std::string& filename);
 
-/// Parse NL text from an already-loaded buffer (used by tests with inline
-/// fixtures). `name` labels the resulting problem.
+/// Parse NL from an already-loaded buffer, text or binary (used by tests with
+/// inline fixtures). `name` labels the resulting problem.
 NlProblem parse_nl(const std::string& text, const std::string& name = "");
 
 /// Build a closed CBLS `Model` from an `NlProblem`.

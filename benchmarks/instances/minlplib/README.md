@@ -15,9 +15,11 @@ the published catalogue CSV:
 
 Each instance's text NL file is fetched individually from
 `https://www.minlplib.org/nl/<name>.nl` (we do **not** pull the multi-hundred-MB
-archive). The CBLS NL reader (`src/io/nl_reader.cpp`) handles the **text** ('g'
-header) format; instances served only as **binary** NL ('b' header) are rejected
-by the downloader and excluded (e.g. the `kriging_peaks-*` family).
+archive). The CBLS NL reader (`src/io/nl_reader.cpp`) reads both the text ('g'
+header) and, since #282, the binary ('b' header) format. The downloader still
+passes over instances served only as binary NL (e.g. the `kriging_peaks-red*`
+family): the published and held-out rosters were drawn under that rule, and
+changing it would change their membership.
 
 ## Selection method (CSV-driven, reproducible)
 

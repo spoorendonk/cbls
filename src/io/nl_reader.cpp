@@ -1,4 +1,4 @@
-// AMPL NL (text format) reader.
+// AMPL NL reader (text and binary formats).
 //
 // Original implementation from the public NL format specifications:
 //   * David M. Gay, "Writing .nl Files" — https://ampl.github.io/nlwrite.pdf
@@ -6,8 +6,8 @@
 // No third-party source was vendored; the opcode numbers below follow the AMPL
 // `opcode.hd` numbering documented in those references.
 //
-// Scope: TEXT format only (header line begins with 'g'). The binary variant
-// (header 'b') is rejected with a clear error. The reader records the raw
+// Scope: both encodings, text (header 'g') and binary (header 'b'), the
+// latter in the host's byte order only. The reader records the raw
 // expression graph and linear parts; semantic mapping to CBLS ops (and the
 // decision of which opcodes are supported) lives in nl_to_model.cpp.
 
@@ -16,6 +16,8 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstdint>
+#include <cstring>
 #include <fstream>
 #include <limits>
 #include <sstream>
@@ -28,12 +30,27 @@ namespace cbls {
 
 namespace {
 
-// A forward token cursor over the NL text. The NL text format is whitespace /
-// newline separated; within a segment, items appear in a fixed order. We tokenise
-// lazily so expression parsing can pull operands as needed.
+// A forward cursor over an NL file, in either encoding. The header is text in
+// both ('g' and 'b' files alike), read with `peek_char`/`read_line`. After it,
+// the segments carry the same items in the same order in both encodings; only
+// their spelling differs:
+//
+//   item                      text ('g')                binary ('b')
+//   segment / expression tag  one letter                one byte
+//   number attached to a tag  digits glued to it: "C3"  int32 / float64
+//   later numbers             whitespace-separated      int32 / float64
+//   bound-record type         a digit                   one ASCII digit byte
+//   name (suffix)             a token                   int32 length + bytes
+//
+// so the segment and expression grammar below is written once against this
+// interface. Binary numbers are in the writer's byte order, which the header's
+// `arith` field names; `parse_header` refuses one that is not the host's.
 class Tokenizer {
 public:
     explicit Tokenizer(std::string_view text) : text_(text) {}
+
+    /// Read every segment item as binary from here on (the header stays text).
+    void set_binary() { binary_ = true; }
 
     // Peek the next non-space character without consuming the token.
     bool peek_char(char& out) {
@@ -46,7 +63,9 @@ public:
     }
 
     bool eof() {
-        skip_ws();
+        if (!binary_) {
+            skip_ws();
+        }
         return pos_ >= text_.size();
     }
 
@@ -64,42 +83,152 @@ public:
         return std::string(line);
     }
 
-    // Consume one whitespace-delimited token as a string.
+    /// A segment marker or expression tag: one character.
+    char next_tag() {
+        if (!binary_) {
+            skip_ws();
+        }
+        need(1);
+        return text_[pos_++];
+    }
+
+    /// A number glued to the tag just read ("C3", "o5", "n2.5"). In text no
+    /// whitespace may come between, so a tag missing its number is refused
+    /// instead of taking the next line's.
+    int64_t attached_int(const char* what) {
+        if (binary_) {
+            return read_binary<int32_t>();
+        }
+        return to_int(attached_token(what));
+    }
+    double attached_double(const char* what) {
+        if (binary_) {
+            return read_binary<double>();
+        }
+        return to_double(attached_token(what));
+    }
+    /// The 's' (short) constant: an int16 in binary, plain digits in text.
+    int64_t attached_short(const char* what) {
+        if (binary_) {
+            return read_binary<int16_t>();
+        }
+        return to_int(attached_token(what));
+    }
+
+    int64_t next_int() {
+        if (binary_) {
+            return read_binary<int32_t>();
+        }
+        return to_int(next_token());
+    }
+
+    double next_double() {
+        if (binary_) {
+            return read_binary<double>();
+        }
+        return to_double(next_token());
+    }
+
+    /// A bound record's type code: a digit in text, an ASCII digit byte in binary.
+    int64_t next_bound_type() {
+        if (!binary_) {
+            return next_int();
+        }
+        need(1);
+        return static_cast<int64_t>(text_[pos_++]) - '0';
+    }
+
+    /// A name (suffix): a token in text, an int32 length then bytes in binary.
+    std::string next_name() {
+        if (!binary_) {
+            return next_token();
+        }
+        const auto len = read_binary<int32_t>();
+        if (len < 0) {
+            throw std::runtime_error("NL: negative name length");
+        }
+        need(static_cast<size_t>(len));
+        std::string out(text_.substr(pos_, static_cast<size_t>(len)));
+        pos_ += static_cast<size_t>(len);
+        return out;
+    }
+
+private:
+    // Consume one whitespace-delimited token as a string (text only).
     std::string next_token() {
         skip_ws();
+        return token_here("token");
+    }
+
+    std::string attached_token(const char* what) {
+        if (pos_ >= text_.size() || std::isspace(static_cast<unsigned char>(text_[pos_])) != 0) {
+            throw std::runtime_error(std::string("NL: ") + what + " is missing its number");
+        }
+        return token_here(what);
+    }
+
+    std::string token_here(const char* what) {
         size_t start = pos_;
         while (pos_ < text_.size() && std::isspace(static_cast<unsigned char>(text_[pos_])) == 0) {
             ++pos_;
         }
         if (start == pos_) {
-            throw std::runtime_error("NL: unexpected end of file while reading token");
+            throw std::runtime_error(std::string("NL: unexpected end of file while reading ") +
+                                     what);
         }
         return std::string(text_.substr(start, pos_ - start));
     }
 
-    int64_t next_int() {
-        std::string t = next_token();
+    // The whole token must be the number: "3x" is refused, not read as 3.
+    static int64_t to_int(const std::string& t) {
+        size_t used = 0;
+        int64_t v = 0;
         try {
-            return std::stoll(t);
-        } catch (...) {
+            v = std::stoll(t, &used);
+        } catch (const std::exception&) {
             throw std::runtime_error("NL: expected integer, got '" + t + "'");
         }
+        if (used != t.size()) {
+            throw std::runtime_error("NL: expected integer, got '" + t + "'");
+        }
+        return v;
     }
 
-    double next_double() {
-        std::string t = next_token();
+    static double to_double(const std::string& t) {
+        size_t used = 0;
+        double v = 0.0;
         try {
-            return std::stod(t);
-        } catch (...) {
+            v = std::stod(t, &used);
+        } catch (const std::exception&) {
             throw std::runtime_error("NL: expected number, got '" + t + "'");
+        }
+        if (used != t.size()) {
+            throw std::runtime_error("NL: expected number, got '" + t + "'");
+        }
+        return v;
+    }
+
+    void need(size_t n) const {
+        if (text_.size() - pos_ < n) {
+            throw std::runtime_error("NL: unexpected end of file");
         }
     }
 
-private:
+    // One native-order binary value. memcpy, not a cast: the cursor is not
+    // aligned for T.
+    template <typename T>
+    T read_binary() {
+        need(sizeof(T));
+        T v{};
+        std::memcpy(&v, text_.data() + pos_, sizeof(T));
+        pos_ += sizeof(T);
+        return v;
+    }
+
     // Skip whitespace and '#'-to-end-of-line comments. NL files annotate header
     // and (sometimes) segment-marker lines with "# ..." comments; '#' never
     // appears inside a numeric/opcode token, so treating it as comment-to-EOL is
-    // safe across the whole stream.
+    // safe across the whole text stream. Never called on binary segments.
     void skip_ws() {
         while (pos_ < text_.size()) {
             char c = text_[pos_];
@@ -117,6 +246,7 @@ private:
 
     std::string_view text_;
     size_t pos_ = 0;
+    bool binary_ = false;
 };
 
 // AMPL opcode -> number of operands. Numbers are the authoritative values from
@@ -203,15 +333,20 @@ bool is_nary(int opcode) {
     }
 }
 
+// An int read from the file, as an int32 index; one out of range is refused
+// rather than wrapped.
+int32_t to_index(int64_t v, const char* what) {
+    if (v < 0 || v > std::numeric_limits<int32_t>::max()) {
+        throw std::runtime_error(std::string("NL: ") + what + " " + std::to_string(v) +
+                                 " out of range");
+    }
+    return static_cast<int32_t>(v);
+}
+
 // Parse one expression rooted at the current token into `expr.nodes`; return the
 // new node's index. Recursive descent over the prefix opcode stream.
 int32_t parse_expr(Tokenizer& tok, NlExpr& expr) {
-    std::string head = tok.next_token();
-    if (head.empty()) {
-        throw std::runtime_error("NL: empty expression token");
-    }
-    char tag = head[0];
-    std::string rest = head.substr(1);
+    const char tag = tok.next_tag();
 
     auto add = [&expr](NlExprNode n) -> int32_t {
         expr.nodes.push_back(std::move(n));
@@ -219,20 +354,28 @@ int32_t parse_expr(Tokenizer& tok, NlExpr& expr) {
     };
 
     switch (tag) {
-        case 'n': {  // numeric constant
+        case 'n':    // numeric constant
+        case 's':    // short integer constant (binary writers)
+        case 'l': {  // long integer constant (binary writers)
             NlExprNode n;
             n.kind = NlNodeKind::Num;
-            n.num = std::stod(rest);
+            if (tag == 'n') {
+                n.num = tok.attached_double("constant 'n'");
+            } else if (tag == 's') {
+                n.num = static_cast<double>(tok.attached_short("constant 's'"));
+            } else {
+                n.num = static_cast<double>(tok.attached_int("constant 'l'"));
+            }
             return add(std::move(n));
         }
         case 'v': {  // variable reference
             NlExprNode n;
             n.kind = NlNodeKind::Var;
-            n.index = static_cast<int32_t>(std::stoll(rest));
+            n.index = to_index(tok.attached_int("variable reference 'v'"), "variable reference");
             return add(std::move(n));
         }
         case 'o': {  // operator
-            int opcode = static_cast<int>(std::stoll(rest));
+            const int opcode = to_index(tok.attached_int("operator 'o'"), "opcode");
             NlExprNode n;
             n.kind = NlNodeKind::Op;
             n.opcode = opcode;
@@ -309,14 +452,16 @@ std::vector<int64_t> read_ints(const std::string& line, int count) {
 // The header counts needed to place the discrete columns. Everything else in
 // the header is consumed and discarded.
 struct NlHeaderCounts {
-    int64_t nlvc = 0;   ///< nonlinear in constraints (index bound)
-    int64_t nlvo = 0;   ///< nonlinear in objectives (index bound)
-    int64_t nlvb = 0;   ///< nonlinear in both
-    int64_t nbv = 0;    ///< linear binary
-    int64_t niv = 0;    ///< linear integer
-    int64_t nlvbi = 0;  ///< integer among the nonlinear-in-both block
-    int64_t nlvci = 0;  ///< integer among the nonlinear-in-constraints block
-    int64_t nlvoi = 0;  ///< integer among the nonlinear-in-objectives block
+    int64_t nlvc = 0;     ///< nonlinear in constraints (index bound)
+    int64_t nlvo = 0;     ///< nonlinear in objectives (index bound)
+    int64_t nlvb = 0;     ///< nonlinear in both
+    int64_t nbv = 0;      ///< linear binary
+    int64_t niv = 0;      ///< linear integer
+    int64_t nlvbi = 0;    ///< integer among the nonlinear-in-both block
+    int64_t nlvci = 0;    ///< integer among the nonlinear-in-constraints block
+    int64_t nlvoi = 0;    ///< integer among the nonlinear-in-objectives block
+    int64_t arith = 0;    ///< binary byte order: 1 little-endian, 2 big-endian IEEE
+    bool binary = false;  ///< 'b' header: segments are binary
 };
 
 // Consume the whole NL header, filling `prob`'s counts and returning the
@@ -327,14 +472,9 @@ NlHeaderCounts parse_header(Tokenizer& tok, NlProblem& prob) {
     if (!tok.peek_char(fmt)) {
         throw std::runtime_error("NL: empty file");
     }
-    if (fmt == 'b') {
-        throw std::runtime_error(
-            "NL: binary format ('b' header) is not supported; only text ('g') is. "
-            "Re-export the instance in ASCII NL.");
-    }
-    if (fmt != 'g') {
+    if (fmt != 'g' && fmt != 'b') {
         throw std::runtime_error(std::string("NL: unrecognised header char '") + fmt +
-                                 "' (expected 'g' for text format)");
+                                 "' (expected 'g' for text or 'b' for binary format)");
     }
     // Advance past the whole first header line. The text is not needed, but the
     // cursor must move or the counts read below lands on line 1.
@@ -363,12 +503,14 @@ NlHeaderCounts parse_header(Tokenizer& tok, NlProblem& prob) {
     // format the header layout is fixed; lines 1 (`g...`) and 2 (counts) are
     // already consumed, so of the lines skipped here:
     //   #3 -> header line 5: "nlvc nlvo nlvb"          (nonlinear var counts)
-    //   (#4 -> header line 6, "nwv nfunc arith flags", is skipped: arc and
-    //    other-linear variables are always continuous and always precede the
-    //    trailing nbv+niv block, so they never shift a discrete position.)
+    //   #4 -> header line 6: "nwv nfunc arith flags"; only `arith` is kept,
+    //    for a binary file's byte order. (Arc and other-linear variables are
+    //    always continuous and always precede the trailing nbv+niv block, so
+    //    they never shift a discrete position.)
     //   #5 -> header line 7: "nbv niv nlvbi nlvci nlvoi"  (discrete counts)
     //   #8 -> header line 10: "comb comc como comc1 como1" (defined variables)
     NlHeaderCounts h;
+    h.binary = fmt == 'b';
     int header_line_after_counts = 0;
     while (true) {
         char c = 0;
@@ -385,6 +527,8 @@ NlHeaderCounts parse_header(Tokenizer& tok, NlProblem& prob) {
             h.nlvc = v[0];
             h.nlvo = v[1];
             h.nlvb = v[2];
+        } else if (header_line_after_counts == 4) {
+            h.arith = read_ints(hline, 3)[2];
         } else if (header_line_after_counts == 5) {
             auto v = read_ints(hline, 5);
             h.nbv = v[0];
@@ -543,17 +687,15 @@ void skip_dual_guess(Tokenizer& tok, int64_t count) {
     }
 }
 
-// The index suffix on a segment marker, e.g. 3 in "J3".
-int64_t segment_index(const std::string& seg) {
-    if (seg.size() < 2) {
-        throw std::runtime_error("NL: segment '" + seg + "' missing index");
-    }
-    return std::stoll(seg.substr(1));
+// The index glued to a segment marker, e.g. 3 in "J3".
+int64_t segment_index(Tokenizer& tok, char kind) {
+    const std::string what = std::string("segment '") + kind + "'";
+    return tok.attached_int(what.c_str());
 }
 
 BoundRecord read_bound(Tokenizer& tok) {
     BoundRecord b;
-    const int64_t code = tok.next_int();
+    const int64_t code = tok.next_bound_type();
     // Type 5 is a complementarity record (`5 k i`, two ints this struct has no
     // place for), and nothing past 5 is defined. Cast unchecked, either one
     // matched no case below, consumed none of its payload and left the cursor
@@ -614,11 +756,10 @@ void read_var_bounds(Tokenizer& tok, NlProblem& prob) {
 
 // Dispatch one segment, named by its marker token (e.g. "C0", "O0", "r", "J3"),
 // onto the reader for its payload.
-void parse_segment(Tokenizer& tok, NlProblem& prob, const std::string& seg) {
-    const char kind = seg[0];
+void parse_segment(Tokenizer& tok, NlProblem& prob, char kind) {
     switch (kind) {
         case 'C': {  // nonlinear part of constraint <i>
-            const int64_t i = segment_index(seg);
+            const int64_t i = segment_index(tok, kind);
             if (i < 0 || i >= prob.n_cons) {
                 throw std::runtime_error("NL: C-segment index out of range");
             }
@@ -626,7 +767,7 @@ void parse_segment(Tokenizer& tok, NlProblem& prob, const std::string& seg) {
             break;
         }
         case 'O': {  // objective <i> <sense>; then nonlinear expr
-            const int64_t i = segment_index(seg);
+            const int64_t i = segment_index(tok, kind);
             if (i < 0 || i >= prob.n_objs) {
                 throw std::runtime_error("NL: O-segment index out of range");
             }
@@ -636,7 +777,7 @@ void parse_segment(Tokenizer& tok, NlProblem& prob, const std::string& seg) {
             break;
         }
         case 'x':  // initial primal guess: count, then <varidx> <value> pairs
-            read_initial_guess(tok, prob, segment_index(seg));
+            read_initial_guess(tok, prob, segment_index(tok, kind));
             break;
         case 'r':  // constraint bounds: n_cons records of <type> [values]
             read_con_bounds(tok, prob);
@@ -645,10 +786,10 @@ void parse_segment(Tokenizer& tok, NlProblem& prob, const std::string& seg) {
             read_var_bounds(tok, prob);
             break;
         case 'k':  // Jacobian column-count header: n_vars-1 cumulative ints
-            skip_ints(tok, segment_index(seg));
+            skip_ints(tok, segment_index(tok, kind));
             break;
         case 'J': {  // linear part of constraint <i>: k pairs <varidx> <coef>
-            const int64_t i = segment_index(seg);
+            const int64_t i = segment_index(tok, kind);
             const int64_t k = tok.next_int();
             if (i < 0 || i >= prob.n_cons) {
                 throw std::runtime_error("NL: J-segment index out of range");
@@ -657,7 +798,7 @@ void parse_segment(Tokenizer& tok, NlProblem& prob, const std::string& seg) {
             break;
         }
         case 'G': {  // linear part of objective <i>: k pairs <varidx> <coef>
-            const int64_t i = segment_index(seg);
+            const int64_t i = segment_index(tok, kind);
             const int64_t k = tok.next_int();
             if (i < 0 || i >= prob.n_objs) {
                 throw std::runtime_error("NL: G-segment index out of range");
@@ -666,18 +807,19 @@ void parse_segment(Tokenizer& tok, NlProblem& prob, const std::string& seg) {
             break;
         }
         case 'd':  // dual initial guess: count then pairs
-            skip_dual_guess(tok, segment_index(seg));
+            skip_dual_guess(tok, segment_index(tok, kind));
             break;
         case 'V':  // defined variable: index then linear+nonlinear def
-            read_defined_var(tok, prob, segment_index(seg));
+            read_defined_var(tok, prob, segment_index(tok, kind));
             break;
         case 'S': {  // suffix block: "S<kind> <n> <name>"
             // Not skipped: a suffix can be model data. MINLPLib's only ones
             // are `sosno`/`ref`, which declare SOS constraints, and dropping
             // them would solve a relaxation. Named in the refusal so a
             // coverage list can say which suffix stopped the file.
-            tok.next_int();
-            const std::string suffix = tok.next_token();
+            segment_index(tok, kind);  // the suffix kind
+            tok.next_int();            // its entry count
+            const std::string suffix = tok.next_name();
             throw std::runtime_error("NL: suffix '" + suffix +
                                      "' (segment 'S') is not supported by this reader");
         }
@@ -688,6 +830,15 @@ void parse_segment(Tokenizer& tok, NlProblem& prob, const std::string& seg) {
         default:
             throw std::runtime_error(std::string("NL: unknown segment marker '") + kind + "'");
     }
+}
+
+// The header `arith` code for this host's byte order (ASL: 1 = IEEE
+// little-endian, 2 = IEEE big-endian).
+int64_t host_arith() {
+    const uint16_t probe = 1;
+    unsigned char first = 0;
+    std::memcpy(&first, &probe, 1);
+    return first == 1 ? 1 : 2;
 }
 
 }  // namespace
@@ -707,20 +858,29 @@ NlProblem parse_nl(const std::string& text, const std::string& name) {
     prob.initial_x.assign(prob.n_vars, std::numeric_limits<double>::quiet_NaN());
     prob.defined_vars.resize(static_cast<size_t>(prob.n_defined_vars));
 
+    if (header.binary) {
+        // Binary numbers are in the writer's byte order. Reading them in
+        // another would yield garbage that still parses, so a mismatch (or an
+        // undeclared order) is refused.
+        const int64_t host = host_arith();
+        if (header.arith != host) {
+            throw std::runtime_error("NL: binary file's byte order (arith " +
+                                     std::to_string(header.arith) + ") is not this host's (arith " +
+                                     std::to_string(host) + ")");
+        }
+        tok.set_binary();
+    }
+
     // ---- Segments ----
     while (!tok.eof()) {
-        char marker = 0;
-        if (!tok.peek_char(marker)) {
-            break;
-        }
-        // Read the marker into a named local first. Passing `tok.next_token()`
+        // Read the marker into a named local first. Passing `tok.next_tag()`
         // as an argument while `tok` is also an argument leaves the cursor
         // advance unsequenced against the other argument initialisations --
         // well-defined only because parameter 1 binds a reference and so never
         // reads `tok`. Make one of those two facts explicit rather than both
         // implicit.
-        const std::string seg = tok.next_token();
-        parse_segment(tok, prob, seg);
+        const char kind = tok.next_tag();
+        parse_segment(tok, prob, kind);
     }
 
     return prob;

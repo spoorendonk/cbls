@@ -1,12 +1,14 @@
-// Network-free tests for the AMPL NL text reader (issue #72, P3), the
-// NL->Model adapter (P4), and one end-to-end solve of a vendored non-convex
-// instance (#124). Reader/adapter fixtures are tiny inline `g3` NL files; no
-// instances are downloaded. Fixture layout mirrors a real minlplib `.nl`
-// (header block, then b / x / r / J / O / C segments).
+// Network-free tests for the AMPL NL reader (issue #72, P3; binary format
+// #282), the NL->Model adapter (P4), and one end-to-end solve of a vendored
+// non-convex instance (#124). Reader/adapter fixtures are tiny inline `g3`/`b3`
+// NL files, plus one vendored binary MINLPLib file in tests/data; no instances
+// are downloaded. Fixture layout mirrors a real minlplib `.nl` (header block,
+// then b / x / r / J / O / C segments).
 
 #include "test_helpers.h"
 
 #include <algorithm>
+#include <array>
 #include <benchmarks/minlplib/note_policy.h>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
@@ -16,6 +18,7 @@
 #include <cbls/io_nl.h>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <string>
 
 using namespace cbls;
@@ -41,9 +44,145 @@ static std::string nl_header(int nv, int nc, int no, int ndef = 0) {
     return h;
 }
 
-TEST_CASE("NL reader rejects binary header", "[minlplib]") {
-    std::string text = "b3 0 1 0\n 1 0 1 0 0\n";
-    REQUIRE_THROWS_WITH(parse_nl(text, "bin"), Catch::Matchers::ContainsSubstring("binary"));
+// ---- Binary NL ('b' header), #282 ----
+
+// This host's `arith` code: 1 = IEEE little-endian, 2 = big-endian.
+static int host_arith() {
+    const uint16_t probe = 1;
+    unsigned char first = 0;
+    std::memcpy(&first, &probe, 1);
+    return first == 1 ? 1 : 2;
+}
+
+// The `g` fixture header turned into a `b` one: same counts, `arith` set
+// (to the host's byte order unless given).
+static std::string nl_header_binary(int nv, int nc, int no, int arith = 0) {
+    std::string h = nl_header(nv, nc, no);
+    h[0] = 'b';
+    const std::string text_arith = " 0 0 0 1\t# linear net, funcs, arith, flags\n";
+    const std::size_t at = h.find(text_arith);
+    h.replace(at, text_arith.size(),
+              " 0 0 " + std::to_string(arith == 0 ? host_arith() : arith) +
+                  " 0\t# linear net, funcs, arith, flags\n");
+    return h;
+}
+
+// Appends binary NL items in the host's byte order.
+struct BinaryNl {
+    std::string s;
+    BinaryNl& tag(char c) {
+        s += c;
+        return *this;
+    }
+    template <typename T>
+    BinaryNl& put(T v) {
+        std::array<char, sizeof(T)> bytes{};
+        std::memcpy(bytes.data(), &v, sizeof(T));
+        s.append(bytes.data(), bytes.size());
+        return *this;
+    }
+    BinaryNl& i32(int32_t v) { return put(v); }
+    BinaryNl& f64(double v) { return put(v); }
+};
+
+// minimize x0^2 + x1 ; s.t. x0 + x1 >= 3 ; x in [0,10]^2 -- in both encodings.
+static std::string text_twin() {
+    std::string text = nl_header(2, 1, 1);
+    text += "b\n0 0 10\n0 0 10\n";
+    text += "r\n2 3\n";
+    text += "J0 2\n0 1\n1 1\n";
+    text += "O0 0\n";
+    text += "o5\nv0\nn2\n";
+    text += "G0 1\n1 1\n";
+    return text;
+}
+
+static std::string binary_twin() {
+    BinaryNl b;
+    b.tag('b').tag('0').f64(0).f64(10).tag('0').f64(0).f64(10);
+    b.tag('r').tag('2').f64(3);
+    b.tag('J').i32(0).i32(2).i32(0).f64(1).i32(1).f64(1);
+    b.tag('O').i32(0).i32(0);
+    b.tag('o').i32(5).tag('v').i32(0).tag('n').f64(2);
+    b.tag('G').i32(0).i32(1).i32(1).f64(1);
+    return nl_header_binary(2, 1, 1) + b.s;
+}
+
+TEST_CASE("NL reader reads the binary format ('b' header)", "[minlplib]") {
+    SECTION("the same problem as its text twin") {
+        const NlProblem t = parse_nl(text_twin(), "text");
+        const NlProblem b = parse_nl(binary_twin(), "binary");
+        REQUIRE(b.n_vars == t.n_vars);
+        REQUIRE(b.n_cons == t.n_cons);
+        REQUIRE(b.n_objs == t.n_objs);
+        for (std::size_t j = 0; j < 2; ++j) {
+            REQUIRE(b.var_bounds[j].type == t.var_bounds[j].type);
+            REQUIRE(b.var_bounds[j].lower == t.var_bounds[j].lower);
+            REQUIRE(b.var_bounds[j].upper == t.var_bounds[j].upper);
+        }
+        REQUIRE(b.constraints[0].bound.type == t.constraints[0].bound.type);
+        REQUIRE(b.constraints[0].bound.lower == t.constraints[0].bound.lower);
+        REQUIRE(b.constraints[0].linear.size() == t.constraints[0].linear.size());
+        REQUIRE(b.objectives[0].linear.size() == t.objectives[0].linear.size());
+        const NlExpr& e = b.objectives[0].nonlinear;
+        REQUIRE(e.nodes.size() == t.objectives[0].nonlinear.nodes.size());
+        REQUIRE(e.nodes[e.root].opcode == 5);
+
+        // Same model, same value: at x = (2, 2) the objective is 4 + 2.
+        NlToModelResult r = nl_to_model(b);
+        REQUIRE(r.supported);
+        r.model.var_mut(0).value = 2.0;
+        r.model.var_mut(1).value = 2.0;
+        full_evaluate(r.model);
+        REQUIRE_THAT(r.model.node_value(r.objective_node_id), WithinAbs(6.0, 1e-12));
+    }
+    SECTION("short and long constants") {
+        // minimize x0 * 3 + (-7): 's' is an int16, 'l' an int32.
+        BinaryNl b;
+        b.tag('b').tag('0').f64(-5).f64(5);
+        b.tag('O').i32(0).i32(0).tag('o').i32(0).tag('o').i32(2).tag('v').i32(0);
+        b.tag('s').put(static_cast<int16_t>(3));
+        b.tag('l').i32(-7);
+        NlToModelResult r = nl_to_model(parse_nl(nl_header_binary(1, 0, 1) + b.s, "sl"));
+        REQUIRE(r.supported);
+        r.model.var_mut(0).value = 2.0;
+        full_evaluate(r.model);
+        REQUIRE_THAT(r.model.node_value(r.objective_node_id), WithinAbs(-1.0, 1e-12));
+    }
+    SECTION("a truncated file is refused") {
+        std::string cut = binary_twin();
+        cut.resize(cut.size() - 3);  // into the last coefficient
+        REQUIRE_THROWS_WITH(parse_nl(cut, "cut"),
+                            Catch::Matchers::ContainsSubstring("unexpected end of file"));
+    }
+    SECTION("a foreign byte order is refused") {
+        const int foreign = host_arith() == 1 ? 2 : 1;
+        REQUIRE_THROWS_WITH(parse_nl(nl_header_binary(1, 0, 1, foreign) + "b", "endian"),
+                            Catch::Matchers::ContainsSubstring("byte order"));
+    }
+    SECTION("a real MINLPLib file, kriging_peaks-red010") {
+        // MINLPLib serves this instance only in binary. Its best-known point
+        // (minlplib.org/sol/kriging_peaks-red010.p1.sol; columns x1, x2 per
+        // its .col file) gives the catalogue's primal bound 0.291120782173534.
+        const NlProblem prob = read_nl("tests/data/kriging_peaks-red010.nl");
+        REQUIRE(prob.n_vars == 2);
+        NlToModelResult r = nl_to_model(prob);
+        if (!r.supported) {
+            FAIL((r.skipped_reasons.empty() ? std::string("unsupported") : r.skipped_reasons[0]));
+            return;
+        }
+        r.model.var_mut(0).value = -2.169611845910990;
+        r.model.var_mut(1).value = 0.295734644415665;
+        full_evaluate(r.model);
+        REQUIRE_THAT(r.model.node_value(r.objective_node_id), WithinAbs(0.291120782173534, 1e-9));
+    }
+}
+
+TEST_CASE("NL reader refuses a text tag missing its number", "[minlplib]") {
+    // A bare "O" would otherwise take the next line's number as its index.
+    const std::string text = nl_header(1, 0, 1) + "b\n0 0 1\nO\n0 0\nn0\n";
+    REQUIRE_THROWS_WITH(parse_nl(text, "bare"),
+                        Catch::Matchers::ContainsSubstring("missing its number"));
 }
 
 TEST_CASE("NL reader parses counts and variable bounds", "[minlplib]") {
