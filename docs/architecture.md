@@ -1552,8 +1552,8 @@ The ViolationLS outer loop owns the iteration clock and calls:
   instead of anywhere in the box. The List/Set half is unchanged. That is
   OR-Tools' no-restart path (`PerturbateCurrentSolution`); its restart states
   redraw near zero or the objective bound, and below 16 workers on one state
-  set it runs no no-restart state, so the mipfeas head-to-head's CP-SAT arm
-  never takes it (#234).
+  set it runs no no-restart state, so the mipfeas CP-SAT arm in its fj+ls mode
+  never takes it (#234); at its defaults (#255) it picks its own worker count.
 
 **The objective before the first feasible point (#218), on by default.**
 Without help FJ ignores the objective until the first feasible point: the

@@ -252,9 +252,13 @@ flag or reformats a log line does not crash — it produces a degraded or empty
 baseline across all 233 instances at exit 0.
 
 `cpsat_solve.py --preflight` solves one tiny model built in memory (no instance,
-no network, ~2s) and asserts both halves, naming which broke:
+no network, ~2s) and asserts both halves, naming which broke. At CP-SAT's
+defaults (`--workers 0`, the default) there is no restriction to assert, so it
+checks that CP-SAT accepted the one parameter it sets and the log format only,
+including the worker line `workers_started` is read from; with `--workers N`
+it checks both:
 
-* **worker restriction** — CP-SAT accepted the parameter string, the log's
+* **worker restriction** (fj+ls mode only) — CP-SAT accepted the parameter string, the log's
   subsolver announcement lists exactly `fj` as first-solution and `ls` as
   interleaved, the thread count is the one asked for, and the configuration can
   actually find a solution;
@@ -424,12 +428,12 @@ cmake -B build && cmake --build build -j$(nproc) --target cbls_mipfeas
 pip install -e '.[benchmarks]'
 python benchmarks/mipfeas/cpsat_solve.py --preflight   # ~2s, no instance, no network
 
-# 4. Wiring check: 11 instances, both engines, short budget
-python benchmarks/mipfeas/run_benchmark.py --roster smoke --budget 60 --jobs 2
+# 4. Wiring check: 11 instances, both engines, short budget. CP-SAT at its
+#    defaults takes the machine's cores, so the driver runs one job at a time.
+python benchmarks/mipfeas/run_benchmark.py --roster smoke --budget 60 --jobs 1
 
-# 5. The publishable run (233 x 600s x 2 engines is ~78 CPU-hours)
-python benchmarks/mipfeas/run_benchmark.py --roster full --budget 600 \
-    --jobs 4 --mem-limit-gb 6
+# 5. The publishable run (233 x 600s x 2 engines, one job at a time: ~78 wall-hours)
+python benchmarks/mipfeas/run_benchmark.py --roster full --budget 600 --jobs 1
 
 # 6. Score it — into the results directory, beside what it scores
 python benchmarks/mipfeas/primal_integral.py \
@@ -816,8 +820,9 @@ cited at
   the perturbation probability, near zero, and, when the state uses the
   objective, objective columns to the bound their coefficient favours. Only a no-restart state perturbs near the
   current value (`PerturbateCurrentSolution`), and the first one is state 15
-  (`use_restart = index % 16 != 15`), so at the `num_workers` this benchmark
-  runs, below 16 on one state set, the CP-SAT arm never takes that path.
+  (`use_restart = index % 16 != 15`), so in the fj+ls mode, at fewer than 16
+  workers on one state set, the CP-SAT arm never takes that path. At its
+  defaults CP-SAT picks its own worker count and portfolio, so it may.
 * **CBLS kicks.** One search state, fixed options, no Luby schedule and no reset
   to zero or the bound. On stagnation it perturbs from `kick_origin()`: the
   incumbent once one exists, an adopted pool solution in a portfolio, in place

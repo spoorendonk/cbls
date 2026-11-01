@@ -2321,9 +2321,10 @@ def write_comparison(
             "#",
             "# This is an IMPLEMENTATION SANITY CHECK, not a MIP-competitiveness claim.",
             "# The only baseline is CP-SAT restricted to its fj + ls workers — the reference",
-            "# implementation of the same jump-based algorithm CBLS reimplements. CP-SAT's",
-            "# default portfolio, and every other MIP solver, are deliberately out of scope",
-            "# (epic #87). A gap in either direction is informative about the reimplementation.",
+            "# implementation of the same jump-based algorithm CBLS reimplements. This table",
+            "# makes no claim about CP-SAT at its defaults, the campaign's baseline since",
+            "# 2026-11-01 (#255). A gap in either direction is informative about the",
+            "# reimplementation.",
         ]
     header = [
         *baseline,
