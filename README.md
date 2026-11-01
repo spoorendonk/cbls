@@ -44,7 +44,7 @@ m.close();
 - **Feasibility Jump** construction heuristic (greedy violation reduction)
 - **Gradient-based intensification**: Newton steps and backtracking line search on continuous variables
 - **Large neighborhood search**: destroy-repair diversification
-- **Delta evaluation**: a one-variable move re-evaluates a topologically sorted cone cached when the model is frozen; probes roll back from an undo log
+- **Delta evaluation**: a one-variable move on a frozen model re-evaluates a topologically sorted cone cached at freeze (up to a memory cap); probes roll back from an undo log
 - **Reverse-mode AD**: sparse automatic differentiation for gradient moves
 - **Multi-threaded** cooperative portfolio: workers share incumbents through a solution pool and restart stalled searches from it
 - **Python bindings** via nanobind
@@ -100,7 +100,8 @@ diversification kicks or LNS restart the search from a perturbed copy of the
 point it is exploring around — its own incumbent, a peer's state under the
 multi-threaded portfolio, or the live assignment until the first feasible
 solution. How it fares against CP-SAT, SCIP and published results is what the
-benchmarks below measure; their full-scale tables are not published yet (#253).
+benchmarks below measure. Their current tables are smoke-scale or predate
+recent engine work; the full-campaign tables are not published yet (#253).
 
 ## Known limitations
 
