@@ -1424,7 +1424,9 @@ def _num(value: float, digits: int = 3) -> str:
     return "n/a" if math.isnan(value) else f"{value:.{digits}f}"
 
 
-def _scope_banners(rows: list[Scored], summaries: list[Summary], parity: Parity) -> list[str]:
+def _scope_banners(
+    rows: list[Scored], summaries: list[Summary], parity: Parity, held_out: HeldOut | None
+) -> list[str]:
     """The scope caveats the comparison table carries, for the report as well.
 
     A report renders as a page and is the artifact that travels, so a caveat that
@@ -1433,7 +1435,15 @@ def _scope_banners(rows: list[Scored], summaries: list[Summary], parity: Parity)
     produce a report that otherwise reads as a result.
     """
     banners: list[str] = []
-    if parity.roster_size != FULL_ROSTER_SIZE:
+    if held_out is not None and _is_held_out_table(parity.roster_size, held_out):
+        banners += [
+            f"> **Held-out roster.** {parity.roster_size} of the {FULL_ROSTER_SIZE} MIPfeas "
+            f"instances. The other {len(held_out.names)} are the instances settings were "
+            f"tuned on, listed in `{held_out.path.name}` and left out so that no scored "
+            f"instance was used for tuning: {', '.join(held_out.names)}.",
+            "",
+        ]
+    elif parity.roster_size != FULL_ROSTER_SIZE:
         banners += [
             "> **WIRING CHECK, NOT A PUBLISHABLE RESULT.** The MIPfeas roster is "
             f"{FULL_ROSTER_SIZE} instances; this report covers {parity.roster_size}. "
@@ -1689,6 +1699,7 @@ def render_report(
     engines: tuple[str, ...] = ENGINES,
     run_record: dict[str, object] | None = None,
     run_count: int = 0,
+    held_out: HeldOut | None = None,
 ) -> str:
     """The parity report that is published beside the comparison table.
 
@@ -1714,7 +1725,7 @@ def render_report(
         "pairing, never a claim against any solver's default portfolio (epic #87).",
         "",
     ]
-    out += _scope_banners(rows, summaries, parity)
+    out += _scope_banners(rows, summaries, parity, held_out)
     out += [
         "## 1. Defects",
         "",
@@ -1929,6 +1940,55 @@ def read_roster(path: Path) -> list[tuple[str, float, str]]:
     return entries
 
 
+class HeldOut(NamedTuple):
+    """The full-roster instances a table leaves out because settings were tuned on them.
+
+    A campaign that tunes on some MIPfeas instances and reports the rest scores a
+    roster that is short of FULL_ROSTER_SIZE by design (#255). Without a name for
+    that shape, the table is stamped a wiring check, which it is not.
+    """
+
+    path: Path
+    names: tuple[str, ...]
+
+
+def read_held_out(path: Path) -> HeldOut:
+    """Instance names, one per line; blank lines and `#` comments are skipped."""
+    names = [
+        line.split("#", 1)[0].strip()
+        for line in path.read_text().splitlines()
+        if line.split("#", 1)[0].strip()
+    ]
+    repeated = sorted({name for name in names if names.count(name) > 1})
+    if repeated:
+        raise ValueError(f"{path} repeats {', '.join(repeated)}")
+    return HeldOut(path, tuple(names))
+
+
+def held_out_problems(roster_names: list[str], held_out: HeldOut) -> list[str]:
+    """Why `held_out` does not complete `roster_names` to the full roster, if it does not.
+
+    The two must be disjoint and together come to FULL_ROSTER_SIZE: a held-out list
+    that overlaps the roster or falls short of it would label a partial run as the
+    reported half of a tuned campaign.
+    """
+    problems: list[str] = []
+    overlap = sorted(set(roster_names) & set(held_out.names))
+    if overlap:
+        problems.append(f"{held_out.path} names instances the roster scores: {', '.join(overlap)}")
+    total = len(roster_names) + len(held_out.names)
+    if total != FULL_ROSTER_SIZE:
+        problems.append(
+            f"the roster ({len(roster_names)}) and {held_out.path} ({len(held_out.names)}) "
+            f"come to {total} instances, not the {FULL_ROSTER_SIZE} of the MIPfeas roster"
+        )
+    return problems
+
+
+def _is_held_out_table(instances: int, held_out: HeldOut | None) -> bool:
+    return held_out is not None and instances + len(held_out.names) == FULL_ROSTER_SIZE
+
+
 def _config_value(rows: list[Scored], engine: str, key: str) -> str | None:
     """The value `key` took in `engine`'s rows, or None when no row records it."""
     for row in rows:
@@ -2055,7 +2115,12 @@ def _blank[T](value: T | None, render: Callable[[T], object] = lambda v: v) -> o
 
 
 def write_comparison(
-    path: Path, rows: list[Scored], summaries: list[Summary], budget: float, roster_path: Path
+    path: Path,
+    rows: list[Scored],
+    summaries: list[Summary],
+    budget: float,
+    roster_path: Path,
+    held_out: HeldOut | None = None,
 ) -> None:
     header = [
         "# MIPfeas comparison: CBLS vs CP-SAT's violation_ls worker.",
@@ -2116,7 +2181,15 @@ def write_comparison(
             "# verdict; the 'Verified:' note above does not hold for them.",
             "#",
         ]
-    if instances != FULL_ROSTER_SIZE:
+    if held_out is not None and _is_held_out_table(instances, held_out):
+        header += [
+            f"# HELD-OUT ROSTER: {instances} of the {FULL_ROSTER_SIZE} MIPfeas instances.",
+            f"# The other {len(held_out.names)}, listed in {held_out.path.name}, are the",
+            "# instances settings were tuned on, left out so that no scored instance",
+            "# was used for tuning.",
+            "#",
+        ]
+    elif instances != FULL_ROSTER_SIZE:
         # The budget is not part of this test (#126): the budget to score at is a
         # choice the run makes and the header records, so a full roster at any one
         # budget is a result. A partial roster is a wiring check at every budget.
@@ -2213,11 +2286,24 @@ def main() -> int:
         "goes, and a row nobody checked is what that issue exists to stop publishing. "
         "Never relaxes a verdict that says `fail`",
     )
+    parser.add_argument(
+        "--held-out",
+        default=None,
+        help="file naming, one per line, the MIPfeas instances this roster leaves out "
+        "because settings were tuned on them. Must be disjoint from --roster and complete "
+        "it to the full 233; the table is then labelled a held-out roster instead of a "
+        "wiring check",
+    )
     args = parser.parse_args()
 
     roster_path = Path(args.roster)
     roster = read_roster(roster_path)
     results_dir = Path(args.results_dir)
+    held_out = read_held_out(Path(args.held_out)) if args.held_out else None
+    if held_out is not None:
+        problems = held_out_problems([name for name, _, _ in roster], held_out)
+        if problems:
+            parser.error("; ".join(problems))
 
     rows = [
         score_instance(
@@ -2236,7 +2322,7 @@ def main() -> int:
     check_uniform_configuration(rows)
 
     out_path = Path(args.out)
-    write_comparison(out_path, rows, summaries, args.budget, roster_path)
+    write_comparison(out_path, rows, summaries, args.budget, roster_path, held_out)
     report_path = (
         Path(args.report) if args.report else out_path.with_name(f"{out_path.stem}_report.md")
     )
@@ -2255,6 +2341,7 @@ def main() -> int:
             out_path,
             run_record=run_record,
             run_count=run_count,
+            held_out=held_out,
         ),
     )
 

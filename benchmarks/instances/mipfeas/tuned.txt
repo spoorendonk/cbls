@@ -1,0 +1,27 @@
+# The 22 MIPfeas instances settings were tuned on (#255's dev set). A table
+# that reports the other 211 passes this file to primal_integral.py as
+# --held-out, so no scored instance was used for tuning.
+# The 11 of smoke.csv: #209, #226 and the 1e7 clamp were tuned on them.
+enlight_hard
+markshare2
+gen-ip054
+gen-ip002
+pk1
+mas76
+neos5
+mad
+binkar10_1
+atlanta-ip
+neos-5114902-kasavu
+# The 11 held out in #244's settings check.
+chromaticindex1024-7
+csched007
+fastxgemm-n2r6s0t2
+neos-3083819-nubu
+neos-4338804-snowy
+neos-4763324-toguru
+neos-957323
+rail02
+supportcase18
+traininstance2
+uct-subprob

@@ -15,15 +15,21 @@ from benchmarks.mipfeas.primal_integral import (
     FULL_ROSTER_SIZE,
     NO_SOLUTION_GAP,
     SIGN_FLIP_GAP,
+    HeldOut,
     Scored,
     check_uniform_configuration,
+    held_out_problems,
     primal_gap,
     primal_integral,
+    read_held_out,
+    read_roster,
+    render_report,
     score_instance,
     shifted_geometric_mean,
     summarize,
     write_comparison,
 )
+from benchmarks.mipfeas.run_benchmark import DEFAULT_INSTANCE_DIR
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -810,3 +816,71 @@ def test_partial_roster_table_is_still_banner_stamped(tmp_path: Path, budget: fl
     # counts and peak RSS, so a substring search for the number proves nothing.
     assert f"is {FULL_ROSTER_SIZE} instances" in text
     assert "this table used 1" in text
+
+
+@pytest.mark.parametrize(
+    ("held", "held_out_label"),
+    [(22, True), (21, False)],
+    ids=["completes-the-roster", "falls-short"],
+)
+def test_held_out_roster_is_labelled_only_when_it_completes_the_full_one(
+    tmp_path: Path, held: int, held_out_label: bool
+) -> None:
+    # #255 reports 211 instances and leaves out the 22 it tuned on. That table is
+    # not a wiring check; one whose held-out list does not make up the difference
+    # still is, in the CSV header and in the report alike.
+    _write_result(tmp_path, "cbls", "inst", {"status": "feasible", "objective": 10.0})
+    scored = _score(tmp_path, reference=10.0)
+    rows = [
+        scored._replace(instance=f"i{k}", engine=engine)
+        for engine in ENGINES
+        for k in range(FULL_ROSTER_SIZE - 22)
+    ]
+    summaries = [summarize(rows, engine) for engine in ENGINES]
+    held_out = HeldOut(tmp_path / "tuned.txt", tuple(f"t{k}" for k in range(held)))
+    out = tmp_path / "comparison.csv"
+    write_comparison(out, rows, summaries, 60.0, tmp_path / "r.csv", held_out)
+    table = out.read_text()
+    report = render_report(rows, summaries, 60.0, tmp_path / "r.csv", out, held_out=held_out)
+
+    for text in (table, report):
+        assert ("WIRING CHECK" in text) is not held_out_label
+        assert ("tuned.txt" in text) is held_out_label
+    assert ("# HELD-OUT ROSTER: 211 of the 233" in table) is held_out_label
+    assert ("**Held-out roster.** 211 of the 233" in report) is held_out_label
+    assert ("t21" in report) is held_out_label
+
+
+@pytest.mark.parametrize(
+    ("roster", "held", "complaint"),
+    [
+        (["a", "b"], ["b", *(f"t{k}" for k in range(FULL_ROSTER_SIZE - 3))], "names instances"),
+        (["a", "b"], [f"t{k}" for k in range(FULL_ROSTER_SIZE - 3)], "come to 232 instances"),
+    ],
+    ids=["overlaps-the-roster", "short-of-the-full-roster"],
+)
+def test_held_out_list_must_complete_the_roster_disjointly(
+    tmp_path: Path, roster: list[str], held: list[str], complaint: str
+) -> None:
+    problems = held_out_problems(roster, HeldOut(tmp_path / "h.txt", tuple(held)))
+    assert len(problems) == 1
+    assert complaint in problems[0]
+
+
+def test_held_out_file_skips_comments_and_refuses_repeats(tmp_path: Path) -> None:
+    path = tmp_path / "h.txt"
+    path.write_text("# header\nalpha\n\n  beta  # trailing note\n")
+    assert read_held_out(path).names == ("alpha", "beta")
+    path.write_text("alpha\nalpha\n")
+    with pytest.raises(ValueError, match="repeats alpha"):
+        read_held_out(path)
+
+
+def test_committed_tuned_list_completes_the_pinned_roster() -> None:
+    # The list #255's reported table is scored against: if it drifts from
+    # roster.csv, scoring that table refuses the flag instead of labelling it.
+    roster = [name for name, _, _ in read_roster(DEFAULT_INSTANCE_DIR / "roster.csv")]
+    tuned = read_held_out(DEFAULT_INSTANCE_DIR / "tuned.txt")
+    reported = [name for name in roster if name not in tuned.names]
+    assert len(tuned.names) == 22
+    assert held_out_problems(reported, tuned) == []
