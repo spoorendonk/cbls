@@ -515,8 +515,7 @@ TEST_CASE("a search starting feasible with a +inf objective still finds a finite
 // through solve() takes a long run whose trajectory is not reproducible move by
 // move. That end-to-end side is pinned by measurement instead (setcover
 // scp41/Set, 99 candidates accepted at a true weighted delta of exactly 0 out of
-// 39627, with no row clamped anywhere), reported in the Structural Batch section
-// of docs/architecture.md.
+// 39627, with no row clamped anywhere), reported in #118.
 //
 // The model below is the smallest thing that reaches the window and can be
 // observed leaving it:

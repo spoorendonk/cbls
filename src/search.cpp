@@ -1642,7 +1642,7 @@ void ViolationLSLoop::count_batch(BatchKind kind) {
 // from ViolationLS §5 / Algorithm 6, which draws A at the start, on a new best
 // and on a perturbation, and keeps it in between. #209 implemented that sticky
 // draw and settled it with a pre-registered paired A/B (committed before either
-// arm ran; docs/architecture.md has the protocol): MIPfeas smoke roster, 30s,
+// arm ran; #209 has the protocol): MIPfeas smoke roster, 30s,
 // seeds 1-10, engine a19b222, primal integral per (instance, seed). Sticky minus
 // per-batch: mean +0.031, 95% CI [+0.016, +0.046] over 110 pairs; per-batch won
 // 72, sticky 8, 30 ties (the three instances neither arm solves); sgm 0.2018

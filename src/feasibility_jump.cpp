@@ -3645,7 +3645,7 @@ bool FeasibilityJump::novelty_batch(int64_t batch_iterations) {
     // an iteration count gets to the equal per-batch effort Algorithm 6 assumes
     // (its batches, like OR-Tools', are bounded by the same deterministic time
     // whichever algorithm runs). Derived from the sample size, not fitted; what
-    // it measured to on MIPfeas is in docs/architecture.md. <= 0 is "no
+    // it measured to on MIPfeas is in #209. <= 0 is "no
     // per-batch limit", as for batch(): the deadline, or GFJConfig::
     // max_iterations, then ends it.
     nj_work_remaining_ =

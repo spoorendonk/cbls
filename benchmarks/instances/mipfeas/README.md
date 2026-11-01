@@ -673,7 +673,7 @@ on them a published row is in-sample:
 | Choice | Decided by | Shipped in |
 |---|---|---|
 | Novelty Jump on, and the `1e7` clamp | the A/B table under "What the wiring check found" | the runner's flags |
-| FJ-or-Novelty redrawn every batch | #209's pre-registered A/B, 10 seeds at 30s (`docs/architecture.md`, Novelty Jump) | `143c8da` |
+| FJ-or-Novelty redrawn every batch | #209's pre-registered A/B, 10 seeds at 30s | `143c8da` |
 | objective tie-break on | #226 Run A, 5 seeds at 10s; gap at first feasible 0.748 | `9e1cce9` (#220) |
 | near-value kick off | #226 Run B on MINLPLib; Run A on this roster passed it | default kept since #217 (#219) |
 

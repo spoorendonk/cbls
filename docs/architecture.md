@@ -150,7 +150,7 @@ Bool, Int and Float are *scalar* (jumpable by GFJ). List and Set are
 > **Neither structural type has a positive result behind it.** "Generalises to
 > structured variables" is a claim about modelling reach only. `Set` is
 > measured and negative against one Bool per column
-> ([structure-only models](#structure-only-models-what-the-structural-batch-is-and-is-not),
+> ([structure-only models](#structure-only-models),
 > `benchmarks/instances/setcover/README.md`); `List` has no evidence yet, and
 > the CVRP benchmark (`benchmarks/cvrp/`) is where #204 will produce it.
 
@@ -1118,11 +1118,11 @@ Breaking a currently-satisfied constraint is therefore *cheap*, which lets the
 search build chains that target the initially-broken constraints. When a move
 breaks a satisfied constraint, that constraint is promoted to full weight and
 its vars are enqueued. Algorithm 4 re-initialises `W'` this way at every
-discrepancy level; since #209 only the rows noted since the last reset are
-redone (`reset_changed_novelty_weights`, OR-Tools'
-`ResetChangedCompoundWeights`), which reproduces the whole-row re-init exactly
-because every other row still holds its re-init value — the comment above
-that function gives the argument, and `novelty_weights_consistent()` checks it.
+discrepancy level; only the rows noted since the last reset are redone
+(`reset_changed_novelty_weights`, OR-Tools' `ResetChangedCompoundWeights`),
+which reproduces the whole-row re-init exactly because every other row still
+holds its re-init value — the comment above that function gives the argument,
+and `novelty_weights_consistent()` checks it.
 
 ### Bounded-Backtracking Search
 
@@ -1130,16 +1130,16 @@ that function gives the argument, and `novelty_weights_consistent()` checks it.
 explicit move stack (the paper's set `T`). `s_m` is the cumulative
 *original-weight* score of moves on the stack; `s_c` tracks the best child score
 explored at the current level. A candidate var is selected (`select_novelty_var`)
-as the best — by **novelty score**, as OR-Tools ranks its sample (#209) — of up
+as the best — by **novelty score**, as OR-Tools ranks its sample — of up
 to 3 sampled vars in `Q\T` passing the filter
 `(s_m + W'-score > 0) OR (W-score > s_c)`, scored by `compute_var_jump` under
-`W'`; its W-score comes from the same pass (#272: a dual-weight
-`LinearJumpScorer::prepare`, a dual-weight probe), bit-identical to scoring it
-afresh under `W`. The move is applied; if `s_m + W-score > 0` the compound move is committed
-(left applied) and returns true; otherwise it recurses, and on failure backtracks
-(reverting the move and consuming a `budget` discrepancy — at the root too, as
-in the paper; OR-Tools does not count root backtracks, see the comment above
-`novelty_jump_search`).
+`W'`; its W-score comes from the same pass (a dual-weight
+`LinearJumpScorer::prepare` probe, #272), bit-identical to scoring it afresh
+under `W`. The move is applied; if `s_m + W-score > 0` the compound move is
+committed (left applied) and returns true; otherwise it recurses, and on failure
+backtracks (reverting the move and consuming a `budget` discrepancy — at the
+root too, as in the paper; OR-Tools does not count root backtracks, see the
+comment above `novelty_jump_search`).
 
 One ApplyNoveltyJump (`novelty_descent`, Algorithm 4) iterates `budget = 0, 1,
 2`, committing improving compound moves and restarting at `budget = 0` from the
@@ -1149,7 +1149,7 @@ already re-queued every var whose verdict they could have changed.
 ### The Novelty batch
 
 `novelty_batch(batch_iterations)` is Algorithm 6 line 22, GLS with
-ApplyNoveltyJump as its move (#209): when a whole ApplyNoveltyJump fails at
+ApplyNoveltyJump as its move: when a whole ApplyNoveltyJump fails at
 `budget = 2` — a Novelty local minimum — the GLS weights are decayed and bumped
 exactly as an FJ batch's are (`W'` follows on the bumped rows), and the search
 goes on. `W'` is initialised and `Q'` seeded once per batch. Its work is
@@ -1161,87 +1161,30 @@ charge closest to the equal per-batch effort Algorithm 6 assumes, and it keeps
 wall clock is bounded by the GLS loop's deadline stride, polled per move and per
 bump (a search that applies no move still bumps), and it ends by rebuilding
 FJ's `V`, `Q` and jump table, so the caller needs no resync.
+
 Like FJ's `update_var`, a move or undo re-queues into `Q'` only the neighbours
 that sit in an active violated row (Algorithm 1 lines 16-17, OR-Tools'
-`ShouldScan`): a var whose rows all hold fails both arms of the filter, and
-without the per-commit reseed to clear them out, scoring such vars was 88% of a
-binkar10_1 run (that admission test is `update_var`'s, and like it ignores a row
-whose residual is in `(0, tol]`, which counts as satisfied but still scores).
+`ShouldScan`), and like it ignores a row whose residual is in `(0, tol]`, which
+counts as satisfied but still scores. A var whose rows all hold fails both arms
+of the filter, so admitting it only costs scoring time.
 `SearchCounters::novelty_moves`, `novelty_commits` and `novelty_weight_bumps`
-record its work apart from FJ's. Before #209 a Novelty batch was a single
-ApplyNoveltyJump capped at 256 moves whose failure was ignored, it reseeded
-`Q'` from every violated row after every commit and at every level, and it
-charged no GLS iteration.
-
-**Measured (#209)**, MIPfeas runner, one thread, Release, serial under the
-wall-clock lock at 1-minute load 1.36-1.49 (AMD Ryzen 5 5600H). "Before" is
-`f9a425a` (#210's head); the shipped code is `143c8da`. A SIGPROF profile of
-binkar10_1 at 20s (`cd235e3`) puts `seed_novelty_scan_set` and
-`init_novelty_weights` at 0.0% (33.6% at `c339b47`); Novelty's time is now
-scoring its sample (`select_novelty_var` 63.5%), at roughly 27 us per Novelty
-move against roughly 11 us per FJ iteration, about 2.5x -- the same order as
-the 3 iterations a move is charged.
-
-binkar10_1, 20s, seed 42, compound moves on / off. Before: 880k / 1.82M GLS
-iterations (0.48), Novelty batches then charging nothing. Shipped: 2.60M /
-1.83M charged iterations, of which 1.08M are FJ GLS iterations (0.59 on the
-before metric) and 505k Novelty moves (1.51M charged), with 1514 Novelty and
-1513 FJ batches, 236k compound moves committed and 79 Novelty weight bumps.
-
-The 11-instance smoke roster at 30s, seed 42, against CP-SAT's
-`num_violation_ls` worker (CP-SAT rows from the 2026-10-03 run at `c339b47`,
-one worker; primal integral, shifted geometric mean, lower is better):
-CP-SAT 0.2917, 8/11 feasible; before 0.2485, 8/11; shipped 0.2257, 8/11 -- the
-same eight instances. Single-seed; the ten-seed comparison below is the
-evidence that carries weight. Novelty engaged on every instance: it ran about
-half the batches and committed compound moves on all eleven, and bumped weights
-on all but neos-5114902-kasavu.
-
-**Pre-registered A/B: when Algorithm 6's `A` is redrawn (#209 review).**
-Written and committed before either arm was run. Arms, both built from engine
-commit `a19b222`: (a) `A` kept until a new best or a full-period perturbation
-(Algorithm 6 / paper §5, the code at `a19b222`); (b) `A` redrawn every batch (the
-pre-#209 behaviour; `a19b222` with `pick_batch_kind` redrawing unconditionally,
-built as a variant, not a flag). Roster: the 11-instance MIPfeas smoke roster.
-30s per run, seeds 1-10, one thread, MIPfeas runner defaults (compound moves
-on), run serially under the wall-clock lock at 1-minute load < 1.5. Metric:
-each run's primal integral as `primal_integral.py` scores it at 30s. Reported:
-sgm per arm (the scorer's shifted geometric mean over all 110 runs); the paired
-difference (a) - (b) per (instance, seed), its mean with a 95% t-interval over
-the 110 pairs; win/loss/tie counts (tie: equal integrals); feasible runs per arm;
-and per arm the share of batches that were Novelty, from the runner's counters.
-Decision rule: if the interval excludes zero, ship the arm with the lower mean
-integral; otherwise ship (b), the pre-#209 behaviour and the closer of the two
-to OR-Tools, whose `ls` worker redraws `use_compound_moves` at every restart of
-a short Luby schedule (`SharedLsStates::ConfigureNextLubyRestart`,
-`LsOptions::Randomize`).
-
-*Outcome*, 220 runs, all exit 0, load 1.42-1.49. Sticky minus per-batch,
-paired over 110 (instance, seed): mean +0.031, sd 0.080, 95% CI [+0.016,
-+0.046]. Per-batch had the lower integral in 72 pairs, sticky in 8, 30 ties
-(atlanta-ip, enlight_hard and neos-5114902-kasavu, unsolved by both at 2.0).
-sgm 0.2467 sticky, 0.2018 per-batch; 80/110 feasible in both; Novelty's share of
-scalar batches 47.6% sticky, 50.0% per-batch. Per-batch won all ten seeds on
-binkar10_1, gen-ip002, gen-ip054, markshare2 and pk1, 9 of 10 on mad, 8 on
-mas76, and 5-5 on neos5. The interval excludes zero, so by the rule the winner,
-per-batch redraw, ships (`143c8da`); `pick_batch_kind` carries the deviation from
-§5 and its reasoning.
+record its work apart from FJ's. The MIPfeas measurements (cost per move,
+profile, smoke roster) and the pre-registered A/B that settled when Algorithm
+6's `A` is redrawn — every batch, a deviation from §5 that `pick_batch_kind`
+documents — are in #209.
 
 `apply_novelty_jump()` is one stand-alone ApplyNoveltyJump from a fresh `W'` and
 `Q'`, capped at `kNoveltyWorkBudget = 256` applied moves; the caller must
 `resync()` afterward. Tests and the trajectory fence's history use it; the
 search runs `novelty_batch`.
 
-> **Status:** Novelty Jump is **on by default** since 2026-10-07
-> (`SearchConfig::use_compound_moves = true`), after a single-seed smoke at
-> `b8f52f4` favoured it on MINLPLib on objective (16 better, 7 worse, 25 tied at
-> 5s; feasible on 46 instances with it against 47 without: nvs02 and nvs14 lost,
-> chain50 gained) and not on UC-CHPED (3 better, 16 worse of its (instance,
-> horizon) rows at 10s), whose runner therefore turns it off. One seed per arm,
-> at load 1.2-2.4 (above the 1.5 the A/B protocol asks for), so an indication
-> rather than a result. When enabled, `novelty_jump_probability` (default 0.5, matching the
-> paper) is the probability that a scalar batch is Novelty, drawn afresh every
-> batch (see [Main Loop](#main-loop)).
+> **Status:** Novelty Jump is **on by default**
+> (`SearchConfig::use_compound_moves = true`), on a single-seed smoke that
+> favoured it on MINLPLib and not on UC-CHPED, whose runner therefore turns it
+> off; the smoke's numbers are in #209. When enabled,
+> `novelty_jump_probability` (default 0.5, matching the paper) is the
+> probability that a scalar batch is Novelty, drawn afresh every batch (see
+> [Main Loop](#main-loop)).
 
 ---
 
@@ -1259,71 +1202,36 @@ keeps any move that reduces total weighted violation (negative weighted `deltaG`
 under the current GLS weights `W`).
 
 By default the generators are the built-in ones — exactly one per List/Set
-variable, in variable-id order, each proposing exactly the typed moves the
-hard-coded sweep proposed before #165 — so an unconfigured run takes the
-trajectory it always took, bit for bit at one thread on a given seed. That is
-pinned by `tests/test_structural_equivalence.cpp`, whose digests were recorded
-against the engine at `a805cb6`.
+variable, in variable-id order. `tests/test_structural_equivalence.cpp` pins
+their trajectory bit for bit at one thread on a given seed, against digests
+recorded at `a805cb6`.
 
 That `deltaG` is accumulated per constraint, via
 `ViolationManager::snapshot_violations` / `weighted_delta_from`, and not by
-subtracting two `total_violation()` readings. That removes **two** independent
-defects, and only the first of them needs a clamped row.
+subtracting two `total_violation()` readings, which fails twice over:
 
-**Clamped-row blindness (#118).** Once any row is clamped to `kInfPenalty`,
-whole-sum differencing loses the real rows outright: 1e30 is fourteen orders of
-magnitude above an O(1) row, so both readings round to the same double and every
-move scores exactly 0. The objective soft constraint sits at that clamp for as
-long as the #116 sentinel bound is installed, which used to freeze the structural
-assignment of any model whose feasible region contains a non-finite objective.
+- **Clamped rows (#118).** Once any row is clamped to `kInfPenalty` (the
+  objective row is, while the #116 sentinel bound is installed), both readings
+  round to the same double and every move scores exactly 0.
+- **Cache drift.** `total_violation()` is an incrementally maintained
+  accumulator whose periodic from-scratch recompute bounds its rounding error
+  without removing it, so two readings can differ in the last ulp for a move
+  that changed nothing; a `- 1e-12` guard cannot filter that (`x - 1e-12 == x`
+  for every double `x > 16384`, and GLS weights push setcover's total far
+  above that). The old test committed such phantom zero-delta moves on
+  setcover with no row clamped (measured in #118); `tests/test_nonfinite_guard.cpp`
+  pins the property on a two-row fixture.
 
-**Phantom improvements from cache drift.** This one is older than #116 and needs
-no clamped row at all. The old test was `after < before - 1e-12` against a
-`before` threaded across candidate moves, and both readings come from
-`total_violation()`'s incremental accumulator (`cached_total_ += (new - old) *
-W`), whose 1000-call from-scratch recompute *bounds* the accumulated rounding
-error but does not remove it. Two readings taken at different points in that
-cycle can differ in the last ulp even when no constraint changed at all, and the
-`- 1e-12` guard does not filter it. Above `2^14` it cannot: `x - 1e-12 == x` for
-every double `x > 16384` (16384 itself is the last value the subtraction still
-moves, because it lands in the binade below, whose ulp is 1.8e-12), and GLS
-weights push setcover's weighted total to ~4.4e6, where one ulp is 9.3e-10.
-Below `2^14` the guard is live but the drift simply outgrows it — observed
-phantoms run 1.8e-12 to 1.2e-10.
-
-Measured on `scp41` under the `Set` encoding (10s x 3 seeds, **no row clamped
-anywhere in the run**): 99 of 39627 candidate moves were accepted by the old test
-with a true weighted delta of exactly 0 — ~99 zero-delta moves committed per 30s
-of search, each setting `changed` and forcing an `fj.resync()`. Unicost `scpe1`
-shows the same at 12 of 166119. Per-constraint differencing scores those moves at
-exactly 0 and rejects them. (A weighted delta of exactly 0 is not by itself proof
-that *no row* moved — a `set_swap` shifting coverage +1/-1 across two rows of
-equal GLS weight cancels exactly, and that is a genuine sideways move rather than
-a no-op. The instrumentation counted the weighted delta only, so the no-op
-reading is supported for the handful of disagreements whose changed-row count was
-printed, not for all 99.) `tests/test_nonfinite_guard.cpp` pins the underlying
-property deterministically, on a two-row fixture that reproduces the drift
-without a search.
-
-It is this second half, not the clamped-row half, that moved the `Set` numbers
-below: setcover's objective is finite throughout, so no row is ever clamped
-there.
-
-Since #165 the delta is also **restricted to the rows the move can have
-changed** — the union of the moved generator's scope's G_v
-(`Model::constraints_of_var`), ascending — rather than rescanning every
-constraint. That is the same `double` and not merely the same answer: a row
-outside the union has the node value it had when the snapshot was taken, so
-`now == snapshot[i]` holds bitwise and *both* versions skip it, and ascending
-order keeps the surviving terms in one summation sequence.
-
-Since #273 the rows are narrowed again, per **candidate** rather than per
-generator: the batch keeps `differing_`, every row whose violation differs from
-the snapshot (empty at each snapshot), and after each walk re-reads that list
-plus the walked variables' G_v, which re-derives it exactly — a row in neither
-was equal before the walk and the walk did not touch it. A partition generator
-over every route of a CVRP is then scored over the one or two routes a move
-touches, not all of them. The walk's own rows would not be enough: under
+The delta is **restricted to the rows the move can have changed**, and is the
+same `double` a full rescan gives, not merely the same answer: a row whose
+violation equals the snapshot's is skipped by both, and ascending order keeps
+the surviving terms in one summation sequence. The batch keeps `differing_`,
+every row whose violation differs from the snapshot (empty at each snapshot),
+and after each walk re-reads that list plus the walked variables' G_v
+(`Model::constraints_of_var`), which re-derives it exactly — a row in neither
+was equal before the walk and the walk did not touch it (#273). A partition
+generator over every route of a CVRP is then scored over the one or two routes
+a move touches. The walk's own rows would not be enough: under
 `FirstImprovingSample` a kept candidate's rows differ from the re-taken
 snapshot once the next candidate restores the sample base, and the candidate
 after that does not walk them. Scoring reads no scope; the scope drives only
@@ -1357,45 +1265,36 @@ whole element vector it wants (#164) — a swap of two positions, a reversal, a
 `std::rotate` for a relocated segment, an insert, an erase, an assignment — or a
 `replacement` vector for what positions cannot express. Positions are relative,
 so the structural batch keeps the sample's starting assignment and puts back,
-before each candidate, exactly what the previous one disturbed — which is what
-reproduces the pre-#164 rule that committing candidate k and then candidate k+1
-leaves k's change gone.
+before each candidate, exactly what the previous one disturbed: committing
+candidate k and then candidate k+1 leaves k's change gone. That is one
+allocation-free `assign` per variable the previous candidate changed (one or
+two for every built-in), where whole vectors cost two heap allocations and
+three O(n) copies per candidate.
 
-The per-candidate ledger is then one allocation-free `assign` per variable the
-previous candidate changed — one or two for every built-in — against the
-absolute form's **two heap allocations** (the generator's vector, and the copy of
-it into the candidate list) and **three O(n) copies** (into the undo snapshot,
-into the variable, and back out again). Removing the allocations is the part that
-holds for any n on any machine; no search-throughput A/B has been run.
-
-(The scalar move generators `flip`, `int_dec`/`int_inc`/`int_rand` and
-`float_perturb` also live here and are used by LNS randomization paths.
-There is **no** sequence-aware block on/off generator: one was written but never
-wired to a caller, and it was deleted rather than left to read as a live
-capability. Sequence structure is used by LNS, whose destroy step can remove a
-whole registered sequence at once — see the LNS section.)
+The scalar move generators `flip`, `int_dec`/`int_inc`/`int_rand` and
+`float_perturb` also live here and are used by LNS randomization paths. There
+is **no** sequence-aware block on/off generator; sequence structure is used by
+LNS, whose destroy step can remove a whole registered sequence at once — see
+the LNS section.
 
 A batch is structural with probability `structural_batch_probability`: `< 0`
 auto-selects `0.33` when the batch would build at least one move generator --
 a registered `move_generators` entry, or a List/Set variable with
-`default_structural_generators` on (#165) -- and `0.0` otherwise, so a model
+`default_structural_generators` on -- and `0.0` otherwise, so a model
 whose batch would propose nothing never spends an iteration on one. When the
 batch would build a generator but FJ has nothing to jump -- no Bool/Int/Float
 variable with two values in its domain that some row reads, as on a List-only
 CVRP model or a mixed one whose every scalar is fixed or unread -- the automatic
-setting is `1.0` (#201). An FJ batch over an empty jumpable set did no work,
-reported itself stuck and took #102's unproductive kick, which re-randomised
-every List after almost every batch; on CVRP X-n101-k25 the 0.33 default never
-reached feasibility. An explicit probability is honoured, as the control arm,
-but on such a model its empty FJ/Novelty batches neither kick nor count toward
-`perturbation_period`. A model FJ has work in keeps its mix and RNG draws
-exactly -- which is not the same as being safe: the folded objective counts as
-a row, so a List model whose only movable scalar is read by the objective alone
-keeps the 0.33 mix, FJ settles that scalar at once, and the empty-batch kicks
-return (a 30-customer, 6-route partitioned-List model with one objective-only
-Int is infeasible at 200000 iterations on seeds 1-3, 560-572 kicks each).
-Set the probability to `1.0` explicitly there. After a structural batch commits
-anything, the engine `resync()`s its scan set.
+setting is `1.0` (#201): an FJ batch there does no work, reports itself stuck
+and takes the unproductive kick, which re-randomises every List. An explicit
+probability is honoured, as the control arm, but on such a model its empty
+FJ/Novelty batches neither kick nor count toward `perturbation_period`. A model
+FJ has work in keeps its mix and RNG draws exactly -- which is not the same as
+being safe: the folded objective counts as a row, so a List model whose only
+movable scalar is read by the objective alone keeps the 0.33 mix, FJ settles
+that scalar at once, and the empty-batch kicks return. Set the probability to
+`1.0` explicitly there. After a structural batch commits anything, the engine
+`resync()`s its scan set.
 
 ### Registering a move generator
 
@@ -1411,8 +1310,8 @@ Three contracts the batch relies on, all stated on the class:
 
 - **`generate` must return in bounded time.** The deadline is checked *between*
   generators, never inside one (#105), so an unbounded `generate` is an
-  unbounded overrun of `solve()`'s budget. One generator per variable is what
-  keeps that check where the pre-#165 sweep had it — between variables.
+  unbounded overrun of `solve()`'s budget. One generator per variable keeps
+  that check between variables.
 - **`clone()` must return an independent object.** Every portfolio worker builds
   its own `StructuralBatch` and therefore its own clones, so a cache or a cursor
   a generator holds is per-worker state. A clone that shared it would be a data
@@ -1421,19 +1320,18 @@ Three contracts the batch relies on, all stated on the class:
 - **`scope()` must name every variable the moves can change.** It is what
   `ViolationGuided`'s and `GranularBest`'s skips are computed from, so a move
   touching a variable outside the scope can be skipped when it would have
-  helped. Scoring does not read it: since #273 the batch scores the rows each
-  move's own variables reach. Debug and sanitizer builds assert the contract
-  on every move, so a move from an empty scope aborts there.
+  helped. Scoring does not read it: the batch scores the rows each move's own
+  variables reach. Debug and sanitizer builds assert the contract on every
+  move, so a move from an empty scope aborts there.
 
 Not routed through the generator set: the diversification kick's structural half
 (`FeasibilityJump::perturb_structural`). It draws from the same RNG as the rest
 of the search, so changing what it draws shifts every later draw on every model
 with a structured variable — and it wants an arbitrary legal move rather than a
-good one, which is the opposite of what a cost-aware generator gives it. #164
-did not change that and left it with #165. What #164 added is a second SOURCE of
-moves rather than a second source of policy: a List in a `ListPartition` also
-offers that partition's inter-list moves, anchored on the variable being kicked,
-which is what lets a kick move an all-empty `AtMostOnce` partition at all.
+good one, which is the opposite of what a cost-aware generator gives it. A List
+in a `ListPartition` also offers that partition's inter-list moves, anchored on
+the variable being kicked, which is what lets a kick move an all-empty
+`AtMostOnce` partition at all.
 
 ### Selection policies and neighbour lists
 
@@ -1442,8 +1340,8 @@ generator's candidates:
 
 | Policy | Rule |
 |---|---|
-| `Auto` (**default**, #203) | `GranularBest` when `structural_neighbours` is set, `FirstImprovingSample` otherwise — so a search without a neighbour list keeps the pre-#165 trajectory bit for bit. Resolved once, when the batch is built (`resolve_structural_selection`) |
-| `FirstImprovingSample` | one `generate` call, each candidate applied in turn and kept if it strictly improves — the pre-#165 rule, bit for bit |
+| `Auto` (**default**, #203) | `GranularBest` when `structural_neighbours` is set, `FirstImprovingSample` otherwise. Resolved once, when the batch is built (`resolve_structural_selection`) |
+| `FirstImprovingSample` | one `generate` call, each candidate applied in turn and kept if it strictly improves |
 | `BestOfSample` | call the generator until it has offered at least `structural_sample_size` candidates (one call always happens, and a call that appends several may overshoot), score them all, commit the best improving one |
 | `ViolationGuided` | `BestOfSample`, restricted to generators whose scope can still change a **violated** row |
 | `GranularBest` (#203) | `ViolationGuided`, except that each `ListPartition` offers the **granular complete neighbourhood** of one random element per `generate` call (Toth & Vigo 2003): every relocate (after/before), swap and adjacency-making 2-opt / 2-opt\* pairing it with each of its k nearest neighbours, a move into each empty member list (so an emptied list can be reopened), plus insert/remove under `AtMostOnce`. A call yielding fewer than `structural_sample_size` is topped up with a further element's neighbourhood. Partition members' own intra-list generators propose nothing, since same-list pairs cover them. Needs `structural_neighbours`; without one it is `ViolationGuided` |
@@ -1453,14 +1351,12 @@ the scope's G_v is violated at the accepted assignment, every one of those rows
 contributes 0 to the weighted violation, so a move over that scope can only
 leave the total alone or raise it. Skipping cannot skip an improving move.
 
-It is, however, the **variable-level** form of what #165 describes. The issue
-asks for the *element* to be chosen from those appearing in violated
-constraints; that is not recoverable from the DAG, which tracks incidence per
-variable, and a `Set` read through a single `Lambda` node puts every element of
-the universe in every row that node feeds. Element-level guidance therefore
-needs either a generator-supplied element scorer or the custom-invariant work of
-#166. What is available today is the variable-level choice plus whatever
-granularity a neighbour list supplies.
+It is, however, guidance at the **variable** level, not the element level:
+the DAG tracks incidence per variable, and a `Set` read through a single
+`Lambda` node puts every element of the universe in every row that node feeds.
+Element-level guidance needs either a generator-supplied element scorer or the
+custom-invariant work of #166; what is available today is the variable-level
+choice plus whatever granularity a neighbour list supplies.
 
 `NeighbourList` is that granularity — Toth & Vigo's granular neighbourhood
 (INFORMS J. Computing 15(4), 2003; used throughout modern routing heuristics
@@ -1479,82 +1375,37 @@ to expose to Python (#156).
 `structural_sample_size` defaults to 8. That is a **neutral placeholder, not a
 measured choice**, and no published result is derived from it. It feeds the
 opt-in `BestOfSample` and `ViolationGuided`, and `GranularBest` — the `Auto`
-default when a neighbour list is set (#203) — as the floor its one-element
-neighbourhoods are topped up to; #203's CVRP smoke ran at the default.
-`benchmarks/setcover/ab_selection.sh` A/Bs the **policies** on the set-covering roster at that default; it takes no
+default when a neighbour list is set — as the floor its one-element
+neighbourhoods are topped up to. `benchmarks/setcover/ab_selection.sh` A/Bs the
+**policies** on the set-covering roster at that default; it takes no
 `--structural-sample-size`, so sweeping the size itself means driving
 `cbls_setcover --structural-sample-size` directly.
 
-### Structure-only models: what the structural batch is and is not
+### Structure-only models
 
 In its **default configuration** the structural batch is a
 **first-improvement hill climber over a 3-5 move random sample**, not a guided
 search. Per pass and per variable, `set_moves` proposes exactly one random add,
 one random remove and one random swap; nothing chooses *which* element on
 violation grounds, the way FJ's jump table and best-of-N scan-set sampling
-choose a scalar's value.
-
-#165 added the machinery to change that — `BestOfSample` / `ViolationGuided` and
-neighbour lists above — and it **has now been measured on the setcover roster,
-under #164's positional move representation, and is still not established**: at a
-10s budget, **20 seeds per arm**, engine commit `8dc906b`, paired per seed,
-`ViolationGuided` is −76.2 against the default on the weighted instances (a base
-of ~2900, so −2.6%) with a 95% CI of **[−161.4, +9.0]** — 1.75 SE from zero,
-crossing it. Unicost is −0.18 on ~6.7. The table and caveats are in
-`benchmarks/instances/setcover/README.md`.
-
-So the result that follows is still the result, and it still describes the
-default configuration — which remains what a user gets. Two readings to avoid.
-"Guidance was tried and does not work": the interval crosses zero in both
-directions, and 9 of 10 instances are non-worse for the guided arm. And
-"guidance works, the earlier null was just the representation cost": a five-seed
-run of this same comparison read −4.5%, and quadrupling the seeds shrank it to
-−2.6% with the interval still spanning zero. Per-seed spread is ±8-11% of the
-objective, wider than the effect. The confounder #164 removed was real — scoring
-a candidate now costs an allocation-free `assign` per variable its predecessor
-changed rather than at least two allocations and three O(|elements|) copies — and
-removing it did not produce a separation.
-
-That is invisible on a mixed model — where List/Set variables sit alongside
-scalars that GFJ drives — but it is the whole search on a model whose
-only variables are structured. There, everything else is inert:
+choose a scalar's value. On a mixed model GFJ hides that; on a model whose only
+variables are structured it is the whole search, because everything else is
+inert:
 
 | Mechanism | On a structure-only model |
 |---|---|
-| FJ batch | not scheduled at the automatic mix since #201: with no movable scalar every batch is structural. Before that it ran anyway, `apply_jump` failed every iteration, and the batch degenerated into a pure GLS weight pump that reported itself stuck and took the unproductive kick |
+| FJ batch | not scheduled at the automatic mix: with no movable scalar every batch is structural |
 | Novelty Jump | not scheduled at the automatic mix either — compound moves are chains of scalar jumps, nothing to chain |
-| `perturb` kick | reaches them since #111 (each List/Set variable gets its own pass of `clamp(round(p*|elements|), 1, |elements|)` random structural moves), but the moves are the same unguided ones — see [Diversification](#diversification) |
-| LNS | on an unpartitioned List/Set, destroys the variable wholesale (a List keeps its elements and is reshuffled), then repairs with an FJ that has nothing to jump. A `ListPartition` is ruined and recreated instead (#202, see [LNS](#destroy-phase)): strings of elements leave a few lists and go back in one at a time at their best position, so the membership across lists moves. Before #202 the partition got the reshuffle too, and no repair was ever accepted on CVRP |
+| `perturb` kick | reaches them (each List/Set variable gets its own pass of `clamp(round(p*|elements|), 1, |elements|)` random structural moves), but the moves are the same unguided ones — see [Diversification](#diversification) |
+| LNS | on an unpartitioned List/Set, destroys the variable wholesale (a List keeps its elements and is reshuffled), then repairs with an FJ that has nothing to jump. A `ListPartition` is ruined and recreated instead (see [LNS](#destroy-phase)): strings of elements leave a few lists and go back in one at a time at their best position, so the membership across lists moves |
 
-so progress is slow once the sampled neighbourhood stops improving — slow, not
-finished: 6x the budget still buys ~18% on these instances (scp41 `set`, best of
-seeds 42-44: 4739 at 10s, 3876 at 60s, both at engine `adc8ee4`), so the 10s
-numbers are budget-limited rather than neighbourhood-limited. Measured on
-OR-Library set covering (`benchmarks/instances/setcover/`, issue #93): on the
-weighted instances the same data modelled as one `Set` variable costs
-**3.4-5.1x the proven optimum** at engine `35ec07c` (8.6-11.0x at `adc8ee4`,
-before #201 stopped scheduling empty FJ batches on it), against **+4-9%** for
-one Bool per column — while on *unicost* instances,
-where the objective is just cardinality, the two nearly converge. What the Set
-search lacks is not reach but a violation-guided choice of *which* element to
-move. A 3-row, 4-column fixture in `tests/test_setcover.cpp` reproduces it
-exactly: the Set encoding stalls one move away from the optimum because every
+The measured consequence is in `benchmarks/instances/setcover/README.md`: on
+OR-Library set covering, one `Set` variable costs several times the optimum on
+the weighted instances where one Bool per column is within a few percent, and
+the opt-in guided policies have not established a separation from the default.
+A 3-row, 4-column fixture in `tests/test_setcover.cpp` reproduces the stall
+exactly: the Set encoding stops one move away from the optimum because every
 single add/remove/swap from its incumbent is worse.
-
-Note what the idle FJ batches cost — which is why #201's automatic mix no
-longer schedules them on a model with no movable scalar. Their weight pump inflates `W` on the
-persistently-violated objective row, and a skewed enough `W` is what lets the
-structural pass accept a move that breaks a constraint — which is why the pump
-was once thought to be load-bearing for a structure-only model. Setting
-`structural_batch_probability = 1.0` removes the pump in exchange for more
-structural passes, and that trade measures *better* in both
-regimes — unicost 7/7/7 -> 6/6/6, weighted 4917/4739/4902 -> 2593/2727/2916,
-i.e. best-of-3 4739 -> 2593, a 45% improvement on scp41 (engine `adc8ee4`). The
-pump is not buying anything that outweighs the passes it displaces. #201 made
-that the default: the roster's weighted `Set` gap went from +387% to +291% (mean
-best-of-3) at the one commit, `1304c43` against `35ec07c`.
-Neither setting is a fix; both are symptoms of the structural batch having no
-guidance of its own.
 
 ### Deadline bound
 
@@ -1562,51 +1413,15 @@ The sweep is bounded by the same wall-clock deadline as the rest of the loop,
 checked **between generators** (`StructuralBatch::run`) — never mid-generator,
 so a generator's drawn candidates are always evaluated whole (the reference move
 set is never truncated for speed) and the overrun is capped at one generator's
-work.
+work. The check is unconditional per generator, not strided.
 
 The bound is needed because the sweep's cost grows with the model:
 `O(#generators x #candidates x (delta_evaluate + |R_c| + |differing_|))`, where
 a candidate is scored over the rows its walk reached (`R_c`, from each walked
 variable's G_v) plus the rows that already differ from the pass's baseline
-(`differing_`), not over every constraint (#273,
-`StructuralBatch::delta_after_walk`). The measurements below predate #273: at
-`95820e1` every move rescanned every constraint.
-Both factors matter — a 1000-List x 800-element model costs 44.5us per variable
-on its own, but **with ~40k constraints** the same model costs 407us per
-variable. On a 1500-List x 100-element model with 40k constraints, a 0.5s budget
-took **1.19–1.25s unbounded versus 0.502s bounded**. `solve(model, time_limit)`
-is a library contract, and that was a violation for any user model of this shape
-(issue #105).
-
-Real benchmark models were nowhere near that scale. Measured on pharma-glsp
-(the only List benchmark this repo ever had, retired in #28 — the numbers are
-kept because they are the measurement that motivated the bound): it created one
-List per macro-period, so its largest class (`glsp_e`, T=10) swept 10 structured
-variables in **p50 499us, max 792us**, i.e. 0.03% of a 3s budget. The bound is
-therefore about honouring the contract on large user models, not about the
-benchmarks.
-
-The check is **unconditional per variable**, not strided. An earlier self-tuning
-stride was tried and deleted: because the stride persisted across passes while
-its counter reset per pass, once it exceeded the model's structured-variable
-count it could never fire again — it did nothing at all on 160 of the 170 real
-pharma-glsp instances (2–6 List variables each; benchmark since retired,
-#28). Cost of the plain check on real instances is ~0.75% of runtime at the
-adversarial `structural_batch_probability
-= 1.0`, and ~0.003% on the default 0.33 path.
-
-> A per-variable `steady_clock::now()` costs ~1.4us only on an **HPET**
-> clocksource (the machine these numbers came from); through the vDSO on a
-> **TSC** clocksource it is ~20–25ns. On a synthetic model with 2000 tiny List
-> variables the HPET cost does dominate — one sweep goes 1.54ms → 4.57ms — but
-> that is a 60x-inflated constant that will not exist on most machines, which is
-> why amortising it did not justify the complexity.
-
-> **Removed:** the old SA "adaptive move probabilities" (per-move-type
-> acceptance-rate tracking, 5% floor, rebalance every 1000 evaluations) and the
-> SA-only Float moves `newton_tight` / `gradient_lift` no longer exist. The
-> structural batch picks moves uniformly within each variable; Float steering is
-> now handled by GFJ's gradient jump candidates and the inner solver.
+(`differing_`), not over every constraint (`StructuralBatch::delta_after_walk`).
+`solve(model, time_limit)` is a library contract, and a large enough user model
+overran it severalfold without the bound (#105, which has the measurements).
 
 ---
 

@@ -78,8 +78,8 @@ public:
     // (b) Even with no row clamped, two total_violation() readings disagree in
     // the last ulp for a move that changed nothing, because that value is an
     // incrementally maintained accumulator with a periodic resync; per-constraint
-    // differencing reports an exact 0 for an unchanged row. See #118 and the
-    // Structural Batch section of docs/architecture.md for the measurement.
+    // differencing reports an exact 0 for an unchanged row. #118 has the
+    // measurement.
     //
     // Intended use, from the caller that applies and rolls back candidate moves:
     // snapshot the accepted state once, then read weighted_delta_from() after

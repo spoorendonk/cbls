@@ -374,7 +374,7 @@ PassOutcome multi_var_pass(Model& model, ViolationManager& vm, int max_constrain
 //
 // What a poll costs is the clock read inside the search's past_deadline():
 // ~20-25 ns through the vDSO on a tsc clocksource, but 1408 ns on this project's
-// reference machine (hpet; measured for #113, docs/architecture.md). The
+// reference machine (hpet; measured for #113). The
 // regimes, and where each constant loses:
 //  - Large models (>= kPollUnits nodes): one variable per poll -- rahue
 //    (352k nodes) is here. The overrun is one variable's descent, irreducible
