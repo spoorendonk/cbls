@@ -732,6 +732,13 @@ int64_t luby(int64_t i);
 /// identical worker failures.
 void validate_search_config(const SearchConfig& config);
 
+/// Freezes `model` first (#271; `Model::freeze`), before `time_limit` starts:
+/// the close, the objective row and the cone cache are setup, not search. The
+/// cache build is O(`config.cone_cache_bytes`) -- milliseconds on the measured
+/// models, seconds only for cones near the cap. The model comes back frozen,
+/// so a later copy of it shares its `lambda_sum`/`pair_lambda_sum` callables
+/// rather than deep-copying them: one carrying mutable state of its own races
+/// once those copies run in parallel (see `Model::freeze`).
 SearchResult solve(Model& model, double time_limit = 10.0, uint64_t seed = 42, bool use_fj = true,
                    InnerSolverHook* hook = nullptr, LNS* lns = nullptr, int lns_interval = 3,
                    SolveCallback* callback = nullptr, const SearchConfig& config = {},

@@ -576,7 +576,8 @@ public:
     /// rebuilds the back-references, the topological order, `topo_pos` and G_v
     /// -- so a structure frozen at `close()` would have N workers re-sorting one
     /// shared DAG concurrently. `solve()` freezes whatever model it is handed
-    /// (#271), so a solved model comes back frozen.
+    /// (#271), so a solved model comes back frozen, and its later copies share
+    /// its callables (below) whether or not the caller ever called `freeze()`.
     ///
     /// Every structural method throws afterwards: variable and expression
     /// creation, `add_constraint`, `minimize`/`maximize`, `add_var_sequence`,
