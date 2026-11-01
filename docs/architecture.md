@@ -86,13 +86,13 @@ A one-screen map of the pipeline, its files, the extension points, build targets
 7. **LNS** (`src/lns.cpp`) — every N-th diversification kick: SISR ruin-and-recreate on each `ListPartition`, destroy 30% and repair by FJ elsewhere; accepted on a lexicographic (real violation, objective) key.
 8. **Violation & penalty** (`src/violation.cpp`) — `total_violation = Σ W[c]·max(0, viol_c)`; `weighted_violation_delta` is the no-commit counterfactual δ_G; `augmented_objective()` is the inner solver's descent metric.
 9. **Parallel search** (`src/pool.cpp`) — `SolutionPool` + `ParallelSearch`, a cooperative portfolio that shares incumbents and the objective bound. Workers share the frozen model's immutable structure (#157) and copy only what a search writes. Nondeterministic; `--threads 1` is the reproducible run. See [Solution Pool & Parallel Search](#solution-pool--parallel-search); the benchmark driver's CPU policy is in `benchmarks/instances/mipfeas/README.md`.
-10. **I/O** (`src/io.cpp`, `src/io/`) — JSONL `.cbls` format; MPS (gzip, optional bzip2), AMPL `.nl` and MIPLIB `.solu` readers. CLI in `src/cli.cpp`.
+10. **I/O** (`src/io.cpp`, `src/io/`) — JSONL `.cbls` format; the MPS reader (`mps_reader.cpp` + `mps_to_model.cpp`, gzip, optional bzip2), the AMPL `.nl` reader (`nl_reader.cpp` + `nl_to_model.cpp`) and the MIPLIB `.solu` reader (`solu_reader.cpp`). CLI in `src/cli.cpp`.
 
 ### Key extension points
 
 - **`InnerSolverHook`** — subclass for domain-specific continuous optimization; `FloatIntensifyHook` (`include/cbls/inner_solver.h`) is the reference. Its `solve()` gets a `StopRef stop` and **must** poll it if its work can outlast the budget: the call cannot be pre-empted.
 - **New operations** — add to `NodeOp` in `dag.h`, implement `evaluate()` in `dag.cpp`, `local_derivative()` for AD, and `delta_evaluate` support in `dag_ops.cpp`.
-- **`CustomInvariant`** (`include/cbls/custom_invariant.h`, #166) — user code inside the DAG via `Model::custom(inputs, std::move(inv), name)`: optional incremental `delta`, a `commit`/`rollback` bracket, `clone()`d per portfolio worker. Not writable to `.cbls`, not exposed to Python (#132). Contract under [Expression Nodes](#expression-nodes).
+- **`CustomInvariant`** (`include/cbls/custom_invariant.h`, #166) — user code inside the DAG via `Model::custom(inputs, std::move(inv), name)`: optional incremental `delta`, a `commit`/`rollback` bracket, `clone()`d per portfolio worker. Not writable to `.cbls`, not exposed to Python (#132). Contract in footnote ² of [Expression Nodes](#expression-nodes), after the AD section.
 
 ### Build targets
 
@@ -295,8 +295,8 @@ cache too; a portfolio factory that builds a fresh model per call builds one
 cache per worker.
 
 **Incremental Sum** (#177, #188). A committed FJ move changes one term of each
-row it touches, and re-summing a row costs its whole length (on long MIP rows,
-a third of the run). `commit_scalar_move` therefore moves each *incremental* `Sum` by the
+row it touches, and re-summing a row costs its whole length (36% of swath3's
+run in #177). `commit_scalar_move` therefore moves each *incremental* `Sum` by the
 differences of its changed terms instead of re-summing it.
 
 - *Incremental* (`ExprNode::kIncSum`, set at `close()` by
@@ -3049,7 +3049,14 @@ const-handle split described below.
   or builds a fresh one per call, deep-copies the DAG per worker. `freeze()` is the
   operative call, not the choice of overload. A Python caller reaches the shared
   structure the same way: freeze a master and return it from every call, and
-  nanobind's by-value cast copies it into the sharing copy constructor.
+  nanobind's by-value cast copies it into the sharing copy constructor. Python
+binds the master overload as `ParallelSearch.solve_master` and the factory one
+as `solve_parallel`.
+
+Callers: `src/cli.cpp` and the `cvrp`, `uc-chped` and `minlplib` runners at
+`--threads > 1` use the master overload (#262), as does
+`cbls_minlplib_portfolio` at every thread count; `benchmarks/mipfeas/` uses the
+factory over pre-built copies of its frozen master.
 
 **Measured** on `neos-5114902-kasavu` (710k columns, 961k rows, 4.92M nonzeros,
 4.30M DAG nodes): `cbls_mipfeas --instance neos-5114902-kasavu --budget 30
