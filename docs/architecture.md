@@ -1804,8 +1804,19 @@ changed** — the union of the moved generator's scope's G_v
 constraint. That is the same `double` and not merely the same answer: a row
 outside the union has the node value it had when the snapshot was taken, so
 `now == snapshot[i]` holds bitwise and *both* versions skip it, and ascending
-order keeps the surviving terms in one summation sequence. The full rescan
-remains the fallback for a generator that declares no scope.
+order keeps the surviving terms in one summation sequence.
+
+Since #273 the rows are narrowed again, per **candidate** rather than per
+generator: the batch keeps `differing_`, every row whose violation differs from
+the snapshot (empty at each snapshot), and after each walk re-reads that list
+plus the walked variables' G_v, which re-derives it exactly — a row in neither
+was equal before the walk and the walk did not touch it. A partition generator
+over every route of a CVRP is then scored over the one or two routes a move
+touches, not all of them. The walk's own rows would not be enough: under
+`FirstImprovingSample` a kept candidate's rows differ from the re-taken
+snapshot once the next candidate restores the sample base, and the candidate
+after that does not walk them. No scope is needed, so a generator declaring
+none no longer falls back to the full rescan.
 
 Moves come from `generate_standard_moves` (`src/moves.cpp`):
 

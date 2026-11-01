@@ -116,7 +116,8 @@ double ViolationManager::weighted_delta_from(const std::vector<double>& snapshot
 }
 
 double ViolationManager::weighted_delta_from(const std::vector<double>& snapshot,
-                                             ConstSpan<int32_t> rows) const {
+                                             ConstSpan<int32_t> rows,
+                                             std::vector<int32_t>* differing) const {
     require_row_count();
     const auto& cids = model_.constraint_ids();
     if (snapshot.size() != cids.size()) {
@@ -135,6 +136,9 @@ double ViolationManager::weighted_delta_from(const std::vector<double>& snapshot
         const double now = clamped_node_violation(model_.node_value(cids[i]));
         if (now != snapshot[i]) {
             delta += weights[i] * (now - snapshot[i]);
+            if (differing != nullptr) {
+                differing->push_back(ci);
+            }
         }
     }
     return delta;

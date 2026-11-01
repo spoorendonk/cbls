@@ -117,29 +117,52 @@ StructuralBatch::StructuralBatch(const Model& model, const SearchConfig& config,
     }
 }
 
-ConstSpan<int32_t> StructuralBatch::affected_rows(const Model& model, const MoveGenerator& gen) {
-    const ConstSpan<int32_t> scope = gen.scope();
-    if (scope.empty()) {
-        return {};
+void StructuralBatch::resnapshot(const ViolationManager& vm) {
+    vm.snapshot_violations(baseline_);
+    differing_.clear();
+}
+
+// COST (#273). Per call O(|R_c| + |differing_|), plus a sort of R_c when the
+// G_v runs arrive out of order -- several walked variables, or a differing row
+// from an earlier candidate; one variable whose G_v already holds every
+// differing row needs none. It replaced a scan of the generator's whole scope
+// (the union of its G_v), and wins where a candidate walks a small part of a
+// large scope: a `ListPartitionGenerator` over every route of a CVRP, whose
+// move touches one or two (14-15% of instructions on X-n251/X-n502 under
+// GranularBest, measured by callgrind). It loses, by the mark-and-copy pass
+// over G_v, on a one-variable scope, where R_c IS the scope; that is one more
+// O(|G_v|) pass next to the walk's own O(cone), and cone >= G_v.
+double StructuralBatch::delta_after_walk(const Model& model, const ViolationManager& vm,
+                                         const std::vector<int32_t>& walked) {
+    score_rows_.clear();
+    bool ascending = true;
+    const auto add = [&](int32_t ci) {
+        uint8_t& mark = row_mark_[static_cast<size_t>(ci)];
+        if (mark != 0) {
+            return;
+        }
+        mark = 1;
+        ascending = ascending && (score_rows_.empty() || score_rows_.back() < ci);
+        score_rows_.push_back(ci);
+    };
+    for (const int32_t var_id : walked) {
+        for (const int32_t ci : model.constraints_of_var(var_id)) {
+            add(ci);
+        }
     }
-    if (scope.size() == 1) {
-        // The common case, the built-ins included: G_v is already a contiguous
-        // ascending run of the model's CSR, so there is nothing to build.
-        return model.constraints_of_var(scope[0]);
+    for (const int32_t ci : differing_) {
+        add(ci);
     }
-    rows_.clear();
-    for (int32_t var_id : scope) {
-        const ConstSpan<int32_t> gv = model.constraints_of_var(var_id);
-        rows_.insert(rows_.end(), gv.begin(), gv.end());
+    for (const int32_t ci : score_rows_) {
+        row_mark_[static_cast<size_t>(ci)] = 0;
     }
-    // Sort-then-unique rather than a stamp array. A stamp dedups in O(1) per
-    // entry but leaves the result in scope order, and ASCENDING order is what
-    // makes the restricted sum bit-identical to the full scan (floating-point
-    // addition is not associative). Since the sort is needed either way, it may
-    // as well do the dedup.
-    std::sort(rows_.begin(), rows_.end());
-    rows_.erase(std::unique(rows_.begin(), rows_.end()), rows_.end());
-    return {rows_.data(), rows_.size()};
+    // Ascending, because that is the order the full scan sums in and
+    // floating-point addition is not associative.
+    if (!ascending) {
+        std::sort(score_rows_.begin(), score_rows_.end());
+    }
+    differing_.clear();
+    return vm.weighted_delta_from(baseline_, {score_rows_.data(), score_rows_.size()}, &differing_);
 }
 
 bool StructuralBatch::scope_can_improve(const Model& model, const MoveGenerator& gen) const {
@@ -177,14 +200,16 @@ void StructuralBatch::draw_candidates(MoveContext& ctx, MoveGenerator& gen) {
     }
 }
 
-// A move that changes a variable outside its generator's `scope()` is scored
-// against the wrong rows -- WRONGLY, not merely inefficiently: the rows it
-// actually moved are absent from the restricted sum, so the batch can commit a
-// move that raises the weighted violation and never notice. Unlike the #156
-// hazards this one does not crash, which makes it harder to find rather than
-// easier, so the contract is checked where the move is handed over. Debug and
-// sanitizer builds only: `touched` is already materialised, but the check is
-// O(|touched| x |scope|) on the hot path and it is 1x1 for every built-in.
+// A move that changes a variable outside its generator's `scope()` breaks the
+// skip `scope_can_improve` makes under ViolationGuided and GranularBest: a
+// generator whose scope reads satisfied is passed over although its moves
+// reach violated rows. Scoring no longer rests on the scope (#273 scores the
+// rows the walk reached), so the move itself is still judged right; the lost
+// opportunity does not crash or mis-score, which makes it harder to find
+// rather than easier, so the contract is checked where the move is handed
+// over. Debug and sanitizer builds only: `touched` is already materialised,
+// but the check is O(|touched| x |scope|) on the hot path and it is 1x1 for
+// every built-in.
 static void assert_move_within_scope(const MoveGenerator& gen,
                                      const std::vector<int32_t>& touched) {
 #ifndef NDEBUG
@@ -382,7 +407,6 @@ const std::vector<int32_t>& StructuralBatch::apply_from_base(Model& model, const
 }
 
 bool StructuralBatch::take_first_improving(Model& model, ViolationManager& vm, MoveGenerator& gen,
-                                           ConstSpan<int32_t> rows, bool full_scan,
                                            GeneratorCounters& counters) {
     bool changed = false;
     snapshot_sample_base(model);
@@ -395,12 +419,11 @@ bool StructuralBatch::take_first_improving(Model& model, ViolationManager& vm, M
         const std::vector<int32_t>& touched = apply_from_base(model, move);
         assert_move_within_scope(gen, touched);
         delta_evaluate(model, touched, DeltaMode::Commit, journal());
-        const double delta =
-            full_scan ? vm.weighted_delta_from(baseline_) : vm.weighted_delta_from(baseline_, rows);
+        const double delta = delta_after_walk(model, vm, touched);
         if (delta < kImprovementThreshold) {
             changed = true;  // improving: keep
             ++counters.moves_accepted;
-            vm.snapshot_violations(baseline_);
+            resnapshot(vm);
             gen.on_commit(move);
             record_accepted(model);
         }
@@ -431,12 +454,16 @@ bool StructuralBatch::take_first_improving(Model& model, ViolationManager& vm, M
         describe_transition(model, applied_, accepted_, base_vars_);
     }
     delta_evaluate(model, base_vars_, DeltaMode::Commit, journal());
+    // Not a score: this walk moved rows, and the next generator's candidates
+    // read `differing_`, which must name every row that differs from
+    // `baseline_` once it is done -- a restore that does not land bit-for-bit
+    // included.
+    static_cast<void>(delta_after_walk(model, vm, base_vars_));
     dirty_vars_.clear();
     return changed;
 }
 
 bool StructuralBatch::take_best(Model& model, ViolationManager& vm, MoveGenerator& gen,
-                                ConstSpan<int32_t> rows, bool full_scan,
                                 GeneratorCounters& counters) {
     std::ptrdiff_t best = -1;
     double best_delta = kImprovementThreshold;
@@ -452,8 +479,7 @@ bool StructuralBatch::take_best(Model& model, ViolationManager& vm, MoveGenerato
         const std::vector<int32_t>& touched = apply_from_base(model, move);
         assert_move_within_scope(gen, touched);
         delta_evaluate(model, touched, DeltaMode::Commit, journal());
-        const double delta =
-            full_scan ? vm.weighted_delta_from(baseline_) : vm.weighted_delta_from(baseline_, rows);
+        const double delta = delta_after_walk(model, vm, touched);
         if (delta < best_delta) {
             best_delta = delta;
             best = static_cast<std::ptrdiff_t>(i);
@@ -467,6 +493,8 @@ bool StructuralBatch::take_best(Model& model, ViolationManager& vm, MoveGenerato
                 describe_transition(model, applied_, previous_, dirty_vars_);
             }
             delta_evaluate(model, dirty_vars_, DeltaMode::Commit, journal());
+            // As at the end of `take_first_improving`: kept for `differing_`.
+            static_cast<void>(delta_after_walk(model, vm, dirty_vars_));
             dirty_vars_.clear();
         }
         return false;
@@ -474,7 +502,7 @@ bool StructuralBatch::take_best(Model& model, ViolationManager& vm, MoveGenerato
     const Move& move = candidates_[static_cast<size_t>(best)];
     const std::vector<int32_t>& touched = apply_from_base(model, move);
     delta_evaluate(model, touched, DeltaMode::Commit, journal());
-    vm.snapshot_violations(baseline_);
+    resnapshot(vm);
     gen.on_commit(move);
     ++counters.moves_accepted;
     return true;
@@ -514,8 +542,21 @@ bool StructuralBatch::take_best(Model& model, ViolationManager& vm, MoveGenerato
 // changed -- the union of the moved generator's scope's G_v -- which is the same
 // double and not merely the same answer: every other row satisfies
 // `now == snapshot[i]` bitwise and is skipped by both versions, and ascending
-// order keeps the surviving terms in the same sequence. The full scan remains
-// the fallback for a generator that declares no scope.
+// order keeps the surviving terms in the same sequence.
+//
+// #273 narrowed it again, from the generator's scope to what each candidate
+// can have moved, by the same argument. `differing_` holds every row whose
+// violation differs from `baseline_`: empty at a snapshot, and after each walk
+// over variables W the only rows whose value can have changed are those in
+// G_v for v in W, so re-reading those plus the old `differing_` restores it --
+// a row in neither differed before the walk and was not touched by it. A
+// candidate's walk alone would NOT do: under FirstImprovingSample, once a
+// candidate is kept and re-snapshotted, the next one restores the sample base
+// and so moves the kept candidate's rows away from the snapshot, and the one
+// after it no longer walks them. `differing_` is what carries them. It also
+// carries a row a restore failed to land bit-for-bit, which the scope scan
+// read on every later candidate. It needs no scope, so a generator declaring
+// none no longer falls back to the full scan.
 //
 // Both delta calls self-correct to the current node values (they read the
 // constraint nodes directly), so no explicit invalidate is needed across the
@@ -527,7 +568,10 @@ bool StructuralBatch::run(Model& model, ViolationManager& vm, RNG& rng, bool has
     }
     bool changed = false;
     journaling_ = wants_journal(model);
-    vm.snapshot_violations(baseline_);
+    resnapshot(vm);
+    // Sized once per pass to the model's rows, which `snapshot_violations` has
+    // just checked against the weights; every mark is cleared after use.
+    row_mark_.resize(baseline_.size(), 0);
     MoveContext ctx{model, vm, rng, selection_, &baseline_};
     for (size_t i = 0; i < generators_.size(); ++i) {
         MoveGenerator& gen = *generators_[i];
@@ -543,12 +587,10 @@ bool StructuralBatch::run(Model& model, ViolationManager& vm, RNG& rng, bool has
         if (candidates_.empty()) {
             continue;
         }
-        const ConstSpan<int32_t> rows = affected_rows(model, gen);
-        const bool full_scan = rows.empty();
         GeneratorCounters& counters = counters_[i];
         changed = (selection_ == StructuralSelection::FirstImprovingSample
-                       ? take_first_improving(model, vm, gen, rows, full_scan, counters)
-                       : take_best(model, vm, gen, rows, full_scan, counters)) ||
+                       ? take_first_improving(model, vm, gen, counters)
+                       : take_best(model, vm, gen, counters)) ||
                   changed;
     }
     return changed;

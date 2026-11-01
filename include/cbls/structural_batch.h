@@ -5,6 +5,7 @@
 
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <vector>
 
@@ -66,10 +67,11 @@ struct SearchConfig;
 ///
 /// The remaining cost is therefore
 /// O(#constraints x (1 + #commits) + #generators x #candidates x
-/// (delta_evaluate + |R_g|)), where R_g is the deduped union of the
-/// generator's scope's G_v -- equal to G_v for the one-variable built-ins, and
-/// the reason this is written per GENERATOR rather than per structured
-/// variable. Still unbounded in the model size, so the bound
+/// (delta_evaluate + |R_c|)), where R_c is the rows a CANDIDATE can have moved
+/// -- its walked variables' G_v plus the rows still differing from the
+/// snapshot -- rather than its generator's whole scope (#273, which took a
+/// partition generator over every route of a CVRP down to the one or two
+/// routes a move touches). Still unbounded in the model size, so the bound
 /// still matters -- but it now takes a model with large STRUCTURES, or a sweep
 /// that commits heavily, rather than merely many rows, to reach the same
 /// overrun. Restricting the baseline refresh to the moved rows would close the
@@ -131,13 +133,17 @@ public:
 
 private:
     bool take_first_improving(Model& model, ViolationManager& vm, MoveGenerator& gen,
-                              ConstSpan<int32_t> rows, bool full_scan, GeneratorCounters& counters);
-    bool take_best(Model& model, ViolationManager& vm, MoveGenerator& gen, ConstSpan<int32_t> rows,
-                   bool full_scan, GeneratorCounters& counters);
-    /// The constraint rows a move from `gen` can change: the union of its
-    /// scope's G_v, ascending and deduplicated. Empty scope returns an empty
-    /// span, which the caller reads as "score with the full scan".
-    ConstSpan<int32_t> affected_rows(const Model& model, const MoveGenerator& gen);
+                              GeneratorCounters& counters);
+    bool take_best(Model& model, ViolationManager& vm, MoveGenerator& gen,
+                   GeneratorCounters& counters);
+    /// Snapshot the current violations into `baseline_`; no row differs then.
+    void resnapshot(const ViolationManager& vm);
+    /// After a walk over `walked`: the weighted change against `baseline_`,
+    /// summed over the rows that can differ from it -- `differing_` and the
+    /// walked variables' G_v -- and `differing_` brought up to date. See the
+    /// note above `StructuralBatch::run` in structural_batch.cpp.
+    double delta_after_walk(const Model& model, const ViolationManager& vm,
+                            const std::vector<int32_t>& walked);
     /// Whether any row in the scope's G_v is violated at the baseline. See
     /// `StructuralSelection::ViolationGuided` for why skipping the rest is exact.
     [[nodiscard]] bool scope_can_improve(const Model& model, const MoveGenerator& gen) const;
@@ -176,8 +182,15 @@ private:
     /// in structural_batch.cpp for why a move is judged against this rather than
     /// by differencing two whole-sum `total_violation()` readings.
     std::vector<double> baseline_;
+    /// Every row whose clamped violation differs, bitwise, from `baseline_`, in
+    /// ascending order. Empty right after each snapshot; `delta_after_walk`
+    /// keeps it exact across walks.
+    std::vector<int32_t> differing_;
+    /// `delta_after_walk`'s scratch: the rows it scores, and a per-row
+    /// dedup mark that is all zero between calls.
+    std::vector<int32_t> score_rows_;
+    std::vector<uint8_t> row_mark_;
     std::vector<Move> candidates_;
-    std::vector<int32_t> rows_;  // scratch for a multi-variable scope's G_v union
     /// The sample baseline: one entry per structured variable the current
     /// `candidates_` name, holding its elements before any candidate was
     /// applied. See `snapshot_sample_base`.

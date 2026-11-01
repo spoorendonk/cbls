@@ -237,9 +237,9 @@ private:
 /// class, not merely a stale heuristic. Recomputing costs
 /// O(sum |lists| + universe) on the one branch that needs it.
 ///
-/// Scope is every member list, so the batch restricts candidate scoring to the
-/// union of their G_v and `ViolationGuided` can skip a partition all of whose
-/// rows are satisfied.
+/// Scope is every member list, so `ViolationGuided` can skip a partition all
+/// of whose rows are satisfied. A candidate is scored over the one or two
+/// lists it moves, not the scope (#273).
 class ListPartitionGenerator final : public MoveGenerator {
 public:
     ListPartitionGenerator(int partition, std::vector<int32_t> list_ids,

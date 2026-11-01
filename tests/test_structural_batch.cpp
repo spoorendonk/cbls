@@ -576,14 +576,12 @@ TEST_CASE("a generator whose scope names an unknown variable is refused at regis
 }
 
 // ---------------------------------------------------------------------------
-// The MULTI-VARIABLE scope path of StructuralBatch::affected_rows.
+// The MULTI-VARIABLE union of StructuralBatch::delta_after_walk.
 //
 // The equivalence case above scores against `constraints_of_var(v)` -- one
-// variable's G_v, which the model already stores as an ascending contiguous run,
-// so `affected_rows` returns it untouched. A generator with two variables in
-// scope takes the other branch: concatenate both G_v, sort, unique. That
-// arithmetic is the only new arithmetic the G_v restriction introduced and it is
-// load-bearing twice over --
+// variable's G_v, which the model already stores as an ascending contiguous run.
+// A move over two variables needs the union of both G_v, deduplicated and
+// ascending. That arithmetic is load-bearing twice over --
 //
 //   * a row reachable from BOTH variables appears twice in the concatenation,
 //     and summing it twice is a WRONG delta, not a slow one;
@@ -729,7 +727,7 @@ TEST_CASE("G_v-restricted scoring over a two-variable scope matches the full res
 TEST_CASE("the batch scores a two-variable generator through the union path",
           "[structural][moves]") {
     // The same path, reached through StructuralBatch rather than by hand, so
-    // `affected_rows`' own union is the one under test. Every move the batch
+    // `delta_after_walk`'s own union is the one under test. Every move the batch
     // keeps must be a true improvement under a FULL rescan: a union that
     // double-counted a shared row could accept a move that does not improve.
     SharedRowModel sr = shared_row_model();
@@ -743,7 +741,7 @@ TEST_CASE("the batch scores a two-variable generator through the union path",
     // weight 6 and worsens the shared row by 4 at weight 1:
     //   correct (deduped) delta = -6 + 4 = -2  -> accept
     //   shared row counted twice = -6 + 8 = +2 -> reject
-    // So dropping the `unique` in StructuralBatch::affected_rows turns every
+    // So dropping the dedup in StructuralBatch::delta_after_walk turns every
     // commit below into a rejection and `passes_with_commit` falls to 0.
     REQUIRE(vm.weights.size() == 4);
     vm.weights[0] = 6.0;   // size_a <= 1, the a-only row
@@ -873,4 +871,88 @@ TEST_CASE("a committed candidate is undone by the next one from the same sample"
     for (int32_t nid : counts) {
         REQUIRE(m.node_value(nid) == fresh.node_value(nid));
     }
+}
+
+// ---------------------------------------------------------------------------
+// Rows a kept candidate moved, carried to candidates that do not walk them (#273)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// Three one-variable candidates in ONE sample, each on a different Set: A,
+/// then B, then C. Under `FirstImprovingSample` each is applied to the sample
+/// base, so once A's candidate is kept, B's candidate puts A back and C's
+/// candidate no longer walks A at all.
+class DisjointCandidateGenerator final : public MoveGenerator {
+public:
+    explicit DisjointCandidateGenerator(std::array<int32_t, 3> scope) : scope_(scope) {}
+
+    [[nodiscard]] std::string_view name() const override { return "disjoint_candidate"; }
+    [[nodiscard]] ConstSpan<int32_t> scope() const override { return {scope_.data(), 3}; }
+
+    void generate(MoveContext& ctx, std::vector<Move>& out) override {
+        if (spent_) {
+            return;  // one sample only
+        }
+        spent_ = true;
+        static_cast<void>(ctx);
+        const std::array<std::vector<int32_t>, 3> sets{{{0, 1}, {0}, {0}}};
+        for (size_t k = 0; k < 3; ++k) {
+            Move move;
+            move.move_type = "one_set";
+            move.changes.push_back(replace_change(scope_[k], sets[k]));
+            out.push_back(std::move(move));
+        }
+    }
+
+    [[nodiscard]] std::unique_ptr<MoveGenerator> clone() const override {
+        return std::make_unique<DisjointCandidateGenerator>(scope_);
+    }
+
+private:
+    std::array<int32_t, 3> scope_;
+    bool spent_ = false;
+};
+
+}  // namespace
+
+TEST_CASE("a kept candidate's rows are scored for a later candidate that does not walk them",
+          "[structural][batch]") {
+    // Three Sets, each wanted at size >= 2 and each starting empty: violations
+    // (2, 2, 2). Candidate 0 sets A = {0, 1}, landing at (0, 2, 2): kept, and
+    // the snapshot is re-taken there. Candidate 1 sets B = {0} on the sample
+    // base, (2, 1, 2): +1, rejected. Candidate 2 sets C = {0} on the sample
+    // base, (2, 2, 1): also +1 against the snapshot, because A's row is back at
+    // 2 -- rejected.
+    //
+    // Candidate 2's walk covers B (the restore) and C, not A. Scoring only the
+    // rows that walk reaches reads -1 for it and keeps it, which leaves A
+    // empty. A holding {0, 1} and C empty is the pass.
+    Model m;
+    std::array<int32_t, 3> ids{};
+    for (int k = 0; k < 3; ++k) {
+        const int32_t handle = m.set_var(4, 0, 4, std::string(1, static_cast<char>('a' + k)));
+        ids[static_cast<size_t>(k)] = vid(handle);
+        m.add_constraint(m.geq(m.count(handle), m.constant(2)));
+    }
+    m.close();
+    for (int32_t id : ids) {
+        m.var_mut(id).elements.clear();
+    }
+    full_evaluate(m);
+
+    SearchConfig config;
+    config.default_structural_generators = false;
+    config.move_generators.push_back(std::make_shared<const DisjointCandidateGenerator>(ids));
+    StructuralBatch batch(m, config, /*enabled=*/true);
+    ViolationManager vm(m);
+    REQUIRE(vm.total_violation() == 6.0);
+    RNG rng(42);
+    REQUIRE(batch.run(m, vm, rng, /*has_deadline=*/false, kNoDeadline));
+
+    REQUIRE(m.var(ids[0]).elements == std::vector<int32_t>{0, 1});
+    REQUIRE(m.var(ids[1]).elements.empty());
+    REQUIRE(m.var(ids[2]).elements.empty());
+    REQUIRE(batch.generator_counters().at(0).moves_accepted == 1);
+    REQUIRE(vm.total_violation() == 4.0);
 }

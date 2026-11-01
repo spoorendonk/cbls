@@ -226,11 +226,11 @@ struct MoveContext {
 ///    (`src/pool.cpp`) builds a fresh batch and so a fresh clone, so `clone()`
 ///    runs workers x restarts times and no generator state survives a restart.
 ///  - `scope()` must name every variable the generator's moves can change, and
-///    must stay constant for the generator's lifetime. The batch uses it to
-///    restrict candidate scoring to the union of those variables' G_v, and
-///    `ViolationGuided` uses it to skip generators that cannot help. A move
-///    touching a variable outside the scope is scored WRONGLY, not just
-///    inefficiently.
+///    must stay constant for the generator's lifetime. `ViolationGuided` and
+///    `GranularBest` use it to skip generators that cannot help, so a move
+///    touching a variable outside the scope can be skipped when it would have
+///    helped. Scoring does not read it: the batch scores the rows each move's
+///    own variables reach (#273).
 class MoveGenerator {
 public:
     MoveGenerator() = default;
@@ -245,7 +245,7 @@ public:
     [[nodiscard]] virtual std::string_view name() const = 0;
 
     /// The variables this generator's moves can change: one list, a partition of
-    /// lists, a set. Ascending order is not required; the batch sorts the union.
+    /// lists, a set. Ascending order is not required.
     [[nodiscard]] virtual ConstSpan<int32_t> scope() const = 0;
 
     /// Append candidate moves. Called once per batch under

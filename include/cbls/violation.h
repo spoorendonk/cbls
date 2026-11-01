@@ -109,9 +109,15 @@ public:
     /// way, and a move on one List of a 40 000-row model can change only the
     /// handful of rows that read it.
     ///
+    /// `differing`, when non-null, gets every row of `rows` whose violation
+    /// differs from the snapshot -- exactly the rows that contributed a term --
+    /// appended in the order of `rows`. The structural batch carries that list
+    /// from one candidate to the next (#273).
+    ///
     /// Throws, like the full scan, if the snapshot is not one entry per
     /// constraint. An out-of-range entry in `rows` throws `std::out_of_range`.
-    double weighted_delta_from(const std::vector<double>& snapshot, ConstSpan<int32_t> rows) const;
+    double weighted_delta_from(const std::vector<double>& snapshot, ConstSpan<int32_t> rows,
+                               std::vector<int32_t>* differing = nullptr) const;
 
     // Invalidate cached total (call after weights change or full_evaluate)
     void invalidate_cache() { cache_valid_ = false; }
