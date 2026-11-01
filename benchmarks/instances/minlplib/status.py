@@ -9,9 +9,12 @@ already exclude. Each instance gets exactly one status, the first that applies:
                         (``download.FULL_EXCLUDED_OP_COLUMNS``)
   missing-nl            no ``<name>.nl`` in the directory
   no-primal-bound       the catalogue has no finite primal bound
-  reader-error          the NL reader refused the file (its message)
+  reader-error          the NL reader found the file malformed (its message)
+  reader-unsupported    the NL reader lacks a construct the file uses, e.g. an
+                        SOS suffix (its message; the runner's skipped(unsupported))
   adapter-unsupported   the NL-to-model adapter refused it (its first reason)
-  checker-failed        the checker crashed, was killed or timed out on it
+  checker-failed        the checker crashed, was killed, timed out or threw
+                        while building the model
   modelled              read and modelled
 
 This is the full-library selection: every problem type, convex and
@@ -46,10 +49,10 @@ from benchmarks.common.records import atomic_write  # noqa: E402
 from benchmarks.instances.minlplib import download  # noqa: E402
 
 DEFAULT_CHECKER = REPO_ROOT / "build" / "cbls_minlplib_nl_check"
-# Files per checker process: amortises start-up without letting one crash
-# cost more than a batch, which is then re-run a file at a time.
-BATCH = 64
-# Seconds per file before the checker counts as hung (scaled by batch size).
+# Seconds one file may take before the checker counts as hung. Each file gets
+# its own checker process: a few ms of start-up per file (seconds over the
+# 1609-file archive) buys an exact per-file timeout and charges a crash to the
+# one file that caused it, where batching would save those seconds only.
 DEFAULT_TIMEOUT = 600.0
 
 STATUSES: tuple[str, ...] = (
@@ -57,6 +60,7 @@ STATUSES: tuple[str, ...] = (
     "missing-nl",
     "no-primal-bound",
     "reader-error",
+    "reader-unsupported",
     "adapter-unsupported",
     "checker-failed",
     "modelled",
@@ -65,7 +69,7 @@ STATUSES: tuple[str, ...] = (
 
 # The statuses the checker decides (the rest come from the catalogue).
 CHECKER_STATUSES: frozenset[str] = frozenset(
-    {"reader-error", "adapter-unsupported", "checker-failed", "modelled"}
+    {"reader-error", "reader-unsupported", "adapter-unsupported", "checker-failed", "modelled"}
 )
 
 
@@ -93,68 +97,47 @@ def catalogue_status(row: dict[str, str], nl_dir: Path) -> Status | None:
     return None
 
 
-def parse_checker_line(line: str) -> tuple[str, str, str]:
-    """(path, status, detail) from one checker line."""
-    parts = line.rstrip("\n").split("\t", 2)
-    if len(parts) < 2 or parts[1] not in ("modelled", "reader-error", "adapter-unsupported"):
-        raise ValueError(f"unexpected checker line: {line!r}")
+def parse_checker_line(line: str) -> tuple[str, str, str] | None:
+    """(path, status, detail) from one checker line, or None if it is not one."""
+    parts = line.split("\t", 2)
+    if len(parts) < 2 or parts[1] not in CHECKER_STATUSES:
+        return None
     return parts[0], parts[1], parts[2] if len(parts) == 3 else ""
 
 
-def _run_checker(
-    checker: Path, paths: list[Path], timeout: float
-) -> dict[str, tuple[str, str]] | str:
-    """Status per path for one batch, or why the checker did not answer for all.
+def check_file(checker: Path, path: Path, timeout: float = DEFAULT_TIMEOUT) -> tuple[str, str]:
+    """(status, detail) for one file, from its own checker process.
 
-    Output is decoded leniently: reader messages can quote raw file bytes,
-    and one undecodable byte must not take the whole run down.
+    Output is decoded leniently and split on newlines only: reader messages
+    quote raw file bytes, and no byte in one may take the whole run down.
     """
     try:
         proc = subprocess.run(
-            [str(checker), *map(str, paths)],
+            [str(checker), str(path)],
             capture_output=True,
             text=True,
             errors="replace",
             check=False,
-            timeout=timeout * len(paths),
+            timeout=timeout,
         )
     except subprocess.TimeoutExpired:
-        return f"timed out after {timeout * len(paths):g}s"
+        return "checker-failed", f"timed out after {timeout:g}s"
     if proc.returncode < 0:
-        return f"killed by signal {-proc.returncode}"
+        return "checker-failed", f"killed by signal {-proc.returncode}"
     if proc.returncode != 0:
-        return f"exit code {proc.returncode}"
-    out: dict[str, tuple[str, str]] = {}
-    for line in proc.stdout.splitlines():
-        path, status, detail = parse_checker_line(line)
-        out[path] = (status, detail)
-    if set(out) != {str(p) for p in paths}:
-        return "no answer for every file"
-    return out
+        return "checker-failed", f"exit code {proc.returncode}"
+    lines = proc.stdout.split("\n")
+    parsed = parse_checker_line(lines[0]) if len(lines) == 2 and lines[1] == "" else None
+    if parsed is None or parsed[0] != str(path):
+        return "checker-failed", f"unexpected output: {proc.stdout[:200]!r}"
+    return parsed[1], parsed[2]
 
 
 def check_files(
     checker: Path, paths: list[Path], timeout: float = DEFAULT_TIMEOUT
 ) -> dict[str, tuple[str, str]]:
-    """Checker status per path; a file the checker fails on is `checker-failed`.
-
-    A failed batch is re-run a file at a time, so only the file that crashes,
-    hangs or is killed (an adapter crash, the OOM killer) is charged, and
-    with its own status rather than as a reader refusal.
-    """
-    result: dict[str, tuple[str, str]] = {}
-    for start in range(0, len(paths), BATCH):
-        batch = paths[start : start + BATCH]
-        answered = _run_checker(checker, batch, timeout)
-        if isinstance(answered, str):
-            answered = {}
-            for path in batch:
-                one = _run_checker(checker, [path], timeout)
-                answered[str(path)] = (
-                    ("checker-failed", one) if isinstance(one, str) else one[str(path)]
-                )
-        result.update(answered)
-    return result
+    """Checker (status, detail) per path."""
+    return {str(path): check_file(checker, path, timeout) for path in paths}
 
 
 def statuses(
@@ -232,17 +215,18 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     rows = download.parse_csv(args.catalogue.read_bytes())
     results = statuses(rows, args.nl_dir, args.checker, args.timeout)
-    atomic_write(args.out, status_text(results))
-    if args.bounds is not None:
-        atomic_write(args.bounds, download.bounds_text(modelled_instances(rows, results)))
     print(f"{len(results)} catalogue instances")
     for status, n in counts(results).items():
         print(f"  {status:20s} {n}")
     checked = [s for s in results if s.status in CHECKER_STATUSES]
     if checked and all(s.status == "checker-failed" for s in checked):
-        # A wrong, stale or broken binary, not a property of the library.
-        print("the checker failed on every file it was given; the counts are not a status")
+        # A wrong, stale or broken binary, not a property of the library:
+        # nothing is written, so an existing bounds.csv is not emptied.
+        print("the checker failed on every file it was given; nothing written")
         return 1
+    atomic_write(args.out, status_text(results))
+    if args.bounds is not None:
+        atomic_write(args.bounds, download.bounds_text(modelled_instances(rows, results)))
     return 0
 
 

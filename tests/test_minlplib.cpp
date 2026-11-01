@@ -1,8 +1,8 @@
 // Network-free tests for the AMPL NL reader (issue #72, P3; binary format
 // #282), the NL->Model adapter (P4), and one end-to-end solve of a vendored
 // non-convex instance (#124). Reader/adapter fixtures are tiny inline `g3`/`b3`
-// NL files, plus one vendored binary MINLPLib file in tests/data; no instances
-// are downloaded. Fixture layout mirrors a real minlplib `.nl` (header block,
+// NL files, plus three vendored MINLPLib files in tests/data (one binary); no
+// instances are downloaded. Fixture layout mirrors a real minlplib `.nl` (header block,
 // then b / x / r / J / O / C segments).
 
 #include "test_helpers.h"

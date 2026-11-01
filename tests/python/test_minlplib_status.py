@@ -64,7 +64,8 @@ def _fake_checker(tmp_path: Path) -> Path:
     """A checker that answers from each file's first word.
 
     "crash" exits 3, "hang" sleeps past any test timeout, "latin" answers with
-    a byte that is not UTF-8 (as a reader message quoting a raw file byte can).
+    a byte that is not UTF-8 and "ctrl" with a \\x1c (a reader message quoting
+    raw file bytes can carry either), "sos" with a reader coverage refusal.
     """
     script = tmp_path / "checker"
     script.write_text(
@@ -75,6 +76,8 @@ def _fake_checker(tmp_path: Path) -> Path:
         "    crash) exit 3;;\n"
         "    hang) exec sleep 30;;\n"
         '    latin) printf "%s\\treader-error\\tNL: bad tag \\303\\n" "$f";;\n'
+        '    ctrl) printf "%s\\treader-error\\tNL: a\\034b\\n" "$f";;\n'
+        '    sos) printf "%s\\treader-unsupported\\tNL: suffix\\n" "$f";;\n'
         '    ok) printf "%s\\tmodelled\\n" "$f";;\n'
         '    bad) printf "%s\\treader-error\\tNL: broken\\n" "$f";;\n'
         '    *) printf "%s\\tadapter-unsupported\\topcode 49\\n" "$f";;\n'
@@ -96,6 +99,7 @@ def _catalogue(tmp_path: Path) -> tuple[list[dict[str, str]], Path]:
         _row("bad"),
         _row("atan"),
         _row("crash"),
+        _row("sos"),
         _row("ok2", opvcpower="True"),
     ]
     for name, word in [
@@ -105,6 +109,7 @@ def _catalogue(tmp_path: Path) -> tuple[list[dict[str, str]], Path]:
         ("bad", "bad"),
         ("atan", "atan"),
         ("crash", "crash"),
+        ("sos", "sos"),
         ("ok2", "ok"),
     ]:
         (nl / f"{name}.nl").write_text(word + "\n")
@@ -121,9 +126,10 @@ def test_every_instance_gets_the_first_status_that_applies(tmp_path: Path) -> No
         ("ok1", "modelled", ""),
         ("bad", "reader-error", "NL: broken"),
         ("atan", "adapter-unsupported", "opcode 49"),
-        # The crash takes its batch down; the batch is re-run a file at a
-        # time, so only the crashing file is charged, and not as the reader's.
+        # Each file has its own checker process, so only the crashing file
+        # is charged, and not as the reader's.
         ("crash", "checker-failed", "exit code 3"),
+        ("sos", "reader-unsupported", "NL: suffix"),
         ("ok2", "modelled", ""),
     ]
     assert status.counts(got) == {
@@ -131,6 +137,7 @@ def test_every_instance_gets_the_first_status_that_applies(tmp_path: Path) -> No
         "missing-nl": 1,
         "no-primal-bound": 1,
         "reader-error": 1,
+        "reader-unsupported": 1,
         "adapter-unsupported": 1,
         "checker-failed": 1,
         "modelled": 2,
@@ -161,6 +168,23 @@ def test_an_undecodable_checker_byte_does_not_stop_the_run(tmp_path: Path) -> No
     assert got[str(tmp_path / "x.nl")] == ("reader-error", "NL: bad tag \ufffd")
 
 
+def test_a_control_byte_in_a_message_does_not_stop_the_run(tmp_path: Path) -> None:
+    # str.splitlines() would split at \x1c and leave a line that parses as
+    # nothing; only newlines delimit the checker's lines.
+    (tmp_path / "x.nl").write_text("ctrl\n")
+    got = status.check_files(_fake_checker(tmp_path), [tmp_path / "x.nl"])
+    assert got[str(tmp_path / "x.nl")] == ("reader-error", "NL: a\x1cb")
+
+
+def test_output_that_is_not_a_checker_line_is_a_checker_failure(tmp_path: Path) -> None:
+    (tmp_path / "x.nl").write_text("ok\n")
+    noisy = tmp_path / "noisy"
+    noisy.write_text("#!/bin/sh\necho hello\n")
+    noisy.chmod(0o755)
+    got = status.check_files(noisy, [tmp_path / "x.nl"])
+    assert got[str(tmp_path / "x.nl")][0] == "checker-failed"
+
+
 def test_a_hung_file_is_charged_alone(tmp_path: Path) -> None:
     (tmp_path / "hang.nl").write_text("hang\n")
     (tmp_path / "ok.nl").write_text("ok\n")
@@ -186,7 +210,13 @@ def test_a_checker_that_fails_on_everything_fails_the_run(tmp_path: Path) -> Non
     broken.write_text("#!/bin/sh\nexit 1\n")
     broken.chmod(0o755)
     argv = ["--catalogue", str(cat), "--nl-dir", str(nl), "--out", str(tmp_path / "s.csv")]
+    bounds = tmp_path / "bounds.csv"
+    bounds.write_text("instance\nkept\n")
+    argv += ["--bounds", str(bounds)]
     assert status.main([*argv, "--checker", str(broken)]) == 1
+    # Nothing is written: an existing bounds.csv is not emptied.
+    assert bounds.read_text() == "instance\nkept\n"
+    assert not (tmp_path / "s.csv").exists()
 
 
 def test_a_missing_checker_is_refused(tmp_path: Path) -> None:
@@ -203,6 +233,11 @@ def test_the_real_checker_models_the_vendored_files(tmp_path: Path) -> None:
     files = [data / "filter.nl", data / "ex8_4_4.nl", data / "kriging_peaks-red010.nl"]
     broken = tmp_path / "broken.nl"
     broken.write_text("g3 0 1 0\n")
-    got = status.check_files(CHECKER, [*files, broken])
+    # filter.nl with an opcode no NL writer emits: a coverage refusal, as the
+    # runner buckets it, not a malformed file.
+    unknown = tmp_path / "unknown.nl"
+    unknown.write_text((data / "filter.nl").read_text().replace("o42\n", "o999\n", 1))
+    got = status.check_files(CHECKER, [*files, broken, unknown])
     assert [got[str(f)] for f in files] == [("modelled", "")] * 3
     assert got[str(broken)][0] == "reader-error"
+    assert got[str(unknown)][0] == "reader-unsupported"

@@ -12,6 +12,7 @@
 #include <array>
 #include <benchmarks/common/runner_args.h>
 #include <benchmarks/common/search_config_flags.h>
+#include <benchmarks/minlplib/nl_refusal.h>
 #include <benchmarks/minlplib/note_policy.h>
 #include <benchmarks/mipfeas/worker_accounting.h>
 #include <cbls/cbls.h>
@@ -777,8 +778,7 @@ bool read_instance(std::ostream& csv, const Args& args, const std::string& name,
         prob = cbls::read_nl(nl_path);
     } catch (const std::exception& e) {
         std::string what = e.what();
-        bool unsupported = what.find("NL_UNKNOWN_OPCODE") != std::string::npos ||
-                           what.find("not supported by this reader") != std::string::npos;
+        const bool unsupported = cbls::minlplib::is_reader_coverage_gap(what);
         std::replace(what.begin(), what.end(), ',', ';');
         if (unsupported) {
             std::printf("%-22s  (skipped: %s)\n", name.c_str(), what.c_str());

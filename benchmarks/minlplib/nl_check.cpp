@@ -2,12 +2,17 @@
 // line, without solving, and prints one tab-separated line per file:
 //
 //   <path> \t modelled
-//   <path> \t reader-error \t <message>
-//   <path> \t adapter-unsupported \t <first reason>
+//   <path> \t reader-error \t <message>          the file is malformed
+//   <path> \t reader-unsupported \t <message>    a construct the reader lacks
+//   <path> \t adapter-unsupported \t <reason>    an op the adapter lacks
+//   <path> \t checker-failed \t <message>        the adapter or model threw
 //
 // benchmarks/instances/minlplib/status.py runs it over the unpacked MINLPLib
-// archive to give every catalogue instance a status (#283). Tabs and newlines
-// inside a message are replaced by spaces, so each file is exactly one line.
+// archive to give every catalogue instance a status (#283). Reader refusals
+// are split as the runner splits them (nl_refusal.h). Every control character
+// in a message (reader messages quote raw file bytes) becomes a space, so each
+// file is exactly one line.
+#include <benchmarks/minlplib/nl_refusal.h>
 #include <cbls/io_nl.h>
 #include <cstdio>
 #include <exception>
@@ -17,11 +22,35 @@ namespace {
 
 std::string one_line(std::string s) {
     for (char& c : s) {
-        if (c == '\t' || c == '\n' || c == '\r') {
+        const auto u = static_cast<unsigned char>(c);
+        if (u < 0x20 || u == 0x7f) {
             c = ' ';
         }
     }
     return s;
+}
+
+std::string check(const std::string& path) {
+    cbls::NlProblem prob;
+    try {
+        prob = cbls::read_nl(path);
+    } catch (const std::exception& e) {
+        const std::string what = e.what();
+        return (cbls::minlplib::is_reader_coverage_gap(what) ? "reader-unsupported\t"
+                                                             : "reader-error\t") +
+               one_line(what);
+    }
+    try {
+        const cbls::NlToModelResult built = cbls::nl_to_model(prob);
+        if (built.supported) {
+            return "modelled";
+        }
+        return "adapter-unsupported\t" + one_line(built.skipped_reasons.empty()
+                                                      ? std::string("(no reason given)")
+                                                      : built.skipped_reasons[0]);
+    } catch (const std::exception& e) {
+        return std::string("checker-failed\tmodel building threw: ") + one_line(e.what());
+    }
 }
 
 }  // namespace
@@ -33,21 +62,7 @@ int main(int argc, char** argv) {
     }
     for (int i = 1; i < argc; ++i) {
         const std::string path = argv[i];
-        std::string status;
-        try {
-            const cbls::NlProblem prob = cbls::read_nl(path);
-            const cbls::NlToModelResult built = cbls::nl_to_model(prob);
-            if (built.supported) {
-                status = "modelled";
-            } else {
-                status = "adapter-unsupported\t" + one_line(built.skipped_reasons.empty()
-                                                                ? std::string("(no reason given)")
-                                                                : built.skipped_reasons[0]);
-            }
-        } catch (const std::exception& e) {
-            status = std::string("reader-error\t") + one_line(e.what());
-        }
-        std::printf("%s\t%s\n", one_line(path).c_str(), status.c_str());
+        std::printf("%s\t%s\n", one_line(path).c_str(), check(path).c_str());
         std::fflush(stdout);
     }
     return 0;

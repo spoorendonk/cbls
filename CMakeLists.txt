@@ -369,6 +369,7 @@ if(CBLS_BUILD_BENCHMARKS)
     add_executable(cbls_minlplib_nl_check benchmarks/minlplib/nl_check.cpp)
     target_link_libraries(cbls_minlplib_nl_check PRIVATE cbls_lib)
     cbls_enable_warnings(cbls_minlplib_nl_check)
+    target_include_directories(cbls_minlplib_nl_check PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
     add_executable(cbls_setcover benchmarks/setcover/setcover.cpp)
     target_link_libraries(cbls_setcover PRIVATE cbls_lib)
