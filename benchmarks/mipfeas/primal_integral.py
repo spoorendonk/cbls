@@ -1716,7 +1716,7 @@ def render_report(
     out: list[str] = [
         "# MIPfeas parity report",
         "",
-        f"Roster: {_roster_label(roster_path, rows, parity.roster_size, held_out)}, "
+        f"Roster {_roster_label(roster_path, rows, parity.roster_size, held_out, '`')}, "
         f"{budget}s per instance-engine pair. Table: `{table_path.name}`.",
         "",
         "CBLS against CP-SAT restricted to its `fj` + `ls` subsolvers under",
@@ -2003,16 +2003,25 @@ def _is_held_out_table(rows: list[Scored], instances: int, held_out: HeldOut | N
 
 
 def _roster_label(
-    roster_path: Path, rows: list[Scored], instances: int, held_out: HeldOut | None
+    roster_path: Path,
+    rows: list[Scored],
+    instances: int,
+    held_out: HeldOut | None,
+    quote: str = "",
 ) -> str:
-    """The roster a table scored, named so the count is true of the named file."""
+    """The roster a table scored, named so the count is true of the named file.
+
+    `quote` wraps each file name: the report renders them as code, the CSV header
+    as plain text.
+    """
+    roster = f"{quote}{roster_path.name}{quote}"
     if _is_held_out_table(rows, instances, held_out):
         assert held_out is not None
         return (
-            f"{roster_path.name} minus {held_out.path.name} "
+            f"{roster} minus {quote}{held_out.path.name}{quote} "
             f"({instances} of {FULL_ROSTER_SIZE} instances)"
         )
-    return f"{roster_path.name} ({instances} instances)"
+    return f"{roster} ({instances} instances)"
 
 
 def _config_value(rows: list[Scored], engine: str, key: str) -> str | None:

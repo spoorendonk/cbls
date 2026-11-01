@@ -858,7 +858,7 @@ def test_held_out_roster_is_labelled_only_when_it_completes_the_full_one(
     for text in (table, report):
         assert ("WIRING CHECK" in text) is not held_out_label
         assert ("tuned.txt" in text) is held_out_label
-        assert roster_line in text
+        assert roster_line in text.replace("`", "")
     assert ("# HELD-OUT ROSTER: 211 of the 233" in table) is held_out_label
     assert ("**Held-out roster.** 211 of the 233" in report) is held_out_label
     assert ("t21" in report) is held_out_label
