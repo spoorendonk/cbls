@@ -19,6 +19,7 @@
 #include <cstdint>
 #include <cstring>
 #include <fstream>
+#include <initializer_list>
 #include <limits>
 #include <sstream>
 #include <stdexcept>
@@ -562,8 +563,8 @@ NlHeaderCounts parse_header(Tokenizer& tok, NlProblem& prob) {
             h.nlvbi = v[2];
             h.nlvci = v[3];
             h.nlvoi = v[4];
-            prob.n_discrete_vars =
-                static_cast<int32_t>(h.nbv + h.niv + h.nlvbi + h.nlvci + h.nlvoi);
+            // `prob.n_discrete_vars` is set by `check_placement_counts` once
+            // n_vars is known to be sane: summed here unchecked it could wrap.
         } else if (header_line_after_counts == 8) {
             const auto v = read_ints(hline, 5);
             // Range-check each count before summing: five values within
@@ -580,6 +581,32 @@ NlHeaderCounts parse_header(Tokenizer& tok, NlProblem& prob) {
         }
     }
     return h;
+}
+
+// Refuse placement counts (header lines 5 and 7) outside [0, n_vars], then set
+// `prob.n_discrete_vars` (#290). `mark_tail` loops over a block's length, so an
+// unchecked 4e18 there hangs the reader; and the block-offset and discrete sums
+// below would wrap int64. Each count is a number of columns, or (nlvc, nlvo)
+// an index bound one past a column, so none can exceed n_vars in a valid file.
+// Once all are within [0, n_vars] (n_vars <= INT32_MAX, checked by
+// `check_counts_backed`), every sum of at most five of them fits int64, and
+// `mark_tail` runs at most n_vars passes per block.
+void check_placement_counts(NlProblem& prob, const NlHeaderCounts& h) {
+    const int64_t n = prob.n_vars;
+    for (const int64_t c : {h.nlvc, h.nlvo, h.nlvb, h.nbv, h.niv, h.nlvbi, h.nlvci, h.nlvoi}) {
+        if (c < 0 || c > n) {
+            throw std::runtime_error("NL: malformed header: nonlinear or discrete variable count " +
+                                     std::to_string(c) + " outside [0, " + std::to_string(n) +
+                                     "] (the variable count)");
+        }
+    }
+    const int64_t discrete = h.nbv + h.niv + h.nlvbi + h.nlvci + h.nlvoi;
+    if (discrete > n) {
+        throw std::runtime_error("NL: malformed header: " + std::to_string(discrete) +
+                                 " discrete variables declared but only " + std::to_string(n) +
+                                 " variables");
+    }
+    prob.n_discrete_vars = static_cast<int32_t>(discrete);
 }
 
 // The last `n_int` columns of [block_start, block_start + block_len) are integer.
@@ -895,6 +922,7 @@ NlProblem parse_nl(const std::string& text, const std::string& name) {
         tok.set_binary();
     }
     check_counts_backed(prob, tok.remaining());
+    check_placement_counts(prob, header);
     mark_discrete_vars(prob, header);
 
     prob.constraints.resize(prob.n_cons);

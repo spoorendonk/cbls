@@ -550,6 +550,50 @@ TEST_CASE("NL reader refuses header counts the file cannot back", "[minlplib]") 
     }
 }
 
+TEST_CASE("NL reader refuses nonlinear or discrete counts outside the variable count",
+          "[minlplib]") {
+    // #290: the placement counts of header lines 5 and 7 size `mark_tail`'s
+    // loops and feed int64 sums. Before the check, the first section looped
+    // ~4e18 times instead of refusing.
+    const std::string body = "b\n0 0 1\n0 0 1\nO0 0\nn0\n";
+    const auto with_lines = [&body](const std::string& line5, const std::string& line7) {
+        std::string text = nl_header(2, 0, 1);
+        const std::string old5 = " 0 0 0\t# nonlinear vars";
+        const std::string old7 = " 0 0 0 0 0\t# discrete";
+        const std::size_t at5 = text.find(old5);
+        const std::size_t at7 = text.find(old7);
+        REQUIRE(at5 != std::string::npos);
+        REQUIRE(at7 != std::string::npos);
+        text.replace(at7, old7.size(), line7);  // later line first: at5 stays valid
+        text.replace(at5, old5.size(), line5);
+        return text + body;
+    };
+    SECTION("a huge nonlinear block and integer count") {
+        REQUIRE_THROWS_WITH(
+            parse_nl(with_lines(" 0 0 4000000000000000000", " 0 0 4000000000000000000 0 0"),
+                     "hang"),
+            Catch::Matchers::ContainsSubstring("malformed header"));
+    }
+    SECTION("an INT64_MAX count would wrap the block-offset sums") {
+        const std::string max = "9223372036854775807";
+        REQUIRE_THROWS_WITH(parse_nl(with_lines(" " + max + " 0 " + max, " 0 0 0 0 0"), "wrap"),
+                            Catch::Matchers::ContainsSubstring("malformed header"));
+    }
+    SECTION("a negative count") {
+        REQUIRE_THROWS_WITH(parse_nl(with_lines(" 0 0 0", " 0 -1 0 0 0"), "negative"),
+                            Catch::Matchers::ContainsSubstring("malformed header"));
+    }
+    SECTION("discrete counts each in range but summing past the variable count") {
+        REQUIRE_THROWS_WITH(parse_nl(with_lines(" 0 0 0", " 2 2 0 0 0"), "sum"),
+                            Catch::Matchers::ContainsSubstring("malformed header"));
+    }
+    SECTION("counts within the variable count still read") {
+        const NlProblem p = parse_nl(with_lines(" 2 0 2", " 0 0 1 0 0"), "ok");
+        REQUIRE(p.n_discrete_vars == 1);
+        REQUIRE(p.var_is_discrete == std::vector<uint8_t>{0, 1});
+    }
+}
+
 TEST_CASE("NL reader skips a dual initial guess (d segment)", "[minlplib]") {
     std::string text = nl_header(1, 1, 1);
     text += "b\n0 0 10\n";
