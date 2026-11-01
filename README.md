@@ -44,7 +44,7 @@ m.close();
 - **Feasibility Jump** construction heuristic (greedy violation reduction)
 - **Gradient-based intensification**: Newton steps and backtracking line search on continuous variables
 - **Large neighborhood search**: destroy-repair diversification
-- **Delta evaluation**: incremental DAG update; a one-variable move re-evaluates a topologically sorted cone cached (within a memory budget) when the model is frozen, and a probe rolls back from an undo log
+- **Delta evaluation**: a one-variable move re-evaluates a topologically sorted cone cached when the model is frozen; probes roll back from an undo log
 - **Reverse-mode AD**: sparse automatic differentiation for gradient moves
 - **Multi-threaded** cooperative portfolio: workers share incumbents through a solution pool and restart stalled searches from it
 - **Python bindings** via nanobind
@@ -99,14 +99,14 @@ discontinuous ones. GLS reweighting reshapes the landscape on stagnation, and
 diversification kicks or LNS restart the search from a perturbed copy of the
 point it is exploring around — its own incumbent, a peer's state under the
 multi-threaded portfolio, or the live assignment until the first feasible
-solution. How it fares against SCIP and CP-SAT is what the benchmarks below
-measure; their full-scale tables are not published yet (#253).
+solution. How it fares against CP-SAT, SCIP and published results is what the
+benchmarks below measure; their full-scale tables are not published yet (#253).
 
 ## Known limitations
 
 - Pure local search: no constraint propagation, cutting planes or LP relaxation, so no bound and no proof of optimality or infeasibility.
 - Benchmark models may be simplified relative to their source papers, so a "BKS gap" is not always apples-to-apples; where that applies (uc-chped) the deviation is audited equation by equation in [`benchmarks/uc-chped/FIDELITY.md`](benchmarks/uc-chped/FIDELITY.md), and the comparison table states what it may and may not claim.
-- **`Set` variables are expressible, not competitive; `List` variables have no published result.** On weighted OR-Library set covering the `Set` encoding lands several times further from the optimum than the same model in Bools. No `List` result is published until the CVRP campaign (#204). The evidence and its mechanical cause are in [docs/benchmarks/README.md](docs/benchmarks/README.md#structured-variables-the-claim-is-currently-unsupported).
+- **`Set` variables are expressible, not competitive; `List` variables have no published result.** On weighted OR-Library set covering the `Set` encoding lands at several times the optimum, while the same model in Bools is within 4-9% of it. No `List` result is published until the CVRP campaign (#204). The evidence and its mechanical cause are in [docs/benchmarks/README.md](docs/benchmarks/README.md#structured-variables-the-claim-is-currently-unsupported).
 
 ## Benchmarks
 
@@ -135,12 +135,13 @@ The other directories under `benchmarks/` are **not** comparative benchmarks:
 | `benchmarks/cvrp/` | `cbls_cvrp` | the worked example for `List` variables: CVRPLIB X set, scored as gap to the best-known values, with PyVRP and OR-Tools as context. Unpublished until #204 |
 | `benchmarks/setcover/` | `cbls_setcover` | the worked example for `Set` variables: ten OR-Library instances under both a `Set` and a Bool encoding. Its result is a documented limitation, not a comparative claim |
 | `benchmarks/chped/` | none | CHPED dispatch model, data and SCIP reference. `examples/chped.cpp` uses the model; `reference_solve.py --uc` is UC-CHPED's SCIP reference |
-| `benchmarks/tune/` | none | `xk tune` (Optuna) parameter studies, one per benchmark class |
+| `benchmarks/tune/` | none | `xk tune` parameter studies, one per benchmark class |
 | `benchmarks/common/` | none | headers and Python helpers the runners share |
 | `benchmarks/instances/miplib-fj/` | none | a retired benchmark's instances, kept because tests read them |
 
 Each benchmark's data, rosters and results write-up live in
-`benchmarks/instances/<name>/`; [docs/benchmarks/README.md](docs/benchmarks/README.md)
+`benchmarks/instances/<name>/` (UC-CHPED's write-up is
+[docs/benchmarks/uc-chped/README.md](docs/benchmarks/uc-chped/README.md)); [docs/benchmarks/README.md](docs/benchmarks/README.md)
 is the index.
 
 ## Architecture
