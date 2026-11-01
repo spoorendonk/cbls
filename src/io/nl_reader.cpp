@@ -395,9 +395,14 @@ NlHeaderCounts parse_header(Tokenizer& tok, NlProblem& prob) {
                 static_cast<int32_t>(h.nbv + h.niv + h.nlvbi + h.nlvci + h.nlvoi);
         } else if (header_line_after_counts == 8) {
             const auto v = read_ints(hline, 5);
+            // Range-check each count before summing: five values within
+            // [0, INT32_MAX] cannot overflow int64, but unchecked ones can.
+            constexpr int64_t kMax = std::numeric_limits<int32_t>::max();
+            if (std::any_of(v.begin(), v.end(), [](int64_t n) { return n < 0 || n > kMax; })) {
+                throw std::runtime_error("NL: malformed common-expression line: '" + hline + "'");
+            }
             const int64_t total = v[0] + v[1] + v[2] + v[3] + v[4];
-            if (std::any_of(v.begin(), v.end(), [](int64_t n) { return n < 0; }) ||
-                total > std::numeric_limits<int32_t>::max()) {
+            if (total > kMax) {
                 throw std::runtime_error("NL: malformed common-expression line: '" + hline + "'");
             }
             prob.n_defined_vars = static_cast<int32_t>(total);

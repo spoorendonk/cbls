@@ -139,44 +139,106 @@ public:
         return defined_var(static_cast<std::size_t>(slot));
     }
 
+    /// Whether NL variable `j` names a defined variable rather than a column.
+    [[nodiscard]] bool is_defined_var(int32_t j) const { return slot_of(j) >= 0; }
+
 private:
     enum class DefState : std::uint8_t { Unbuilt, Building, Built };
 
+    /// One defined variable on the dependency walk, with the defined variables
+    /// it names and how many of them have been visited.
+    struct DefFrame {
+        std::size_t slot;
+        std::vector<std::size_t> deps;
+        std::size_t next = 0;
+    };
+
+    /// The defined-variable slot NL variable `j` names, or -1 for a column or
+    /// an index past the defined variables.
+    [[nodiscard]] int64_t slot_of(int32_t j) const {
+        const int64_t slot = static_cast<int64_t>(j) - static_cast<int64_t>(vh_.size());
+        return (j >= 0 && slot >= 0 && slot < static_cast<int64_t>(def_state_.size())) ? slot : -1;
+    }
+
+    [[nodiscard]] std::string label(std::size_t slot) const {
+        return "defined variable " + std::to_string(vh_.size() + slot);
+    }
+
+    // Build defined variable `slot`, after every defined variable it depends
+    // on, deepest first. The walk keeps its own stack: a recursive AMPL
+    // definition (`s[t] = s[t-1] + x[t]`) writes one V segment per step, each
+    // naming the last, and recursing per link would overflow the native stack
+    // on a long horizon. Translating one definition then recurses only as deep
+    // as its own expression, since its defined-variable references are built.
     int32_t defined_var(std::size_t slot) {
-        const std::string label = "defined variable " + std::to_string(vh_.size() + slot);
-        switch (def_state_[slot]) {
-            case DefState::Built:
-                return def_handle_[slot];
-            case DefState::Building:
-                fail(label + " refers to itself");
-                return m_.constant(0.0);
-            case DefState::Unbuilt:
-                break;
+        if (def_state_[slot] == DefState::Built) {
+            return def_handle_[slot];
         }
+        std::vector<DefFrame> stack;
+        enter(slot, stack);
+        while (ok_ && !stack.empty()) {
+            DefFrame& top = stack.back();
+            if (top.next < top.deps.size()) {
+                const std::size_t dep = top.deps[top.next++];
+                if (def_state_[dep] == DefState::Unbuilt) {
+                    enter(dep, stack);  // invalidates `top`; not used again
+                } else if (def_state_[dep] == DefState::Building) {
+                    fail(label(dep) + " refers to itself");
+                }
+                continue;
+            }
+            build(top.slot);
+            stack.pop_back();
+        }
+        return ok_ ? def_handle_[slot] : m_.constant(0.0);
+    }
+
+    // Mark `slot` in progress and push it with the defined variables it names.
+    void enter(std::size_t slot, std::vector<DefFrame>& stack) {
         const NlDefinedVar& dv = prob_.defined_vars[slot];
         if (!dv.defined) {
-            fail(label + " has no V segment");
-            return m_.constant(0.0);
+            fail(label(slot) + " has no V segment");
+            return;
         }
         def_state_[slot] = DefState::Building;
+        DefFrame frame{slot, {}, 0};
+        auto add = [&](int32_t j) {
+            const int64_t s = slot_of(j);
+            if (s >= 0) {
+                frame.deps.push_back(static_cast<std::size_t>(s));
+            }
+        };
+        for (const NlLinTerm& t : dv.linear) {
+            add(t.var);
+        }
+        for (const NlExprNode& n : dv.nonlinear.nodes) {
+            if (n.kind == NlNodeKind::Var) {
+                add(n.index);
+            }
+        }
+        stack.push_back(std::move(frame));
+    }
+
+    // Build `slot`, whose defined-variable dependencies are all built.
+    void build(std::size_t slot) {
+        const NlDefinedVar& dv = prob_.defined_vars[slot];
         std::vector<int32_t> parts;
         parts.reserve(dv.linear.size() + 1);
         for (const NlLinTerm& t : dv.linear) {
             const int32_t h = var_handle(t.var);
             if (!ok_) {
-                return m_.constant(0.0);
+                return;
             }
             parts.push_back(scaled(m_, t.coef, h));
         }
         if (!dv.nonlinear.empty()) {
             parts.push_back(translate(dv.nonlinear, dv.nonlinear.root));
             if (!ok_) {
-                return m_.constant(0.0);
+                return;
             }
         }
         def_handle_[slot] = sum_of(m_, parts);
         def_state_[slot] = DefState::Built;
-        return def_handle_[slot];
     }
 
     void fail(const std::string& why) {
@@ -322,6 +384,15 @@ BodyResult build_body(Model& m, ExprTranslator& tr, const NlExpr& nonlinear,
         if (!tr.ok()) {
             out.ok = false;
             out.reason = tr.reason();
+            return out;
+        }
+    }
+    // AMPL never writes a defined variable into J/G, and `build_linear` would
+    // drop the term, relaxing the row; refuse it as a V segment's bad index is.
+    for (const NlLinTerm& t : linear) {
+        if (tr.is_defined_var(t.var)) {
+            out.ok = false;
+            out.reason = "linear term names defined variable " + std::to_string(t.var);
             return out;
         }
     }

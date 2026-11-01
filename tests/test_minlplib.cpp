@@ -344,6 +344,17 @@ TEST_CASE("NL reader refuses a V segment outside the declared range", "[minlplib
         REQUIRE_THROWS_WITH(parse_nl(text, "twice"),
                             Catch::Matchers::ContainsSubstring("defined twice"));
     }
+    SECTION("counts whose sum overflows") {
+        // Two INT64_MAX counts wrap negative if summed before the range check.
+        std::string text = nl_header(2, 0, 1);
+        const std::string line10 = " 0 0 0 0 0\t# common exprs";
+        const std::size_t at = text.find(line10);
+        REQUIRE(at != std::string::npos);
+        text.replace(at, line10.size(), " 9223372036854775807 9223372036854775807 2 0 0");
+        text += "O0 0\nn0\n";
+        REQUIRE_THROWS_WITH(parse_nl(text, "overflow"),
+                            Catch::Matchers::ContainsSubstring("malformed common-expression"));
+    }
 }
 
 TEST_CASE("NL reader skips a dual initial guess (d segment)", "[minlplib]") {
@@ -498,20 +509,39 @@ TEST_CASE("nl_to_model inlines a defined variable", "[minlplib]") {
 }
 
 TEST_CASE("nl_to_model resolves a chain of defined variables", "[minlplib]") {
-    // v2 := x0 + x1 ; v3 := v2 * v2 + 0.5 * v2 (V referencing V, in both parts).
-    // minimize v3 + x0. At x = (1, 2): v2 = 3, v3 = 10.5, obj = 11.5.
-    std::string text = nl_header(2, 0, 1, /*ndef=*/2);
-    text += "b\n0 -5 5\n0 -5 5\n";
-    text += "V2 2 0\n0 1\n1 1\nn0\n";
-    text += "V3 1 0\n2 0.5\no2\nv2\nv2\n";
-    text += "O0 0\nv3\n";
-    text += "G0 1\n0 1\n";
-    NlToModelResult r = nl_to_model(parse_nl(text, "chain"));
-    REQUIRE(r.supported);
-    r.model.var_mut(0).value = 1.0;
-    r.model.var_mut(1).value = 2.0;
-    full_evaluate(r.model);
-    REQUIRE_THAT(r.model.node_value(r.objective_node_id), WithinAbs(11.5, 1e-9));
+    SECTION("V referencing V, in both parts") {
+        // v2 := x0 + x1 ; v3 := v2 * v2 + 0.5 * v2.
+        // minimize v3 + x0. At x = (1, 2): v2 = 3, v3 = 10.5, obj = 11.5.
+        std::string text = nl_header(2, 0, 1, /*ndef=*/2);
+        text += "b\n0 -5 5\n0 -5 5\n";
+        text += "V2 2 0\n0 1\n1 1\nn0\n";
+        text += "V3 1 0\n2 0.5\no2\nv2\nv2\n";
+        text += "O0 0\nv3\n";
+        text += "G0 1\n0 1\n";
+        NlToModelResult r = nl_to_model(parse_nl(text, "chain"));
+        REQUIRE(r.supported);
+        r.model.var_mut(0).value = 1.0;
+        r.model.var_mut(1).value = 2.0;
+        full_evaluate(r.model);
+        REQUIRE_THAT(r.model.node_value(r.objective_node_id), WithinAbs(11.5, 1e-9));
+    }
+    SECTION("a chain too long to build by recursion") {
+        // A recursive AMPL definition, s[t] := s[t-1] + 1, one V per step:
+        // v1 := x0 + 1, v(k) := v(k-1) + 1. Building it one native frame per
+        // link overflows the stack. minimize v(n); at x0 = 0.5 it is n + 0.5.
+        constexpr int kLinks = 200000;
+        std::string text = nl_header(1, 0, 1, kLinks);
+        text += "b\n0 0 1\n";
+        for (int k = 1; k <= kLinks; ++k) {
+            text += "V" + std::to_string(k) + " 0 0\no0\nv" + std::to_string(k - 1) + "\nn1\n";
+        }
+        text += "O0 0\nv" + std::to_string(kLinks) + "\n";
+        NlToModelResult r = nl_to_model(parse_nl(text, "longchain"));
+        REQUIRE(r.supported);
+        r.model.var_mut(0).value = 0.5;
+        full_evaluate(r.model);
+        REQUIRE_THAT(r.model.node_value(r.objective_node_id), WithinAbs(kLinks + 0.5, 1e-6));
+    }
 }
 
 TEST_CASE("nl_to_model builds a defined variable once for all its uses", "[minlplib]") {
@@ -554,6 +584,23 @@ TEST_CASE("nl_to_model reports an undefined or cyclic defined variable", "[minlp
         NlToModelResult r = nl_to_model(parse_nl(text, "defatan"));
         REQUIRE_FALSE(r.supported);
         REQUIRE_THAT(r.skipped_reasons[0], Catch::Matchers::ContainsSubstring("49"));
+    }
+    SECTION("refers to itself through another") {
+        // v1 := v2 + 1, v2 := v1 * x0: a cycle of two.
+        std::string text = nl_header(1, 0, 1, /*ndef=*/2);
+        text += "b\n0 0 5\nV1 0 0\no0\nv2\nn1\nV2 0 0\no2\nv1\nv0\nO0 0\nv1\n";
+        NlToModelResult r = nl_to_model(parse_nl(text, "cycle2"));
+        REQUIRE_FALSE(r.supported);
+        REQUIRE_THAT(r.skipped_reasons[0], Catch::Matchers::ContainsSubstring("refers to itself"));
+    }
+    SECTION("named in a linear J segment") {
+        // AMPL never writes this; dropping the term would relax the row.
+        std::string text = nl_header(1, 1, 1, /*ndef=*/1);
+        text += "b\n0 0 5\nr\n1 4\nV1 0 0\nn1\nC0\nn0\nJ0 1\n1 1\nO0 0\nn0\n";
+        NlToModelResult r = nl_to_model(parse_nl(text, "defjac"));
+        REQUIRE_FALSE(r.supported);
+        REQUIRE_THAT(r.skipped_reasons[0],
+                     Catch::Matchers::ContainsSubstring("linear term names defined variable"));
     }
 }
 
