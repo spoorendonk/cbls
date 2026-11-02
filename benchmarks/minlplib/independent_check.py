@@ -215,14 +215,12 @@ def _columns(model: Any, n: int) -> tuple[list[Any], Any | None, list[tuple[Any,
     # `.col` beside the `.nl` (#319), so this guards a change in SCIP's naming.
     indices = [_COLUMN_NAME.match(var.name) for var in columns]
     unindexed = [var.name for m, var in zip(indices, columns, strict=True) if m is None]
+    naming = "(a .col file read with the .nl, or a change in SCIP's NL reader naming?)"
     if unindexed:
-        raise ValueError(
-            f"SCIP column {unindexed[0]!r} carries no column index "
-            "(a .col file read with the .nl, or a change in SCIP's NL reader naming?)"
-        )
+        raise ValueError(f"SCIP column {unindexed[0]!r} carries no column index {naming}")
     by_index = {int(m.group(1)): var for m, var in zip(indices, columns, strict=True) if m}
     if sorted(by_index) != list(range(n)):
-        raise ValueError(f"SCIP's column names are not a permutation of 0..{n - 1}")
+        raise ValueError(f"SCIP's column names are not a permutation of 0..{n - 1} {naming}")
     return [by_index[j] for j in range(n)], nlobj, fixed
 
 
@@ -235,7 +233,8 @@ class _Probe:
         self.model: Any = Model()
         self.model.hideOutput()
         # SCIP's AMPL reader picks up a `<stem>.col` beside the `.nl` and names
-        # columns from it (GAMS names, `objvar`), which `_columns` refuses. The
+        # columns from it: GAMS names, 1-based `x1..xn` (not a permutation of
+        # 0..n-1) and unindexed ones like `objvar`, both refused by `_columns`. The
         # library archive ships one beside every `.nl` (#319), so the reader is
         # given the `.nl` alone: a symlink in an empty directory. That hides
         # `<stem>.row` too, so constraints in a demotion note carry SCIP's

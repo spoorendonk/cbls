@@ -332,15 +332,18 @@ def test_a_column_name_without_an_index_is_refused_not_guessed(tmp_path: Path) -
 def test_a_col_file_beside_the_nl_is_not_read_by_the_check(tmp_path: Path) -> None:
     # The MINLPLib archive ships `<stem>.col` (GAMS names) beside every `.nl`;
     # read beside it, SCIP names ex4_1_1's column `x1`, and the check refused
-    # every full-library row (#319). The check reads the `.nl` alone.
+    # every full-library row (#319). The check reads the `.nl` alone. Both
+    # refusal classes #319 hit: a 1-based name (`x1`, not a permutation of
+    # 0..0) and an unindexed one (`objvar`).
     nl = tmp_path / "ex4_1_1.nl"
     shutil.copyfile(INST / "ex4_1_1.nl", nl)
-    (tmp_path / "ex4_1_1.col").write_text("x1\n")
-    beside = pyscipopt.Model()
-    beside.hideOutput()
-    beside.readProblem(str(nl))
-    assert [v.name for v in beside.getVars() if v.name != "nlobjvar"] == ["x1"]
     good = Solution("ex4_1_1", EX4_1_1_AT_1, (1.0,))
-    assert check_solution(nl, good) is None
-    worse = check_solution(nl, replace(good, objective=EX4_1_1_AT_1 + 0.5))
-    assert worse is not None and "worse than SCIP's value" in worse
+    for gams_name in ("x1", "objvar"):
+        (tmp_path / "ex4_1_1.col").write_text(f"{gams_name}\n")
+        beside = pyscipopt.Model()
+        beside.hideOutput()
+        beside.readProblem(str(nl))
+        assert [v.name for v in beside.getVars() if v.name != "nlobjvar"] == [gams_name]
+        assert check_solution(nl, good) is None
+        worse = check_solution(nl, replace(good, objective=EX4_1_1_AT_1 + 0.5))
+        assert worse is not None and "worse than SCIP's value" in worse
