@@ -419,7 +419,7 @@ PresolveResult build_result(Work& w, const std::vector<double>& lb0,
     const PresolveStats& s = w.stats;
     const bool reduced = s.cols_fixed + s.cols_empty + s.rows_empty + s.rows_free +
                              s.rows_singleton + s.rows_redundant + s.row_sides_dropped +
-                             s.bounds_tightened >
+                             s.bounds_tightened + s.coefs_tightened >
                          0;
     w.stats.status = reduced ? PresolveStatus::Reduced : PresolveStatus::Unchanged;
     res.stats = w.stats;
@@ -650,6 +650,11 @@ PresolveResult presolve(const LinearProblem& problem, const PresolveOptions& opt
             }
             if (!w.infeasible) {
                 presolve_detail::reduce_rows(w);
+            }
+            // After the implied sides are dropped, so a redundant side is
+            // removed rather than tightened.
+            if (!w.infeasible && opts.coefficient_tightening) {
+                presolve_detail::reduce_coef_tightening(w);
             }
             if (!w.infeasible && opts.empty_columns) {
                 presolve_detail::reduce_empty_columns(w);

@@ -14,6 +14,9 @@
 //   - singleton rows: turned into bounds on their column, then removed;
 //   - redundant row sides: a side the activity range over the column bounds
 //     already implies is dropped, and a row left with no side is removed;
+//   - coefficient tightening: an integral column's coefficient in a one-sided
+//     row moves toward 0 with the side, keeping the row's integer solutions
+//     (Achterberg et al. 2020, eq. (3.6); src/presolve_coef.cpp);
 //   - empty columns (in no row): fixed at their best bound for the objective.
 //     This is the only optimality-based (dual) reduction here: it keeps every
 //     optimum's objective value, not every feasible point.
@@ -64,6 +67,8 @@ struct PresolveOptions {
     bool redundant_rows = true;
     bool empty_columns = true;
     bool propagate_bounds = true;
+    /// Coefficient tightening on one-sided rows (#327).
+    bool coefficient_tightening = true;
     /// Hard stop on the number of rounds; each round is O(nnz).
     int max_rounds = 20;
     /// Passed to `propagate_bounds` each round.
@@ -86,15 +91,17 @@ enum class PresolveStatus : uint8_t {
 struct PresolveStats {
     PresolveStatus status = PresolveStatus::Unchanged;
     int rounds = 0;
-    int cols_fixed = 0;         ///< Fixed columns removed.
-    int cols_empty = 0;         ///< Empty columns fixed at their best bound and removed.
-    int rows_empty = 0;         ///< Empty rows removed.
-    int rows_free = 0;          ///< Rows with no finite side removed.
-    int rows_singleton = 0;     ///< Singleton rows turned into column bounds.
-    int rows_redundant = 0;     ///< Rows removed because both sides were implied.
-    int row_sides_dropped = 0;  ///< Implied row sides dropped (rows kept or not).
-    int duplicates_merged = 0;  ///< Repeated (row, column) entries merged on load.
-    int bounds_tightened = 0;   ///< Kept columns whose lb or ub moved.
+    int cols_fixed = 0;           ///< Fixed columns removed.
+    int cols_empty = 0;           ///< Empty columns fixed at their best bound and removed.
+    int rows_empty = 0;           ///< Empty rows removed.
+    int rows_free = 0;            ///< Rows with no finite side removed.
+    int rows_singleton = 0;       ///< Singleton rows turned into column bounds.
+    int rows_redundant = 0;       ///< Rows removed because both sides were implied.
+    int row_sides_dropped = 0;    ///< Implied row sides dropped (rows kept or not).
+    int duplicates_merged = 0;    ///< Repeated (row, column) entries merged on load.
+    int bounds_tightened = 0;     ///< Kept columns whose lb or ub moved.
+    int coefs_tightened = 0;      ///< Coefficient-tightening steps (a column may count again).
+    int rows_coef_tightened = 0;  ///< Row passes in which a coefficient was tightened.
     double seconds = 0.0;
 };
 

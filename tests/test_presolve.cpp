@@ -613,12 +613,14 @@ TEST_CASE("presolve removes no feasible point and postsolve restores it", "[pres
     // survive into the reduced problem and come back unchanged.
     PresolveOptions o = only(true);
     o.empty_columns = false;
+    int n_tightened = 0;  // coefficient tightening (#327) is on by default
     for (uint32_t seed = 1; seed <= 1000; ++seed) {
         CAPTURE(seed);
         const Instance inst = random_instance(seed, seed % 2 == 0);
         REQUIRE(satisfies(inst.p, inst.x_star));
         const PresolveResult r = presolve(inst.p, o);
         REQUIRE(r.stats.status != PresolveStatus::Infeasible);
+        n_tightened += r.stats.coefs_tightened;
         const std::vector<double> reduced_x = restrict_to(r, inst.x_star);
         REQUIRE(satisfies(r.reduced, reduced_x));
         const std::vector<double> back = r.postsolve.apply(reduced_x);
@@ -644,17 +646,20 @@ TEST_CASE("presolve removes no feasible point and postsolve restores it", "[pres
             }
         }
     }
+    REQUIRE(n_tightened > 0);
 }
 
 TEST_CASE("every point of the reduced problem postsolves to a feasible one", "[presolve]") {
     // Empty columns on: the dual reduction keeps feasibility and does not
     // worsen the objective of the point it maps.
     const PresolveOptions o = only(true);
+    int n_tightened = 0;
     for (uint32_t seed = 1; seed <= 1000; ++seed) {
         CAPTURE(seed);
         const Instance inst = random_instance(seed, /*boxed=*/true);
         const PresolveResult r = presolve(inst.p, o);
         REQUIRE(r.stats.status != PresolveStatus::Infeasible);
+        n_tightened += r.stats.coefs_tightened;
         const std::vector<double> mapped = r.postsolve.apply(restrict_to(r, inst.x_star));
         REQUIRE(satisfies(inst.p, mapped));
         REQUIRE(objective(inst.p, mapped) <= objective(inst.p, inst.x_star) + 1e-9);
@@ -668,6 +673,7 @@ TEST_CASE("every point of the reduced problem postsolves to a feasible one", "[p
         });
         REQUIRE(n_points >= 1);
     }
+    REQUIRE(n_tightened > 0);
 }
 
 TEST_CASE("a postsolved point passes verify_model on the unpresolved MPS model", "[presolve]") {

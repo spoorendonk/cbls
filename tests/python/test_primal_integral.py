@@ -430,6 +430,35 @@ def test_a_row_without_an_opt_in_engine_key_is_the_off_arm(
             check_uniform_configuration(rows)
 
 
+@pytest.mark.parametrize(
+    ("presolve", "match"),
+    # Without presolve the key names nothing, so an old row (no key) and a new
+    # one share a cell; under presolve a pre-#327 row never tightened and is
+    # its own configuration.
+    [(False, None), (True, "span 2 configurations")],
+    ids=["dropped-without-presolve", "kept-under-presolve"],
+)
+def test_coefficient_tightening_is_a_configuration_only_under_presolve(
+    tmp_path: Path, presolve: bool, match: str | None
+) -> None:
+    old: dict[str, object] = {"presolve": presolve}
+    new: dict[str, object] = {"presolve": presolve, "presolve_coef_tightening": True}
+    for instance, extra in (("a", old), ("b", new)):
+        _write_result(
+            tmp_path,
+            "cbls",
+            instance,
+            {"status": "feasible", "objective": 100.0, **extra},
+            trace=[(1.0, 100.0)],
+        )
+    rows = [_score(tmp_path, name) for name in ("a", "b")]
+    if match is None:
+        check_uniform_configuration(rows)  # must not raise
+    else:
+        with pytest.raises(ValueError, match=match):
+            check_uniform_configuration(rows)
+
+
 def test_summarize_excludes_not_run_instances_from_the_aggregates(tmp_path: Path) -> None:
     _write_result(
         tmp_path, "cbls", "solved", {"status": "feasible", "objective": 100.0}, trace=[(0.0, 100.0)]

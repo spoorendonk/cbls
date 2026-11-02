@@ -125,6 +125,10 @@ struct Args {
     // built from. With it on, propagation runs inside presolve, under the two
     // settings above.
     bool presolve = false;
+    // Coefficient tightening inside presolve (#327), on by default like the
+    // library. Changes the reduced model, so recorded per result; meaningless
+    // without --presolve, but recorded there too so every row has the key.
+    bool presolve_coef_tightening = true;
     // Portfolio workers. 1 is the single-threaded engine path this benchmark has
     // always measured; >1 runs `ParallelSearch`, the cooperative portfolio, on
     // that many threads. The baseline's `num_workers` is the number to match:
@@ -159,6 +163,7 @@ void print_usage() {
         "                    [--budget SECONDS] [--seed N] [--feas-tol T]\n"
         "                    [--inf-clamp B] [--no-propagate-bounds]\n"
         "                    [--max-propagation-passes N] [--presolve|--no-presolve]\n"
+        "                    [--no-presolve-coef-tightening]\n"
         "                    [--no-compound-moves] [--exact-int-jump]\n"
         "                    [--perturb-near-value] [--no-objective-tie-break]\n"
         "                    [--restart-randomization] [--luby-restart-unit N]\n"
@@ -270,6 +275,8 @@ Args parse_args(int argc, char** argv) {
             a.presolve = true;
         } else if (s == "--no-presolve") {
             a.presolve = false;
+        } else if (s == "--no-presolve-coef-tightening") {
+            a.presolve_coef_tightening = false;
         } else if (c.value_flag("--max-propagation-passes", v)) {
             a.max_propagation_passes = parse_propagation_passes(v);
         } else if (parse_search_flag(c, a)) {
@@ -484,6 +491,7 @@ void write_result(const Args& args, const nlohmann::json& extra) {
     j["propagate_bounds"] = args.propagate_bounds;
     j["max_propagation_passes"] = args.max_propagation_passes;
     j["presolve"] = args.presolve;
+    j["presolve_coef_tightening"] = args.presolve_coef_tightening;
     j["threads"] = args.threads;
     j["share_objective_bound"] = args.share_objective_bound;
     j["lns"] = args.search.lns;
@@ -690,6 +698,8 @@ void add_presolve_stats(const cbls::MpsToModelResult& built, nlohmann::json& j) 
     j["presolve_row_sides_dropped"] = ps.row_sides_dropped;
     j["presolve_duplicates_merged"] = ps.duplicates_merged;
     j["presolve_bounds_tightened"] = ps.bounds_tightened;
+    j["presolve_coefs_tightened"] = ps.coefs_tightened;
+    j["presolve_rows_coef_tightened"] = ps.rows_coef_tightened;
     j["presolve_n_vars"] = built.var_handles.size();
     j["presolve_n_cons"] =
         std::count_if(built.constraint_node_ids.begin(), built.constraint_node_ids.end(),
@@ -822,6 +832,7 @@ int run_benchmark(int argc, char** argv) {
     mps_opts.propagate_bounds = args.propagate_bounds;
     mps_opts.max_propagation_passes = args.max_propagation_passes;
     mps_opts.presolve.enabled = args.presolve;
+    mps_opts.presolve.coefficient_tightening = args.presolve_coef_tightening;
     const auto t_build = std::chrono::steady_clock::now();
     cbls::MpsToModelResult built;
     try {

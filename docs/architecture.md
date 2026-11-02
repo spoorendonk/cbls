@@ -87,7 +87,7 @@ A one-screen map of the pipeline, its files, the extension points, build targets
 7. **LNS** (`src/lns.cpp`) — every N-th diversification kick: SISR ruin-and-recreate on each `ListPartition`, destroy 30% and repair by FJ elsewhere; accepted on a lexicographic (real violation, objective) key.
 8. **Violation & penalty** (`src/violation.cpp`) — `total_violation = Σ W[c]·max(0, viol_c)`; `weighted_violation_delta` is the no-commit counterfactual δ_G; `augmented_objective()` is the inner solver's descent metric.
 9. **Parallel search** (`src/pool.cpp`) — `SolutionPool` + `ParallelSearch`, a cooperative portfolio that shares incumbents and the objective bound. Workers share the frozen model's immutable structure (#157) and copy only what a search writes. Nondeterministic; `--threads 1` is the reproducible run. See [Solution Pool & Parallel Search](#solution-pool--parallel-search); the benchmark driver's CPU policy is in `benchmarks/instances/mipfeas/README.md`.
-10. **I/O** (`src/io.cpp`, `src/io/`) — JSONL `.cbls` format; the MPS reader (`mps_reader.cpp` + `mps_to_model.cpp`, gzip, optional bzip2), the AMPL `.nl` reader (`nl_reader.cpp` + `nl_to_model.cpp`) and the MIPLIB `.solu` reader (`solu_reader.cpp`). CLI in `src/cli.cpp`. Load-time reductions for the adapters: implied bounds (`src/bound_propagation.cpp`) and presolve with postsolve (`include/cbls/presolve.h`, `src/presolve.cpp`, `src/presolve_internal.h`); see [Implied variable bounds](#implied-variable-bounds) and [Presolve](#presolve).
+10. **I/O** (`src/io.cpp`, `src/io/`) — JSONL `.cbls` format; the MPS reader (`mps_reader.cpp` + `mps_to_model.cpp`, gzip, optional bzip2), the AMPL `.nl` reader (`nl_reader.cpp` + `nl_to_model.cpp`) and the MIPLIB `.solu` reader (`solu_reader.cpp`). CLI in `src/cli.cpp`. Load-time reductions for the adapters: implied bounds (`src/bound_propagation.cpp`) and presolve with postsolve (`include/cbls/presolve.h`, `src/presolve.cpp`, `src/presolve_internal.h`, `src/presolve_coef.cpp`); see [Implied variable bounds](#implied-variable-bounds) and [Presolve](#presolve).
 
 ### Key extension points
 
@@ -2629,8 +2629,8 @@ it an empty box.
 
 ### Presolve
 
-**Files:** `include/cbls/presolve.h`, `src/presolve.cpp`, `src/presolve_internal.h`
-(epic #322; framework #324)
+**Files:** `include/cbls/presolve.h`, `src/presolve.cpp`, `src/presolve_internal.h`,
+`src/presolve_coef.cpp` (epic #322; framework #324)
 
 `presolve(LinearProblem, PresolveOptions)` reduces a linear problem and returns
 the reduced one with a `Postsolve` that maps a reduced solution back to one value
@@ -2651,9 +2651,24 @@ adapter calls it under `MpsToModelOptions::presolve` (#325; `.nl` is #326).
   singleton rows turned into column bounds (the quotient relaxed outward by its
   error bound, then rounded inward on an integral column); a row side the activity range already implies dropped —
   only when the activity clears it by its `(nnz + 3)·DBL_EPSILON` rounding bound,
-  the #211 scaling — and the row removed once it has no side; empty columns fixed
+  the #211 scaling — and the row removed once it has no side; coefficient
+  tightening (#327, below); empty columns fixed
   at their best bound. The last is the one **dual** reduction: it keeps the
   optimum's value, not every feasible point. Everything else is primal.
+- **Coefficient tightening** (`src/presolve_coef.cpp`, #327;
+  `PresolveOptions::coefficient_tightening`, on). Achterberg et al. 2020, §3.3
+  eq. (3.6), for general integers, not binaries only: in a one-sided row
+  `A_S x_S + a_k x_k <= b` (a `>=` row negated) with x_k integral and not
+  frozen, `d = b − M + |a_k|` (M the max activity, finite) with `0 < d < |a_k|`
+  moves a_k toward 0 by d and b by `−d·u_k` (`a_k > 0`) or `+d·l_k` (`a_k < 0`,
+  the mirror by `y = −x_k`). The integer solutions are unchanged, so no
+  postsolve step. `b − M` is invariant under a step, so it is computed once per
+  row. d is cut by the gap's #211 rounding bound, the side's `row_roundoff` and
+  the rounding of the new coefficient, so the step taken never exceeds the true
+  d; one under `feasibility_tolerance` is not taken. The new side is tracked as
+  a fold (`2·|shift|` added to `row_scale`). Equality, two-sided and implied
+  sides are left alone (`d >= |a_k|` means the side is implied, dropped above).
+  `cbls_mipfeas --no-presolve-coef-tightening` is the off arm.
 - **Floating point.** A row bound carries `(folds + 1)·DBL_EPSILON·row_scale`
   of error from the fixed columns folded into it. Every bound derived from it
   is relaxed outward by that error first, so roundoff never cuts off a feasible
@@ -2684,7 +2699,10 @@ adapter calls it under `MpsToModelOptions::presolve` (#325; `.nl` is #326).
 tests over 1000 random problems built around a known feasible point: the point
 survives into the reduced problem and postsolves back to itself, and every
 integer point of a small reduced box postsolves to an original-feasible point
-with the same objective.
+with the same objective. `tests/test_presolve_coef.cpp` pins (3.6), its mirror
+and the `>=` case by hand, and enumerates 2000 random one-sided rows over small
+boxes (continuous columns on a quarter grid): the tightened row admits exactly
+the original row's points.
 
 **MPS adapter (#325).** With `MpsToModelOptions::presolve.enabled`,
 `mps_to_model` moves its row matrix into a `LinearProblem` (objective

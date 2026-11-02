@@ -214,6 +214,7 @@ add_library(cbls_lib
     src/randomize.cpp
     src/bound_propagation.cpp
     src/presolve.cpp
+    src/presolve_coef.cpp
     src/feasibility_jump.cpp
     src/linear_jump.cpp
     src/search.cpp

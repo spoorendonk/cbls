@@ -92,5 +92,7 @@ void reduce_propagate(Work& w);
 void reduce_fixed_columns(Work& w);
 void reduce_rows(Work& w);  ///< Empty, free, singleton and redundant rows.
 void reduce_empty_columns(Work& w);
+/// Integral coefficients of one-sided rows (src/presolve_coef.cpp, #327).
+void reduce_coef_tightening(Work& w);
 
 }  // namespace cbls::presolve_detail

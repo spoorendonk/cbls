@@ -135,6 +135,7 @@ CONFIG_KEYS = (
     "propagate_bounds",
     "max_propagation_passes",
     "presolve",
+    "presolve_coef_tightening",
     "lns",
     "lns_interval",
     "novelty_prob",
@@ -188,6 +189,11 @@ def config_string(result: dict[str, object]) -> str:
     # not match a table scored before it -- which is the point: that table was
     # measured on the old default and must be regenerated, not averaged in.
     # Presolve (#325) likewise: off is the model every earlier row was built from.
+    # Its coefficient tightening (#327) names nothing without presolve, so it is
+    # dropped there; under presolve it is kept either way, and a presolve row
+    # from before it (no key, tightening never ran) stays its own cell.
+    if cells.get("presolve") is not True:
+        cells.pop("presolve_coef_tightening", None)
     for opt_in in (
         "perturb_near_value",
         "objective_tie_break",
