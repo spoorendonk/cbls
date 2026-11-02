@@ -2722,15 +2722,24 @@ adapter calls it under `MpsToModelOptions::presolve` (#325; `.nl` is #326).
   compensated sum.
 - **Infeasible** returns the original problem with an identity postsolve, as the
   adapters already do for propagation: the search reports infeasibility.
-- **Postsolve** is a LIFO stack of steps (`FixedColumn` today; aggregation adds
-  its own, #328): `apply` places the reduced values and undoes the steps last to
-  first. A column no step restored comes back NaN, loudly.
+- **Postsolve** is one LIFO stack of tagged steps (`Postsolve::Step`: `Fixed`
+  today; aggregation adds its kind, #328): `apply` places the reduced values and
+  undoes the steps last to first, whatever their kind. A column no step
+  restored comes back NaN, loudly.
 - **Cost.** O(nnz) per round. The working copy is about 20 B per nonzero
   (row-major 12 B, column index 8 B), plus the reduced copy, on top of the
   caller's input; the disabled and infeasible paths build no column index.
   Each reduction is one function over the shared `Work` in
   `src/presolve_internal.h`, so later reductions (#327, #328) live in their own
   files.
+- **Growing rows (#336).** Each row and each column-index list owns a range
+  with room (`row_begin`/`row_end`/`row_cap`, `col_begin`/`col_end`/`col_cap`).
+  `Work::add_entry` (fill-in for substitution) reuses the column's own cleared
+  slot in the row, else appends, moving a full row or column list to the end of
+  its arrays with twice the room: amortised O(1) per added entry plus the
+  O(row length) slot search. A slot's column never changes, so every slot is
+  listed exactly once in the column index and a moved row keeps its offsets.
+  Vacated room is reclaimed only when the result is compacted.
 
 `tests/test_presolve.cpp` checks each reduction by hand and two seeded property
 tests over 1000 random problems built around a known feasible point: the point

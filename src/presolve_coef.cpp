@@ -47,7 +47,7 @@ bool one_sided(const Work& w, std::size_t r, double& s, double& b) {
 /// The maximum of `s * activity` of row r over the column box, and the sum of
 /// its terms' magnitudes. False when it is infinite.
 bool max_activity(const Work& w, std::size_t r, double s, double& max_act, double& magnitude) {
-    for (std::size_t p = w.row_start[r]; p < w.row_start[r + 1]; ++p) {
+    for (std::size_t p = w.row_begin[r]; p < w.row_end[r]; ++p) {
         const double a = s * w.coefs[p];
         if (a == 0.0) {
             continue;
@@ -83,8 +83,8 @@ void tighten_row(Work& w, std::size_t r, double s, double b) {
     if (!max_activity(w, r, s, max_act, magnitude)) {
         return;  // M infinite: (3.6) needs u_S finite.
     }
-    const std::size_t begin = w.row_start[r];
-    const std::size_t end = w.row_start[r + 1];
+    const std::size_t begin = w.row_begin[r];
+    const std::size_t end = w.row_end[r];
     const double gap = b - max_act;
     const double per_unit = static_cast<double>(w.row_live[r] + 3) * kEps;
     const double gap_error = per_unit * (std::abs(b) + magnitude);

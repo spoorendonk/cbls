@@ -3,11 +3,17 @@
 // Working storage shared by the presolve reductions (src/presolve*.cpp).
 // Not installed: the public interface is include/cbls/presolve.h.
 //
-// Rows are a flat CSR whose deleted entries keep their column index and have
-// their coefficient set to exactly 0 (`propagate_bounds` skips a zero term, so
-// the live rows can be handed to it as views without compaction). Each column
-// lists its entries as (row, offset within the row). Removed rows and columns
-// are marked, and everything is compacted once, when the result is built.
+// Row r's entries are `cols`/`coefs` in [row_begin[r], row_end[r]); deleted
+// entries keep their column index and have their coefficient set to exactly 0
+// (`propagate_bounds` skips a zero term, so the live rows can be handed to it
+// as views without compaction). Each column lists its entries as (row, offset
+// within the row) in `col_rows`/`col_offs` over [col_begin[j], col_end[j]).
+// Removed rows and columns are marked, and everything is compacted once, when
+// the result is built.
+//
+// A row can grow (`add_entry`). A slot's column never changes once the slot
+// exists, so each slot is listed exactly once, by the column it holds, and a
+// row moved elsewhere keeps its offsets (and so its column-index entries).
 
 #include "cbls/presolve.h"
 
@@ -30,8 +36,11 @@ struct Work {
     std::vector<int32_t> col_live;  ///< Live entries per column.
     double obj_offset = 0.0;
 
-    // Rows (flat CSR; a deleted entry has coefficient 0).
-    std::vector<std::size_t> row_start;
+    // Rows (a deleted entry has coefficient 0). Row r owns [row_begin[r],
+    // row_cap[r]) of `cols`/`coefs`, of which [row_begin[r], row_end[r]) is used.
+    std::vector<std::size_t> row_begin;
+    std::vector<std::size_t> row_end;
+    std::vector<std::size_t> row_cap;
     std::vector<int32_t> cols;
     std::vector<double> coefs;
     std::vector<double> row_lo;  ///< -inf when absent.
@@ -44,9 +53,12 @@ struct Work {
     std::vector<uint8_t> row_removed;
     std::vector<int32_t> row_live;  ///< Live entries per row.
 
-    // Column-major index: column j's entries are
-    // (col_rows[q], col_offs[q]) for q in [col_start[j], col_start[j+1]).
-    std::vector<std::size_t> col_start;
+    // Column-major index: column j's entries are (col_rows[q], col_offs[q]) for
+    // q in [col_begin[j], col_end[j]); column j owns up to col_cap[j]. An entry
+    // of a removed row, or one whose coefficient is 0, is stale: skip it.
+    std::vector<std::size_t> col_begin;
+    std::vector<std::size_t> col_end;
+    std::vector<std::size_t> col_cap;
     std::vector<int32_t> col_rows;
     std::vector<int32_t> col_offs;
 
@@ -59,6 +71,23 @@ struct Work {
 
     [[nodiscard]] std::size_t n_cols() const { return lb.size(); }
     [[nodiscard]] std::size_t n_rows() const { return row_lo.size(); }
+
+    /// Position in `cols`/`coefs` of column-index entry q.
+    [[nodiscard]] std::size_t entry_pos(std::size_t q) const {
+        return row_begin[static_cast<std::size_t>(col_rows[q])] +
+               static_cast<std::size_t>(col_offs[q]);
+    }
+
+    /// Add `a * x_j` to live row r, where j has no live entry (a != 0, finite).
+    /// Reuses j's own cleared slot in r if it has one; otherwise appends, moving
+    /// the row to the end of `cols`/`coefs` when it is full. Returns false, and
+    /// changes nothing, if the row would outgrow an int32 offset.
+    ///
+    /// Cost: O(row length) to look for j's cleared slot, plus, when the row or
+    /// column is full, a move of O(its length) into twice the room, so moves
+    /// cost amortised O(1) per added entry. The vacated room is not reused
+    /// before the result is built: at most about twice the entries ever added.
+    [[nodiscard]] bool add_entry(int32_t r, int32_t j, double a);
 
     /// Bound on the floating-point error in row r's current `row_lo`/`row_hi`:
     /// each fold `bound -= a * v` adds at most one rounding of the product and
@@ -85,6 +114,12 @@ struct Work {
     /// the caller lets the collapsed point violate the bound it widens.
     void tighten_column(int32_t j, double lo, double hi, double slack);
 };
+
+/// Validate `p` and load it into `w`: bounds normalised to ±inf, rows merged.
+/// The column index is not built here: only the reductions need it.
+void load(const LinearProblem& p, Work& w);
+/// Build the column-major index and the live counts of a loaded `w`.
+void build_column_index(Work& w);
 
 // One function per reduction. Each sets `w.changed` when it changes anything
 // and `w.infeasible` when it proves infeasibility.

@@ -37,8 +37,12 @@ std::vector<double> Postsolve::apply(const std::vector<double>& reduced_x) const
     for (std::size_t i = 0; i < reduced_x.size(); ++i) {
         x[static_cast<std::size_t>(reduced_to_col_[i])] = reduced_x[i];
     }
-    for (auto it = fixed_.rbegin(); it != fixed_.rend(); ++it) {
-        x[static_cast<std::size_t>(it->col)] = it->value;
+    for (auto it = steps_.rbegin(); it != steps_.rend(); ++it) {
+        switch (it->kind) {
+            case Step::Kind::Fixed:
+                x[static_cast<std::size_t>(it->col)] = it->value;
+                break;
+        }
     }
     return x;
 }
@@ -121,6 +125,7 @@ void load_row(const LinearProblem& p, std::size_t i, std::vector<std::pair<int32
         tmp.emplace_back(p.cols[k], p.coefs[k]);
     }
     std::sort(tmp.begin(), tmp.end());
+    w.row_begin.push_back(w.cols.size());
     std::size_t k = 0;
     while (k < tmp.size()) {
         const int32_t col = tmp[k].first;
@@ -141,8 +146,10 @@ void load_row(const LinearProblem& p, std::size_t i, std::vector<std::pair<int32
         }
         k = next;
     }
-    w.row_start.push_back(w.cols.size());
+    w.row_end.push_back(w.cols.size());
 }
+
+}  // namespace
 
 void build_column_index(Work& w) {
     const std::size_t n = w.n_cols();
@@ -150,29 +157,32 @@ void build_column_index(Work& w) {
     w.col_live.assign(n, 0);
     w.row_live.assign(m, 0);
     for (std::size_t r = 0; r < m; ++r) {
-        w.row_live[r] = static_cast<int32_t>(w.row_start[r + 1] - w.row_start[r]);
-        for (std::size_t p = w.row_start[r]; p < w.row_start[r + 1]; ++p) {
+        w.row_live[r] = static_cast<int32_t>(w.row_end[r] - w.row_begin[r]);
+        for (std::size_t p = w.row_begin[r]; p < w.row_end[r]; ++p) {
             ++w.col_live[static_cast<std::size_t>(w.cols[p])];
         }
     }
-    w.col_start.assign(n + 1, 0);
+    w.col_begin.assign(n, 0);
+    w.col_end.assign(n, 0);
+    w.col_cap.assign(n, 0);
+    std::size_t next = 0;
     for (std::size_t j = 0; j < n; ++j) {
-        w.col_start[j + 1] = w.col_start[j] + static_cast<std::size_t>(w.col_live[j]);
+        w.col_begin[j] = next;
+        w.col_end[j] = next;
+        next += static_cast<std::size_t>(w.col_live[j]);
+        w.col_cap[j] = next;
     }
     w.col_rows.resize(w.cols.size());
     w.col_offs.resize(w.cols.size());
-    std::vector<std::size_t> fill(w.col_start.begin(), w.col_start.end() - 1);
     for (std::size_t r = 0; r < m; ++r) {
-        for (std::size_t p = w.row_start[r]; p < w.row_start[r + 1]; ++p) {
-            const std::size_t q = fill[static_cast<std::size_t>(w.cols[p])]++;
+        for (std::size_t p = w.row_begin[r]; p < w.row_end[r]; ++p) {
+            const std::size_t q = w.col_end[static_cast<std::size_t>(w.cols[p])]++;
             w.col_rows[q] = static_cast<int32_t>(r);
-            w.col_offs[q] = static_cast<int32_t>(p - w.row_start[r]);
+            w.col_offs[q] = static_cast<int32_t>(p - w.row_begin[r]);
         }
     }
 }
 
-/// Validate `p` and load it into `w`: bounds normalised to ±inf, rows merged.
-/// The column index is not built here: only the reductions need it.
 void load(const LinearProblem& p, Work& w) {
     const double infinity = w.opts.propagation.infinity;
     validate(p, infinity);
@@ -192,7 +202,8 @@ void load(const LinearProblem& p, Work& w) {
     w.col_removed.assign(n, 0);
     w.obj_offset = p.obj_offset;
 
-    w.row_start.assign(1, 0);
+    w.row_begin.reserve(m);
+    w.row_end.reserve(m);
     w.cols.reserve(p.cols.size());
     w.coefs.reserve(p.coefs.size());
     w.row_lo.resize(m);
@@ -207,9 +218,12 @@ void load(const LinearProblem& p, Work& w) {
         const double hi_mag = std::isfinite(w.row_hi[i]) ? std::abs(w.row_hi[i]) : 0.0;
         w.row_scale[i] = std::max(lo_mag, hi_mag);
     }
+    w.row_cap = w.row_end;
     w.row_folds.assign(m, 0);
     w.row_removed.assign(m, 0);
 }
+
+namespace {
 
 /// Round integral columns' bounds inward and settle crossed bounds: within
 /// `feasibility_tolerance` they collapse to a point, beyond it the problem is
@@ -271,7 +285,7 @@ double quotient_error(const Work& w, std::size_t r, double side, double a, doubl
 /// "no bound" downstream, so the row is then kept as it is (as
 /// `propagate_bounds` skips such a value).
 void reduce_singleton(Work& w, std::size_t r) {
-    std::size_t p = w.row_start[r];
+    std::size_t p = w.row_begin[r];
     while (w.coefs[p] == 0.0) {
         ++p;
     }
@@ -342,7 +356,7 @@ struct Activity {
 void reduce_implied_sides(Work& w, std::size_t r) {
     Activity min_act;
     Activity max_act;
-    for (std::size_t p = w.row_start[r]; p < w.row_start[r + 1]; ++p) {
+    for (std::size_t p = w.row_begin[r]; p < w.row_end[r]; ++p) {
         const double a = w.coefs[p];
         if (a == 0.0) {
             continue;
@@ -404,7 +418,7 @@ PresolveResult build_result(Work& w, const std::vector<double>& lb0,
             continue;
         }
         res.row_to_reduced[r] = static_cast<int32_t>(out.row_lo.size());
-        for (std::size_t p = w.row_start[r]; p < w.row_start[r + 1]; ++p) {
+        for (std::size_t p = w.row_begin[r]; p < w.row_end[r]; ++p) {
             if (w.coefs[p] != 0.0) {
                 out.cols.push_back(res.col_to_reduced[static_cast<std::size_t>(w.cols[p])]);
                 out.coefs.push_back(w.coefs[p]);
@@ -453,12 +467,12 @@ bool Work::can_fix(int32_t j, double value) const {
     const auto in_range = [infinity](double bound, double shift) {
         return !std::isfinite(bound) || std::abs(bound - shift) < infinity;
     };
-    for (std::size_t q = col_start[jj]; q < col_start[jj + 1]; ++q) {
+    for (std::size_t q = col_begin[jj]; q < col_end[jj]; ++q) {
         const auto r = static_cast<std::size_t>(col_rows[q]);
         if (row_removed[r] != 0) {
             continue;
         }
-        const double shift = coefs[row_start[r] + static_cast<std::size_t>(col_offs[q])] * value;
+        const double shift = coefs[entry_pos(q)] * value;
         if (!std::isfinite(shift) || !in_range(row_lo[r], shift) || !in_range(row_hi[r], shift)) {
             return false;
         }
@@ -468,12 +482,12 @@ bool Work::can_fix(int32_t j, double value) const {
 
 void Work::fix_column(int32_t j, double value) {
     const auto jj = static_cast<std::size_t>(j);
-    for (std::size_t q = col_start[jj]; q < col_start[jj + 1]; ++q) {
+    for (std::size_t q = col_begin[jj]; q < col_end[jj]; ++q) {
         const auto r = static_cast<std::size_t>(col_rows[q]);
         if (row_removed[r] != 0) {
             continue;
         }
-        const std::size_t p = row_start[r] + static_cast<std::size_t>(col_offs[q]);
+        const std::size_t p = entry_pos(q);
         const double a = coefs[p];
         if (a == 0.0) {
             continue;
@@ -499,7 +513,7 @@ void Work::fix_column(int32_t j, double value) {
 
 void Work::remove_row(int32_t r) {
     const auto rr = static_cast<std::size_t>(r);
-    for (std::size_t p = row_start[rr]; p < row_start[rr + 1]; ++p) {
+    for (std::size_t p = row_begin[rr]; p < row_end[rr]; ++p) {
         if (coefs[p] != 0.0) {
             --col_live[static_cast<std::size_t>(cols[p])];
         }
@@ -507,6 +521,69 @@ void Work::remove_row(int32_t r) {
     row_removed[rr] = 1;
     row_live[rr] = 0;
     changed = true;
+}
+
+namespace {
+
+/// Move [begin, end) of each of the parallel arrays `a` and `b` to their end,
+/// with room for `cap` entries, and point the range (and its room) there.
+template <class A, class B>
+void move_to_end(std::vector<A>& a, std::vector<B>& b, std::size_t& begin, std::size_t& end,
+                 std::size_t& cap_end, std::size_t cap) {
+    const std::size_t len = end - begin;
+    const std::size_t at = a.size();
+    a.resize(at + cap);
+    b.resize(at + cap);
+    std::copy(a.begin() + static_cast<std::ptrdiff_t>(begin),
+              a.begin() + static_cast<std::ptrdiff_t>(end),
+              a.begin() + static_cast<std::ptrdiff_t>(at));
+    std::copy(b.begin() + static_cast<std::ptrdiff_t>(begin),
+              b.begin() + static_cast<std::ptrdiff_t>(end),
+              b.begin() + static_cast<std::ptrdiff_t>(at));
+    begin = at;
+    end = at + len;
+    cap_end = at + cap;
+}
+
+/// Room for a full range of `len` entries to grow into: twice it, at least 4.
+std::size_t grown(std::size_t len) {
+    return std::max<std::size_t>(4, 2 * len);
+}
+
+}  // namespace
+
+bool Work::add_entry(int32_t r, int32_t j, double a) {
+    const auto rr = static_cast<std::size_t>(r);
+    const auto jj = static_cast<std::size_t>(j);
+    std::size_t p = row_begin[rr];
+    while (p < row_end[rr] && cols[p] != j) {
+        ++p;
+    }
+    const std::size_t len = row_end[rr] - row_begin[rr];
+    if (p == row_end[rr] && len >= static_cast<std::size_t>(std::numeric_limits<int32_t>::max())) {
+        return false;
+    }
+    ++row_live[rr];
+    ++col_live[jj];
+    changed = true;
+    if (p < row_end[rr]) {  // j's own cleared slot, still listed in j's index
+        coefs[p] = a;
+        return true;
+    }
+    if (row_end[rr] == row_cap[rr]) {
+        move_to_end(cols, coefs, row_begin[rr], row_end[rr], row_cap[rr], grown(len));
+    }
+    p = row_end[rr]++;
+    cols[p] = j;
+    coefs[p] = a;
+    if (col_end[jj] == col_cap[jj]) {
+        move_to_end(col_rows, col_offs, col_begin[jj], col_end[jj], col_cap[jj],
+                    grown(col_end[jj] - col_begin[jj]));
+    }
+    const std::size_t q = col_end[jj]++;
+    col_rows[q] = r;
+    col_offs[q] = static_cast<int32_t>(len);
+    return true;
 }
 
 void Work::tighten_column(int32_t j, double lo, double hi, double slack) {
@@ -535,7 +612,7 @@ void reduce_propagate(Work& w) {
     std::vector<LinearRow> views;
     views.reserve(w.n_rows());
     for (std::size_t r = 0; r < w.n_rows(); ++r) {
-        const std::size_t len = w.row_start[r + 1] - w.row_start[r];
+        const std::size_t len = w.row_end[r] - w.row_begin[r];
         // A row longer than LinearRow can describe is skipped: it then
         // tightens nothing, which is sound.
         if (w.row_removed[r] != 0 || w.row_live[r] == 0 ||
@@ -545,7 +622,7 @@ void reduce_propagate(Work& w) {
         // `propagate_bounds` covers the activity's roundoff, not the error
         // already in a folded side, so the sides are widened by it first.
         const double err = w.row_folds[r] > 0 ? w.row_roundoff(r) : 0.0;
-        views.push_back(LinearRow{w.cols.data() + w.row_start[r], w.coefs.data() + w.row_start[r],
+        views.push_back(LinearRow{w.cols.data() + w.row_begin[r], w.coefs.data() + w.row_begin[r],
                                   static_cast<int32_t>(len), w.row_lo[r] - err, w.row_hi[r] + err});
     }
     const BoundPropagationStats s =

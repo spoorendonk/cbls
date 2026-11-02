@@ -112,7 +112,13 @@ struct PresolveStats {
 /// later step may read a column an earlier one restores.
 class Postsolve {
 public:
-    struct FixedColumn {
+    /// One undo step, tagged by kind. Steps of every kind share one stack, so
+    /// `apply` undoes them in exactly the reverse of the order presolve took.
+    struct Step {
+        enum class Kind : uint8_t {
+            Fixed,  ///< x[col] = value.
+        };
+        Kind kind;
         int32_t col;
         double value;
     };
@@ -121,20 +127,22 @@ public:
     /// With no steps pushed, `apply` is then the identity on the survivors.
     void set_mapping(std::size_t n_original, std::vector<int32_t> reduced_to_col);
 
-    void push_fixed(int32_t col, double value) { fixed_.push_back({col, value}); }
+    void push_fixed(int32_t col, double value) {
+        steps_.push_back({Step::Kind::Fixed, col, value});
+    }
 
     /// One value per original column. Throws `std::invalid_argument` unless
     /// `reduced_x` has one entry per reduced column.
     [[nodiscard]] std::vector<double> apply(const std::vector<double>& reduced_x) const;
 
-    [[nodiscard]] std::size_t num_steps() const { return fixed_.size(); }
+    [[nodiscard]] std::size_t num_steps() const { return steps_.size(); }
     [[nodiscard]] std::size_t n_original() const { return n_original_; }
     [[nodiscard]] const std::vector<int32_t>& reduced_to_col() const { return reduced_to_col_; }
 
 private:
     std::size_t n_original_ = 0;
     std::vector<int32_t> reduced_to_col_;
-    std::vector<FixedColumn> fixed_;
+    std::vector<Step> steps_;
 };
 
 struct PresolveResult {
