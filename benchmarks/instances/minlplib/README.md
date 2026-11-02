@@ -117,9 +117,13 @@ presolve, every check (objective, residuals, `verify_model`) runs there, and a
 failure there is a `VERIFY-FAILED` row. The `.sol` holds every original column.
 `wall_seconds` times the search alone, not that second build. The row's
 `search_config` records `presolve`; what presolve did to the instance goes to
-stdout as `<instance>  presolve=<status> rows= cols= bounds=` (statuses
-`reduced`, `unchanged`, `infeasible`, `rejected`, `not-run`; the last three
-searched the plain model). It is an experiment arm:
+stdout as `<instance>  presolve=<status> rows= cols= bounds= seconds=`
+(statuses `reduced`, `unchanged`, `infeasible`, `rejected`, `not-run`; the
+last three searched the plain model, and the presolve time is spent in the
+build, outside `wall_seconds`). A presolved row is held to a stricter check
+than a plain one: `verify_model` also checks column bounds and DAG domain nodes,
+so a presolve-vs-plain A/B can lose solved rows to that check alone. Read its
+`VERIFY-FAILED(original model: ...)` rows apart. It is an experiment arm:
 `cbls_minlplib` and `run_benchmark.py --presolve` both refuse to write a
 published table, and the driver stages it apart (`threads<N>-presolve`, and a
 `presolve=on` stamp line).

@@ -483,6 +483,20 @@ def test_mixed_thread_counts_are_refused_and_an_absent_count_reads_as_one(
     assert scored(bounds, table, shards).provenance.cbls_threads == 1
 
 
+def test_presolved_rows_are_named_and_never_mixed_with_plain_ones(tmp_path: Path) -> None:
+    """A `--presolve` row (#343) is not the plain engine's: named, and refused mixed."""
+    bounds, table, shards = campaign(tmp_path, [("a", 0.0, 0.0), ("b", 0.0, 0.0)])
+    write_cbls(table, [cbls_line("a", 0.0), cbls_line("b", 0.0, config="threads=16;presolve")])
+    with pytest.raises(RefusedError, match="mixed cbls presolve settings: 'off', 'on'"):
+        scored(bounds, table, shards)
+    write_cbls(
+        table, [cbls_line("a", 0.0, config="presolve"), cbls_line("b", 0.0, config="presolve")]
+    )
+    s = scored(bounds, table, shards)
+    assert s.provenance.cbls_presolve == "on"
+    assert "- cbls presolve: on (search_config)" in gm_ratio.render_markdown(s)
+
+
 def test_mixed_scip_versions_are_refused(tmp_path: Path) -> None:
     bounds, table, shards = campaign(tmp_path, [("a", 0.0, 0.0), ("b", 0.0, 0.0)])
     write_scip(shards, "b", 0.0, version="SCIP 9.0.0 / PySCIPOpt 5.0.0 / 60s / seed 0")

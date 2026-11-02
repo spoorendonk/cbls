@@ -929,6 +929,15 @@ def test_a_staged_row_at_another_thread_count_is_solved_again(tmp_path: Path) ->
     assert not staged_complete(make_args(tmp_path), "abc1234", "a", stage)
 
 
+def test_a_staged_row_under_the_other_presolve_setting_is_solved_again(tmp_path: Path) -> None:
+    """As the thread count (#343): a plain resume never takes a presolved row, nor the reverse."""
+    stage = _stage(tmp_path)
+    assert not staged_complete(make_args(tmp_path, presolve=True), "abc1234", "a", stage)
+    stage = _stage(tmp_path, config=f"{DEFAULT_ARM};presolve")
+    assert staged_complete(make_args(tmp_path, presolve=True), "abc1234", "a", stage)
+    assert not staged_complete(make_args(tmp_path), "abc1234", "a", stage)
+
+
 def test_preflight_refuses_more_threads_than_the_process_may_run_on(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

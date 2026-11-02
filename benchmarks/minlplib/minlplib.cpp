@@ -1180,6 +1180,18 @@ bool verify_original(const cbls::NlToModelResult& plain, const Args& args, const
     return false;
 }
 
+/// Whether a feasible search's point stands: `verify_assignment` on the NL
+/// problem, then, for a presolved build, `verify_original` on the model built
+/// without presolve. On failure `note` holds the VERIFY-FAILED string.
+bool verify_row(const cbls::NlProblem& prob, const cbls::NlToModelResult& built, bool presolved,
+                const Args& args, double obj, const std::string& name, Tally& t, std::string& note,
+                double& max_violation) {
+    if (!verify_assignment(prob, built, args, obj, name, t, note, max_violation)) {
+        return false;
+    }
+    return !presolved || verify_original(built, args, name, t, note);
+}
+
 /// Read, build, solve and score one instance, and write its row. Every exit
 /// writes exactly one row.
 void run_instance(std::ostream& csv, std::ofstream& trace, const Args& args,
@@ -1269,9 +1281,8 @@ void run_instance(std::ostream& csv, std::ofstream& trace, const Args& args,
     double gap_bks = safe_gap(obj, b.primal, maximizing);
     double gap_dual = safe_gap(obj, b.dual, maximizing);
 
-    const bool verified = result.feasible &&
-                          verify_assignment(prob, built, args, obj, name, t, note, max_violation) &&
-                          (!presolved || verify_original(built, args, name, t, note));
+    const bool verified = result.feasible && verify_row(prob, built, presolved, args, obj, name, t,
+                                                        note, max_violation);
 
     if (verified) {
         ++t.feasible;

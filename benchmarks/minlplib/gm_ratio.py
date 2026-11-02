@@ -517,6 +517,9 @@ class Provenance:
     scip_version: str
     budget: Budget
     memory_cap: str
+    #: "on", "off" or "none" (no rows), as `_one` reads it: a presolved run's rows
+    #: record `presolve` in `search_config` (#343) and are not the plain engine.
+    cbls_presolve: str = "off"
 
 
 def provenance(
@@ -535,6 +538,10 @@ def provenance(
         scip_version=_one((r.version for r in scip.rows.values()), "SCIP versions"),
         budget=budget or Budget(),
         memory_cap=memory_cap or NOT_STATED,
+        cbls_presolve=_one(
+            ("on" if "presolve" in r.search_config.split(";") else "off" for r in rows),
+            "cbls presolve settings",
+        ),
     )
 
 
@@ -776,6 +783,7 @@ def render_markdown(s: Score) -> str:
         "",
         f"- engine commit: {p.commit_sha} (commit_sha column)",
         f"- cbls threads: {threads} (search_config)",
+        f"- cbls presolve: {p.cbls_presolve} (search_config)",
         f"- SCIP: {p.scip_version} (scip_version column), at its defaults",
         _budget_line(p.budget),
         f"- memory cap: {p.memory_cap}",

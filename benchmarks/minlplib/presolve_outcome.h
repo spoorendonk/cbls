@@ -1,11 +1,14 @@
 #pragma once
 
 // What the linear-part presolve (#342) did to one `.nl` build, as one line of
-// text: `presolve=<status> rows=<removed> cols=<removed> bounds=<tightened>`.
-// Shared by cbls_minlplib (printed per instance under --presolve, #343) and
-// cbls_minlplib_nl_check --presolve (the census), so both name an outcome alike.
+// text: `presolve=<status> rows=<removed> cols=<removed> bounds=<tightened>
+// seconds=<presolve time>`. Shared by cbls_minlplib (printed per instance under
+// --presolve, #343) and cbls_minlplib_nl_check --presolve (the census), so both
+// name an outcome alike.
 
+#include <array>
 #include <cbls/io_nl.h>
+#include <cstdio>
 #include <string>
 
 namespace cbls::bench {
@@ -29,8 +32,11 @@ inline std::string presolve_outcome(const NlToModelResult& built) {
     }
     const int rows = s.rows_empty + s.rows_free + s.rows_singleton + s.rows_redundant;
     const int cols = s.cols_fixed + s.cols_empty;
+    std::array<char, 32> secs{};
+    std::snprintf(secs.data(), secs.size(), "%.3g", s.seconds);
     return std::string("presolve=") + status + " rows=" + std::to_string(rows) +
-           " cols=" + std::to_string(cols) + " bounds=" + std::to_string(s.bounds_tightened);
+           " cols=" + std::to_string(cols) + " bounds=" + std::to_string(s.bounds_tightened) +
+           " seconds=" + secs.data();
 }
 
 }  // namespace cbls::bench

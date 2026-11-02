@@ -915,6 +915,8 @@ def staged_complete(args: argparse.Namespace, sha: str, name: str, stage: Path) 
         return False
     if staged_row_threads(stage / f"{name}.csv") != args.threads:
         return False
+    if staged_row_presolved(stage / f"{name}.csv") != args.presolve:
+        return False
     return not args.trace or (stage / f"{name}.trace.csv").exists()
 
 
@@ -936,6 +938,20 @@ def staged_row_threads(path: Path) -> int | None:
         return None
     match = SEARCH_CONFIG_THREADS.search(row.get("search_config", ""))
     return int(match.group(1)) if match else 1
+
+
+def staged_row_presolved(path: Path) -> bool | None:
+    """Whether a staged row was solved under `--presolve` (#343), or None with no whole row.
+
+    The same hole as `staged_row_threads`: `--no-resume` rewrites the stamp and
+    leaves the earlier rows, so an interrupted plain re-run over a presolved
+    directory would resume onto presolved rows and publish them as the plain
+    engine's. The row's own `search_config` records `presolve` when it was on.
+    """
+    row = _staged_row(path)
+    if row is None:
+        return None
+    return "presolve" in row.get("search_config", "").split(";")
 
 
 def runner_command(args: argparse.Namespace, sha: str, name: str, stage: Path) -> list[str]:
