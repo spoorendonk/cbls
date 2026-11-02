@@ -25,6 +25,7 @@
 #include <cstdlib>
 #include <ctime>
 #include <exception>
+#include <filesystem>
 #include <fstream>
 #include <functional>
 #include <iomanip>
@@ -267,15 +268,26 @@ void resolve_out_csv(Args& a) {
 }
 
 /// `--counters` names a file of its own: never the table, the trace, the
-/// table's temp file or a published file, each of which it would truncate on
-/// open (the hole `resolve_out_csv` closes for `--trace`).
+/// table's temp file, nor anything in the instance directory (the published
+/// table and trace, `bounds.csv`, the SCIP baseline, the notes), each of which
+/// it would truncate on open (the hole `resolve_out_csv` closes for `--trace`).
+/// The directory is refused whole: the files the runner reads there cannot be
+/// listed here without drifting from the loaders, and a run that reads one
+/// before truncating it still loses it on disk.
 void check_counters_path(const Args& a) {
     if (a.counters_csv.empty()) {
         return;
     }
-    const std::vector<std::string> taken = {a.out_csv, a.out_csv + ".tmp",
-                                            a.inst_dir + "/comparison.csv",
-                                            a.inst_dir + "/anytime_trace.csv"};
+    std::filesystem::path parent = std::filesystem::path(a.counters_csv).parent_path();
+    if (parent.empty()) {
+        parent = ".";
+    }
+    if (cbls::bench::same_file(parent.string(), a.inst_dir)) {
+        std::fprintf(stderr, "--counters names %s, inside the instance directory %s\n",
+                     a.counters_csv.c_str(), a.inst_dir.c_str());
+        std::exit(2);
+    }
+    const std::vector<std::string> taken = {a.out_csv, a.out_csv + ".tmp"};
     for (const std::string& other : taken) {
         if (cbls::bench::same_file(a.counters_csv, other)) {
             std::fprintf(stderr, "--counters names %s, which another output owns\n", other.c_str());
@@ -1220,27 +1232,41 @@ double process_cpu_seconds() {
     return static_cast<double>(ts.tv_sec) + (1e-9 * static_cast<double>(ts.tv_nsec));
 }
 
-/// `search_instance`, and under `--counters` one row of what the search did
-/// (#341): iterations and batches, the Novelty and propagated-leg counters,
-/// CPU time, and the process's peak RSS so far (per instance only with one
-/// instance per call). Counters are summed over workers.
-cbls::SearchResult counted_search(const Args& args, cbls::Model& model,
-                                  cbls::SolveCallback* callback, std::ofstream& counters,
-                                  const std::string& name) {
+/// What a search cost the process, read as it returns: CPU seconds around it
+/// and the peak RSS so far (KiB), before postsolve's second build can raise it.
+struct SearchCost {
+    double cpu_seconds = 0.0;
+    long peak_rss_kb = 0;
+};
+
+/// `search_instance`, measured (#341).
+cbls::SearchResult measured_search(const Args& args, cbls::Model& model,
+                                   cbls::SolveCallback* callback, SearchCost& cost) {
     const double cpu0 = process_cpu_seconds();
     cbls::SearchResult result = search_instance(args, model, callback);
-    const double cpu = process_cpu_seconds() - cpu0;
-    if (counters.is_open()) {
-        rusage usage{};
-        getrusage(RUSAGE_SELF, &usage);
-        const cbls::SearchCounters& k = result.counters;
-        counters << name << "," << result.iterations << "," << k.fj_batches << ","
-                 << k.novelty_batches << "," << k.novelty_moves << ","
-                 << k.novelty_propagation_tightenings << "," << k.novelty_propagation_conflicts
-                 << "," << cpu << "," << usage.ru_maxrss << "," << args.search_config << "\n";
-        counters.flush();
-    }
+    cost.cpu_seconds = process_cpu_seconds() - cpu0;
+    rusage usage{};
+    getrusage(RUSAGE_SELF, &usage);
+    cost.peak_rss_kb = usage.ru_maxrss;
     return result;
+}
+
+/// Under `--counters`, one row of what the search did (#341): iterations and
+/// batches, the Novelty and propagated-leg counters, CPU time and peak RSS
+/// (per instance only with one instance per call). Counters are summed over
+/// workers. Written only once the solve bracket has succeeded, so a
+/// solve-error row has no counters row.
+void write_counters_row(std::ofstream& counters, const Args& args, const std::string& name,
+                        const cbls::SearchResult& result, const SearchCost& cost) {
+    if (!counters.is_open()) {
+        return;
+    }
+    const cbls::SearchCounters& k = result.counters;
+    counters << name << "," << result.iterations << "," << k.fj_batches << "," << k.novelty_batches
+             << "," << k.novelty_moves << "," << k.novelty_propagation_tightenings << ","
+             << k.novelty_propagation_conflicts << "," << cost.cpu_seconds << ","
+             << cost.peak_rss_kb << "," << args.search_config << "\n";
+    counters.flush();
 }
 
 /// Whether a feasible search's point stands: `verify_assignment` on the NL
@@ -1280,6 +1306,7 @@ void run_instance(std::ostream& csv, std::ofstream& trace, std::ofstream& counte
     auto t0 = std::chrono::steady_clock::now();
     auto t1 = t0;
     cbls::SearchResult result;
+    SearchCost cost;
     try {
         // Test seam: the solve-error path needs a solve that throws, and since
         // #202 the engine no longer throws on the empty model the test used to
@@ -1290,14 +1317,13 @@ void run_instance(std::ostream& csv, std::ofstream& trace, std::ofstream& counte
             throw std::runtime_error("CBLS_MINLPLIB_THROW_IN_SOLVE names this instance");
         }
         TraceRecorder recorder(trace, name);
-        result = counted_search(args, built.model, trace.is_open() ? &recorder : nullptr, counters,
-                                name);
+        result = measured_search(args, built.model, trace.is_open() ? &recorder : nullptr, cost);
+        t1 = std::chrono::steady_clock::now();
         if (cbls::mipfeas::lost_workers(result, args.threads)) {
             std::fputs(cbls::mipfeas::lost_workers_message(name, args.threads, result).c_str(),
                        stderr);
             ++t.lost_workers;
         }
-        t1 = std::chrono::steady_clock::now();
         // Under presolve the search ran on the reduced model: postsolve its
         // point onto the model built without presolve, so the residuals, the
         // objective check, the infeasibility note and the `.sol` all describe
@@ -1313,6 +1339,7 @@ void run_instance(std::ostream& csv, std::ofstream& trace, std::ofstream& counte
                            FirstFeasibleCells{});
         return;
     }
+    write_counters_row(counters, args, name, result, cost);
     double wall = std::chrono::duration<double>(t1 - t0).count();
 
     // solve() reports the *minimised* objective. For a maximize instance the

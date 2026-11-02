@@ -1596,8 +1596,13 @@ def test_the_counters_sidecar_holds_one_row_per_search_and_leaves_the_table_alon
 ) -> None:
     """`--counters` (#341): the throughput A/B's counters, beside an unchanged table."""
     counters = tmp_path / "counters.csv"
-    result = run_the_runner(tmp_path, {"ok": SOLVABLE_NL}, ["--counters", str(counters)])
-    assert result.returncode == 0, result.stdout + result.stderr
+    result = run_the_runner(
+        tmp_path,
+        {"ok": SOLVABLE_NL, THROW_IN_SOLVE_INSTANCE: SOLVABLE_NL},
+        ["--counters", str(counters)],
+    )
+    # The throwing solve makes the run exit nonzero; it leaves no counters row.
+    assert result.returncode != 0, result.stdout + result.stderr
     with (tmp_path / "out.csv").open(newline="") as fh:
         assert list(csv.DictReader(fh).fieldnames or []) == list(RUNNER_COLUMNS)
     with counters.open(newline="") as fh:
@@ -1616,9 +1621,25 @@ def test_the_counters_sidecar_holds_one_row_per_search_and_leaves_the_table_alon
     assert int(row["iterations"]) > 0
     assert float(row["cpu_seconds"]) > 0.0
     assert int(row["peak_rss_kb"]) > 0
-    # It never takes the table's path.
-    clash = run_the_runner(tmp_path, {"ok": SOLVABLE_NL}, ["--counters", str(tmp_path / "out.csv")])
-    assert clash.returncode == 2 and "--counters" in clash.stderr
+    # It never takes the table's or the trace's path, nor one in the instance
+    # directory, and refuses before truncating any of them.
+    trace = tmp_path / "trace.csv"
+    trace.write_text("kept\n")
+    inst_dir = tmp_path / "instances"
+    for taken in (
+        tmp_path / "out.csv",
+        trace,
+        inst_dir / "comparison.csv",
+        inst_dir / "anytime_trace.csv",
+        inst_dir / "bounds.csv",
+    ):
+        before = taken.read_text() if taken.exists() else None
+        clash = run_the_runner(
+            tmp_path, {"ok": SOLVABLE_NL}, ["--trace", str(trace), "--counters", str(taken)]
+        )
+        assert clash.returncode == 2 and "--counters" in clash.stderr, taken
+        if before is not None:
+            assert taken.read_text() == before, taken
 
 
 def test_an_unreadable_instance_makes_the_runner_exit_nonzero(tmp_path: Path) -> None:
