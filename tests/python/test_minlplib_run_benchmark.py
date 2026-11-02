@@ -111,6 +111,7 @@ def make_args(tmp_path: Path, **overrides: object) -> argparse.Namespace:
         "seed": 1,
         "threads": 1,
         "presolve": False,
+        "presolve_aggregation": True,
         "build_jobs": 4,
         "instances": [],
         "out": None,
@@ -938,6 +939,46 @@ def test_a_staged_row_under_the_other_presolve_setting_is_solved_again(tmp_path:
     assert not staged_complete(make_args(tmp_path), "abc1234", "a", stage)
 
 
+def test_a_staged_row_under_the_other_aggregation_setting_is_solved_again(tmp_path: Path) -> None:
+    """The same for `--no-presolve-aggregation` (#347): its row says `no-presolve-aggregation`."""
+    off = make_args(tmp_path, presolve=True, presolve_aggregation=False)
+    stage = _stage(tmp_path, config=f"{DEFAULT_ARM};presolve")
+    assert not staged_complete(off, "abc1234", "a", stage)
+    stage = _stage(tmp_path, config=f"{DEFAULT_ARM};presolve;no-presolve-aggregation")
+    assert staged_complete(off, "abc1234", "a", stage)
+    assert not staged_complete(make_args(tmp_path, presolve=True), "abc1234", "a", stage)
+
+
+def test_no_presolve_aggregation_reaches_the_runner_and_keys_the_staging_dir(
+    tmp_path: Path,
+) -> None:
+    """`--no-presolve-aggregation` (#347): on by default, passed through, staged apart."""
+    inst = ["--inst-dir", str(tmp_path / "inst"), "--presolve"]
+    assert run_benchmark.parse_args(inst).presolve_aggregation
+    args = run_benchmark.parse_args([*inst, "--no-presolve-aggregation"])
+    assert not args.presolve_aggregation
+    cmd = runner_command(args, "abc1234", "nvs01", tmp_path / "stage")
+    assert "--presolve" in cmd and "--no-presolve-aggregation" in cmd
+    on = make_args(tmp_path, presolve=True)
+    assert "--no-presolve-aggregation" not in runner_command(
+        on, "abc1234", "nvs01", tmp_path / "stage"
+    )
+    off = make_args(tmp_path, presolve=True, presolve_aggregation=False)
+    assert resolve_paths(on, "abc1234").stage != resolve_paths(off, "abc1234").stage
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    assert staging_stamp_conflict(stage, on, "abc1234") is None
+    assert "aggregation" not in (stage / STAMP_NAME).read_text(), "a #343 stamp still matches"
+    conflict = staging_stamp_conflict(stage, off, "abc1234")
+    assert conflict is not None and "presolve-aggregation=off" in conflict
+
+
+def test_no_presolve_aggregation_without_presolve_is_refused(tmp_path: Path) -> None:
+    published = tmp_path / "inst" / "comparison.csv"
+    refusal = usage_error(make_args(tmp_path, presolve_aggregation=False), published)
+    assert refusal is not None and "--no-presolve-aggregation needs --presolve" in refusal
+
+
 def test_preflight_refuses_more_threads_than_the_process_may_run_on(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1656,6 +1697,44 @@ def test_the_counters_sidecar_holds_one_row_per_search_and_leaves_the_table_alon
         if not refused or (before is not None and taken.read_text() != before):
             escaped.append(taken.name)
     assert escaped == []
+
+
+#: Two columns in [0,10], one row `x0 + x1 = 5`, minimise `x0 + 2 x1`: optimum 5
+#: at (5, 0). The row is a doubleton equality, so presolve aggregates one column
+#: into the other (#328), unless `--no-presolve-aggregation` (#347).
+AGGREGABLE_NL = (
+    nl_header(2, 1, 1)
+    + "b\n0 0 10\n0 0 10\nr\n4 5\nO0 0\nn0\nG0 2\n0 1\n1 2\nC0\nn0\nJ0 2\n0 1\n1 1\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("extra", "aggregated"),
+    [([], 1), (["--no-presolve-aggregation"], 0)],
+    ids=["aggregation-on", "aggregation-off"],
+)
+def test_presolve_aggregation_is_reported_and_recorded(
+    tmp_path: Path, extra: list[str], aggregated: int
+) -> None:
+    """`aggregated=` reports the step (#347), and the off arm is recorded in the row."""
+    result = run_the_runner(tmp_path, {"agg": AGGREGABLE_NL}, ["--presolve", *extra])
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert re.search(rf"^agg\s+presolve=\S+ .* aggregated={aggregated} ", result.stdout, re.M), (
+        result.stdout
+    )
+    with (tmp_path / "out.csv").open(newline="") as fh:
+        (row,) = list(csv.DictReader(fh))
+    assert row["feasible"] == "true", row
+    assert float(row["objective"]) == pytest.approx(5.0, abs=1e-6)
+    config = row["search_config"].split(";")
+    assert "presolve" in config
+    assert ("no-presolve-aggregation" in config) == (aggregated == 0)
+
+
+def test_the_runner_refuses_no_presolve_aggregation_without_presolve(tmp_path: Path) -> None:
+    result = run_the_runner(tmp_path, {"agg": AGGREGABLE_NL}, ["--no-presolve-aggregation"])
+    assert result.returncode == 2
+    assert "--no-presolve-aggregation needs --presolve" in result.stderr
 
 
 def test_an_unreadable_instance_makes_the_runner_exit_nonzero(tmp_path: Path) -> None:

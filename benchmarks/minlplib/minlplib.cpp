@@ -94,6 +94,10 @@ struct Args {
     // on the model built without it. Off by default; recorded in `search_config`
     // when on, and refused for the published table.
     bool presolve = false;
+    // Presolve's doubleton-equality aggregation (#328, #347), on by default
+    // under presolve. `--no-presolve-aggregation` is its off arm, valid only
+    // with `--presolve`, and recorded in `search_config` when off.
+    bool presolve_aggregation = true;
 };
 
 // Flag-value parsing lives in benchmarks/common/runner_args.h, shared with the
@@ -124,9 +128,18 @@ void check_flag_values(Args& a) {
         a.search_config += (a.search_config.empty() ? "" : ";");
         a.search_config += "threads=" + std::to_string(a.threads);
     }
+    if (!a.presolve && !a.presolve_aggregation) {
+        // A presolve step names nothing without presolve: accepting it would
+        // leave a row that says nothing of the flag the operator typed.
+        std::fprintf(stderr, "--no-presolve-aggregation needs --presolve\n");
+        std::exit(2);
+    }
     if (a.presolve) {
         a.search_config += (a.search_config.empty() ? "" : ";");
         a.search_config += "presolve";
+        if (!a.presolve_aggregation) {
+            a.search_config += ";no-presolve-aggregation";
+        }
     }
     if (a.search.no_time_limit) {
         // The wall-clock-free arm (#136): solve() disables its clock at
@@ -182,6 +195,9 @@ const char* unpublishable_flag(const Args& a) {
     }
     if (a.presolve) {
         return "--presolve";
+    }
+    if (!a.presolve_aggregation) {
+        return "--no-presolve-aggregation";  // refused without --presolve already
     }
     return cbls::bench::first_non_default_search_flag(a.search);
 }
@@ -358,6 +374,8 @@ Args parse_args(int argc, char** argv) {
             a.presolve = true;
         } else if (s == "--no-presolve") {
             a.presolve = false;
+        } else if (s == "--no-presolve-aggregation") {
+            a.presolve_aggregation = false;
         } else if (cbls::bench::match_search_flag(c, s, a.search)) {
             // A search-configuration flag (#136); the table, the parse and the
             // recorded spelling all live in benchmarks/common/search_config_flags.h.
@@ -366,7 +384,7 @@ Args parse_args(int argc, char** argv) {
                 "Usage: cbls_minlplib [inst-dir] [--time-limit S] [--seed N]"
                 " [--feas-tol T] [--instance NAME ...] [--threads N] [--commit SHA]"
                 " [--out CSV] [--trace CSV] [--counters CSV] [--solution-dir DIR]"
-                " [--presolve|--no-presolve]\n"
+                " [--presolve|--no-presolve] [--no-presolve-aggregation]\n"
                 "       %s\n",
                 cbls::bench::search_flags_usage(kSearchFlagFamilies).c_str());
             std::exit(0);
@@ -1121,6 +1139,7 @@ bool prepare_instance(std::ostream& csv, const Args& args, const std::string& na
     try {
         cbls::NlToModelOptions opts;
         opts.presolve.enabled = args.presolve;
+        opts.presolve.doubleton_aggregation = args.presolve_aggregation;
         built = cbls::nl_to_model(prob, opts);
     } catch (const std::exception& e) {
         std::printf("%-22s  ERROR building model: %s\n", name.c_str(), e.what());

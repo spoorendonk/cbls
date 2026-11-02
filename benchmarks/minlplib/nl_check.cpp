@@ -10,9 +10,11 @@
 // With `--presolve` first, the model is built with the linear-part presolve
 // (#326, #343) and a modelled line also carries its outcome, for the census:
 //
-//   <path> \t modelled \t presolve=<status> rows=<removed> cols=<removed> bounds=<tightened>
+//   <path> \t modelled \t presolve=<status> rows=<removed> cols=<removed> aggregated=<cols> ...
 //
-// with the statuses of `presolve_outcome` (presolve_outcome.h).
+// with the statuses of `presolve_outcome` (presolve_outcome.h). A
+// `--no-presolve-aggregation` after `--presolve` turns the doubleton-equality
+// aggregation off (#347), for the census of what it alone removes.
 //
 // benchmarks/instances/minlplib/status.py runs it over the unpacked MINLPLib
 // archive to give every catalogue instance a status (#283). Reader refusals
@@ -38,7 +40,7 @@ std::string one_line(std::string s) {
     return s;
 }
 
-std::string check(const std::string& path, bool presolve) {
+std::string check(const std::string& path, bool presolve, bool aggregation) {
     cbls::NlProblem prob;
     try {
         prob = cbls::read_nl(path);
@@ -51,6 +53,7 @@ std::string check(const std::string& path, bool presolve) {
     try {
         cbls::NlToModelOptions opts;
         opts.presolve.enabled = presolve;
+        opts.presolve.doubleton_aggregation = aggregation;
         const cbls::NlToModelResult built = cbls::nl_to_model(prob, opts);
         if (built.supported) {
             return presolve ? "modelled\t" + cbls::bench::presolve_outcome(built) : "modelled";
@@ -67,14 +70,18 @@ std::string check(const std::string& path, bool presolve) {
 
 int main(int argc, char** argv) {
     const bool presolve = argc > 1 && std::string(argv[1]) == "--presolve";
-    const int first = presolve ? 2 : 1;
+    const bool no_aggregation =
+        presolve && argc > 2 && std::string(argv[2]) == "--no-presolve-aggregation";
+    const int first = 1 + (presolve ? 1 : 0) + (no_aggregation ? 1 : 0);
     if (argc <= first) {
-        std::fprintf(stderr, "usage: %s [--presolve] FILE.nl...\n", argv[0]);
+        std::fprintf(stderr, "usage: %s [--presolve [--no-presolve-aggregation]] FILE.nl...\n",
+                     argv[0]);
         return 2;
     }
     for (int i = first; i < argc; ++i) {
         const std::string path = argv[i];
-        std::printf("%s\t%s\n", one_line(path).c_str(), check(path, presolve).c_str());
+        std::printf("%s\t%s\n", one_line(path).c_str(),
+                    check(path, presolve, !no_aggregation).c_str());
         std::fflush(stdout);
     }
     return 0;

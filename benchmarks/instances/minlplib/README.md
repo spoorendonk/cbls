@@ -117,7 +117,7 @@ presolve, every check (objective, residuals, `verify_model`) runs there, and a
 failure there is a `VERIFY-FAILED` row. The `.sol` holds every original column.
 `wall_seconds` times the search alone, not that second build. The row's
 `search_config` records `presolve`; what presolve did to the instance goes to
-stdout as `<instance>  presolve=<status> rows= cols= bounds= seconds=`
+stdout as `<instance>  presolve=<status> rows= cols= aggregated= bounds= seconds=`
 (statuses `reduced`, `unchanged`, `infeasible`, `rejected`, `not-run`; the
 last three searched the plain model, and the presolve time is spent in the
 build, outside `wall_seconds`). A presolved row is held to a stricter check
@@ -128,10 +128,20 @@ so a presolve-vs-plain A/B can lose solved rows to that check alone. Read its
 published table, and the driver stages it apart (`threads<N>-presolve`, and a
 `presolve=on` stamp line).
 
-`cbls_minlplib_nl_check --presolve FILE.nl...` adds
-the same `presolve=<status> rows= cols= bounds= seconds=` cells to each
-modelled line: the census of how many instances presolve changes. Counts for a
-given engine commit are recorded on #326 and #343.
+Presolve includes doubleton-equality aggregation (#328): a linear row
+`a x + b y = c` over two non-frozen columns eliminates `y`. It removes the
+column and its row, so it counts in `rows=` and `cols=`, and `aggregated=`
+says how many columns it took. `--no-presolve-aggregation` (valid only with
+`--presolve`, in the runner and the driver) is its off arm (#347). It is
+recorded as `no-presolve-aggregation` in `search_config` and staged apart
+(`threads<N>-presolve-no-aggregation`, and a `presolve-aggregation=off` stamp
+line).
+
+`cbls_minlplib_nl_check --presolve [--no-presolve-aggregation] FILE.nl...` adds
+`presolve=<status> rows=<removed> cols=<removed> aggregated=<cols>
+bounds=<tightened> seconds=<time>` to each modelled line: the census of how
+many instances presolve changes. Counts for a given engine commit are recorded
+on #326, #343 and #328.
 
 ### Search counters (#341)
 

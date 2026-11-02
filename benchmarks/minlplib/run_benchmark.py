@@ -261,7 +261,7 @@ def resolve_paths(args: argparse.Namespace, sha: str) -> Paths:
         default_staging_root()
         / sha
         / f"{args.time_limit:g}s"
-        / (f"threads{args.threads}" + ("-presolve" if args.presolve else ""))
+        / (f"threads{args.threads}" + presolve_suffix(args))
         / f"seed{args.seed}"
     )
     preregistered = args.seed == DEFAULT_SEED
@@ -484,6 +484,9 @@ def usage_error(args: argparse.Namespace, published_out: Path) -> str | None:
         return f"--build-jobs must be >= 1 (got {args.build_jobs})"
     if args.threads < 1:
         return f"--threads must be >= 1 (got {args.threads})"
+    if not args.presolve_aggregation and not args.presolve:
+        # The runner refuses it too; refused here before anything is staged.
+        return "--no-presolve-aggregation needs --presolve"
     seed_refusal = (
         roster_dir_error(args, published_out)
         or seed_policy_error(args, published_out)
@@ -795,12 +798,14 @@ def staging_stamp(args: argparse.Namespace, sha: str) -> str:
     campaign resumed on another one would publish one table measured on two. The
     thread count since #299: a campaign resumed at another `--threads` would
     publish one table measured with two portfolio sizes. A `presolve` line since
-    #343, written only when it is on, so a stamp from before it still matches.
+    #343, written only when it is on, so a stamp from before it still matches;
+    a `presolve-aggregation=off` line since #347 the same way, off its default.
     """
     return (
         f"commit={sha}\ntime-limit={args.time_limit:g}\nseed={args.seed}\n"
         f"threads={args.threads}\n"
         + ("presolve=on\n" if args.presolve else "")
+        + ("presolve-aggregation=off\n" if args.presolve and not args.presolve_aggregation else "")
         + f"host={socket.gethostname()}\nroster={roster_fingerprint(args.inst_dir)}\n"
     )
 
@@ -917,6 +922,8 @@ def staged_complete(args: argparse.Namespace, sha: str, name: str, stage: Path) 
         return False
     if staged_row_presolved(stage / f"{name}.csv") != args.presolve:
         return False
+    if args.presolve and staged_row_aggregated(stage / f"{name}.csv") != args.presolve_aggregation:
+        return False
     return not args.trace or (stage / f"{name}.trace.csv").exists()
 
 
@@ -954,6 +961,26 @@ def staged_row_presolved(path: Path) -> bool | None:
     return "presolve" in row.get("search_config", "").split(";")
 
 
+def staged_row_aggregated(path: Path) -> bool | None:
+    """Whether a staged presolve row ran aggregation (#347), or None with no whole row.
+
+    The same hole again, for `--no-presolve-aggregation`. Staging is keyed by
+    commit, and every commit that has the flag records its off arm as
+    `no-presolve-aggregation` in `search_config`, so a row without it ran on.
+    """
+    row = _staged_row(path)
+    if row is None:
+        return None
+    return "no-presolve-aggregation" not in row.get("search_config", "").split(";")
+
+
+def presolve_suffix(args: argparse.Namespace) -> str:
+    """The staging directory's presolve part: `-presolve`, `-presolve-no-aggregation` or none."""
+    if not args.presolve:
+        return ""
+    return "-presolve" if args.presolve_aggregation else "-presolve-no-aggregation"
+
+
 def runner_command(args: argparse.Namespace, sha: str, name: str, stage: Path) -> list[str]:
     """The `cbls_minlplib` invocation for one instance, staged under `stage`."""
     return runner.runner_command(
@@ -967,7 +994,8 @@ def runner_command(args: argparse.Namespace, sha: str, name: str, stage: Path) -
         solution_dir=stage,
         threads=args.threads,
         extra=(["--trace", str(stage / f"{name}.trace.csv")] if args.trace else [])
-        + (["--presolve"] if args.presolve else []),
+        + (["--presolve"] if args.presolve else [])
+        + ([] if args.presolve_aggregation else ["--no-presolve-aggregation"]),
     )
 
 
@@ -1460,6 +1488,13 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--presolve",
         action="store_true",
         help="presolve each instance's linear part (#343); never writes a published table",
+    )
+    parser.add_argument(
+        "--no-presolve-aggregation",
+        dest="presolve_aggregation",
+        action="store_false",
+        help="with --presolve: turn its doubleton-equality aggregation off (#347); on by "
+        "default, and staged apart",
     )
     parser.add_argument("--build-jobs", type=int, default=DEFAULT_BUILD_JOBS)
     # nargs="+", not "*": a bare `--instances` would otherwise be an empty list,
