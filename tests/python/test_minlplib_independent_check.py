@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import csv
 import re
+import shutil
 import subprocess
 from dataclasses import replace
 from pathlib import Path
@@ -319,5 +320,26 @@ def test_a_column_name_without_an_index_is_refused_not_guessed(tmp_path: Path) -
     model.setObjective(x)
     path = tmp_path / "named.nl"
     model.writeProblem(str(path), verbose=False)  # with its .col file: the column is "x"
+    assert (tmp_path / "named.col").exists()
+    named = pyscipopt.Model()
+    named.hideOutput()
+    named.readProblem(str(path))
     with pytest.raises(ValueError, match="carries no column index"):
-        check_solution(path, Solution("named", 0.0, (0.0,)))
+        independent_check._columns(named, 1)
+
+
+def test_a_col_file_beside_the_nl_is_not_read_by_the_check(tmp_path: Path) -> None:
+    # The MINLPLib archive ships `<stem>.col` (GAMS names) beside every `.nl`;
+    # read beside it, SCIP names ex4_1_1's column `x1`, and the check refused
+    # every full-library row (#319). The check reads the `.nl` alone.
+    nl = tmp_path / "ex4_1_1.nl"
+    shutil.copyfile(INST / "ex4_1_1.nl", nl)
+    (tmp_path / "ex4_1_1.col").write_text("x1\n")
+    beside = pyscipopt.Model()
+    beside.hideOutput()
+    beside.readProblem(str(nl))
+    assert [v.name for v in beside.getVars() if v.name != "nlobjvar"] == ["x1"]
+    good = Solution("ex4_1_1", EX4_1_1_AT_1, (1.0,))
+    assert check_solution(nl, good) is None
+    worse = check_solution(nl, replace(good, objective=EX4_1_1_AT_1 + 0.5))
+    assert worse is not None and "worse than SCIP's value" in worse

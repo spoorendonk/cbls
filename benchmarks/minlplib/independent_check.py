@@ -233,7 +233,15 @@ class _Probe:
 
         self.model: Any = Model()
         self.model.hideOutput()
-        self.model.readProblem(str(nl_path))
+        # SCIP's AMPL reader picks up a `<stem>.col` beside the `.nl` and names
+        # columns from it (GAMS names, `objvar`), which `_columns` refuses. The
+        # library archive ships one beside every `.nl` (#319), so the reader is
+        # given the `.nl` alone: a symlink in an empty directory. The model is
+        # fully read before the directory goes.
+        with tempfile.TemporaryDirectory(prefix="cbls-check-") as lone:
+            link = Path(lone) / nl_path.name
+            link.symlink_to(nl_path.resolve())
+            self.model.readProblem(str(link))
         self.columns, self.nlobj, self.fixed = _columns(self.model, len(solution.values))
         self.values = solution.values
         self.maximizing = self.model.getObjectiveSense() == "maximize"
