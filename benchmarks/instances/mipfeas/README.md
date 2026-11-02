@@ -143,12 +143,10 @@ and on a CP-SAT row whose log printed no worker count.
 
 No *aggregate* setup magnitude is quoted for the roster, because no per-row
 figure from a real run is committed: the published smoke table predates the
-measurement and was not regenerated. What is already measured elsewhere in this
-file bounds it rather than states it — propagation, one of setup's three parts,
-costs ~1.1s worst case and ~7s summed over the roster (**Implied bounds shrink
-that restriction**), and the read+build asymmetry under **Configuration, and
-what is recorded** is read per row from `setup_seconds`. Neither is a substitute for the per-row
-columns.
+measurement and was not regenerated. One part is measured elsewhere in this
+file: propagation, one of setup's three parts, costs ~1.1s worst case and ~7s
+summed over the roster (**Implied bounds shrink that restriction**). That bounds
+one part only and is no substitute for the per-row `setup_seconds` column.
 
 ## Metric: Primal Integral
 
@@ -433,9 +431,10 @@ uv sync --extra dev --extra benchmarks
 .venv/bin/python benchmarks/mipfeas/run_benchmark.py --roster smoke --budget 60 --jobs 1
 
 # 5. The full roster: 233 x 60s x 2 engines, one job at a time, ~8 wall-hours.
-#    #255 ran the 211 outside tuned.txt at 60s, seed 1, with --cbls-threads 16
-#    --cpuset 0-15, and scored them with --held-out tuned.txt in step 6; its table
-#    waits on #253.
+#    #255 ran the 211 outside tuned.txt at 60s: cbls at seed 1 on 16 threads
+#    pinned to cores 0-15, CP-SAT unpinned at its defaults (the runner refuses
+#    --cpuset with CP-SAT at its defaults, so the two halves ran separately).
+#    It scored them with --held-out tuned.txt in step 6; its table waits on #253.
 .venv/bin/python benchmarks/mipfeas/run_benchmark.py --roster full --budget 60 --jobs 1
 
 # 6. Score it — into the results directory, beside what it scores
