@@ -380,6 +380,7 @@ def _driver_args(**overrides: object) -> argparse.Namespace:
         "propagate_bounds": True,
         "presolve": False,
         "presolve_coef_tightening": True,
+        "presolve_aggregation": True,
         "cpsat_workers": 1,
         "cbls_threads": 1,
         "commit": "abc1234",
@@ -430,6 +431,13 @@ def _driver_args(**overrides: object) -> argparse.Namespace:
             {"--no-presolve-coef-tightening": None},
             [],
         ),
+        ("cbls", {"presolve": True}, {}, ["--no-presolve-aggregation"]),
+        (
+            "cbls",
+            {"presolve": True, "presolve_aggregation": False},
+            {"--no-presolve-aggregation": None},
+            [],
+        ),
         ("cbls", {"cbls_threads": 4}, {"--threads": "4"}, []),
         ("cpsat", {}, {"--workers": "1"}, []),
         # Without a solution directory neither runner writes a solution vector, and
@@ -454,6 +462,8 @@ def _driver_args(**overrides: object) -> argparse.Namespace:
         "presolve",
         "presolve-coef-tightening-on-by-default",
         "no-presolve-coef-tightening",
+        "presolve-aggregation-on-by-default",
+        "no-presolve-aggregation",
         "cbls-threads",
         "cpsat-workers",
         "cbls-solution-dir",
@@ -628,16 +638,30 @@ def test_resuming_under_a_different_search_arm_is_refused(tmp_path: Path) -> Non
     assert check(presolve=True) == 2
     # Its coefficient tightening (#327) is checked only under presolve, and a
     # presolve row from before it never tightened, so it is read as off.
+    # Aggregation (#337) is held off here, and the tightening off in its block
+    # below, so each block isolates one step.
     old_presolve = {"instance": "a", "threads": 1, "presolve": True, **tie}
     result.write_text(json.dumps(old_presolve))
-    assert check(presolve=True) == 2
-    assert check(presolve=True, presolve_coef_tightening=False) is None
-    result.write_text(json.dumps({**old_presolve, "presolve_coef_tightening": True}))
-    assert check(presolve=True) is None
-    assert check(presolve=True, presolve_coef_tightening=False) == 2
+    assert check(presolve=True, presolve_aggregation=False) == 2
+    assert check(presolve=True, presolve_coef_tightening=False, presolve_aggregation=False) is None
+    tightened = {**old_presolve, "presolve_coef_tightening": True}
+    result.write_text(json.dumps(tightened))
+    assert check(presolve=True, presolve_aggregation=False) is None
+    assert check(presolve=True, presolve_coef_tightening=False, presolve_aggregation=False) == 2
     no_presolve = {"instance": "a", "threads": 1, "presolve_coef_tightening": True, **tie}
     result.write_text(json.dumps(no_presolve))
     assert check(presolve_coef_tightening=False) is None
+    # Aggregation (#337) the same way: a presolve row from before it (here one
+    # that tightened) never aggregated, so it is read as off.
+    result.write_text(json.dumps(tightened))
+    assert check(presolve=True) == 2
+    assert check(presolve=True, presolve_aggregation=False) is None
+    result.write_text(json.dumps({**tightened, "presolve_aggregation": True}))
+    assert check(presolve=True) is None
+    assert check(presolve=True, presolve_aggregation=False) == 2
+    no_presolve = {"instance": "a", "threads": 1, "presolve_aggregation": True, **tie}
+    result.write_text(json.dumps(no_presolve))
+    assert check(presolve_aggregation=False) is None
 
 
 def test_a_default_run_resumes_over_a_job_it_killed(tmp_path: Path) -> None:

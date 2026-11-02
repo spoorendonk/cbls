@@ -136,6 +136,7 @@ CONFIG_KEYS = (
     "max_propagation_passes",
     "presolve",
     "presolve_coef_tightening",
+    "presolve_aggregation",
     "lns",
     "lns_interval",
     "novelty_prob",
@@ -195,8 +196,11 @@ def config_string(result: dict[str, object]) -> str:
     # dropped there; under presolve its off arm is what a presolve row from
     # before it ran, so off is dropped too (as the resume guard back-reads a
     # missing key as off) and only the on arm carries the key.
-    if cells.get("presolve") is not True or cells.get("presolve_coef_tightening") is False:
-        cells.pop("presolve_coef_tightening", None)
+    # Aggregation (#337, #346) the same way: a presolve row from before it never
+    # aggregated, so it is the off arm.
+    for presolve_step in ("presolve_coef_tightening", "presolve_aggregation"):
+        if cells.get("presolve") is not True or cells.get(presolve_step) is False:
+            cells.pop(presolve_step, None)
     for opt_in in (
         "perturb_near_value",
         "objective_tie_break",

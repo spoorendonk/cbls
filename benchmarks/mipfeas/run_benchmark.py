@@ -322,6 +322,7 @@ def build_run_record(
             "propagate_bounds": args.propagate_bounds,
             "presolve": args.presolve,
             "presolve_coef_tightening": args.presolve_coef_tightening,
+            "presolve_aggregation": args.presolve_aggregation,
             "large_bytes": args.large_bytes,
             "jobs_planned": planned,
             "jobs_to_run": to_run,
@@ -445,6 +446,7 @@ def build_command(job: Job, args: argparse.Namespace, results_dir: Path) -> list
             *([] if args.propagate_bounds else ["--no-propagate-bounds"]),
             *(["--presolve"] if args.presolve else []),
             *([] if args.presolve_coef_tightening else ["--no-presolve-coef-tightening"]),
+            *([] if args.presolve_aggregation else ["--no-presolve-aggregation"]),
             *solution_flags,
             "--commit",
             args.commit,
@@ -488,9 +490,11 @@ def arm_keys(engine: str, args: argparse.Namespace) -> dict[str, object]:
         "objective_tie_break": args.objective_tie_break,
         "presolve": args.presolve,
     }
-    # Coefficient tightening (#327) names a reduced model only under presolve.
+    # Coefficient tightening (#327) and aggregation (#337) name a reduced model
+    # only under presolve.
     if args.presolve:
         keys["presolve_coef_tightening"] = args.presolve_coef_tightening
+        keys["presolve_aggregation"] = args.presolve_aggregation
     return keys
 
 
@@ -989,9 +993,9 @@ def check_resume_configuration(
     Returns the exit code to fail with, or None to proceed.
     """
     # What a row without a key ran: `exact_int_jump`, `compound_propagation`,
-    # `perturb_near_value`, `objective_tie_break`, `presolve` and
-    # `presolve_coef_tightening` (a presolve
-    # row from before #327 ran without it) are back-read as off, since every row
+    # `perturb_near_value`, `objective_tie_break`, `presolve`,
+    # `presolve_coef_tightening` and `presolve_aggregation` (a presolve row from
+    # before #327 or #337 ran without them) are back-read as off, since every row
     # from before a flag ran its off arm; any other missing key is unknown and
     # left alone.
     back_read_off = {
@@ -1001,6 +1005,7 @@ def check_resume_configuration(
         "objective_tie_break",
         "presolve",
         "presolve_coef_tightening",
+        "presolve_aggregation",
     }
     for job in jobs:
         result = read_json_object(job.result_path(results_dir))
@@ -1355,6 +1360,13 @@ def main() -> int:
         help="build the CBLS model from the presolved problem (#322) and write "
         "postsolved solutions; off by default. A CBLS-side reduction CP-SAT does on "
         "its own, recorded per result as presolve",
+    )
+    parser.add_argument(
+        "--no-presolve-aggregation",
+        dest="presolve_aggregation",
+        action="store_false",
+        help="under --presolve, skip doubleton-equality aggregation (#337), on by "
+        "default; recorded per result as presolve_aggregation",
     )
     parser.add_argument(
         "--no-presolve-coef-tightening",

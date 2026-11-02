@@ -132,6 +132,9 @@ struct Args {
     // library. Changes the reduced model, so recorded per result; meaningless
     // without --presolve, but recorded there too so every row has the key.
     bool presolve_coef_tightening = true;
+    // Doubleton-equality aggregation inside presolve (#337, #346), on by
+    // default like the library; recorded per result like the one above.
+    bool presolve_aggregation = true;
     // Portfolio workers. 1 is the single-threaded engine path this benchmark has
     // always measured; >1 runs `ParallelSearch`, the cooperative portfolio, on
     // that many threads. The baseline's `num_workers` is the number to match:
@@ -167,7 +170,7 @@ void print_usage() {
         "                    [--budget SECONDS] [--seed N] [--feas-tol T]\n"
         "                    [--inf-clamp B] [--no-propagate-bounds]\n"
         "                    [--max-propagation-passes N] [--presolve|--no-presolve]\n"
-        "                    [--no-presolve-coef-tightening]\n"
+        "                    [--no-presolve-coef-tightening] [--no-presolve-aggregation]\n"
         "                    [--no-compound-moves] [--exact-int-jump]\n"
         "                    [--perturb-near-value] [--no-objective-tie-break]\n"
         "                    [--restart-randomization] [--luby-restart-unit N]\n"
@@ -281,6 +284,8 @@ Args parse_args(int argc, char** argv) {
             a.presolve = false;
         } else if (s == "--no-presolve-coef-tightening") {
             a.presolve_coef_tightening = false;
+        } else if (s == "--no-presolve-aggregation") {
+            a.presolve_aggregation = false;
         } else if (c.value_flag("--max-propagation-passes", v)) {
             a.max_propagation_passes = parse_propagation_passes(v);
         } else if (parse_search_flag(c, a)) {
@@ -496,6 +501,7 @@ void write_result(const Args& args, const nlohmann::json& extra) {
     j["max_propagation_passes"] = args.max_propagation_passes;
     j["presolve"] = args.presolve;
     j["presolve_coef_tightening"] = args.presolve_coef_tightening;
+    j["presolve_aggregation"] = args.presolve_aggregation;
     j["threads"] = args.threads;
     j["share_objective_bound"] = args.share_objective_bound;
     j["lns"] = args.search.lns;
@@ -840,6 +846,7 @@ int run_benchmark(int argc, char** argv) {
     mps_opts.max_propagation_passes = args.max_propagation_passes;
     mps_opts.presolve.enabled = args.presolve;
     mps_opts.presolve.coefficient_tightening = args.presolve_coef_tightening;
+    mps_opts.presolve.doubleton_aggregation = args.presolve_aggregation;
     const auto t_build = std::chrono::steady_clock::now();
     cbls::MpsToModelResult built;
     try {

@@ -2775,6 +2775,8 @@ under `NlToModelOptions::presolve` (#326, #342).
   side error, scaled by `|e/b|`. Runs after the row reductions in a round, so
   a row they shrink to two entries is seen the same round; rows are scanned
   once per round, and a chain unwinds in reverse through the postsolve stack.
+  A substitution whose added scale (`|e/b|` included) is not finite is refused
+  (#345). `cbls_mipfeas --no-presolve-aggregation` is the off arm.
 - **Floating point.** A row bound carries `(folds + 1)·DBL_EPSILON·row_scale`
   of error from the fixed columns folded into it. Every bound derived from it
   is relaxed outward by that error first, so roundoff never cuts off a feasible
