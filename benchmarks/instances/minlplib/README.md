@@ -275,18 +275,21 @@ file states the configuration it was produced under (#136):
 --no-time-limit            disable the wall clock; requires --max-iterations
 --perturb-near-value       OR-Tools' near-value kick (#217)
 --no-objective-tie-break   drop the FJ objective tie-break (#218; on since #226)
+--compound-propagation     propagate Novelty legs over the linear rows (#340)
 ```
 
-`--perturb-near-value` and `--no-objective-tie-break` are recorded in the cell
+`--perturb-near-value`, `--no-objective-tie-break` and `--compound-propagation`
+are recorded in the cell
 only when they move the engine off its default, so a default row's cell is the
 one the committed tables hold. Those tables predate #226 and so ran the
 tie-break off: their cells match a default row's, and only the engine commit
 tells them apart until they are regenerated.
 
-Two combinations are refused rather than accepted: `--lns-interval` with
-`--no-lns`, and `--novelty-prob` with `--no-compound-moves`. The engine never
-reads `--lns-interval` or `--novelty-prob` in those pairs, so accepting them
-would record an arm that the run did not have.
+Four combinations are refused rather than accepted: `--lns-interval` with
+`--no-lns`, `--novelty-prob` with `--no-compound-moves`, and
+`--compound-propagation` with `--no-compound-moves` or `--novelty-prob 0`. The
+engine never reads the flag in those pairs, so accepting them would record an
+arm that the run did not have.
 
 Compound moves are on by default since 2026-10-07. The published tables predate
 that and record `compound_moves=off` in their `search_config` cells; until they

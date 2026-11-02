@@ -1245,7 +1245,14 @@ Novelty run: variable bounds never change after construction, so once.
   var and per leg.
 
 `SearchCounters::novelty_propagation_tightenings` (bounds derived) and
-`novelty_propagation_conflicts` (legs in conflict) record it.
+`novelty_propagation_conflicts` (legs in conflict) record it; Python reads
+both, and `cbls_mipfeas` publishes both per row.
+
+`SearchConfig::compound_move_propagation` turns it on for the batch FJ
+(#340); the LNS repair FJ runs no Novelty. The shared runner flag is
+`--compound-propagation` (scalar family, opt-in in the `search_config` cell),
+refused without compound moves or at `--novelty-prob 0`, where no batch reads
+it; `run_benchmark.py --compound-propagation` forwards it to `cbls_mipfeas`.
 
 `apply_novelty_jump()` is one stand-alone ApplyNoveltyJump from a fresh `W'` and
 `Q'`, capped at `kNoveltyWorkBudget = 256` applied moves; the caller must
@@ -2555,6 +2562,7 @@ solve(model, time_limit, seed, use_fj, hook, lns, lns_interval, callback, config
 | `cone_cache_bytes` | 256 MiB (`Model::kDefaultConeCacheBytes`) | `SearchConfig` | cap on the frozen model's cone cache (#271) |
 | `unproductive_iterations` | 300 | `SearchConfig` → `GFJConfig` | end an FJ batch after this many GLS iterations without a new real-violation low, and take the kick as due (#102); `<= 0` = fixed cadence |
 | `fj_exact_int_jump` | false | `SearchConfig` | exact Int argmin over all-linear rows (OR-Tools' `ComputeLinearJump`, #216) |
+| `compound_move_propagation` | false | `SearchConfig` | propagate each Novelty leg over the linear rows; next leg drawn inside the narrowed box (#339, #340) |
 | `perturb_near_value` | false | `SearchConfig` | OR-Tools' near-value diversification kick (#217) |
 | `fj_objective_tie_break` | true | `SearchConfig` | OR-Tools' affine-objective tie-break before the first feasible point (#218, #226) |
 | `restart_randomization` | false | `SearchConfig` | CP-SAT's restart randomisation as an arm (#239) |

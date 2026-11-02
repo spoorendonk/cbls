@@ -64,9 +64,12 @@ constexpr double kLnsFraction = 0.3;
 // (--no-time-limit and --max-iterations against a Primal Integral over a wall
 // budget; --no-float-hook, which no MIPfeas arm has asked for). A shared flag
 // not listed here falls through to "Unknown argument", as before.
-constexpr std::array<const char*, 5> kSharedSearchFlags = {"--no-lns", "--lns-interval",
-                                                           "--novelty-prob", "--unproductive-iters",
-                                                           "--perturbation-period"};
+constexpr std::array<const char*, 6> kSharedSearchFlags = {"--no-lns",
+                                                           "--lns-interval",
+                                                           "--novelty-prob",
+                                                           "--unproductive-iters",
+                                                           "--perturbation-period",
+                                                           "--compound-propagation"};
 
 /// The families the flags above belong to, for validate_search_flags().
 constexpr unsigned kSharedSearchFamilies = cbls::bench::kScalarRunnerSearchFlags;
@@ -144,7 +147,8 @@ struct Args {
     // carries the same keys.
     bool share_objective_bound = true;
     // The kSharedSearchFlags arms (#267): LNS on/off and its interval, the
-    // Novelty probability, FJ's unproductive-batch exit and the kick period.
+    // Novelty probability, FJ's unproductive-batch exit, the kick period and
+    // propagated Novelty legs (#340).
     // Only those fields are read; the struct's other fields stay at their
     // defaults, as nothing here can set them. Each is recorded per result and is
     // a config key in the scorer, dropped there at its default so a row from
@@ -169,7 +173,7 @@ void print_usage() {
         "                    [--restart-randomization] [--luby-restart-unit N]\n"
         "                    [--no-lns] [--lns-interval N] [--novelty-prob P]\n"
         "                    [--unproductive-iters N] [--perturbation-period N]\n"
-        "                    [--threads N]\n"
+        "                    [--compound-propagation] [--threads N]\n"
         "                    [--share-bound | --no-share-bound]\n"
         "                    [--solution-dir DIR]\n"
         "                    [--commit SHA]\n");
@@ -499,6 +503,7 @@ void write_result(const Args& args, const nlohmann::json& extra) {
     j["novelty_prob"] = args.search.novelty_prob;
     j["unproductive_iters"] = args.search.unproductive_iters;
     j["perturbation_period"] = args.search.perturbation_period;
+    j["compound_propagation"] = args.search.compound_propagation;
     j["commit_sha"] = args.commit_sha;
 
     // Write-then-rename: a job killed mid-write must leave either the previous
@@ -881,6 +886,7 @@ int run_benchmark(int argc, char** argv) {
     cfg.novelty_jump_probability = args.search.novelty_prob;
     cfg.unproductive_iterations = args.search.unproductive_iters;
     cfg.perturbation_period = static_cast<int>(args.search.perturbation_period);
+    cfg.compound_move_propagation = args.search.compound_propagation;
 
     // One model per portfolio worker, replicated BEFORE the solve bracket opens.
     // Since #157 a replica shares the master's immutable structure and copies only
@@ -1027,6 +1033,11 @@ int run_benchmark(int argc, char** argv) {
         {"novelty_moves", result.counters.novelty_moves},
         {"novelty_commits", result.counters.novelty_commits},
         {"novelty_weight_bumps", result.counters.novelty_weight_bumps},
+        // What propagated legs did (#340): bounds narrowed and legs refused.
+        // Zero unless --compound-propagation; without them an on-arm row cannot
+        // tell propagation that never narrowed from propagation that did.
+        {"novelty_propagation_tightenings", result.counters.novelty_propagation_tightenings},
+        {"novelty_propagation_conflicts", result.counters.novelty_propagation_conflicts},
         // The shared objective bound's engagement (#179), summed over workers,
         // so a null A/B result can be told apart from a mechanism that never
         // fired. All zero at --threads 1. Published in both arms: with sharing

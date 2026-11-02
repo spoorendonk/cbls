@@ -141,6 +141,7 @@ CONFIG_KEYS = (
     "novelty_prob",
     "unproductive_iters",
     "perturbation_period",
+    "compound_propagation",
     "workers",
     "parameters",
 )
@@ -164,7 +165,8 @@ def config_string(result: dict[str, object]) -> str:
 
     One key is back-filled, and the opt-in engine flags (`exact_int_jump`,
     #216; `perturb_near_value`, #217; `objective_tie_break`, #218;
-    `restart_randomization` and `luby_restart_unit`, #239) dropped when off,
+    `restart_randomization` and `luby_restart_unit`, #239;
+    `compound_propagation`, #340) dropped when off,
     and #267's tunable knobs (TUNABLE_DEFAULTS) dropped at their defaults;
     see their lines.
     `share_objective_bound` (#179) did not exist before
@@ -200,6 +202,7 @@ def config_string(result: dict[str, object]) -> str:
         "objective_tie_break",
         "restart_randomization",
         "presolve",
+        "compound_propagation",
     ):
         if cells.get(opt_in) is False:
             del cells[opt_in]

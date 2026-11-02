@@ -254,6 +254,15 @@ struct SearchConfig {
     // off and what decided it.
     bool fj_exact_int_jump = false;
 
+    // Propagated Novelty legs (#339, #340), off by default: forwarded to
+    // GFJConfig::compound_propagation for the batch FJ. Each leg of a compound
+    // move is propagated over the linear rows and the next leg is drawn inside
+    // the narrowed box. Read only by Novelty batches, so it has no effect
+    // without `use_compound_moves` or with `novelty_jump_probability == 0`; the
+    // LNS repair FJ runs no Novelty and ignores it. Off is today's search, draw
+    // for draw.
+    bool compound_move_propagation = false;
+
     // OR-Tools' diversification kick (#217), off by default: forwarded to
     // GFJConfig::perturb_near_value. Each scalar is redrawn with probability
     // 0.05 to a value near its current one (log-uniform within 20% of the side

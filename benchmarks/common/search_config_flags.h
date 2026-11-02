@@ -132,6 +132,9 @@ struct SearchFlags {
     // it off; recorded in the cell only when off, so a default row's cell is
     // the one rows from before #226 carry -- tell those apart by commit.
     bool objective_tie_break = SearchConfig{}.fj_objective_tie_break;
+    // Propagated Novelty legs (#339, #340); off by default. Recorded in the
+    // cell only when on (opt-in), so every committed table's cell is unchanged.
+    bool compound_propagation = SearchConfig{}.compound_move_propagation;
     // The first flag typed from each family, indexed by the family's bit, or
     // nullptr. Set by match_search_flag() whatever the value, so that a flag
     // restated at its default is refused on a runner that cannot read it too:
@@ -159,7 +162,7 @@ struct SearchFlagSpec {
 ///
 /// New flags go at the END: a runner's cell is the table filtered by its
 /// families, so appending keeps every existing runner's cell byte-identical.
-inline constexpr std::array<SearchFlagSpec, 15> kSearchFlagSpecs = {{
+inline constexpr std::array<SearchFlagSpec, 16> kSearchFlagSpecs = {{
     {"float_hook", "[--no-float-hook]", kScalarSearchFlags},
     {"lns", "[--no-lns]", kCommonSearchFlags},
     {"lns_interval", "[--lns-interval N]", kCommonSearchFlags},
@@ -177,6 +180,7 @@ inline constexpr std::array<SearchFlagSpec, 15> kSearchFlagSpecs = {{
     {"neighbours", "[--neighbours K]", kNeighbourSearchFlags},
     {"perturb_near_value", "[--perturb-near-value]", kScalarSearchFlags, true},
     {"objective_tie_break", "[--no-objective-tie-break]", kScalarSearchFlags, true},
+    {"compound_propagation", "[--compound-propagation]", kScalarSearchFlags, true},
 }};
 
 inline constexpr std::size_t kSearchFlagCount = kSearchFlagSpecs.size();
@@ -188,6 +192,46 @@ inline std::size_t search_flag_family_index(unsigned family) {
         ++i;
     }
     return i;
+}
+
+/// The structural and neighbour families' half of match_search_flag(): the
+/// flags only List/Set runners read (#198). Returns the flag matched and
+/// consumed, setting `family` to its family, or nullptr with the cursor and
+/// `family` left as they were.
+inline const char* match_structural_search_flag(ArgCursor& c, SearchFlags& f, unsigned& family) {
+    const char* v = nullptr;
+    if (c.value_flag("--structural-prob", v)) {
+        // Out of [0, 1] -- a negative included, since "automatic" is spelled by
+        // omitting the flag -- becomes NaN, the value validation refuses. A
+        // NaN from a non-number already is one.
+        // `+ 0.0` folds a typed -0 onto 0, as for --novelty-prob.
+        const double p = parse_double("--structural-prob", v) + 0.0;
+        f.structural_prob = p >= 0.0 && p <= 1.0 ? p : std::numeric_limits<double>::quiet_NaN();
+        family = kStructuralSearchFlags;
+        return "--structural-prob";
+    }
+    if (c.value_flag("--structural-selection", v)) {
+        if (!try_parse_structural_selection(v, f.structural_selection)) {
+            std::fprintf(stderr,
+                         "--structural-selection: unknown policy '%s' (expected first_improving, "
+                         "best_of_sample, violation_guided or granular_best)\n",
+                         v);
+            std::exit(2);
+        }
+        family = kStructuralSearchFlags;
+        return "--structural-selection";
+    }
+    if (c.value_flag("--structural-sample-size", v)) {
+        f.structural_sample_size = parse_int64("--structural-sample-size", v);
+        family = kStructuralSearchFlags;
+        return "--structural-sample-size";
+    }
+    if (c.value_flag("--neighbours", v)) {
+        f.neighbours = parse_int64("--neighbours", v);
+        family = kNeighbourSearchFlags;
+        return "--neighbours";
+    }
+    return nullptr;
 }
 
 /// Matches and consumes one search-configuration flag under the cursor.
@@ -242,33 +286,9 @@ inline bool match_search_flag(ArgCursor& c, const std::string& s, SearchFlags& f
     } else if (s == "--no-time-limit") {
         f.no_time_limit = true;
         flag = "--no-time-limit";
-    } else if (c.value_flag("--structural-prob", v)) {
-        // Out of [0, 1] -- a negative included, since "automatic" is spelled by
-        // omitting the flag -- becomes NaN, the value validation refuses. A
-        // NaN from a non-number already is one.
-        // `+ 0.0` folds a typed -0 onto 0, as for --novelty-prob.
-        const double p = parse_double("--structural-prob", v) + 0.0;
-        f.structural_prob = p >= 0.0 && p <= 1.0 ? p : std::numeric_limits<double>::quiet_NaN();
-        flag = "--structural-prob";
-        family = kStructuralSearchFlags;
-    } else if (c.value_flag("--structural-selection", v)) {
-        if (!try_parse_structural_selection(v, f.structural_selection)) {
-            std::fprintf(stderr,
-                         "--structural-selection: unknown policy '%s' (expected first_improving, "
-                         "best_of_sample, violation_guided or granular_best)\n",
-                         v);
-            std::exit(2);
-        }
-        flag = "--structural-selection";
-        family = kStructuralSearchFlags;
-    } else if (c.value_flag("--structural-sample-size", v)) {
-        f.structural_sample_size = parse_int64("--structural-sample-size", v);
-        flag = "--structural-sample-size";
-        family = kStructuralSearchFlags;
-    } else if (c.value_flag("--neighbours", v)) {
-        f.neighbours = parse_int64("--neighbours", v);
-        flag = "--neighbours";
-        family = kNeighbourSearchFlags;
+    } else if (const char* structural = match_structural_search_flag(c, f, family);
+               structural != nullptr) {
+        flag = structural;
     } else if (s == "--perturb-near-value") {
         f.perturb_near_value = true;
         flag = "--perturb-near-value";
@@ -276,6 +296,10 @@ inline bool match_search_flag(ArgCursor& c, const std::string& s, SearchFlags& f
     } else if (s == "--no-objective-tie-break") {
         f.objective_tie_break = false;
         flag = "--no-objective-tie-break";
+        family = kScalarSearchFlags;
+    } else if (s == "--compound-propagation") {
+        f.compound_propagation = true;
+        flag = "--compound-propagation";
         family = kScalarSearchFlags;
     } else {
         return false;
@@ -399,7 +423,7 @@ inline bool validate_search_flags(const SearchFlags& f, unsigned applicable, boo
     // A negative and a zero are THE SAME RUN -- the engine arms the
     // unproductive-batch exit only on `> 0` -- so accepting both would put two
     // different `search_config` cells on one configuration, breaking the
-    // invariant search_config_string() states and that the two no-effect
+    // invariant search_config_string() states and that the no-effect
     // refusals below are justified by. 0 is the documented spelling for the
     // fixed-cadence arm; a negative is a typo.
     if (f.unproductive_iters < 0) {
@@ -414,7 +438,7 @@ inline bool validate_search_flags(const SearchFlags& f, unsigned applicable, boo
         error = "--max-iterations must be >= 0 (0 = unlimited)";
         return false;
     }
-    // Two combinations in which a flag the caller typed would be READ BY
+    // Combinations in which a flag the caller typed would be READ BY
     // NOTHING, and so must be refused rather than accepted, recorded and
     // silently ignored -- the failure this whole header exists to prevent, and
     // the same standard the rho and use_fj rejections are held to.
@@ -433,6 +457,16 @@ inline bool validate_search_flags(const SearchFlags& f, unsigned applicable, boo
     }
     if (!f.compound_moves && f.novelty_prob != defaults.novelty_prob) {
         error = "--novelty-prob has no effect without --compound-moves";
+        return false;
+    }
+    // Propagation is read only by Novelty batches, and the batch picker never
+    // draws one without compound moves or at probability 0 (`random() < 0`).
+    if (f.compound_propagation && !f.compound_moves) {
+        error = "--compound-propagation has no effect without --compound-moves";
+        return false;
+    }
+    if (f.compound_propagation && f.novelty_prob == 0.0) {
+        error = "--compound-propagation has no effect with --novelty-prob 0";
         return false;
     }
     // No positivity guard on --unproductive-iters, deliberately: SearchConfig
@@ -511,6 +545,9 @@ inline const char* first_non_default_search_flag(const SearchFlags& f,
     if (f.objective_tie_break != d.objective_tie_break) {
         return "--no-objective-tie-break";
     }
+    if (f.compound_propagation != d.compound_propagation) {
+        return "--compound-propagation";
+    }
     return nullptr;
 }
 
@@ -551,6 +588,7 @@ inline std::array<std::string, kSearchFlagCount> search_config_values(const Sear
         f.neighbours == 0 ? std::string(off) : std::to_string(f.neighbours),
         f.perturb_near_value ? on : off,
         f.objective_tie_break ? on : off,
+        f.compound_propagation ? on : off,
     }};
 }
 
@@ -560,7 +598,7 @@ inline std::array<std::string, kSearchFlagCount> search_config_values(const Sear
 /// Deterministic, comma-free (so it needs no CSV quoting) and emitted in one
 /// fixed order for every runner, so two rows produced by the same arm compare
 /// equal as strings and `sort | uniq -c` over a results file is a census of the
-/// arms it holds. That last claim is what validate_search_flags' two
+/// arms it holds. That last claim is what validate_search_flags'
 /// no-effect-in-this-combination rules protect: without them `--no-lns` and
 /// `--no-lns --lns-interval 5` would be one run under two different cells.
 inline std::string search_config_string(const SearchFlags& f, unsigned applicable) {
@@ -617,6 +655,7 @@ inline void apply_search_flags(const SearchFlags& f, SearchConfig& cfg) {
     cfg.structural_sample_size = static_cast<int>(f.structural_sample_size);
     cfg.perturb_near_value = f.perturb_near_value;
     cfg.fj_objective_tie_break = f.objective_tie_break;
+    cfg.compound_move_propagation = f.compound_propagation;
 }
 
 /// The neighbour flag's check against the instance, which only the runner can
