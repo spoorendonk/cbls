@@ -2658,14 +2658,14 @@ adapter calls it under `MpsToModelOptions::presolve` (#325; `.nl` is #326).
 - **Coefficient tightening** (`src/presolve_coef.cpp`, #327;
   `PresolveOptions::coefficient_tightening`, on). Achterberg et al. 2020, §3.3
   eq. (3.6), for general integers, not binaries only: in a one-sided row
-  `A_S x_S + a_k x_k <= b` (a `>=` row negated) with x_k integral and not
-  frozen, `d = b − M + |a_k|` (M the max activity, finite) with `0 < d < |a_k|`
+  `A_S x_S + a_k x_k <= b` (a `>=` row negated) with x_k integral (frozen
+  too: the column stays, only its linear coefficient moves), `d = b − M + |a_k|` (M the max activity, finite) with `0 < d < |a_k|`
   moves a_k toward 0 by d and b by `−d·u_k` (`a_k > 0`) or `+d·l_k` (`a_k < 0`,
   the mirror by `y = −x_k`). The integer solutions are unchanged, so no
   postsolve step. `b − M` is invariant under a step, so it is computed once per
   row. d is cut by the gap's #211 rounding bound, the side's `row_roundoff` and
   the rounding of the new coefficient, so the step taken never exceeds the true
-  d; one under `feasibility_tolerance` is not taken. The new side is tracked as
+  d; one under `feasibility_tolerance`, as asked or as rounded, is not taken. The new side is tracked as
   a fold (`2·|shift|` added to `row_scale`). Equality, two-sided and implied
   sides are left alone (`d >= |a_k|` means the side is implied, dropped above).
   `cbls_mipfeas --no-presolve-coef-tightening` is the off arm.

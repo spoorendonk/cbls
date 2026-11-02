@@ -586,6 +586,18 @@ def test_resuming_under_a_different_search_arm_is_refused(tmp_path: Path) -> Non
     result.write_text(json.dumps({"instance": "a", "threads": 1, **tie}))
     assert check() is None
     assert check(presolve=True) == 2
+    # Its coefficient tightening (#327) is checked only under presolve, and a
+    # presolve row from before it never tightened, so it is read as off.
+    old_presolve = {"instance": "a", "threads": 1, "presolve": True, **tie}
+    result.write_text(json.dumps(old_presolve))
+    assert check(presolve=True) == 2
+    assert check(presolve=True, presolve_coef_tightening=False) is None
+    result.write_text(json.dumps({**old_presolve, "presolve_coef_tightening": True}))
+    assert check(presolve=True) is None
+    assert check(presolve=True, presolve_coef_tightening=False) == 2
+    no_presolve = {"instance": "a", "threads": 1, "presolve_coef_tightening": True, **tie}
+    result.write_text(json.dumps(no_presolve))
+    assert check(presolve_coef_tightening=False) is None
 
 
 def test_a_default_run_resumes_over_a_job_it_killed(tmp_path: Path) -> None:

@@ -100,7 +100,9 @@ void tighten_row(Work& w, std::size_t r, double s, double b) {
     for (std::size_t p = begin; p < end; ++p) {
         const double a = s * w.coefs[p];
         const auto j = static_cast<std::size_t>(w.cols[p]);
-        if (a == 0.0 || w.integral[j] == 0 || w.frozen[j] != 0 || w.lb[j] == w.ub[j]) {
+        // A frozen column is not skipped: its coefficient in a linear row
+        // changes, but the column is neither removed nor substituted.
+        if (a == 0.0 || w.integral[j] == 0 || w.lb[j] == w.ub[j]) {
             continue;
         }
         const double abs_a = std::abs(a);
@@ -114,6 +116,11 @@ void tighten_row(Work& w, std::size_t r, double s, double b) {
         }
         const double v = a > 0.0 ? w.ub[j] : w.lb[j];
         const double a_new = a > 0.0 ? a - d : a + d;
+        // The step taken, not the one asked for: at a large |a|, fl(a - d) can
+        // round back to a, and a step that changes nothing must not count.
+        if (!(std::abs(a - a_new) > min_step)) {
+            continue;
+        }
         const double shift = (a_new - a) * v;
         const double b_new = b + shift;
         if (!std::isfinite(shift) || !std::isfinite(b_new) || std::abs(b_new) >= infinity) {

@@ -190,9 +190,10 @@ def config_string(result: dict[str, object]) -> str:
     # measured on the old default and must be regenerated, not averaged in.
     # Presolve (#325) likewise: off is the model every earlier row was built from.
     # Its coefficient tightening (#327) names nothing without presolve, so it is
-    # dropped there; under presolve it is kept either way, and a presolve row
-    # from before it (no key, tightening never ran) stays its own cell.
-    if cells.get("presolve") is not True:
+    # dropped there; under presolve its off arm is what a presolve row from
+    # before it ran, so off is dropped too (as the resume guard back-reads a
+    # missing key as off) and only the on arm carries the key.
+    if cells.get("presolve") is not True or cells.get("presolve_coef_tightening") is False:
         cells.pop("presolve_coef_tightening", None)
     for opt_in in (
         "perturb_near_value",

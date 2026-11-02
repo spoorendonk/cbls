@@ -431,18 +431,22 @@ def test_a_row_without_an_opt_in_engine_key_is_the_off_arm(
 
 
 @pytest.mark.parametrize(
-    ("presolve", "match"),
+    ("presolve", "tightening", "match"),
     # Without presolve the key names nothing, so an old row (no key) and a new
-    # one share a cell; under presolve a pre-#327 row never tightened and is
-    # its own configuration.
-    [(False, None), (True, "span 2 configurations")],
-    ids=["dropped-without-presolve", "kept-under-presolve"],
+    # one share a cell. Under presolve a pre-#327 row never tightened: it is
+    # the off arm, apart from the on arm.
+    [
+        (False, True, None),
+        (True, True, "span 2 configurations"),
+        (True, False, None),
+    ],
+    ids=["dropped-without-presolve", "on-arm-kept-under-presolve", "old-row-is-the-off-arm"],
 )
 def test_coefficient_tightening_is_a_configuration_only_under_presolve(
-    tmp_path: Path, presolve: bool, match: str | None
+    tmp_path: Path, presolve: bool, tightening: bool, match: str | None
 ) -> None:
     old: dict[str, object] = {"presolve": presolve}
-    new: dict[str, object] = {"presolve": presolve, "presolve_coef_tightening": True}
+    new: dict[str, object] = {"presolve": presolve, "presolve_coef_tightening": tightening}
     for instance, extra in (("a", old), ("b", new)):
         _write_result(
             tmp_path,
