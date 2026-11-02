@@ -235,7 +235,7 @@ struct SearchConfig {
     //      +0.00). 50 on the roster, 48 comparable (elec25/elec50 are
     //      documented failures on every arm), 32 of those scorable -- a floor
     //      needs a measurable control spread, which 16 do not have. See
-    //      docs/architecture.md for why no floor is imputed onto them.
+    //      #158's comments for why no floor is imputed onto them.
     //
     //      Read the history here as a lesson about method, which is more use
     //      than the number. An earlier pass reported "st_e40 BKS 8/8 -> 6/8,

@@ -1490,8 +1490,8 @@ void ViolationLSLoop::diversify(bool allow_lns) {
     // first feasible point best_state_ is still the initial assignment, which
     // is not a point to return to; that regime keeps the trajectory it had.
     //
-    // What it costs is recorded rather than argued: see docs/architecture.md's
-    // Diversification section for the MINLPLib arm, where the instances that
+    // What it costs is recorded rather than argued: see #158's comments
+    // for the MINLPLib arm, where the instances that
     // use post-feasible kicks to move between feasible integer combinations
     // pay for the elitism. If that cost ever outweighs the gain, the more
     // faithful thing to attack is the kick RATE, not this restore.

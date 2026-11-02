@@ -1818,8 +1818,7 @@ it resamples `rho`.
 one (#158) — `kick_origin()`: this worker's own incumbent, or the state
 `adopt_from_pool` installed while the search is standing on a peer's point.
 Before the first feasible solution, and while the only one on record is #100's
-non-finite-objective witness, there is no origin and the kick fires in place, as
-it always did.
+non-finite-objective witness, there is no origin and the kick fires in place.
 
 **This is a deliberate divergence from the reference, not a bug fix.** Davies et
 al., Algorithm 6 (the PDF in `docs/`) has exactly one restore, and it is not this
@@ -1833,53 +1832,30 @@ one:
 ```
 
 Line 12 perturbs `X` **in place**; line 6 is pool-sourced and conditioned on a
-new *best* arriving, which is what `adopt_from_pool` already implements. So kicks
-composing into a walk away from the incumbent is the reference's own behaviour,
-and restoring an origin first makes the outer loop elitist ILS with a
-strict-improvement acceptance criterion instead. Since `perturb()` ends in
-`reset_weights()`, neither the assignment nor the GLS landscape carries across a
-kick. CLAUDE.md's *Reference Correctness* rule governs a change like this, so the
-case for it has to be made and its cost stated.
-
-**The case.** This port already diverges in the direction that makes the walk
-pathological: Algorithm 6 kicks once per 100 stagnant batches, while #102's
-unproductive route kicks at a median of **2** and supplies **98%** of all kicks —
-about 50x the reference rate. A walk sampled 50x more often is a much longer
-walk. Measured on the mipfeas smoke instances at 60s, 7 instances x 2 seeds,
-13,487 kicks: the batches following a kick hold a real-feasible assignment only
-**5.3%** of the time; and over 1,216 windows of >= 5 batches the **median** of
-(closest approach back to the pre-kick point) / (kick distance) is **1.00** — on
-at least half of them the assignment never got any nearer than the kick itself
-left it. So on the typical kick the search leaves the feasible region and does
-not come back. On binkar10_1 it lands feasible on 3 of 567 post-kick batches.
-
-Both of #158's own hypotheses are refuted by that: the kick is not too small (it
-moves the ~10% of columns it is configured to), and the search does not
-re-converge. **Nor is the LNS cadence the cause** — over the same 14 runs the
-engine ran 86 LNS repairs, and replaying the traces with `lns_slot_` advanced on
-*every* kick gives 90. What keeps LNS from running post-feasibility is that only
-the full-period route may draw a repair there, and that route is 2% of kicks.
+new *best* arriving, which is what `adopt_from_pool` already implements. Restoring
+an origin first makes the outer loop elitist ILS with a strict-improvement
+acceptance criterion instead. Since `perturb()` ends in `reset_weights()`,
+neither the assignment nor the GLS landscape carries across a kick. The case for
+it: #102's unproductive route kicks about 50x as often as Algorithm 6, so the
+in-place walk is that much longer, and measured on the mipfeas smoke instances
+the search typically leaves the feasible region after a kick and does not come
+back. The measurements, and the LNS-acceptance price (repairs now score against
+the origin, so far fewer are accepted), are on #158.
 
 **The restore is not gated on there being no pool**, so a portfolio worker kicks
-from a restored point too — and *which* point is then the question
-`kick_origin()` answers. `adopt_from_pool` draws from the better half rather than
-the best, deliberately, so that workers stay spread, and it leaves `best_state`
-alone when the draw is not an improvement. Restoring `best_state` there would
-discard the draw within a few batches — the unproductive route re-arms five
-batches after adoption zeroes `stagnation` — and the portfolio would degenerate
-into N elitist searches each snapped back to its own incumbent. So adoption
-records the state it installed, under the same two rules the improvement branch
-applies (feasible in *this* model, finite objective — the pool also holds
-closest-approach states submitted with `feasible = false`, and #100 witnesses
-shared with a non-finite objective, and either would anchor ~98% of a worker's
-remaining kicks to a point worth nothing). `tests/test_search.cpp`'s "a kick
+from a restored point too. `adopt_from_pool` draws from the better half rather
+than the best, so that workers stay spread, and leaves `best_state` alone when
+the draw is not an improvement. Restoring `best_state` there would discard the
+draw within a few batches, and the portfolio would degenerate into N elitist
+searches. So adoption records the state it installed, under the same two rules
+the improvement branch applies (feasible in *this* model, finite objective — the
+pool also holds closest-approach states submitted with `feasible = false`, and
+#100 witnesses with a non-finite objective). `tests/test_search.cpp`'s "a kick
 after adoption departs from the adopted point, not our incumbent" pins it: it
 goes red without the restore *and* with a `best_state`-only one.
 
-One consequence worth stating because it inverted. `LNS::destroy_repair`
-snapshots the state it is handed, so before #158 a rejected repair rolled back to
-the drifted point the kick started from — a true no-op. Now the snapshot is the
-origin, so a rejection *moves* the search back to the origin and perturbs
+`LNS::destroy_repair` snapshots the state it is handed, and that is now the
+origin, so a rejected repair *moves* the search back to the origin and perturbs
 nothing: not free, and not a diversification either, since FJ re-descends from a
 point it has already converged on.
 
@@ -1894,250 +1870,61 @@ are kept as `SearchConfig` arms, faithful to OR-Tools main at `266f518`:
   and still resets the weights to 1.
 - `luby_restart_unit` replaces #102's unproductive-batch trigger with a
   `unit × luby(k)` schedule of non-improving batches, and resets `k` on each
-  new best.
+  new best. Algorithm 6 has no Luby schedule.
 
-The rest of `Randomize` is already here. ρ is redrawn at each kick and new
-best, and compound moves at each batch (#209).
+The rest of `Randomize` is already here: ρ is redrawn at each kick and new best,
+and compound moves at each batch (#209). Neither arm separates on the mipfeas
+smoke A/B, so the defaults stay off; the numbers are on #239.
 
-The published algorithm (Davies et al., Algorithm 6) has no Luby schedule: it
-restarts after 100 batches without a new solution. FJ has no restart at all.
+**The scalar kick.** `perturb(p)` randomises each jumpable variable
+independently with probability `p`, and then — **only if that moved nothing** —
+forces one uniformly chosen variable to a *different* value, drawn from its
+domain with the current value removed; a variable pinned by `lb == ub` cannot be
+chosen. Without the fallback a kick on a small model is usually a no-op
+(probability `(1-p)^n`: 81% on two variables at `p = 0.1`). As a fallback rather
+than a forced variable, it never runs on a model large enough for `p` to do its
+job, so the kick keeps its exact draw sequence there.
 
-Survey and A/B are on #239:
+**The structural kick (#111).** List and Set variables get their own pass in the
+same kick; without it a kick on a structure-only model, such as `setcover`'s
+`Set` encoding, randomises nothing. The pass applies
+`k = max(1, round(p * |elements|))` random moves to **each** List/Set variable,
+drawn from the [structural batch](#structural-batch)'s typed generators
+(`generate_standard_moves`) plus, for a member of a `ListPartition`, that
+partition's inter-list moves anchored on this variable
+(`generate_partition_moves`, which is what lets a kick move an all-empty
+`AtMostOnce` partition at all, #164). Its contracts:
 
-- **Setup.** 11 mipfeas smoke instances × 5 seeds, 10 s, 1 thread, engine
-  `e5a9a54`, paired per seed, on a laptop shared at load ~3.
-- **`restart_randomization` alone is neutral.** Primal integral moves by
-  −0.0006, 95% CI [−0.0043, +0.0031]. Its gap at budget is better: gmean ratio
-  0.87 over the 8 instances with a feasible point, 4 wins to 1 loss, and the
-  gain is concentrated on gen-ip002, mas76 and gen-ip054 (medians 0.61-0.81).
-  None of it shows in the integral.
-- **Luby on top of it is worse on the mean.** The primal integral rises by
-  +0.027 [−0.006, +0.060]. Time to first feasible is gmean ×1.17, up to ×3.1,
-  and binkar10_1's integral doubles.
-
-Neither result separates, so the defaults stay off. Note that #102's trigger
-already restarts adaptively, at a median of 2 batches, and that is what a
-fixed schedule only approximates.
-
-#### What admits it, and what it costs (#158)
-
-The two arms below are **before = `97d9d4d`** (the merge base on `main`) and
-**after = `f722697`**, each built from that tree. Serial, one job at a time, on an
-otherwise idle 12-core box with `uptime` checked before each arm; load stayed
-1.00-1.09 throughout. No parameter was changed — CLAUDE.md's over-fitting rule
-forbids selecting one on these rosters, and nothing here does. The two arms named
-in the *smoke* and *portfolio* paragraphs at the end are different and earlier
-builds, and each says so where it appears; only the held-out and MINLPLib arms
-describe the shipped code.
-
-One caveat on the artefacts rather than the numbers: the mipfeas driver stamped
-both arms of a `--cbls-bin` comparison with the *checkout's* commit, so the
-`provenance` cells inside those results directories do not distinguish the arms.
-The SHAs named above are the record. That defect is fixed here — a non-default
-`--cbls-bin` is now attributed to its own content hash — and pinned by
-`tests/python/test_run_benchmark.py`.
-
-**The admitting arm is a HELD-OUT MIPfeas subset, not the smoke roster.** 16
-instances drawn by a fixed seed from `roster.csv` excluding every `smoke.csv`
-row, 60s, `--threads 1`, seeds 42/7/99, every feasible row verified against the
-instance file by SCIP:
-
-| seed | sgm | mean | median | feasible |
-|---|---|---|---|---|
-| 42 | 0.9251 → 0.9115 | 1.2458 → 1.2360 | 0.9959 → 0.9795 | 10/16 → 10/16 |
-| 7  | 0.8693 → 0.8619 | 1.1760 → 1.1696 | 0.9737 → 0.9525 | 10/16 → 10/16 |
-| 99 | 0.9089 → 0.8983 | 1.2441 → 1.2409 | 1.0056 → 1.0044 | 9/16 → 9/16 |
-
-Better on 3/3 seeds on all three statistics, no feasible row lost,
-`verification_failed = 0` and `below_reference = 0` on both arms. Paired over the
-48 rows: **21 better, 8 worse, 19 tied**. At instance level, four are better on
-all three seeds (`neos-2657525-crna`, `neos-1445765`, `reblock115`,
-`comp21-2idx`) against one worse on all three (`drayage-25-23`, whose seed-99
-`+0.10211` is the largest single move in the table).
-
-**State that at its real strength and no higher**: four decisively better against
-one worse is not significant under a sign test, and the aggregate move is ~1.2%
-on the sgm. The honest summary is that the mechanism argument above is the reason
-to make this change, and the held-out arm is *consistent with no harm and weakly
-positive*. It is not a demonstration that the engine got better by 1.2%.
-
-The **11-instance smoke roster** numbers this change was discovered on (sgm
-0.3526 → 0.3460, 17/7/9 over 33 rows; arms `d02270f` → `0aa0f4a`, i.e. an earlier
-form of the change) are kept only as the discovery measurement. They cannot admit anything: that roster is 11 instances and
-`benchmarks/instances/mipfeas/README.md` calls it a wiring check, not a result.
-Three seeds there cannot separate a 1.9% move in any case — #158's own follow-up
-records a **300x** spread across three seeds on `binkar10_1` alone, and that
-applies to the aggregate as much as to the per-instance objectives.
-
-**MINLPLib (priority 2) is inside the noise.** Whole 50-instance roster, 10s,
-four paired seeds, scored by `benchmarks/minlplib/ablation_report.py` against a
-per-instance floor derived from the *control's own* across-seed spread: **not one
-of the 32 scored instances moved outside its floor** (typical ±9.89 points),
-median per-instance delta **+0.00**, and 48/48 instances both-feasible on both
-arms with a feasible-run delta of **+0**.
-
-The three denominators are different sets and reconcile as follows, because an
-unexplained 50/48/32 is exactly the kind of number this branch has already been
-corrected for. The roster is **50**; `elec25` and `elec50` are excluded as
-documented failures that hit every arm alike, leaving **48** comparable, and all
-48 were both-feasible on both arms. Of those 48, only **32** could be *scored*: a
-floor is the control's own across-seed spread, so an instance whose control
-returned an identical gap on every seed, or fewer than two comparable runs, has
-no measurable spread and the report refuses to impute one (this roster's gaps
-span six orders of magnitude, so a borrowed floor would be one a large-gap
-instance clears automatically). The 16 unscored instances are listed in the
-report with a `-` floor. "Points" are gap-to-BKS points — a percentage where the
-published reference is nonzero and an absolute residual where it is zero. `st_e40` — the instance
-`SearchConfig::unproductive_iterations` cites for needing post-feasible kicks,
-and the one this change was most expected to hurt — is 0.00 gap and 4/4 feasible
-on **both** arms. `nvs02` is +3.77 against a floor of 34.25 and `nvs14` +8.33
-against 41.28; `ex8_6_1` +3.17 (floor 20.70), `shiporig` +38.98 (205.96),
-`spring` +2.33 (10.93), `eq6_1` +0.82 (8.27).
-
-An earlier pass reported a real st_e40 and nvs02 cost. That was **winner's
-curse**: the three instances were selected as the largest movers of a two-seed
-run and then re-measured on their own. The lesson is worth more than the number —
-a per-instance claim on this roster needs a measured floor, not a re-run of
-whichever rows moved most.
-
-**What it does cost, measurably: LNS acceptance.** Over that same roster the two
-arms attempt the same number of repairs and keep very different fractions —
-control **1332 attempted / 363 accepted (27.3%)**, arm **1350 / 101 (7.5%)**.
-That is the accept bar rising exactly as designed: `destroy_repair` now scores
-against the kick origin rather than a drifted point, so most repairs no longer
-clear it. Read with the rollback note above — a rejected repair is not free — this
-is the clearest price the change pays, and it is a real one.
-
-**The portfolio regime, measured on the shipped code.** This matters more than
-the single-threaded arm for the `adopted_origin_` half of the change, because
-that machinery is portfolio-only: `adopt_from_pool` is its sole writer and
-returns immediately without a pool. Smoke roster, 60s, `--cbls-threads 4`,
-`97d9d4d` → `f722697` (comment-only to this branch's tip), two paired seeds,
-serial on an idle box:
-
-| seed | sgm | mean | median | feasible |
-|---|---|---|---|---|
-| 42 | 0.2924 → 0.2783 | 0.8924 → 0.8200 | 0.9303 → 0.5958 | 8/11 → 8/11 |
-| 7 | 0.2864 → 0.2595 | 0.8371 → 0.8200 | 0.8103 → 0.6799 | 8/11 → 8/11 |
-
-Better on both seeds on all three statistics, feasible count unchanged, and
-`verification_failed = 0`. The sgm move is ~4.8% and ~9.4%, against ~1.2% on the
-single-threaded held-out arm — consistent with the mechanism being real, since
-this is the regime it acts in, though two seeds on an 11-instance roster is a
-no-regression check and not an effect size.
-
-An earlier `--cbls-threads 4` arm (one seed, sgm 0.2908 → 0.2800) is **not**
-quoted as evidence: its treatment binary predated `kick_origin()`, when the kick
-restored `best_state` unconditionally, so it measured the form `kick_origin()`
-replaced. Recorded here because the trap is easy to re-enter — an arm named by
-roster and budget but not by commit says nothing about which code it ran.
-
-**What the change does NOT do, recorded so it is not re-derived.** #158's second
-hypothesis was that LNS is starved because `lns_slot_` advances only on
-full-period kicks. It is not the cause: over the 14 diagnostic runs the engine
-ran 86 LNS repairs, and replaying the traces with the slot advanced on *every*
-kick gives 90. What keeps LNS from running post-feasibility is that only the
-full-period route may draw a repair there, and that route is 2% of kicks.
-
-A pre-registered clause of the decision rule was to re-run, at MINLPLib's
-published 60s budget, every row that crossed its noise floor downward at 10s.
-**No row crossed, so that clause had nothing to run** and is recorded as empty
-rather than quietly dropped. It is not evidence about the 60s budget, and a 60s
-arm was deliberately not invented to fill it.
-
-`perturb(p)` randomises each jumpable variable independently with probability
-`p`, and then — **only if that moved nothing** — forces one uniformly chosen
-variable to a *different* value. The fallback is what makes the kick meaningful
-on a small model: independent draws alone leave the assignment untouched with
-probability `(1-p)^n`, which at the default `p = 0.1` is 81% on two variables —
-so diversification would usually do nothing, burn the stagnation counter, and
-let the search resume in the same basin.
-
-Making it a fallback rather than a variable forced on every kick is deliberate.
-On a model large enough for the per-variable probability to do its job, a no-op
-kick is vanishingly rare, so the fallback never runs: no extra RNG draw, and the
-kick keeps exactly the distribution *and the exact draw sequence* it had before.
-Forcing a variable unconditionally would instead shift the draw sequence on every
-model.
-
-Resampling is not enough for the forced variable — a uniform redraw returns the
-current value with probability `1/|domain|`, which on a Bool is one kick in two —
-so the fallback draws from the domain with the current value removed. A variable
-pinned by `lb == ub` cannot be chosen.
-
-Both of those reach only *jumpable* (scalar) variables, so List and Set variables
-get their own pass in the same kick (#111). Without it, a kick on a model whose
-decision structure is structural randomised nothing at all, and since LNS fires
-only every `lns_interval`-th kick, most kicks on such a model were no-ops — the
-pharma-glsp campaign-scheduling formulation being the case in the roster at the
-time. That benchmark has been retired (#28), but the guard is still
-load-bearing: `setcover`'s `Set` encoding (`build_set_model`) allocates one
-`Set` variable and no scalar at all, so every kick on it depends on this pass.
-Its effect there is measured, not assumed — see
-`benchmarks/instances/setcover/README.md`.
-
-The structural pass applies `k = max(1, round(p * |elements|))` random moves to
-**each** List/Set variable, drawn from the same typed generators the [structural
-batch](#structural-batch) uses (`generate_standard_moves`) plus, for a member of
-a `ListPartition`, that partition's inter-list moves anchored on this variable
-(`generate_partition_moves` — which is what lets a kick move an all-empty
-`AtMostOnce` partition at all, #164). Every move is legal by construction: a
-List keeps its elements distinct and its length inside `[min_size, max_size]`, a
-partition member keeps its cover, and a Set stays inside `min_size`/`max_size`. Candidates that happen to be no-ops (a relocate to
-the adjacent position) are filtered out before the draw, and a variable counts as
-moved only if its elements *net* changed — a run that adds an element and removes
-it again has to fall through to the guarantee below like any other no-op.
-
-Scaling `k` rather than sampling *which* structures move is the deliberate part.
-A structure has no "randomise the whole variable" analogue that is not a restart,
-so the probability sets how much of each structure moves instead of how many
-structures move. It also stops a structure with fewer than `1/p` slots from never
-moving.
-
-`k` counts *moves*, not displaced slots, and for a List the two are far apart:
-`list_2opt` reverses a random sub-range (mean ~n/3), so `k = 0.1n` rewrites ~98%
-of positions on a 1000-element list while breaking ~26% of adjacent pairs. The
-adjacency figure is the one that tracks `p`, so the scaling suits a List the DAG
-reads pairwise (`pair_lambda_sum`) and is much coarser than `p` suggests for one
-read positionally (`at`).
-The floor of one move is the price: every structure moves on every kick, `p = 0`
-included, where the scalar half moves exactly one variable.
-`k` is clamped to at least one move and at most one per slot, already a full
-scramble, so a misconfigured `p > 1` cannot turn a kick into unbounded work.
-The size is the structure's *current membership*, which for a List is its whole
-decision content but for a Set is not: a 3-of-1000 Set is kicked on the 3, so it
-rewrites a `p` fraction of the set's state and cannot grow far in one kick — LNS,
-which resamples the cardinality outright, is the mechanism for that.
-The moves are local in the *adjacency* metric — a 2-opt reversal rewrites a whole
-sub-range of positions but breaks only two adjacent pairs — so that is the metric
-in which "not a restart" means anything. Measured on a 200-element List: the
-default `p = 0.1` keeps 74% of its adjacent pairs, `p = 0.02` keeps 94%, and
-`p = 0.5` keeps 23%. Cost follows the same scale, `O(k * (|elements| + universe))`
-element copies per structure (the generator builds each candidate as a whole new
-vector, and a Set's candidates scan its universe): 0.012 ms per kick on one
-100-element List, 23 ms on the 1500-List model of #105 — paid once per
-`perturbation_period` stagnant batches. Because that is superlinear in one
-structure's size, checking the deadline between *variables* bounded nothing on a
-model whose structure is one large List or Set: 2269 ms for a single kick on a
-41049-element Set. The pass is therefore deadline-bounded between *moves*, on a
-capped stride, and never before it has moved something — see
-[Bound 5](#bound-5-why-the-kick-is-checked-between-moves-115) for the guarantee
-and why a purely time-derived bound was rejected.
-
-The pass tests the variable type before drawing, so it consumes no randomness on
-a model without List/Set variables: scalar-only models keep their exact draw
-sequence, verified bit-identical against the pre-#111 engine at the time of the
-change over 12k kicks (6 model shapes x 4 probabilities x 25 seeds x 20 kicks,
-comparing the assignment and the next two draws after each kick), and pinned in
-the suite by a test that runs the same scalar model with and without an immovable
-List and requires identical assignment sequences.
+- **Legal.** Every move is legal by construction: a List keeps its elements
+  distinct and its length inside `[min_size, max_size]`, a partition member
+  keeps its cover, and a Set stays inside `min_size`/`max_size`.
+- **Net change.** No-op candidates (a relocate to the adjacent position) are
+  filtered out before the draw, and a variable counts as moved only if its
+  elements *net* changed.
+- **Size.** `k` scales how much of each structure moves, since a structure has
+  no "randomise the whole variable" analogue that is not a restart. It is
+  clamped to `[1, |elements|]`, so every structure moves on every kick, `p = 0`
+  included, and `p > 1` cannot make a kick unbounded. `|elements|` is the
+  current membership: a 3-of-1000 Set is kicked on the 3 and cannot grow far in
+  one kick; LNS, which resamples the cardinality, does that.
+- **Local in adjacency.** `k` counts moves, not displaced slots: a 2-opt
+  reversal rewrites a sub-range of positions but breaks two adjacent pairs, so
+  the kick is local for a List the DAG reads pairwise (`pair_lambda_sum`) and
+  much coarser than `p` suggests for one read positionally (`at`). Measurements
+  are on #111.
+- **Deadline-bounded.** Cost is `O(k * (|elements| + universe))` element copies
+  per structure, superlinear in one structure's size, so the pass checks the
+  deadline between *moves*, on a capped stride, and never before it has moved
+  something; see [Bound 5](#bound-5-why-the-kick-is-checked-between-moves-115).
+- **No draw on scalar-only models.** The pass tests the variable type before
+  drawing, so a model without List/Set variables keeps its exact draw sequence,
+  pinned by a test that runs the same scalar model with and without an
+  immovable List and requires identical assignment sequences.
 
 The kick's guarantee is model-wide: if anything can move, something moves. On a
-mixed model that means the structures absorb it — they always move — so the
-scalar half is left to the configured probability rather than being forced, and
-the forced-scalar fallback only fires when nothing moved at all. A model with no
-movable variable anywhere (every scalar pinned, every structure a dead end) still
-correctly changes nothing.
+mixed model the structures always move, so the scalar half is left to the
+configured probability and the forced-scalar fallback fires only when nothing
+moved at all. A model with no movable variable anywhere still changes nothing.
 
 ### SearchConfig
 
@@ -2173,13 +1960,10 @@ discretized jump candidates (which would need impractically fine granularity).
 ### Trigger
 
 The hook fires **on each feasible batch**, immediately *after* `record_best()`
-has banked the point. Because the hook may move the assignment off the feasible
+has banked the point and tightened `obj <= bound`, so it descends against the
+tightened bound. Because the hook may move the assignment off the feasible
 region, the loop re-checks `real_feasible()` before recording the polished
-assignment; the pre-polish point is safe either way. (This replaces the old SA
-trigger of "every 10 discrete accepts / on every reheat".)
-
-Note the bound tightening in `record_best()` now happens *before* the hook runs,
-so the hook descends against an already-tightened `obj <= bound`.
+assignment; the pre-polish point is safe either way.
 
 It descends `ViolationManager::augmented_objective()` = `obj + total_violation()`
 and mutates Float variables directly.
@@ -2205,18 +1989,12 @@ Each coordinate step on a Float variable v reads only what v can move:
   returns, early stop included, so the search's raw reads after the hook see
   re-grounded values.
 
-A coordinate sweep is therefore O(Σ_v up-cone(v)). Before #207 every variable
-paid a reverse sweep over the objective's whole cone and a scan of every row,
-O(Float vars × nodes) per sweep. On UC-CHPED ucp100-48p (9.6k variables, 195k
-nodes) one sweep then outlasted a 10 s budget, and FJ ran 0 iterations.
-
-The forward pass wins on a separable objective over many variables (UC-CHPED,
-any linear objective), where each up-cone is a handful of nodes. It gains
-nothing on a dense objective in a few variables (MINLPLib's least-squares
-shapes), where each up-cone is about the whole objective cone. There it costs
-what the per-variable reverse sweep it replaced did. Mechanism 3 is unchanged
-and still costs O(model) per step, at most `max_multi_var_constraints` steps per
-sweep.
+A coordinate sweep is therefore O(Σ_v up-cone(v)), which wins on a separable
+objective over many variables (UC-CHPED, any linear objective), where each
+up-cone is a handful of nodes. It gains nothing on a dense objective in a few
+variables (MINLPLib's least-squares shapes), where each up-cone is about the
+whole objective cone. Mechanism 3 still costs O(model) per step, at most
+`max_multi_var_constraints` steps per sweep.
 
 ### Mechanism 1 — Single-Variable Newton Steps
 
@@ -2224,9 +2002,7 @@ For each Float variable, examine its own violated rows (G_v, in ascending
 order) and stop after 3 Newton candidates. For each row,
 `g = constraint_value` and `dg = d(constraint)/d(var)`, taken from the forward
 slopes; if `|dg| > 1e-12`, propose `clamp(var - g/dg, [lb, ub])` and keep it if
-the augmented objective improves. (Before #207 these were the first 3 rows of the
-*global* violated list, which for most variables of a large model did not
-contain the variable at all.)
+the augmented objective improves.
 
 ### Mechanism 2 — Backtracking Line Search on Objective
 
@@ -2245,31 +2021,9 @@ else fully rolled back.
 
 Sweeps repeat up to `max_sweeps` times, stopping early when a sweep makes no
 improvement, or when the search's `stop` is raised (#191: the deadline, a peer
-worker's stop or a host cancel). Before that poll existed the hook ran MIPfeas
-`neos-4300652-rahue` (12k Float columns, 77k rows; at the time every Float variable
-cost an O(rows) violated-row scan, removed by #207) past its budget once the run turned feasible. Measured
-at `--threads 1 --budget 20`, Release, one run per arm under an exclusive lock
-with the 1-minute load below 1.5:
-
-| seed | engine | wall (s) | objective |
-|------|--------|----------|-----------|
-| 1 | `7291a2c` (before #191) | 29.76 | 19.7683 |
-| 1 | `752e18a` (#191) | 20.13 | 19.7683 |
-| 2 | `7291a2c` (before #191) | 22.48 | 18.3416 |
-| 2 | `752e18a` (#191) | 20.13 | 18.3416 |
-
-Measured 2026-10-01 on an AMD Ryzen 5 5600H at `c4b4861`: #191 on `7291a2c`,
-before #192 and #190, landing as `752e18a` (same patch-id). Neither of those
-reaches rahue: its MPS rows are comparisons over Sums, so it has no Sum posted
-as a row (#192), no bare constraint body and no nested comparison (#190). The
-hook's stop-poll stride (`vars_per_poll`, `src/inner_solver.cpp`) was later sized by
-model size (`kPollUnits / max(rows, nodes)`), which leaves rahue's stride at 1. #207
-then changed what each descent does, so these runs record the #191 overrun fix.
-They are not a timing of the current hook.
-
-The poll changes only whether the descent continues, so a pass that finishes
-within budget is bit-identical to before: fixed-iteration final-assignment hashes
-match the pre-#191 engine on 50v-10, aflow30a, alkylation and chain50 (seeds 1-2).
+worker's stop or a host cancel), polled every `vars_per_poll` variables
+(`src/inner_solver.cpp`, sized by model size). The poll changes only whether the
+descent continues, so a pass that finishes within budget is unaffected by it.
 
 ### Parameters
 
@@ -2323,9 +2077,8 @@ an element means: adj(seed) is a k-nearest row plus a random tail rather than a
 full distance order, and the removed set is reinserted in the reference's
 Random order only (its Demand, Far and Close orders are routing quantities).
 
-Every variable **outside** a partition is then destroyed and repaired as it
-always was -- with no partition, that is every variable, with the same random
-draws:
+Every variable **outside** a partition (with no partition, every variable) is
+then destroyed and repaired:
 
 - **Sequence-aware** (when the model registers `var_sequences`): pick
   `ceil(n_seqs * destroy_fraction)` whole sequences plus a proportional fraction
