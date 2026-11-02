@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from benchmarks.minlplib.campaign_report import file_sha256
+from benchmarks.minlplib import gm_ratio
 from benchmarks.minlplib.gm_ratio import (
     EXIT_REFUSED,
     CblsSide,
@@ -30,11 +30,14 @@ from benchmarks.minlplib.gm_ratio import (
     reason_category,
     score,
 )
-from benchmarks.minlplib.run_benchmark import STAMP_NAME, checked_marker
+from benchmarks.minlplib.run_benchmark import STAMP_NAME, checked_marker, mark_checked
 from benchmarks.minlplib.runner import CLAIM_EXCLUDED, RUNNER_COLUMNS
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
     from pathlib import Path
+
+    from benchmarks.minlplib.reference_solve import Bound
 
 SCIP_COLUMNS = (
     "instance,objective,primal_bks,dual_bound,gap_to_bks%,gap_to_dual%,wall_seconds,feasible,"
@@ -563,11 +566,6 @@ def test_a_whole_staged_row_beside_a_rejected_one_is_a_re_solve_and_wins(
     assert side.rows["c"].gap_pct == 2.0
 
 
-def mark_checked(stage: Path, name: str) -> None:
-    """What `run_benchmark.verify_staged` leaves beside a row it has checked."""
-    checked_marker(stage, name).write_text(file_sha256(stage / f"{name}.csv") + "\n")
-
-
 def checked_staging(tmp_path: Path) -> tuple[Path, Path, Path]:
     """A complete campaign, staged: `a` solved and checked, `c` rejected twice over."""
     bounds, _, shards = campaign(tmp_path, [("a", 0.0, 0.0), ("c", "-", 0.0)])
@@ -619,9 +617,28 @@ def test_an_unchecked_staged_row_is_refused_by_name_unless_partial(
     assert main(argv) == EXIT_REFUSED
     err = capsys.readouterr().err
     assert "1 staged cbls row(s) without a matching .checked marker" in err
-    assert f"check: {named}. Re-run run_benchmark.py" in err
+    assert f"check: {named}. Run check_staged.py" in err
     assert main([*argv, "--partial"]) == 0
     assert capsys.readouterr().out.startswith("PARTIAL")
+
+
+def test_a_row_rewritten_while_it_is_read_is_refused_even_with_a_matching_marker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A driver's check demotes and marks `a` between the parse and the hash."""
+    bounds, stage, shards = checked_staging(tmp_path)
+    checked_marker(stage, "a").unlink()
+    real_load = gm_ratio.load_cbls_staging
+
+    def load_then_demote(path: Path, roster: Mapping[str, Bound]) -> CblsSide:
+        side = real_load(path, roster)
+        write_cbls(stage / "a.csv", [cbls_line("a", "NaN", feasible=False, note="VERIFY-FAILED")])
+        mark_checked(stage, "a")
+        return side
+
+    monkeypatch.setattr(gm_ratio, "load_cbls_staging", load_then_demote)
+    assert main(staging_argv(bounds, stage, shards)) == EXIT_REFUSED
+    assert "staged rows changed while they were read" in capsys.readouterr().err
 
 
 def test_a_staged_row_filed_under_another_instance_is_refused(tmp_path: Path) -> None:

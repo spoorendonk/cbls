@@ -827,6 +827,11 @@ def staged_row_complete(path: Path, sha: str) -> bool:
     return row is not None and path.read_text().endswith("\n") and row.get("commit_sha") == sha
 
 
+def staged_row_whole(path: Path) -> bool:
+    """`staged_row_complete` without the commit test: a header and one whole, ended row."""
+    return _staged_row(path) is not None and path.read_text().endswith("\n")
+
+
 def staged_unpublishable(path: Path) -> bool:
     """Whether a staging CSV's row must NOT stand in for a fresh solve.
 
@@ -933,9 +938,7 @@ def verify_staged(args: argparse.Namespace, roster: Sequence[str], stage: Path) 
     """
     demoted: list[str] = []
     for name in roster:
-        row = stage / f"{name}.csv"
-        demoted += independent_check.check_rows(row, args.inst_dir, stage)
-        atomic_write(checked_marker(stage, name), campaign_report.file_sha256(row) + "\n")
+        demoted += check_and_mark(args.inst_dir, stage, name)
     for name in demoted:
         print(
             f"{name}: the independent SCIP check rejected the runner's verified row; "
@@ -1198,17 +1201,38 @@ def checked_marker(stage: Path, name: str) -> Path:
     return stage / f"{name}{CHECKED_SUFFIX}"
 
 
+def check_and_mark(inst_dir: Path, stage: Path, name: str) -> list[str]:
+    """Check `name`'s staged row in SCIP, demoting it if SCIP rejects it, then mark it.
+
+    The marker is written after the check and any demotion, so the hash it holds
+    is of the row as it will be published. A check that raises writes none.
+    Returns the demoted instances, as `independent_check.check_rows` does.
+    """
+    demoted = independent_check.check_rows(stage / f"{name}.csv", inst_dir, stage)
+    mark_checked(stage, name)
+    return demoted
+
+
+def mark_checked(stage: Path, name: str) -> None:
+    row = stage / f"{name}.csv"
+    atomic_write(checked_marker(stage, name), campaign_report.file_sha256(row) + "\n")
+
+
+def checked_digest(stage: Path, name: str) -> str | None:
+    """The sha256 `name`'s `.checked` marker vouches for; None when it has none."""
+    marker = checked_marker(stage, name)
+    return marker.read_text().strip() if marker.is_file() else None
+
+
 def staged_checked(stage: Path, name: str) -> bool:
-    """Whether `name`'s staged row is the one `verify_staged` checked, byte for byte.
+    """Whether `name`'s staged row is the one `check_and_mark` checked, byte for byte.
 
     The hash, not the marker's presence, is what counts: a re-solve rewrites the
     row, and `run_roster` also deletes the marker before it starts one, so a
     marker can never vouch for a row the check did not see.
     """
-    row, marker = stage / f"{name}.csv", checked_marker(stage, name)
-    if not (row.is_file() and marker.is_file()):
-        return False
-    return marker.read_text().strip() == campaign_report.file_sha256(row)
+    row = stage / f"{name}.csv"
+    return row.is_file() and checked_digest(stage, name) == campaign_report.file_sha256(row)
 
 
 def quarantine_staged(stage: Path, name: str) -> None:

@@ -22,8 +22,13 @@ between leaves the row unchecked. So without `--partial`, every staged
 `<instance>.csv` must carry the `<instance>.checked` marker `verify_staged`
 writes, holding that file's sha256 (#307); an instance whose only row is a
 `.rejected` one needs none, as it is scored as no-solution. Any other row is
-refused by name. Re-running the driver on it (`--instances NAME`) checks and
-marks a solved row without solving it again.
+refused by name. `check_staged.py` checks and marks the rows a driver left
+unchecked, whatever commit staged them, and solves nothing.
+
+The scorer cannot tell a lone `.rejected` (or a SCIP `.failed`) left after one
+failed attempt from one left after two: the #256 rule, one retry and then
+no-solution, holds by the campaign's retry pass, not by anything this module
+checks (#312).
 
 The SCIP shards are `scip_shards.py`'s output: `<instance>.csv`, or an
 `<instance>.failed` marker holding `exit <rc>`.
@@ -91,6 +96,7 @@ from benchmarks.common.records import atomic_write  # noqa: E402
 from benchmarks.minlplib.campaign_report import (  # noqa: E402
     Row,
     ScipRow,
+    file_sha256,
     load_results,
     load_run_record,
     load_scip,
@@ -102,7 +108,7 @@ from benchmarks.minlplib.run_benchmark import (  # noqa: E402
     REJECTED_SUFFIX,
     SEARCH_CONFIG_THREADS,
     STAMP_NAME,
-    staged_checked,
+    checked_digest,
 )
 from benchmarks.minlplib.runner import CLAIM_EXCLUDED  # noqa: E402
 
@@ -746,29 +752,55 @@ def budget_seconds(text: str) -> float:
     return float(match.group(1))
 
 
-def unchecked_staged(stage: Path, roster: Sequence[Bound]) -> list[str]:
-    """Roster instances whose staged `<instance>.csv` has no `.checked` marker matching it.
+def staged_digests(stage: Path, roster: Sequence[Bound]) -> dict[str, str]:
+    """The sha256 of every roster instance's staged `<instance>.csv`, by instance."""
+    return {
+        b.instance: file_sha256(path)
+        for b in roster
+        if (path := stage / f"{b.instance}.csv").exists()
+    }
+
+
+def unchecked_staged(stage: Path, digests: Mapping[str, str]) -> list[str]:
+    """The instances in `digests` whose `.checked` marker does not vouch for that digest.
 
     Header-only and torn files count: a re-solve that is running or was killed
     has not been checked either, even with an older `.rejected` row beside it.
-    An instance with no `<instance>.csv` is not listed: a lone `.rejected` row
-    is its no-solution, and no row at all is the completeness refusal's.
+    An instance with no `<instance>.csv` is not in `digests`: a lone `.rejected`
+    row is its no-solution, and no row at all is the completeness refusal's.
     """
-    return [
-        b.instance
-        for b in roster
-        if (stage / f"{b.instance}.csv").exists() and not staged_checked(stage, b.instance)
-    ]
+    return [name for name, digest in digests.items() if checked_digest(stage, name) != digest]
 
 
 def unchecked_refusal(unchecked: Sequence[str]) -> str:
     return (
         f"{len(unchecked)} staged cbls row(s) without a matching .checked marker, so not "
-        f"known to have passed the independent SCIP check: {_names(unchecked)}. Re-run "
-        "run_benchmark.py on each (--instances NAME, same staging directory): a solved "
-        "row is not solved again, only checked and marked. Or pass --partial for an "
-        "interim score"
+        f"known to have passed the independent SCIP check: {_names(unchecked)}. Run "
+        "check_staged.py --inst-dir NL --staging-dir STAGE: it checks and marks every "
+        "whole row, whatever commit staged it, and solves nothing. Or pass --partial for "
+        "an interim score"
     )
+
+
+def load_checked_staging(stage: Path, bounds: Sequence[Bound]) -> CblsSide:
+    """`load_cbls_staging`, refused unless every staged row it read is marked as checked.
+
+    The rows are hashed before they are parsed and again after: a driver that
+    rewrites a row in between (its check demoting it, then marking the new
+    bytes) would otherwise pair a parsed, unchecked row with a marker that
+    matches the file as it is now.
+    """
+    before = staged_digests(stage, bounds)
+    cbls = load_cbls_staging(stage, {b.instance: b for b in bounds})
+    if staged_digests(stage, bounds) != before:
+        raise RefusedError(
+            f"{stage}: staged rows changed while they were read (a driver is writing "
+            "there); score again once it has stopped"
+        )
+    unchecked = unchecked_staged(stage, before)
+    if unchecked:
+        raise RefusedError(unchecked_refusal(unchecked))
+    return cbls
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -802,10 +834,11 @@ def run(args: argparse.Namespace) -> Score:
         cbls = CblsSide(rows=load_cbls_table(args.cbls, roster))
         derived = {"cbls run record": table_budget(args.cbls)}
     else:
-        cbls = load_cbls_staging(args.cbls_staging, roster)
-        unchecked = unchecked_staged(args.cbls_staging, bounds)
-        if unchecked and not args.partial:
-            raise RefusedError(unchecked_refusal(unchecked))
+        cbls = (
+            load_cbls_staging(args.cbls_staging, roster)
+            if args.partial
+            else load_checked_staging(args.cbls_staging, bounds)
+        )
         derived = {"cbls staging stamp": staging_budget(args.cbls_staging)}
     scip = load_scip_shards(args.scip_shards, roster)
     budget = reconcile_budget({"SCIP scip_version": scip_budget(scip), **derived}, args.budget)
