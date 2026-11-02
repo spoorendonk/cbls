@@ -155,6 +155,17 @@ TEST_CASE("presolve keeps a frozen column even when it is fixed", "[presolve]") 
     REQUIRE(r.stats.cols_fixed == 0);
     REQUIRE(r.reduced.n_cols() == 3);
     REQUIRE(r.col_to_reduced[static_cast<std::size_t>(x)] == 0);
+
+    // A singleton row on a frozen column tightens its bound and goes; the
+    // column stays.
+    Builder c;
+    const int32_t f = c.col(0, 10, false, 0.0, /*frozen=*/true);
+    c.row({{f, 2.0}}, -kInf, 6.0);
+    const PresolveResult rc = presolve(c.p, only(false));
+    REQUIRE(rc.stats.rows_singleton == 1);
+    REQUIRE(rc.reduced.n_rows() == 0);
+    REQUIRE(rc.reduced.n_cols() == 1);
+    REQUIRE(rc.reduced.col_ub[0] == 3.0);
 }
 
 TEST_CASE("presolve removes a satisfied empty row and rejects a violated one", "[presolve]") {
@@ -175,6 +186,22 @@ TEST_CASE("presolve removes a satisfied empty row and rejects a violated one", "
     REQUIRE(r.reduced.n_rows() == 1);
     REQUIRE(r.reduced.n_cols() == 1);
     REQUIRE(r.postsolve.num_steps() == 0);
+    REQUIRE(r.stats.rows_empty == 0);  // nothing counted from the abandoned run
+    REQUIRE(r.stats.rounds == 1);
+
+    // At large magnitude the slack stays absolute: a residual of 0.05 left by
+    // folding 1e4 * 5000 twice is a violation, not rounding, while an exact
+    // fold leaves the row satisfied.
+    for (const double rhs : {1e8, 1e8 + 0.05}) {
+        CAPTURE(rhs);
+        Builder d;
+        const int32_t x = d.col(5000, 5000, true);
+        const int32_t y = d.col(5000, 5000, true);
+        d.row({{x, 1e4}, {y, 1e4}}, rhs, rhs);
+        r = presolve(d.p, only(false));
+        REQUIRE(r.stats.status ==
+                (rhs == 1e8 ? PresolveStatus::Reduced : PresolveStatus::Infeasible));
+    }
 }
 
 TEST_CASE("presolve removes a row with no finite side", "[presolve]") {
@@ -203,15 +230,53 @@ TEST_CASE("presolve turns singleton rows into bounds", "[presolve]") {
     REQUIRE(r.reduced.col_ub[static_cast<std::size_t>(x)] == 3.0);
     REQUIRE(r.reduced.col_lb[static_cast<std::size_t>(y)] == -1.5);
     REQUIRE(r.stats.bounds_tightened == 2);
+
+    // 3x <= 3e9 + 1 over the integers is x <= 1e9: the quotient's fraction
+    // (1/3) is rounded off, not absorbed by a slack scaled to 1e9.
+    Builder big;
+    const int32_t u = big.col(0, 4e9, /*integral=*/true);
+    big.row({{u, 3.0}}, -kInf, 3e9 + 1);
+    PresolveOptions keep_empty = only(false);
+    keep_empty.empty_columns = false;  // u ends in no row; keep it to read it
+    const PresolveResult rb = presolve(big.p, keep_empty);
+    REQUIRE(rb.reduced.n_cols() == 1);
+    REQUIRE(rb.reduced.col_ub[0] == 1e9);
+
+    // A quotient at or beyond the infinity threshold would read as "no bound"
+    // downstream: the row stays, and the column keeps its bounds.
+    Builder huge;
+    const int32_t h = huge.col(0, kInf);
+    huge.row({{h, 1e-6}}, -kInf, 1e15);
+    const PresolveResult rh = presolve(huge.p, only(false));
+    REQUIRE(rh.stats.rows_singleton == 0);
+    REQUIRE(rh.reduced.n_rows() == 1);
+    REQUIRE(std::isinf(rh.reduced.col_ub[0]));
 }
 
 TEST_CASE("presolve reports a singleton row outside the column box as infeasible", "[presolve]") {
     Builder b;
     const int32_t x = b.col(0, 1);
     b.row({{x, 1.0}}, 3.0, kInf);
-    const PresolveResult r = presolve(b.p, only(false));
+    PresolveResult r = presolve(b.p, only(false));
     REQUIRE(r.stats.status == PresolveStatus::Infeasible);
     REQUIRE(r.reduced.n_rows() == 1);
+
+    // Crossing by 0.05 at 1e8 is infeasible too: the slack is absolute.
+    Builder c;
+    const int32_t y = c.col(0, 1e8);
+    c.row({{y, 1.0}}, 1e8 + 0.05, kInf);
+    r = presolve(c.p, only(false));
+    REQUIRE(r.stats.status == PresolveStatus::Infeasible);
+
+    // Crossing by one ulp of a computed quotient is rounding: the column
+    // collapses to the point and the row goes.
+    const double q = 1.0 / 3.0;
+    Builder d;
+    const int32_t z = d.col(0, std::nextafter(q, 0.0));
+    d.row({{z, 3.0}}, 1.0, kInf);
+    r = presolve(d.p, only(false));
+    REQUIRE(r.stats.status == PresolveStatus::Reduced);
+    REQUIRE(r.reduced.n_rows() == 0);
 }
 
 TEST_CASE("presolve drops implied row sides and removes a fully implied row", "[presolve]") {
@@ -262,6 +327,15 @@ TEST_CASE("presolve rounds integral bounds inward and rejects an empty integral 
     REQUIRE(r.reduced.col_lb[0] == 1.0);
     REQUIRE(r.reduced.col_ub[0] == 2.0);
 
+    // At 1e9 a half is still a half: the bound rounds down, not up.
+    Builder big;
+    big.col(0, 1e9 + 0.5, true);
+    PresolveOptions keep_empty = only(false);
+    keep_empty.empty_columns = false;  // the column is in no row; keep it to read it
+    r = presolve(big.p, keep_empty);
+    REQUIRE(r.reduced.n_cols() == 1);
+    REQUIRE(r.reduced.col_ub[0] == 1e9);
+
     Builder c;
     c.col(0.2, 0.8, true);
     r = presolve(c.p, only(false));
@@ -297,6 +371,22 @@ TEST_CASE("presolve rejects a malformed problem", "[presolve]") {
     REQUIRE_THROWS_AS(presolve(bad), std::invalid_argument);
     bad = b.p;
     bad.row_start.back() = 0;
+    REQUIRE_THROWS_AS(presolve(bad), std::invalid_argument);
+    bad = b.p;
+    bad.coefs[0] = kInf;
+    REQUIRE_THROWS_AS(presolve(bad), std::invalid_argument);
+    bad = b.p;
+    bad.obj[0] = -kInf;
+    REQUIRE_THROWS_AS(presolve(bad), std::invalid_argument);
+    // An empty side, not a missing one: lb at +infinity, ub at -infinity.
+    bad = b.p;
+    bad.col_lb[0] = kInf;
+    REQUIRE_THROWS_AS(presolve(bad), std::invalid_argument);
+    bad = b.p;
+    bad.col_ub[0] = -1e20;
+    REQUIRE_THROWS_AS(presolve(bad), std::invalid_argument);
+    bad = b.p;
+    bad.row_lo[0] = 1e30;
     REQUIRE_THROWS_AS(presolve(bad), std::invalid_argument);
 
     const PresolveResult r = presolve(b.p, only(true));
@@ -436,8 +526,12 @@ TEST_CASE("presolve removes no feasible point and postsolve restores it", "[pres
         const std::vector<double> back = r.postsolve.apply(reduced_x);
         for (std::size_t j = 0; j < back.size(); ++j) {
             CAPTURE(j);
-            REQUIRE_THAT(back[j],
-                         Catch::Matchers::WithinAbs(inst.x_star[j], tol_of(inst.x_star[j])));
+            if (inst.p.integral[j] != 0) {
+                REQUIRE(back[j] == inst.x_star[j]);  // exact on integral columns
+            } else {
+                REQUIRE_THAT(back[j],
+                             Catch::Matchers::WithinAbs(inst.x_star[j], tol_of(inst.x_star[j])));
+            }
         }
         REQUIRE_THAT(objective(r.reduced, reduced_x),
                      Catch::Matchers::WithinAbs(objective(inst.p, inst.x_star), 1e-9));

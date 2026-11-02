@@ -68,9 +68,12 @@ struct PresolveOptions {
     int max_rounds = 20;
     /// Passed to `propagate_bounds` each round.
     BoundPropagationOptions propagation;
-    /// An empty row `lo <= 0 <= hi`, or a row whose bounds cross, is accepted
-    /// within `feasibility_tolerance * max(1, scale)`, where `scale` is the
-    /// magnitude of the row's bounds and of everything folded into them.
+    /// Absolute slack, on top of a bound on the floating-point error of the
+    /// value checked, for: an empty row `lo <= 0 <= hi`, crossed row or column
+    /// bounds (collapsed to a point within it), and the inward rounding of an
+    /// integral column's bounds. A point presolve admits therefore violates
+    /// the original problem by at most about this much plus roundoff, far
+    /// inside `verify_model`'s 1e-6. Anything more is reported `Infeasible`.
     double feasibility_tolerance = 1e-9;
 };
 
@@ -138,15 +141,18 @@ struct PresolveResult {
 
 /// Presolve `problem`.
 ///
-/// Throws `std::invalid_argument` on a malformed problem (sizes that disagree,
-/// a column index out of range, a NaN bound). On `Infeasible` the result holds
-/// the original problem (duplicates merged) with an identity postsolve: as in
-/// the adapters today, an infeasible instance is reported by the search, not
-/// by the reader.
+/// Throws `std::invalid_argument` on a malformed problem: sizes that disagree,
+/// a column index out of range, a NaN bound, a non-finite coefficient or
+/// objective entry, or a lower bound at +infinity / upper bound at -infinity.
+/// On `Infeasible` the result holds the original problem (duplicates merged)
+/// with an identity postsolve, and its stats count nothing but `rounds` and
+/// `duplicates_merged`: as in the adapters today, an infeasible instance is
+/// reported by the search, not by the reader.
 ///
 /// Cost: O(nnz) per round, `max_rounds` at most. Peak working memory is about
 /// 20 bytes per nonzero (row-major entries 12 B, column-major index 8 B), plus
 /// the reduced copy (12 B per kept nonzero), on top of the caller's input.
+/// Disabled, or once proven infeasible, the column index is not built.
 PresolveResult presolve(const LinearProblem& problem, const PresolveOptions& opts = {});
 
 }  // namespace cbls

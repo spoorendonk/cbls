@@ -66,7 +66,22 @@ bool any_nan(const std::vector<double>& v) {
     return std::any_of(v.begin(), v.end(), [](double d) { return std::isnan(d); });
 }
 
-void validate(const LinearProblem& p) {
+bool all_finite(const std::vector<double>& v) {
+    return std::all_of(v.begin(), v.end(), [](double d) { return std::isfinite(d); });
+}
+
+/// A lower bound at +infinity or an upper bound at -infinity (an empty side,
+/// not a missing one) has no meaning the reductions could fold.
+bool any_empty_side(const std::vector<double>& lo, const std::vector<double>& hi, double infinity) {
+    for (std::size_t i = 0; i < lo.size(); ++i) {
+        if (lo[i] >= infinity || hi[i] <= -infinity) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void validate(const LinearProblem& p, double infinity) {
     const std::size_t n = p.n_cols();
     const std::size_t m = p.n_rows();
     require(
@@ -84,9 +99,13 @@ void validate(const LinearProblem& p) {
         require(c >= 0 && static_cast<std::size_t>(c) < n,
                 "column index " + std::to_string(c) + " out of range");
     }
-    require(!any_nan(p.col_lb) && !any_nan(p.col_ub) && !any_nan(p.row_lo) && !any_nan(p.row_hi) &&
-                !any_nan(p.coefs) && !any_nan(p.obj),
-            "NaN in bounds, coefficients or objective");
+    require(!any_nan(p.col_lb) && !any_nan(p.col_ub) && !any_nan(p.row_lo) && !any_nan(p.row_hi),
+            "NaN in bounds");
+    require(all_finite(p.coefs) && all_finite(p.obj) && std::isfinite(p.obj_offset),
+            "non-finite coefficient or objective entry");
+    require(!any_empty_side(p.col_lb, p.col_ub, infinity) &&
+                !any_empty_side(p.row_lo, p.row_hi, infinity),
+            "a lower bound at +infinity or an upper bound at -infinity");
 }
 
 /// Copy row i of `p` into `w`, merging repeated columns and dropping zeros.
@@ -145,11 +164,12 @@ void build_column_index(Work& w) {
 }
 
 /// Validate `p` and load it into `w`: bounds normalised to ±inf, rows merged.
+/// The column index is not built here: only the reductions need it.
 void load(const LinearProblem& p, Work& w) {
-    validate(p);
+    const double infinity = w.opts.propagation.infinity;
+    validate(p, infinity);
     require(p.n_rows() < static_cast<std::size_t>(std::numeric_limits<int32_t>::max()),
             "too many rows");
-    const double infinity = w.opts.propagation.infinity;
     const std::size_t n = p.n_cols();
     const std::size_t m = p.n_rows();
     w.lb.resize(n);
@@ -179,24 +199,26 @@ void load(const LinearProblem& p, Work& w) {
         const double hi_mag = std::isfinite(w.row_hi[i]) ? std::abs(w.row_hi[i]) : 0.0;
         w.row_scale[i] = std::max(lo_mag, hi_mag);
     }
+    w.row_folds.assign(m, 0);
     w.row_removed.assign(m, 0);
-    build_column_index(w);
 }
 
-/// Round integral columns' bounds inward and settle crossed bounds: within the
-/// tolerance they collapse to a point, beyond it the problem is infeasible.
+/// Round integral columns' bounds inward and settle crossed bounds: within
+/// `feasibility_tolerance` they collapse to a point, beyond it the problem is
+/// infeasible. The input bounds carry no computed error, so no roundoff term.
 void prepare(Work& w) {
+    const double tol = w.opts.feasibility_tolerance;
     for (std::size_t j = 0; j < w.n_cols(); ++j) {
         if (w.integral[j] != 0) {
             if (std::isfinite(w.lb[j])) {
-                w.lb[j] = std::ceil(w.lb[j] - w.tolerance(w.lb[j]));
+                w.lb[j] = std::ceil(w.lb[j] - tol);
             }
             if (std::isfinite(w.ub[j])) {
-                w.ub[j] = std::floor(w.ub[j] + w.tolerance(w.ub[j]));
+                w.ub[j] = std::floor(w.ub[j] + tol);
             }
         }
         if (w.lb[j] > w.ub[j]) {
-            if (w.lb[j] - w.ub[j] > w.tolerance(std::max(std::abs(w.lb[j]), std::abs(w.ub[j])))) {
+            if (w.lb[j] - w.ub[j] > tol) {
                 w.infeasible = true;
                 return;
             }
@@ -205,7 +227,7 @@ void prepare(Work& w) {
     }
     for (std::size_t r = 0; r < w.n_rows(); ++r) {
         if (w.row_lo[r] > w.row_hi[r]) {
-            if (w.row_lo[r] - w.row_hi[r] > w.tolerance(w.row_scale[r])) {
+            if (w.row_lo[r] - w.row_hi[r] > tol + w.row_roundoff(r)) {
                 w.infeasible = true;
                 return;
             }
@@ -215,10 +237,18 @@ void prepare(Work& w) {
 }
 
 /// Singleton row r: its one live entry `a x` in [lo, hi] becomes bounds on x,
-/// and the row goes. The bounds are the exact quotients, not relaxed: `a *
-/// (hi / a)` exceeds `hi` by at most an ulp of it, far inside any feasibility
-/// tolerance. An integral column's bounds are rounded inward past
-/// `tolerance`, as at load.
+/// and the row goes. The bounds are the computed quotients, not relaxed.
+///
+/// `slack` is how far a point may then sit outside the exact quotient: the
+/// quotient's own error (the row bound's roundoff over |a|, plus one rounding
+/// of the division) and `feasibility_tolerance` in both spaces, as
+/// `min(tol, tol / |a|)`, so that a point within it violates neither the row
+/// (by more than `tol` plus roundoff) nor a column bound (by more than `tol`).
+/// An integral column's bounds are rounded inward past `slack`, and a crossing
+/// within it collapses to a point.
+///
+/// A quotient at or beyond `infinity` would read as "no bound" downstream, so
+/// the row is then kept as it is (as `propagate_bounds` skips such a value).
 void reduce_singleton(Work& w, std::size_t r) {
     std::size_t p = w.row_start[r];
     while (w.coefs[p] == 0.0) {
@@ -228,15 +258,26 @@ void reduce_singleton(Work& w, std::size_t r) {
     const auto j = static_cast<std::size_t>(w.cols[p]);
     double lo = a > 0.0 ? w.row_lo[r] / a : w.row_hi[r] / a;
     double hi = a > 0.0 ? w.row_hi[r] / a : w.row_lo[r] / a;
+    const double infinity = w.opts.propagation.infinity;
+    if ((std::isfinite(lo) && std::abs(lo) >= infinity) ||
+        (std::isfinite(hi) && std::abs(hi) >= infinity)) {
+        return;
+    }
+    const double tol = w.opts.feasibility_tolerance;
+    const double abs_a = std::abs(a);
+    const double magnitude =
+        std::max(std::isfinite(lo) ? std::abs(lo) : 0.0, std::isfinite(hi) ? std::abs(hi) : 0.0);
+    const double slack = std::min(tol, tol / abs_a) + (w.row_roundoff(r) / abs_a) +
+                         (std::numeric_limits<double>::epsilon() * magnitude);
     if (w.integral[j] != 0) {
         if (std::isfinite(lo)) {
-            lo = std::ceil(lo - w.tolerance(lo));
+            lo = std::ceil(lo - slack);
         }
         if (std::isfinite(hi)) {
-            hi = std::floor(hi + w.tolerance(hi));
+            hi = std::floor(hi + slack);
         }
     }
-    w.tighten_column(static_cast<int32_t>(j), lo, hi);
+    w.tighten_column(static_cast<int32_t>(j), lo, hi, slack);
     if (w.infeasible) {
         return;
     }
@@ -267,8 +308,9 @@ struct Activity {
 ///
 /// A side is dropped only when the computed activity clears it by its own
 /// rounding bound, `(nnz + 3) * DBL_EPSILON * (|bound| + magnitude)` — the
-/// same activity-scaled roundoff as `propagate_bounds` (#211) — so a dropped
-/// side is implied exactly, not merely to within floating-point noise.
+/// same activity-scaled roundoff as `propagate_bounds` (#211) — plus the
+/// bound's own error from earlier folds (`row_roundoff`), so a dropped side
+/// is implied exactly, not merely to within floating-point noise.
 void reduce_implied_sides(Work& w, std::size_t r) {
     Activity min_act;
     Activity max_act;
@@ -283,16 +325,17 @@ void reduce_implied_sides(Work& w, std::size_t r) {
     }
     const double per_unit =
         static_cast<double>(w.row_live[r] + 3) * std::numeric_limits<double>::epsilon();
+    const double bound_error = w.row_roundoff(r);
     double& hi = w.row_hi[r];
     double& lo = w.row_lo[r];
     if (std::isfinite(hi) && max_act.n_infinite == 0 &&
-        max_act.sum + per_unit * (std::abs(hi) + max_act.magnitude) <= hi) {
+        max_act.sum + (per_unit * (std::abs(hi) + max_act.magnitude)) + bound_error <= hi) {
         hi = kInf;
         ++w.stats.row_sides_dropped;
         w.changed = true;
     }
     if (std::isfinite(lo) && min_act.n_infinite == 0 &&
-        min_act.sum - per_unit * (std::abs(lo) + min_act.magnitude) >= lo) {
+        min_act.sum - (per_unit * (std::abs(lo) + min_act.magnitude)) - bound_error >= lo) {
         lo = -kInf;
         ++w.stats.row_sides_dropped;
         w.changed = true;
@@ -368,8 +411,9 @@ PresolveResult identity_result(const LinearProblem& problem, const PresolveOptio
 // Work
 // ---------------------------------------------------------------------------
 
-double Work::tolerance(double scale) const {
-    return opts.feasibility_tolerance * std::max(1.0, std::abs(scale));
+double Work::row_roundoff(std::size_t r) const {
+    return static_cast<double>(row_folds[r] + 1) * std::numeric_limits<double>::epsilon() *
+           row_scale[r];
 }
 
 void Work::fix_column(int32_t j, double value) {
@@ -392,6 +436,7 @@ void Work::fix_column(int32_t j, double value) {
             row_hi[r] -= shift;
         }
         row_scale[r] += std::abs(shift);
+        ++row_folds[r];
         coefs[p] = 0.0;
         --row_live[r];
     }
@@ -414,12 +459,12 @@ void Work::remove_row(int32_t r) {
     changed = true;
 }
 
-void Work::tighten_column(int32_t j, double lo, double hi) {
+void Work::tighten_column(int32_t j, double lo, double hi, double slack) {
     const auto jj = static_cast<std::size_t>(j);
     double new_lb = std::max(lb[jj], lo);
     double new_ub = std::min(ub[jj], hi);
     if (new_lb > new_ub) {
-        if (new_lb - new_ub > tolerance(std::max(std::abs(new_lb), std::abs(new_ub)))) {
+        if (new_lb - new_ub > slack) {
             infeasible = true;
             return;
         }
@@ -476,7 +521,9 @@ void reduce_rows(Work& w) {
             continue;
         }
         if (w.row_live[r] == 0) {
-            const double tol = w.tolerance(w.row_scale[r]);
+            // The bounds now hold minus the folded constant, up to its
+            // rounding error; a residual within that plus the tolerance holds.
+            const double tol = w.opts.feasibility_tolerance + w.row_roundoff(r);
             if (w.row_lo[r] > tol || w.row_hi[r] < -tol) {
                 w.infeasible = true;
                 return;
@@ -523,41 +570,48 @@ PresolveResult presolve(const LinearProblem& problem, const PresolveOptions& opt
     if (!opts.enabled) {
         return presolve_detail::identity_result(problem, opts);
     }
-    Work w(opts);
-    presolve_detail::load(problem, w);
-    const std::vector<double> lb0 = w.lb;
-    const std::vector<double> ub0 = w.ub;
-    presolve_detail::prepare(w);
-    for (int round = 0; round < opts.max_rounds && !w.infeasible; ++round) {
-        w.changed = false;
-        ++w.stats.rounds;
-        if (opts.propagate_bounds) {
-            presolve_detail::reduce_propagate(w);
-        }
-        if (!w.infeasible && opts.fixed_columns) {
-            presolve_detail::reduce_fixed_columns(w);
+    int rounds = 0;
+    {
+        // Scoped so that on the infeasible path the working copy is freed
+        // before the identity result is built.
+        Work w(opts);
+        presolve_detail::load(problem, w);
+        presolve_detail::build_column_index(w);
+        const std::vector<double> lb0 = w.lb;
+        const std::vector<double> ub0 = w.ub;
+        presolve_detail::prepare(w);
+        for (int round = 0; round < opts.max_rounds && !w.infeasible; ++round) {
+            w.changed = false;
+            ++w.stats.rounds;
+            if (opts.propagate_bounds) {
+                presolve_detail::reduce_propagate(w);
+            }
+            if (!w.infeasible && opts.fixed_columns) {
+                presolve_detail::reduce_fixed_columns(w);
+            }
+            if (!w.infeasible) {
+                presolve_detail::reduce_rows(w);
+            }
+            if (!w.infeasible && opts.empty_columns) {
+                presolve_detail::reduce_empty_columns(w);
+            }
+            if (!w.changed) {
+                break;
+            }
         }
         if (!w.infeasible) {
-            presolve_detail::reduce_rows(w);
+            PresolveResult res = presolve_detail::build_result(w, lb0, ub0);
+            res.stats.seconds =
+                std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+            return res;
         }
-        if (!w.infeasible && opts.empty_columns) {
-            presolve_detail::reduce_empty_columns(w);
-        }
-        if (!w.changed) {
-            break;
-        }
+        rounds = w.stats.rounds;
     }
-    const double seconds =
+    PresolveResult res = presolve_detail::identity_result(problem, opts);
+    res.stats.status = PresolveStatus::Infeasible;
+    res.stats.rounds = rounds;
+    res.stats.seconds =
         std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-    if (w.infeasible) {
-        PresolveResult res = presolve_detail::identity_result(problem, opts);
-        res.stats = w.stats;
-        res.stats.status = PresolveStatus::Infeasible;
-        res.stats.seconds = seconds;
-        return res;
-    }
-    PresolveResult res = presolve_detail::build_result(w, lb0, ub0);
-    res.stats.seconds = seconds;
     return res;
 }
 

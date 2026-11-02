@@ -39,6 +39,8 @@ struct Work {
     /// Magnitude of the row's original bounds plus everything folded into
     /// them since: what the rounding error in `row_lo`/`row_hi` scales with.
     std::vector<double> row_scale;
+    /// Number of fixed-column terms folded into the row's bounds since load.
+    std::vector<int32_t> row_folds;
     std::vector<uint8_t> row_removed;
     std::vector<int32_t> row_live;  ///< Live entries per row.
 
@@ -58,8 +60,11 @@ struct Work {
     [[nodiscard]] std::size_t n_cols() const { return lb.size(); }
     [[nodiscard]] std::size_t n_rows() const { return row_lo.size(); }
 
-    /// `feasibility_tolerance * max(1, scale)`.
-    [[nodiscard]] double tolerance(double scale) const;
+    /// Bound on the floating-point error in row r's current `row_lo`/`row_hi`:
+    /// each fold `bound -= a * v` adds at most one rounding of the product and
+    /// one of the difference, each within `DBL_EPSILON` of a partial sum no
+    /// larger than `row_scale`, so `(row_folds + 1) * DBL_EPSILON * row_scale`.
+    [[nodiscard]] double row_roundoff(std::size_t r) const;
 
     /// Remove column j at `value`: fold it into its rows' bounds and the
     /// objective offset, and push the postsolve step. j must not be frozen.
@@ -69,9 +74,10 @@ struct Work {
     void remove_row(int32_t r);
 
     /// Set column j's bounds to [lo, hi] intersected with the current ones,
-    /// collapsing a crossing within `tolerance` to the point `lb` (rounding,
-    /// not an empty box) and flagging `infeasible` beyond it.
-    void tighten_column(int32_t j, double lo, double hi);
+    /// collapsing a crossing within `slack` to the point `lb` (rounding, not
+    /// an empty box) and flagging `infeasible` beyond it. `slack` is the most
+    /// the caller lets the collapsed point violate the bound it widens.
+    void tighten_column(int32_t j, double lo, double hi, double slack);
 };
 
 // One function per reduction. Each sets `w.changed` when it changes anything

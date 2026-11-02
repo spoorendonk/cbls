@@ -2654,8 +2654,15 @@ calls it yet (MPS #325, `.nl` #326).
   the #211 scaling — and the row removed once it has no side; empty columns fixed
   at their best bound. The last is the one **dual** reduction: it keeps the
   optimum's value, not every feasible point. Everything else is primal.
-- **Integral bounds** are rounded inward at load; a box that rounds empty, or
-  bounds crossing beyond `feasibility_tolerance·max(1, |b|)`, is `Infeasible`.
+- **Tolerances** are absolute (`feasibility_tolerance`, 1e-9) plus a bound on
+  the checked value's floating-point error: a row bound carries
+  `(folds + 1)·DBL_EPSILON·row_scale` from the fixed columns folded into it, and
+  a singleton quotient that over `|a|` plus one rounding. Integral bounds are
+  rounded inward past it (at load and after a singleton row); a box that rounds
+  empty, bounds crossing beyond it, or an empty row violated beyond it, is
+  `Infeasible`. A point presolve admits so violates the original problem by
+  about 1e-9 plus roundoff at most, far inside `verify_model`'s 1e-6, whatever
+  the magnitudes. A singleton quotient at or beyond `1e20` leaves the row alone.
 - **Infeasible** returns the original problem with an identity postsolve, as the
   adapters already do for propagation: the search reports infeasibility.
 - **Postsolve** is a LIFO stack of steps (`FixedColumn` today; aggregation adds
@@ -2663,7 +2670,8 @@ calls it yet (MPS #325, `.nl` #326).
   first. A column no step restored comes back NaN, loudly.
 - **Cost.** O(nnz) per round. The working copy is about 20 B per nonzero
   (row-major 12 B, column index 8 B), plus the reduced copy, on top of the
-  caller's input. Each reduction is one function over the shared `Work` in
+  caller's input; the disabled and infeasible paths build no column index.
+  Each reduction is one function over the shared `Work` in
   `src/presolve_internal.h`, so later reductions (#327, #328) live in their own
   files.
 
