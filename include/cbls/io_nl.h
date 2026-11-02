@@ -187,7 +187,8 @@ struct NlToModelResult {
     int32_t objective_node_id = -1;  ///< -1 if no objective
     bool supported = true;           ///< false if any operator was unsupported
     std::vector<std::string> skipped_reasons;
-    /// Outcome of the propagation pass; all-zero when it was disabled.
+    /// Outcome of the propagation pass without presolve; all-zero when it was
+    /// disabled or ran inside presolve (counted in `presolve_stats` there).
     BoundPropagationStats bound_stats;
     /// Columns whose bounds a clamp still had to supply *after* propagation,
     /// i.e. where the unsound fallback was actually used.

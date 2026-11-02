@@ -2842,9 +2842,10 @@ by presolve stays a variable with `lb == ub`; the `x` segment seeds through
 non-column falls back to the plain build too, which reports it. Off, the model
 is node for node the plain one. Over the 100 vendored MINLPLib files presolve
 reduces none (their AMPL export is presolved already; plain propagation
-tightens none of them either); `tests/test_minlplib.cpp` pins the reductions on
-inline fixtures and, over every vendored file, that no frozen column is removed
-and the postsolved start gives the plain model the same objective.
+tightens none of them either). `tests/test_minlplib.cpp` pins the reductions
+only on inline fixtures; over the vendored files it checks that presolve keeps
+the supported verdict and falls back to the plain build, and would check the
+frozen columns and the postsolved objective on any file it did reduce.
 
 ### JSONL Model Format
 

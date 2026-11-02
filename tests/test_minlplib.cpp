@@ -1393,25 +1393,30 @@ TEST_CASE("nl_to_model presolve drops a removed column's initial value", "[minlp
     REQUIRE(r.original_values(r.model) == std::vector<double>{4.0, 2.0});
 }
 
-// Every vendored MINLPLib file: no column a nonlinear part reaches is removed,
-// presolve does not change the supported verdict, and the presolved model's
-// starting point, postsolved, gives the plain model the same objective. At
-// #342 presolve reduced none of these files (their AMPL export is already
-// presolved; plain propagation tightens nothing on them either), so the
-// reductions themselves are pinned by the fixtures above.
+// Every vendored MINLPLib file: presolve does not change the supported
+// verdict, and where it reduces a file, no column a nonlinear part reaches is
+// removed and the postsolved starting point gives the plain model the same
+// objective. At #342 presolve reduced none of these files (their AMPL export
+// is already presolved; plain propagation tightens nothing on them either),
+// so on them this test checks only the verdict and the fallback: it pins no
+// reduction. The reductions are pinned only by the inline fixtures above.
 TEST_CASE("nl_to_model presolve never removes a column a nonlinear part reaches",
           "[minlplib][presolve]") {
     std::vector<std::string> files;
+    std::size_t n_minlplib = 0;
     for (const char* dir :
          {"benchmarks/instances/minlplib", "benchmarks/instances/minlplib/heldout", "tests/data"}) {
         for (const auto& e : std::filesystem::directory_iterator(dir)) {
             if (e.path().extension() == ".nl") {
                 files.push_back(e.path().string());
+                if (std::string(dir) != "tests/data") {
+                    ++n_minlplib;
+                }
             }
         }
     }
     std::sort(files.begin(), files.end());
-    REQUIRE(files.size() >= 100);
+    REQUIRE(n_minlplib == 100);  // 50 published + 50 held out
     for (const std::string& f : files) {
         INFO(f);
         const NlProblem p = read_nl(f);
