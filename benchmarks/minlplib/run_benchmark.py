@@ -804,7 +804,14 @@ def staging_stamp_conflict(stage: Path, args: argparse.Namespace, sha: str) -> s
     stamp_path = stage / STAMP_NAME
     stamp = staging_stamp(args, sha)
     earlier = stamp_path.read_text() if stamp_path.exists() else None
-    conflict = stamp_refusal(
+    refused = args.resume and earlier is not None and earlier != stamp
+    if not refused and earlier != stamp:
+        # An attempt under another configuration is no retry of this one (#312).
+        # Cleared before `stamp_refusal` writes the new stamp: a kill in between
+        # leaves the old stamp, so the next run clears them again.
+        for record in stage.glob(f"*{FAILURES_SUFFIX}"):
+            record.unlink()
+    return stamp_refusal(
         stamp_path,
         stamp,
         resume=args.resume,
@@ -812,11 +819,6 @@ def staging_stamp_conflict(stage: Path, args: argparse.Namespace, sha: str) -> s
         advice="Delete the staging directory, pass a fresh --staging-dir, or pass --no-resume; "
         "reusing these rows would mix two configurations into one table.",
     )
-    if conflict is None and earlier != stamp:
-        # An attempt under another configuration is no retry of this one (#312).
-        for record in stage.glob(f"*{FAILURES_SUFFIX}"):
-            record.unlink()
-    return conflict
 
 
 def staged_row_complete(path: Path, sha: str) -> bool:
@@ -1175,13 +1177,19 @@ def run_roster(args: argparse.Namespace, sha: str, roster: Sequence[str], stage:
             continue
         cmd = runner_command(args, sha, name, stage)
         print(f"[{index}/{len(roster)}] {name}: {' '.join(cmd)}", flush=True)
-        # The old row's check says nothing about the new one.
+        # The old row's check says nothing about the new one. Nor does an old
+        # row whose solve was killed (header-only or torn) say anything about
+        # this attempt: if the runner dies before it opens its CSV, a row left
+        # here would be set aside and counted as this attempt's (#312).
         checked_marker(stage, name).unlink(missing_ok=True)
+        for suffix in (".csv", ".trace.csv"):
+            (stage / f"{name}{suffix}").unlink(missing_ok=True)
         log = stage / f"{name}.log"
         completed = run_process(cmd, log=log)
-        if completed.returncode != 0:
-            quarantine_staged(stage, name, completed.returncode)
         if completed.returncode != 0 or not staged_complete(args, sha, name, stage):
+            # Exit 0 without a publishable row is a failed solve too, as it is
+            # on the SCIP side: left in place it could never be scored.
+            quarantine_staged(stage, name, completed.returncode)
             what_next = (
                 f"The runner threw on this instance; its row, set aside as {name}.csv"
                 f"{REJECTED_SUFFIX}, carries read-error/build-error/solve-error: no search "
@@ -1194,6 +1202,8 @@ def run_roster(args: argparse.Namespace, sha: str, roster: Sequence[str], stage:
             raise RuntimeError(
                 f"{name} failed (exit {completed.returncode}); see {log}. {what_next}"
             )
+        # A solved instance has no failures to count; a later failure starts over.
+        (stage / f"{name}{FAILURES_SUFFIX}").unlink(missing_ok=True)
     return resumed
 
 
@@ -1275,13 +1285,19 @@ def quarantine_staged(stage: Path, name: str, returncode: int) -> None:
     the evidence stays beside the log.
 
     The attempt is recorded last: a driver killed in between leaves one attempt
-    too few, which a final score refuses, never one too many.
+    too few, which a final score refuses, never one too many. It is recorded
+    only when the runner staged a row: a runner that exits before it opens its
+    CSV (a usage error, an unwritable path, an unreadable roster) solved
+    nothing, and recording it would make an earlier attempt's `.rejected` row
+    read as retried.
     """
+    staged_row = (stage / f"{name}.csv").exists()
     for suffix in (".csv", ".trace.csv"):
         path = stage / f"{name}{suffix}"
         if path.exists():
             path.replace(path.with_name(path.name + REJECTED_SUFFIX))
-    append_attempt(stage / f"{name}{FAILURES_SUFFIX}", returncode)
+    if staged_row:
+        append_attempt(stage / f"{name}{FAILURES_SUFFIX}", returncode)
 
 
 def publish(

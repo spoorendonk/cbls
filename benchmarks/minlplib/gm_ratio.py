@@ -591,26 +591,47 @@ def completeness_refusal(missing_cbls: Sequence[str], missing_scip: Sequence[str
     return "incomplete campaign (pass --partial for an interim score): " + "; ".join(parts)
 
 
-def attempts_refusal(
-    scored: Sequence[str], cbls_attempts: Mapping[str, int], scip_attempts: Mapping[str, int]
-) -> str | None:
+def short_of_attempts(
+    scored: Sequence[str], failed: Iterable[str], attempts: Mapping[str, int]
+) -> dict[str, int]:
+    """The scored `failed` instances with fewer than the required attempts, and their count.
+
+    Keyed on the failures, not on `attempts`: a failure the count map does not
+    know has no recorded attempt, so it is refused rather than let through.
+    """
+    failed = set(failed)
+    return {
+        name: attempts.get(name, 0)
+        for name in scored
+        if name in failed and attempts.get(name, 0) < FAILED_ATTEMPTS_REQUIRED
+    }
+
+
+def attempts_refusal(cbls_short: Mapping[str, int], scip_short: Mapping[str, int]) -> str | None:
     """The refusal for a failure not yet retried, or None when each scored one has been (#312)."""
     parts = []
-    for label, attempts in (("cbls", cbls_attempts), ("SCIP", scip_attempts)):
-        short = [
-            f"{name} ({attempts[name]})"
-            for name in scored
-            if attempts.get(name, FAILED_ATTEMPTS_REQUIRED) < FAILED_ATTEMPTS_REQUIRED
-        ]
-        if short:
-            parts.append(f"{label} {len(short)}: {names_list(short)}")
+    advice = []
+    if cbls_short:
+        parts.append(
+            f"cbls {len(cbls_short)}: {names_list(f'{n} ({k})' for n, k in cbls_short.items())}"
+        )
+        advice.append(
+            "run_benchmark.py --instances NAME at the commit stamp.txt names, resuming (not "
+            "--no-resume, which starts over)"
+        )
+    if scip_short:
+        parts.append(
+            f"SCIP {len(scip_short)}: {names_list(f'{n} ({k})' for n, k in scip_short.items())}"
+        )
+        advice.append("scip_shards.py --instances NAME at the campaign's --time-limit and --seed")
     if not parts:
         return None
     return (
         f"failed instance(s) with fewer than {FAILED_ATTEMPTS_REQUIRED} recorded attempts, so "
         "not yet no-solution under the one-retry rule (pass --partial for an interim score): "
         + "; ".join(parts)
-        + ". Solve them again: run_benchmark.py or scip_shards.py --instances NAME"
+        + ". Solve them again: "
+        + "; ".join(advice)
     )
 
 
@@ -646,7 +667,11 @@ def score(
     both = [b for b in roster if b.instance in cbls_present and b.instance in scip_present]
     scored = [b for b in both if b.instance not in CLAIM_EXCLUDED]
     if not partial:
-        refusal = attempts_refusal([b.instance for b in scored], cbls.attempts, scip.attempts)
+        names = [b.instance for b in scored]
+        refusal = attempts_refusal(
+            short_of_attempts(names, cbls.rejected, cbls.attempts),
+            short_of_attempts(names, scip.failures, scip.attempts),
+        )
         if refusal is not None:
             raise RefusedError(refusal)
 

@@ -784,6 +784,86 @@ def test_each_failed_attempt_is_recorded_though_the_rejected_row_is_overwritten(
     assert recorded_attempts(stage / "a.failures") == ["exit 1", f"exit {RUNNER_EXIT_ERRORED}"]
 
 
+def test_a_runner_that_stages_no_row_records_no_attempt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#312: a retry that died before it opened its CSV solved nothing.
+
+    Counted, it would make the first attempt's `.rejected` row read as retried.
+    A row an earlier, killed solve left behind must not stand in for it either.
+    """
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    (stage / "a.csv").write_text(HEADER + "\n")  # a killed earlier solve's header
+
+    def dies_early(cmd: Sequence[str], **kwargs: object) -> FakeCompleted:
+        return FakeCompleted(2)
+
+    monkeypatch.setattr(subprocess, "run", dies_early)
+    with pytest.raises(RuntimeError, match="exit 2"):
+        run_roster(make_args(tmp_path), "abc1234", ["a"], stage)
+    assert not (stage / "a.failures").exists()
+    assert not (stage / "a.csv.rejected").exists()
+
+
+def test_exit_zero_without_a_row_is_a_failed_attempt_set_aside(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """As on the SCIP side: left in place, the row could never be scored."""
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    monkeypatch.setattr(subprocess, "run", fake_runner(write_row=False))
+    with pytest.raises(RuntimeError, match="exit 0"):
+        run_roster(make_args(tmp_path), "abc1234", ["a"], stage)
+    assert not (stage / "a.csv").exists()
+    assert (stage / "a.csv.rejected").exists()
+    assert recorded_attempts(stage / "a.failures") == ["exit 0"]
+
+
+def test_a_solve_that_succeeds_clears_the_attempts_before_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#312: a failure after a success is a first attempt, not a retry."""
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    monkeypatch.setattr(subprocess, "run", fake_runner(returncode=1))
+    with pytest.raises(RuntimeError):
+        run_roster(make_args(tmp_path), "abc1234", ["a"], stage)
+    monkeypatch.setattr(subprocess, "run", fake_runner())
+    run_roster(make_args(tmp_path), "abc1234", ["a"], stage)
+    assert not (stage / "a.failures").exists()
+
+
+def test_a_death_by_signal_is_recorded_as_sh_reports_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same `exit 137` an OOM kill leaves in a SCIP `.failed` marker."""
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    monkeypatch.setattr(subprocess, "run", fake_runner(returncode=-9))
+    with pytest.raises(RuntimeError):
+        run_roster(make_args(tmp_path), "abc1234", ["a"], stage)
+    assert recorded_attempts(stage / "a.failures") == ["exit 137"]
+
+
+def test_the_old_attempts_are_cleared_before_the_new_stamp_is_written(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#312: a kill between the two must not count an old attempt under the new stamp."""
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    assert staging_stamp_conflict(stage, make_args(tmp_path), "abc1234") is None
+    append_attempt(stage / "a.failures", 1)
+
+    def killed(*args: object, **kwargs: object) -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(run_benchmark, "stamp_refusal", killed)
+    with pytest.raises(KeyboardInterrupt):
+        staging_stamp_conflict(stage, make_args(tmp_path, resume=False), "def5678")
+    assert not (stage / "a.failures").exists()
+
+
 def test_a_new_configuration_clears_the_attempts_of_the_old_one(tmp_path: Path) -> None:
     """#312: `--no-resume` at another commit keeps the rows, but no failure there is a retry."""
     stage = tmp_path / "stage"

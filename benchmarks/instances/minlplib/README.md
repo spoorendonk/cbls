@@ -118,14 +118,17 @@ Both halves read that `bounds.csv`, and neither writes under
   `<instance>.failed` marker (one `exit <rc> <utc>` line per failed attempt; 124
   is the 15-min wrapper cap). A re-run retries only the missing and failed ones.
   The #256 rule: one retry with the memory cap raised, then a remaining failure
-  counts as SCIP no-solution, named with its exit.
+  counts as SCIP no-solution, named with its exit. The directory's `stamp.txt`
+  records the budget and seed; a run under others deletes the `.failed` markers.
 - cbls: `../../minlplib/run_benchmark.py`, one instance per call, at the
   campaign's thread count. A call whose runner exits nonzero sets the row aside
   as `<instance>.csv.rejected`, appends `exit <rc> <utc>` to
   `<instance>.failures`, and the next call solves it again (the #256 rule is one
-  retry, then the rejected row is cbls no-solution). A stamp change clears the
-  `.failures` records: an attempt under another configuration is no retry of
-  this one. After SCIP has
+  retry, then the rejected row is cbls no-solution). A call that exits 0 without
+  a publishable row counts the same way; one that exits before it stages a row
+  records nothing, and a solve that succeeds clears the record. A stamp change
+  clears every `.failures` record: an attempt under another configuration is
+  no retry of this one. After SCIP has
   checked a staged row, the driver writes `<instance>.checked` beside it,
   holding the row's sha256. `../../minlplib/check_staged.py --inst-dir NL
   --staging-dir STAGE` does the same check and marking without solving, for

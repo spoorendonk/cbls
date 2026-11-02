@@ -16,14 +16,16 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from benchmarks.common.records import recorded_attempts
+from benchmarks.common.records import append_attempt, recorded_attempts
 from benchmarks.minlplib.gm_ratio import load_scip_shards
 from benchmarks.minlplib.reference_solve import load_bounds
 from benchmarks.minlplib.scip_shards import (
     capped,
     main,
     reference_command,
+    reset_on_new_stamp,
     run_shards,
+    shard_stamp,
     solve_shard,
 )
 
@@ -102,6 +104,30 @@ def test_a_retry_that_fails_again_appends_a_second_attempt(tmp_path: Path) -> No
     for outcome, cap in (("abort", 30), ("hang", 1)):
         solve_shard(shards, "a", stub_command(tmp_path, {"a": outcome}), cap_seconds=cap)
     assert recorded_attempts(shards / "a.failed") == ["exit 134", "exit 124"]
+
+
+def test_another_budget_or_seed_clears_the_attempts_and_the_same_one_keeps_them(
+    tmp_path: Path,
+) -> None:
+    """#312: a smoke run's failure into the campaign's directory is no retry of it."""
+    shards = tmp_path / "shards"
+    shards.mkdir()
+    assert reset_on_new_stamp(shards, shard_stamp(5, 0)) == []
+    append_attempt(shards / "a.failed", 124)
+    assert reset_on_new_stamp(shards, shard_stamp(5, 0)) == []
+    assert recorded_attempts(shards / "a.failed") == ["exit 124"], "same stamp: a real retry"
+    assert reset_on_new_stamp(shards, shard_stamp(60, 0)) == ["a"]
+    assert not (shards / "a.failed").exists()
+    append_attempt(shards / "a.failed", 134)
+    assert reset_on_new_stamp(shards, shard_stamp(60, 1)) == ["a"]
+
+
+def test_a_torn_attempt_line_is_dropped_not_glued_onto_the_next(tmp_path: Path) -> None:
+    """A kill mid-append loses that attempt, never the next one with it."""
+    marker = tmp_path / "a.failed"
+    marker.write_text("exit 134 2026-11-02T08:00:00Z\nexit 13")
+    append_attempt(marker, 124)
+    assert recorded_attempts(marker) == ["exit 134", "exit 124"]
 
 
 def test_a_capped_solve_is_a_failure_even_with_a_row_written(tmp_path: Path) -> None:

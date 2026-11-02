@@ -137,14 +137,29 @@ def append_csv_row(path: Path, values: Iterable[object]) -> None:
 
 
 #: One failed attempt on an instance: `exit <rc> <utc>`.
-ATTEMPT_LINE = re.compile(r"(exit -?[0-9]+) [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z")
+ATTEMPT_LINE = re.compile(r"(exit [0-9]+) [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z")
+
+
+def shell_exit(returncode: int) -> int:
+    """`returncode` as `sh` reports it: a death by signal N is 128+N, not -N.
+
+    `subprocess` reports a death by signal as negative. The #256 markers were
+    written by `sh` (`exit 134` for an abort), so every attempt record writes
+    the same failure the same way, and an OOM SIGKILL reads as 137 on both sides.
+    """
+    return 128 - returncode if returncode < 0 else returncode
 
 
 def append_attempt(path: Path, returncode: int) -> None:
-    """Record one failed attempt, durably, as `append_csv_row` does a row (#312)."""
+    """Record one failed attempt, durably, as `append_csv_row` does a row (#312).
+
+    A torn last line (a kill mid-append) is dropped first, so it cannot glue
+    onto this line and spoil both: the lost attempt can only ask for a retry.
+    """
+    repair_torn_tail(path)
     stamp = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     with path.open("a") as fh:
-        fh.write(f"exit {returncode} {stamp}\n")
+        fh.write(f"exit {shell_exit(returncode)} {stamp}\n")
         fh.flush()
         os.fsync(fh.fileno())
 

@@ -29,7 +29,9 @@ retry drops its `.failed` marker. The #256 rule for what is left after one
 retry (hub, 2026-11-01): run it again once with the memory cap raised (the
 campaign ran under a 110G cgroup cap), and a failure that remains counts as
 "SCIP: no solution", named with its exit. A final score refuses a marker with
-fewer than two attempts.
+fewer than two attempts. The shard directory's `stamp.txt` records the budget
+and seed; a run under another one deletes every `.failed` marker first, since
+an attempt under another configuration is no retry of this one.
 
 Usage, from any directory, under the machine lock (one lock for the whole run;
 `--jobs` single-thread solves share the machine):
@@ -52,7 +54,7 @@ from typing import TYPE_CHECKING
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from benchmarks.common.records import append_attempt  # noqa: E402
+from benchmarks.common.records import append_attempt, shell_exit  # noqa: E402
 from benchmarks.minlplib.gm_ratio import (  # noqa: E402
     SCIP_FAILED_SUFFIX,
     SCIP_MERGED_SUFFIX,
@@ -107,16 +109,31 @@ def capped(cmd: Sequence[str], cap_seconds: float) -> list[str]:
     return ["timeout", "-k", str(KILL_GRACE_SECONDS), f"{cap_seconds:g}", *cmd]
 
 
-def shell_exit(returncode: int) -> int:
-    """`returncode` as `sh` reports it: a death by signal N is 128+N, not -N.
+#: The shard directory's configuration, beside the shards.
+SHARD_STAMP_NAME = "stamp.txt"
 
-    A solve that aborts or is killed outside the cap (SIGABRT, an OOM SIGKILL)
-    makes `timeout` re-raise that signal on itself, which `subprocess` reports
-    as negative. The #256 markers were written by `sh` (`exit 134` for an
-    abort), so a retry must record the same failure the same way, and a
-    SIGKILL must read as 137 to count as a failure.
+
+def shard_stamp(time_limit: float, seed: int) -> str:
+    """What makes two attempts on one instance the same attempt: budget and seed."""
+    return f"time-limit={time_limit:g}\nseed={seed}\n"
+
+
+def reset_on_new_stamp(shards: Path, stamp: str) -> list[str]:
+    """Delete every `.failed` marker when `shards` was stamped otherwise; the names cleared.
+
+    Cleared before the stamp is written, so a kill in between clears them
+    again on the next run, and never counts an old attempt under the new stamp.
+    A directory without a stamp predates #312: its markers hold no attempt
+    lines, so there is nothing to keep apart.
     """
-    return 128 - returncode if returncode < 0 else returncode
+    path = shards / SHARD_STAMP_NAME
+    cleared: list[str] = []
+    if path.exists() and path.read_text() != stamp:
+        for marker in sorted(shards.glob(f"*{SCIP_FAILED_SUFFIX}")):
+            marker.unlink()
+            cleared.append(marker.name.removesuffix(SCIP_FAILED_SUFFIX))
+    path.write_text(stamp)
+    return cleared
 
 
 def solve_shard(
@@ -141,6 +158,9 @@ def solve_shard(
     failed = shards / f"{name}{SCIP_FAILED_SUFFIX}"
     tmp.unlink(missing_ok=True)
     with (shards / f"{name}.log").open("w") as log:
+        # A solve that aborts or is killed outside the cap (SIGABRT, an OOM
+        # SIGKILL) makes `timeout` re-raise that signal on itself, which
+        # `subprocess` reports as negative; a SIGKILL must read as 137.
         rc = shell_exit(
             subprocess.run(
                 capped(command(name, tmp, merged), cap_seconds),
@@ -224,6 +244,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"not in the roster: {', '.join(unknown)}", file=sys.stderr)
         return 2
     names = [n for n in roster if n in wanted] if wanted else roster
+    args.shards.mkdir(parents=True, exist_ok=True)
+    cleared = reset_on_new_stamp(args.shards, shard_stamp(args.time_limit, args.seed))
+    if cleared:
+        print(
+            f"another budget or seed was stamped here: cleared the attempts of "
+            f"{len(cleared)} instance(s): {', '.join(cleared)}",
+            flush=True,
+        )
     print(f"[{_now()}] start: {len(names)} instance(s), {args.jobs} at a time", flush=True)
     exits = run_shards(
         args.shards,

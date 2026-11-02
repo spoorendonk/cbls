@@ -30,6 +30,7 @@ from benchmarks.minlplib.gm_ratio import (
     main,
     reason_category,
     score,
+    short_of_attempts,
 )
 from benchmarks.minlplib.run_benchmark import STAMP_NAME, checked_marker, mark_checked
 from benchmarks.minlplib.runner import CLAIM_EXCLUDED, RUNNER_COLUMNS
@@ -672,6 +673,20 @@ def test_a_scip_failure_without_two_recorded_attempts_is_refused_by_name_unless_
     assert f"SCIP 1: y ({attempts})" in capsys.readouterr().err
     assert main([*argv, "--partial"]) == 0
     assert capsys.readouterr().out.startswith("PARTIAL")
+
+
+def test_a_failure_the_attempt_counts_do_not_know_is_refused_not_let_through() -> None:
+    """A side built without its `attempts` map must not skip the #312 rule."""
+    assert short_of_attempts(["a", "b", "c"], {"b": "exit 134", "c": "x"}, {"c": 2}) == {"b": 0}
+
+
+def test_the_attempts_refusal_says_how_to_retry_without_starting_over(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    bounds, stage, shards = checked_staging(tmp_path)
+    (stage / "c.failures").unlink()
+    assert main(staging_argv(bounds, stage, shards)) == EXIT_REFUSED
+    assert "at the commit stamp.txt names, resuming" in capsys.readouterr().err
 
 
 def test_a_scip_failure_reads_as_its_last_attempt(tmp_path: Path) -> None:
