@@ -211,13 +211,14 @@ def _columns(model: Any, n: int) -> tuple[list[Any], Any | None, list[tuple[Any,
     # Without a .col file the reader names column j `x<j>`/`i<j>`/`b<j>`, and
     # `getVars()` lists them by TYPE, not by column (nvs05: i2, i3, x0, x1, ...),
     # so the order comes from the names, and only from them: a name without an
-    # index (a .col/.row file beside the .nl) is refused, never guessed from
-    # getVars() order.
+    # index is refused, never guessed from getVars() order. `_Probe` hides any
+    # `.col` beside the `.nl` (#319), so this guards a change in SCIP's naming.
     indices = [_COLUMN_NAME.match(var.name) for var in columns]
     unindexed = [var.name for m, var in zip(indices, columns, strict=True) if m is None]
     if unindexed:
         raise ValueError(
-            f"SCIP column {unindexed[0]!r} carries no column index (a .col file beside the .nl?)"
+            f"SCIP column {unindexed[0]!r} carries no column index "
+            "(a .col file read with the .nl, or a change in SCIP's NL reader naming?)"
         )
     by_index = {int(m.group(1)): var for m, var in zip(indices, columns, strict=True) if m}
     if sorted(by_index) != list(range(n)):
@@ -236,11 +237,15 @@ class _Probe:
         # SCIP's AMPL reader picks up a `<stem>.col` beside the `.nl` and names
         # columns from it (GAMS names, `objvar`), which `_columns` refuses. The
         # library archive ships one beside every `.nl` (#319), so the reader is
-        # given the `.nl` alone: a symlink in an empty directory. The model is
-        # fully read before the directory goes.
+        # given the `.nl` alone: a symlink in an empty directory. That hides
+        # `<stem>.row` too, so constraints in a demotion note carry SCIP's
+        # default row names, never GAMS names. The model is fully read before
+        # the directory goes. `strict=True`: a missing `.nl` is named as itself,
+        # not as a dangling link in a directory already deleted.
+        target = nl_path.resolve(strict=True)
         with tempfile.TemporaryDirectory(prefix="cbls-check-") as lone:
             link = Path(lone) / nl_path.name
-            link.symlink_to(nl_path.resolve())
+            link.symlink_to(target)
             self.model.readProblem(str(link))
         self.columns, self.nlobj, self.fixed = _columns(self.model, len(solution.values))
         self.values = solution.values

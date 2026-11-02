@@ -45,7 +45,8 @@ def sqrt_nl(tmp_path: Path) -> Path:
     path = tmp_path / "sqrtge.nl"
     model.writeProblem(str(path), verbose=False)
     # SCIP's writer leaves .col/.row name files beside it; without them the
-    # reader names the column x0, as it does for every MINLPLib instance.
+    # reader names the column x0, as it does for every MINLPLib instance once
+    # the check hides the archive's .col (#319).
     for side in (".col", ".row"):
         path.with_suffix(side).unlink(missing_ok=True)
     return path
