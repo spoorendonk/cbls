@@ -2752,8 +2752,8 @@ reproducibility.
 of `parallel_for_chunked(0, n_workers, ...)` on the caller's own pool, with
 `n_workers = min(n_threads, executor->n_threads())`.
 
-It lets a host that owns a thread pool run cbls on it instead of
-oversubscribing its cores. `ExecutorRef` is a type-erased, non-owning view of
+It lets a host run cbls on its own pool rather than oversubscribe its
+cores. `ExecutorRef` is a type-erased, non-owning view of
 anything with `parallel_for`, `parallel_for_chunked`, `parallel_invoke` and
 `n_threads`; the caller owns and outlives the pool, as with `StopRef`. The
 `cbls::Executor` concept in the same header compiles only in a C++20 (or later)
@@ -2763,7 +2763,8 @@ including translation unit.
   shared deadline, so one queued behind another would search on no budget:
   asking for more workers than the pool is wide gets fewer workers, not slower
   ones.
-- **The executor must run chunks concurrently.** A *sequential* executor is not
+- **The executor must run chunks concurrently**: workers share
+  incumbents and restart from a peer's. A *sequential* executor is not
   rejected or detected: under a wall clock it degenerates to a one-worker
   portfolio (the first worker takes the whole deadline); with
   `time_limit <= 0` it runs each worker's full `max_iterations` budget in
@@ -2786,14 +2787,13 @@ GIL, the serialisation a portfolio exists to avoid.
 (`include/cbls/stop.h`): a type-erased, **non-owning** view of anything with
 `bool requested() const`, such as the built-in `cbls::StopToken`. A host raises
 it and the run ends at its next **batch** boundary with
-`TerminationReason::Cancelled`. A C++20 `std::stop_token` (member
-`stop_requested()`) needs the three-line adaptor in that header, a **named
-lvalue** outliving the solve: the deleted rvalue constructor refuses a
-temporary at compile time.
+`TerminationReason::Cancelled`. A C++20 `std::stop_token` needs the three-line
+adaptor in that header, a **named lvalue** outliving the solve: the deleted
+rvalue constructor refuses a temporary at compile time.
 
 - **The granularity is the batch, not the iteration.** `requested()` is polled
   exactly where the wall clock is read (`past_deadline()`), so a running batch
-  finishes first.
+  (`batch_iterations` GLS iterations: microseconds to seconds) finishes first.
 - **`Cancelled` is not `Stopped`.** `Stopped` is a *peer worker* ending a
   portfolio run, which only `ParallelSearch` can cause; `Cancelled` is the host,
   and is reported when both hold, as the outer cause. `Feasible` outranks both.
@@ -2811,17 +2811,18 @@ worker ran reports `Cancelled`, not `NoBudget`.
 
 From Python, `SearchConfig.stop` / `ParallelConfig.stop` accept a
 `cbls.StopToken` (`request()`, `reset()`, `requested()`) or `None`, and read
-back as a bool. The single-threaded `cbls.solve` releases the GIL for the whole call, so a token raised
-from another Python thread reaches a running solve (`tests/python/test_stop.py`,
-in a child process: a regression starves the interpreter).
+back as a bool. The single-threaded `cbls.solve` releases the GIL for the
+whole call, so a token raised from another Python thread reaches a running
+solve (`tests/python/test_stop.py`, in a child process: a regression starves
+the interpreter).
 
 ### Event tracing
 
 `SearchConfig::tracer` is a `Tracer*` (`include/cbls/tracer.h`), null by
-default: an unthrottled event stream on the search's own thread, nothing
-rewritten. It is **not** `SolveCallback` (a throttled stream rewritten onto the
-portfolio's clock and incumbent) and must not become it: N workers through one
-instance would need a lock in the host's tracer or serialise the portfolio.
+default: an unthrottled event stream on the search's own thread. It is **not**
+`SolveCallback` (a throttled stream rewritten onto the portfolio's clock and
+incumbent) and must not become it: N workers through one instance would need a
+lock in the host's tracer or serialise the portfolio.
 
 Under a portfolio each worker gets **its own** (`ParallelConfig::tracer_factory`,
 called once per worker with its index, not once per restart). A factory, once
@@ -2829,11 +2830,11 @@ set, **decides**: a null return leaves that worker untraced, with *no* fallback
 to `SearchConfig::tracer` (one shared, unsynchronised sink). A
 `SearchConfig::tracer` with **no** factory is refused (`std::invalid_argument`,
 on the calling thread, before any worker exists) whenever more than one worker
-would run: dropping it loses events, keeping it is a race. A one-worker
-portfolio is allowed through.
+would run: dropping it loses events, keeping it is a race. One worker is
+allowed through.
 
 Five events, `batch_end`, `new_best`, `kick`, `lns` and `hook` (signatures and
-iteration accounting in `include/cbls/tracer.h`). **The granularity is the
+iteration accounting in the header). **The granularity is the
 batch, the kick or the inner-solver call — never the GLS iteration**, which
 would put a virtual call on the engine's hottest loop. A consumer can rely on
 `new_best` arriving before the `batch_end` of the batch that produced it, which
@@ -2843,17 +2844,17 @@ restart replaces the perturb with, is portfolio-only.
 
 A null tracer changes nothing: `tests/test_tracer.cpp` compares objective,
 feasibility, residual, iteration count, perturbation and LNS counters,
-termination reason, escape-probe latch, every `SearchCounters` field (per-generator rows included) and the
-**full final assignment** between a traced and an untraced run of the same
-seed, except `inner_solver_seconds`, a duration, which reads 0.0 in both arms
-of that clockless run.
+termination reason, escape-probe latch, every `SearchCounters` field
+(per-generator rows included) and the **full final assignment** between a
+traced and an untraced run of the same seed, except `inner_solver_seconds`, a
+duration, which reads 0.0 in both arms of that clockless run.
 
 ---
 
 ## GPU
 
 No GPU code: the bottleneck, `delta_evaluate` per jump candidate, is serial per
-jump, and the architecture has no batch-parallel evaluation of candidates.
+jump, and there is no batch-parallel evaluation of candidates.
 
 ---
 
