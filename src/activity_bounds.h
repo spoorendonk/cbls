@@ -3,6 +3,9 @@
 // Row-activity arithmetic shared by bound propagation (src/bound_propagation.cpp)
 // and the domain propagator (#329). Not installed.
 
+#include "cbls/bound_propagation.h"
+
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <limits>
@@ -39,6 +42,18 @@ struct Activity {
         }
     }
 
+    /// Undoes `add(contribution)`. The finite sum is not restored bit for bit
+    /// (floating-point subtraction); callers needing exact restores trail
+    /// whole activities instead.
+    void remove(double contribution) {
+        if (std::isfinite(contribution)) {
+            sum -= contribution;
+            magnitude -= std::abs(contribution);
+        } else {
+            --n_infinite;
+        }
+    }
+
     /// The activity of the row excluding one term, or `unbounded` when two or
     /// more terms are infinite in that direction.
     [[nodiscard]] double without(double contribution, double unbounded) const {
@@ -71,6 +86,22 @@ inline double max_contribution(double coef, double lo, double hi) {
 /// returns everything but the parenthesised factor.
 inline double roundoff_per_unit(std::size_t nnz, double coef) {
     return static_cast<double>(nnz + 3) * std::numeric_limits<double>::epsilon() / std::abs(coef);
+}
+
+/// The safety margin a derived bound `b` is relaxed by.
+inline double relaxation(double b, const BoundPropagationOptions& opts) {
+    return std::max(opts.safety_absolute, opts.safety_relative * std::abs(b));
+}
+
+/// True if `candidate` is a materially tighter upper bound than `incumbent`.
+/// Lower bounds are compared through the same function with both signs flipped.
+inline bool improves(double candidate, double incumbent, const BoundPropagationOptions& opts) {
+    if (!std::isfinite(incumbent)) {
+        return incumbent > 0.0;  // +inf: any finite candidate improves it.
+    }
+    const double threshold = std::max(opts.min_absolute_improvement,
+                                      opts.min_relative_improvement * std::abs(incumbent));
+    return candidate < incumbent - threshold;
 }
 
 }  // namespace cbls::activity_detail

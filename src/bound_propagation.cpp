@@ -19,27 +19,14 @@ namespace {
 using activity_detail::Activity;
 using activity_detail::eff_hi;
 using activity_detail::eff_lo;
+using activity_detail::improves;
 using activity_detail::max_contribution;
 using activity_detail::min_contribution;
+using activity_detail::relaxation;
 using activity_detail::roundoff_per_unit;
 
 constexpr double kNegInf = -std::numeric_limits<double>::infinity();
 constexpr double kPosInf = std::numeric_limits<double>::infinity();
-
-double relaxation(double b, const BoundPropagationOptions& opts) {
-    return std::max(opts.safety_absolute, opts.safety_relative * std::abs(b));
-}
-
-/// True if `candidate` is a materially tighter upper bound than `incumbent`.
-/// Lower bounds are compared through the same function with both signs flipped.
-bool improves(double candidate, double incumbent, const BoundPropagationOptions& opts) {
-    if (!std::isfinite(incumbent)) {
-        return incumbent > 0.0;  // +inf: any finite candidate improves it.
-    }
-    const double threshold = std::max(opts.min_absolute_improvement,
-                                      opts.min_relative_improvement * std::abs(incumbent));
-    return candidate < incumbent - threshold;
-}
 
 // Only `lb`/`ub` are checked for NaN. A NaN elsewhere is conservative rather than
 // wrong: a NaN coefficient counts as an infinite contribution and suppresses

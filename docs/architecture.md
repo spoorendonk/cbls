@@ -81,7 +81,7 @@ A one-screen map of the pipeline, its files, the extension points, build targets
 1. **Model building** (`include/cbls/model.h`, `include/cbls/expr.h`) — typed variables (Bool, Int, Float, List, Set), expressions by operator overloading, constraints, an objective; `close()` sorts the DAG topologically.
 2. **Expression DAG** (`include/cbls/dag.h`, `src/dag.cpp`, `src/dag_ops.cpp`) — variables have negative handles `-(id+1)`, nodes non-negative ids; 35 `NodeOp` types. `full_evaluate` evaluates everything; `delta_evaluate` recomputes only the nodes a move reaches (see [Evaluation Modes](#evaluation-modes), including the incremental Sum's drift bound). Slopes for the continuous jump values come from a forward up-cone pass (`UpConePartials`), or reverse-mode AD (`compute_all_partials`) for a large cone.
 3. **Search** (`src/search.cpp`) — the ViolationLS batch outer loop (Davies et al. CPAIOR 2024, Algorithm 6): each batch is Feasibility Jump, Novelty Jump or Structural, chosen by config probabilities; the `obj <= bound` row tightens on each new real-feasible solution; stagnation perturbs or runs LNS.
-4. **Feasibility Jump** (`src/feasibility_jump.cpp`, `src/linear_jump.cpp`) — a `JumpTable` of cached best jumps (score `-W·δ_G`), best-of-N sampling, GLS weight dynamics, and Novelty Jump compound moves (Algorithms 4–5). Float candidates come from Newton steps toward violated roots; a variable that reaches a `Ceil`/`Floor`/`Round`/`Element` node also gets its breakpoints; all-linear columns are scored in closed form by `LinearJumpScorer`, others by `weighted_violation_delta`. The default-off arms are listed in the [Parameters Table](#parameters-table).
+4. **Feasibility Jump** (`src/feasibility_jump.cpp`, `src/linear_jump.cpp`) — a `JumpTable` of cached best jumps (score `-W·δ_G`), best-of-N sampling, GLS weight dynamics, and Novelty Jump compound moves (Algorithms 4–5). Float candidates come from Newton steps toward violated roots; a variable that reaches a `Ceil`/`Floor`/`Round`/`Element` node also gets its breakpoints; all-linear columns are scored in closed form by `LinearJumpScorer`, others by `weighted_violation_delta`. The default-off arms are listed in the [Parameters Table](#parameters-table). Undoable domain propagation over the linear rows, for compound moves: `src/domain_propagation.cpp` (see [Domain propagation over linear rows](#domain-propagation-over-linear-rows-329)).
 5. **Moves** (`src/moves.cpp`) — typed move generators (bool flip, int ±1/rand, float perturb, list and set moves, the inter-list moves of a `ListPartition`). Scalar moves are subsumed by FJ; list/set moves feed the Structural batch as positional `ElementEdit`s. See [Structural Batch](#structural-batch).
 6. **Inner solver** (`src/inner_solver.cpp`) — `FloatIntensifyHook`: coordinate descent over floats (Newton on violated rows, line search on the objective), run on each new feasible solution.
 7. **LNS** (`src/lns.cpp`) — every N-th diversification kick: SISR ruin-and-recreate on each `ListPartition`, destroy 30% and repair by FJ elsewhere; accepted on a lexicographic (real violation, objective) key.
@@ -1093,6 +1093,43 @@ sweep; on any other objective it does nothing.
   only, throughout the run; Novelty batches, the exact Int argmin and the LNS
   repair keep their own rules.
 - `set_rho(rho)` — re-randomise the GLS decay between batches.
+
+### Domain propagation over linear rows (#329)
+
+**Files:** `include/cbls/domain_propagation.h`, `src/domain_propagation.cpp`,
+`src/activity_bounds.h` (the row-activity arithmetic it shares with
+[Implied variable bounds](#implied-variable-bounds)).
+
+Implied domains depend on bounds, not on current values. A plain FJ jump
+changes no bound, so it gains nothing from propagation; plain jumps already
+get the load-time implied domains (and presolve). The one place where
+variables are held fixed for a while is the Novelty compound-move stack
+(`nj_apply`/`nj_undo`, `move_stack_`, the backtracking in
+`novelty_jump_search`), which is where propagation with a trail fits (#330).
+Until then the classes are used only by tests. Propagating the objective
+cutoff on a new incumbent would make the soft objective row hard, so the
+objective row is not stored.
+
+- `LinearRowStore` is built once from a closed, evaluated model: every row
+  `affine_row_terms` accepts, over scalar variables, as residual CSR with
+  `lo <= sum a_k x_k <= hi` (`-inf`/`-c` for an inequality, `-c`/`-c` for
+  Eq), plus a column → row index. About 24 B per nonzero. It classifies rows
+  with `affine_row_terms` itself, not with FJ's `is_linear_`: that flag is 0
+  for every Eq row, which would drop `x + y + z = 1`.
+- `DomainPropagator` keeps each row's min and max activity as a finite sum
+  plus an infinite count (`Activity`). `fix`/`tighten` update the rows of the
+  changed variable in O(1) each, and scan those whose slack is below the
+  row's max variation (`max_k |a_k| (hi_k - lo_k)` at the starting bounds)
+  plus a bound on the incremental sum's rounding drift; other rows cost
+  O(1). A scanned row's activities are summed afresh from the current
+  bounds: removing a large contribution from a running sum leaves its
+  rounding behind (`0.3 + 1e15 - 1e15` is 0.25), which would derive bounds
+  that cut off feasible points. Depth 1 by default; `cascade` queues derived
+  bounds' rows too, a row again if a later bound touches it, up to
+  `max_cascade_terms`. Derived bounds follow `propagate_bounds`: relaxed by
+  `max(safety, #211 roundoff)`, rounded inward on Bool/Int.
+- `checkpoint`/`backtrack` use a trail of old values (bounds and whole
+  activities), never differences, so a backtrack restores bit for bit.
 
 ---
 
