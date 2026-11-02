@@ -187,6 +187,7 @@ benchmarks/mipfeas/
   mipfeas.cpp        CBLS runner, one instance per process
   cpsat_solve.py     CP-SAT baseline (defaults, or fj+ls), same result schema
   run_benchmark.py   driver: parallel, resumable, memory-capped
+  run_arms.py        CBLS against CBLS: flag-set arms, interleaved, locked per solve (#331)
   verify_solution.py independent feasibility check against the instance file
   primal_integral.py scoring -> comparison.csv + <stem>_report.md
   testdata/          a frozen results directory and the two artifacts scored
@@ -467,6 +468,43 @@ question is asked.
 
 The driver is resumable: a job whose result file exists is skipped, so an
 interrupted run continues where it stopped.
+
+### Comparing CBLS flag sets (`run_arms.py`, #331)
+
+`run_arms.py` runs one engine under several flag sets (arms) and scores them
+against each other. `--campaign presolve-322`, the default, has four arms:
+`control` (the runner's defaults), `presolve` (`--presolve`, with coefficient
+tightening and aggregation on), `compound-propagation`
+(`--compound-propagation`) and `both`.
+
+```sh
+# The 22 tuned.txt instances x seeds 1 2 3 x 4 arms, 60 s each, locked per solve
+.venv/bin/python benchmarks/mipfeas/run_arms.py --out-dir <dir> --budget 60 \
+    --seeds 1 2 3 -- --cbls-threads 4 --cpuset 0,2,4,6
+# Re-score what is there
+.venv/bin/python benchmarks/mipfeas/run_arms.py --out-dir <dir> --budget 60 \
+    --seeds 1 2 3 --report-only
+```
+
+- **Every solve is one `run_benchmark.py --engines cbls` call** on a
+  one-instance roster (`<dir>/rosters/`), into `<dir>/<arm>/seed<N>`, so
+  verification, the pin check, resume and the run record are that driver's.
+- **Order is instance-major, then seed, then arm**: the arms of one (instance,
+  seed) run back to back, so drift in the machine's state hits them alike.
+- **Each solve takes the machine lock** (`--lock-command`, `xk lock --` by
+  default; `''` for none), and nothing holds it between solves. A cell already
+  solved and verified is skipped without taking it.
+- **Arguments after `--` go to `run_benchmark.py`.** Flags the arms or the plan
+  set (`--presolve`, `--compound-propagation`, `--seed`, `--budget`,
+  `--results-dir`, …) are refused there.
+- **`campaign.json` stamps the out-dir.** A run refuses a directory stamped with
+  any other campaign, arm flags, instances, seeds, budget, pass-through or
+  engine commit; `--report-only` compares the first five.
+- **`arms_report.md`** has a row per arm and seed and a row per arm pooled over
+  seeds: feasible count, the shifted geometric mean of the primal integral, its
+  ratio to the control, median setup seconds and maximum peak RSS. The noise
+  floor is the control's PI SGM max / min over seeds; a ratio inside it is not a
+  difference. The report refuses arms run at different engine commits.
 
 ### Running the portfolio (`--cbls-threads`)
 
