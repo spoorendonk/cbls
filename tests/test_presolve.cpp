@@ -1,5 +1,6 @@
 // Presolve and postsolve (#324, epic #322).
 
+#include "presolve_test_util.h"
 #include "test_helpers.h"
 
 #include <algorithm>
@@ -17,86 +18,9 @@
 #include <vector>
 
 using namespace cbls;
+using namespace cbls::presolve_test;
 
 namespace {
-
-constexpr double kInf = std::numeric_limits<double>::infinity();
-
-struct Builder {
-    LinearProblem p;
-
-    int32_t col(double lb, double ub, bool integral = false, double obj = 0.0,
-                bool frozen = false) {
-        p.col_lb.push_back(lb);
-        p.col_ub.push_back(ub);
-        p.integral.push_back(integral ? 1 : 0);
-        p.frozen.push_back(frozen ? 1 : 0);
-        p.obj.push_back(obj);
-        return static_cast<int32_t>(p.col_lb.size() - 1);
-    }
-
-    void row(const std::vector<std::pair<int32_t, double>>& terms, double lo, double hi) {
-        for (const auto& [c, a] : terms) {
-            p.cols.push_back(c);
-            p.coefs.push_back(a);
-        }
-        p.row_start.push_back(p.cols.size());
-        p.row_lo.push_back(lo);
-        p.row_hi.push_back(hi);
-    }
-};
-
-PresolveOptions only(bool propagate) {
-    PresolveOptions o;
-    o.enabled = true;
-    o.propagate_bounds = propagate;
-    return o;
-}
-
-double tol_of(double scale) {
-    return 1e-9 * std::max(1.0, std::abs(scale));
-}
-
-/// x satisfies p's bounds, integrality and rows within 1e-9 (scaled).
-bool satisfies(const LinearProblem& p, const std::vector<double>& x) {
-    if (x.size() != p.n_cols()) {
-        return false;
-    }
-    for (std::size_t j = 0; j < p.n_cols(); ++j) {
-        if (!std::isfinite(x[j]) || x[j] < p.col_lb[j] - tol_of(x[j]) ||
-            x[j] > p.col_ub[j] + tol_of(x[j])) {
-            return false;
-        }
-        if (p.integral[j] != 0 && std::abs(x[j] - std::round(x[j])) > 1e-9) {
-            return false;
-        }
-    }
-    for (std::size_t i = 0; i < p.n_rows(); ++i) {
-        double act = 0.0;
-        double mag = 0.0;
-        for (std::size_t k = p.row_start[i]; k < p.row_start[i + 1]; ++k) {
-            const double t = p.coefs[k] * x[static_cast<std::size_t>(p.cols[k])];
-            act += t;
-            mag += std::abs(t);
-        }
-        const double lo = p.row_lo[i];
-        const double hi = p.row_hi[i];
-        const double scale = mag + (std::isfinite(lo) ? std::abs(lo) : 0.0) +
-                             (std::isfinite(hi) ? std::abs(hi) : 0.0);
-        if (act < lo - tol_of(scale) || act > hi + tol_of(scale)) {
-            return false;
-        }
-    }
-    return true;
-}
-
-double objective(const LinearProblem& p, const std::vector<double>& x) {
-    double v = p.obj_offset;
-    for (std::size_t j = 0; j < p.n_cols(); ++j) {
-        v += p.obj[j] * x[j];
-    }
-    return v;
-}
 
 /// Values for `x + a*z1 - a*z2 <= c` (a = 0.1, z1 = v1, z2 = v2 fixed) where
 /// the exact bound left on x, `c - a*v1 + a*v2`, is at least 3, but folding
@@ -552,11 +476,37 @@ void add_random_row(std::mt19937& rng, Builder& b, const std::vector<double>& x)
     }
 }
 
-Instance random_instance(uint32_t seed, bool boxed) {
+/// `a x_i + b x_j = a v_i + b v_j` over two distinct columns, a and b in
+/// {-2, -1, 1, 2}: the doubleton equalities aggregation (#328) eliminates.
+void add_doubleton_equality(std::mt19937& rng, Builder& b, const std::vector<double>& x) {
+    const int n = static_cast<int>(x.size());
+    const int32_t i = std::uniform_int_distribution<int32_t>(0, n - 1)(rng);
+    int32_t j = std::uniform_int_distribution<int32_t>(0, n - 2)(rng);
+    j = j >= i ? j + 1 : j;
+    const auto coef = [&rng] {
+        const int a = std::uniform_int_distribution<int>(-2, 1)(rng);
+        return static_cast<double>(a >= 0 ? a + 1 : a);
+    };
+    const double ai = coef();
+    const double aj = coef();
+    const double rhs =
+        (ai * x[static_cast<std::size_t>(i)]) + (aj * x[static_cast<std::size_t>(j)]);
+    b.row({{i, ai}, {j, aj}}, rhs, rhs);
+}
+
+/// `equalities`: an equality-heavy variant for aggregation (#328), with up to
+/// two set-partition pairs `u + v = 1` over binaries and half the rows
+/// doubleton equalities; in `boxed` mode it keeps at most 4 other columns, so
+/// the box stays small enough to enumerate.
+Instance random_instance(uint32_t seed, bool boxed, bool equalities = false) {
     std::mt19937 rng(seed);
     Builder b;
     std::vector<double> x;
-    const int n = std::uniform_int_distribution<int>(1, boxed ? 5 : 6)(rng);
+    int max_n = 6;
+    if (boxed) {
+        max_n = equalities ? 4 : 5;
+    }
+    const int n = std::uniform_int_distribution<int>(1, max_n)(rng);
     for (int j = 0; j < n; ++j) {
         const bool integral = boxed || std::uniform_int_distribution<int>(0, 1)(rng) == 1;
         const double v = integral ? std::uniform_int_distribution<int>(-3, 3)(rng)
@@ -570,9 +520,24 @@ Instance random_instance(uint32_t seed, bool boxed) {
         b.col(v - below, v + above, integral, obj, frozen);
         x.push_back(v);
     }
+    if (equalities) {
+        const int pairs = std::uniform_int_distribution<int>(0, 2)(rng);
+        for (int k = 0; k < pairs; ++k) {
+            const double v = std::uniform_int_distribution<int>(0, 1)(rng);
+            const int32_t u = b.col(0, 1, true, std::uniform_int_distribution<int>(-2, 2)(rng));
+            const int32_t w = b.col(0, 1, true, std::uniform_int_distribution<int>(-2, 2)(rng));
+            x.push_back(v);
+            x.push_back(1.0 - v);
+            b.row({{u, 1.0}, {w, 1.0}}, 1.0, 1.0);
+        }
+    }
     const int m = std::uniform_int_distribution<int>(0, 5)(rng);
     for (int i = 0; i < m; ++i) {
-        add_random_row(rng, b, x);
+        if (equalities && x.size() >= 2 && std::uniform_int_distribution<int>(0, 1)(rng) == 1) {
+            add_doubleton_equality(rng, b, x);
+        } else {
+            add_random_row(rng, b, x);
+        }
     }
     return {b.p, x};
 }
@@ -606,21 +571,30 @@ void for_each_point(const LinearProblem& p, F&& f) {
     }
 }
 
-}  // namespace
+/// Counts summed over a property run, to show the reductions were exercised.
+struct Exercised {
+    int coefs_tightened = 0;
+    int cols_aggregated = 0;
 
-TEST_CASE("presolve removes no feasible point and postsolve restores it", "[presolve]") {
-    // With empty columns off every reduction is primal: the known point must
-    // survive into the reduced problem and come back unchanged.
+    void add(const PresolveStats& s) {
+        coefs_tightened += s.coefs_tightened;
+        cols_aggregated += s.cols_aggregated;
+    }
+};
+
+/// With empty columns off every reduction is primal: the known point must
+/// survive into the reduced problem and come back unchanged.
+Exercised check_point_survives(bool equalities) {
     PresolveOptions o = only(true);
     o.empty_columns = false;
-    int n_tightened = 0;  // coefficient tightening (#327) is on by default
+    Exercised ex;
     for (uint32_t seed = 1; seed <= 1000; ++seed) {
         CAPTURE(seed);
-        const Instance inst = random_instance(seed, seed % 2 == 0);
+        const Instance inst = random_instance(seed, seed % 2 == 0, equalities);
         REQUIRE(satisfies(inst.p, inst.x_star));
         const PresolveResult r = presolve(inst.p, o);
         REQUIRE(r.stats.status != PresolveStatus::Infeasible);
-        n_tightened += r.stats.coefs_tightened;
+        ex.add(r.stats);
         const std::vector<double> reduced_x = restrict_to(r, inst.x_star);
         REQUIRE(satisfies(r.reduced, reduced_x));
         const std::vector<double> back = r.postsolve.apply(reduced_x);
@@ -646,20 +620,20 @@ TEST_CASE("presolve removes no feasible point and postsolve restores it", "[pres
             }
         }
     }
-    REQUIRE(n_tightened > 0);
+    return ex;
 }
 
-TEST_CASE("every point of the reduced problem postsolves to a feasible one", "[presolve]") {
-    // Empty columns on: the dual reduction keeps feasibility and does not
-    // worsen the objective of the point it maps.
+/// Empty columns on: the dual reduction keeps feasibility and does not
+/// worsen the objective of the point it maps.
+Exercised check_every_point_postsolves(bool equalities) {
     const PresolveOptions o = only(true);
-    int n_tightened = 0;
+    Exercised ex;
     for (uint32_t seed = 1; seed <= 1000; ++seed) {
         CAPTURE(seed);
-        const Instance inst = random_instance(seed, /*boxed=*/true);
+        const Instance inst = random_instance(seed, /*boxed=*/true, equalities);
         const PresolveResult r = presolve(inst.p, o);
         REQUIRE(r.stats.status != PresolveStatus::Infeasible);
-        n_tightened += r.stats.coefs_tightened;
+        ex.add(r.stats);
         const std::vector<double> mapped = r.postsolve.apply(restrict_to(r, inst.x_star));
         REQUIRE(satisfies(inst.p, mapped));
         REQUIRE(objective(inst.p, mapped) <= objective(inst.p, inst.x_star) + 1e-9);
@@ -673,7 +647,26 @@ TEST_CASE("every point of the reduced problem postsolves to a feasible one", "[p
         });
         REQUIRE(n_points >= 1);
     }
-    REQUIRE(n_tightened > 0);
+    return ex;
+}
+
+}  // namespace
+
+TEST_CASE("presolve removes no feasible point and postsolve restores it", "[presolve]") {
+    CHECK(check_point_survives(/*equalities=*/false).coefs_tightened > 0);
+}
+
+TEST_CASE("every point of the reduced problem postsolves to a feasible one", "[presolve]") {
+    CHECK(check_every_point_postsolves(/*equalities=*/false).coefs_tightened > 0);
+}
+
+TEST_CASE("aggregation removes no feasible point on equality-heavy instances", "[presolve]") {
+    CHECK(check_point_survives(/*equalities=*/true).cols_aggregated > 0);
+}
+
+TEST_CASE("every point of an equality-heavy reduced problem postsolves to a feasible one",
+          "[presolve]") {
+    CHECK(check_every_point_postsolves(/*equalities=*/true).cols_aggregated > 0);
 }
 
 TEST_CASE("a postsolved point passes verify_model on the unpresolved MPS model", "[presolve]") {

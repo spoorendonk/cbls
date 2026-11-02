@@ -87,7 +87,7 @@ A one-screen map of the pipeline, its files, the extension points, build targets
 7. **LNS** (`src/lns.cpp`) — every N-th diversification kick: SISR ruin-and-recreate on each `ListPartition`, destroy 30% and repair by FJ elsewhere; accepted on a lexicographic (real violation, objective) key.
 8. **Violation & penalty** (`src/violation.cpp`) — `total_violation = Σ W[c]·max(0, viol_c)`; `weighted_violation_delta` is the no-commit counterfactual δ_G; `augmented_objective()` is the inner solver's descent metric.
 9. **Parallel search** (`src/pool.cpp`) — `SolutionPool` + `ParallelSearch`, a cooperative portfolio that shares incumbents and the objective bound. Workers share the frozen model's immutable structure (#157) and copy only what a search writes. Nondeterministic; `--threads 1` is the reproducible run. See [Solution Pool & Parallel Search](#solution-pool--parallel-search); the benchmark driver's CPU policy is in `benchmarks/instances/mipfeas/README.md`.
-10. **I/O** (`src/io.cpp`, `src/io/`) — JSONL `.cbls` format; the MPS reader (`mps_reader.cpp` + `mps_to_model.cpp`, gzip, optional bzip2), the AMPL `.nl` reader (`nl_reader.cpp` + `nl_to_model.cpp`) and the MIPLIB `.solu` reader (`solu_reader.cpp`). CLI in `src/cli.cpp`. Load-time reductions for the adapters: implied bounds (`src/bound_propagation.cpp`) and presolve with postsolve (`include/cbls/presolve.h`, `src/presolve.cpp`, `src/presolve_internal.h`, `src/presolve_coef.cpp`); see [Implied variable bounds](#implied-variable-bounds) and [Presolve](#presolve).
+10. **I/O** (`src/io.cpp`, `src/io/`) — JSONL `.cbls` format; the MPS reader (`mps_reader.cpp` + `mps_to_model.cpp`, gzip, optional bzip2), the AMPL `.nl` reader (`nl_reader.cpp` + `nl_to_model.cpp`) and the MIPLIB `.solu` reader (`solu_reader.cpp`). CLI in `src/cli.cpp`. Load-time reductions for the adapters: implied bounds (`src/bound_propagation.cpp`) and presolve with postsolve (`include/cbls/presolve.h`, `src/presolve.cpp`, `src/presolve_internal.h`, `src/presolve_coef.cpp`, `src/presolve_aggregate.cpp`); see [Implied variable bounds](#implied-variable-bounds) and [Presolve](#presolve).
 
 ### Key extension points
 
@@ -2711,7 +2711,7 @@ it an empty box.
 ### Presolve
 
 **Files:** `include/cbls/presolve.h`, `src/presolve.cpp`, `src/presolve_internal.h`,
-`src/presolve_coef.cpp` (epic #322; framework #324)
+`src/presolve_coef.cpp`, `src/presolve_aggregate.cpp` (epic #322; framework #324)
 
 `presolve(LinearProblem, PresolveOptions)` reduces a linear problem and returns
 the reduced one with a `Postsolve` that maps a reduced solution back to one value
@@ -2733,8 +2733,8 @@ under `NlToModelOptions::presolve` (#326, #342).
   singleton rows turned into column bounds (the quotient relaxed outward by its
   error bound, then rounded inward on an integral column); a row side the activity range already implies dropped —
   only when the activity clears it by its `(nnz + 3)·DBL_EPSILON` rounding bound,
-  the #211 scaling — and the row removed once it has no side; coefficient
-  tightening (#327, below); empty columns fixed
+  the #211 scaling — and the row removed once it has no side; doubleton
+  aggregation (#328, below); coefficient tightening (#327, below); empty columns fixed
   at their best bound. The last is the one **dual** reduction: it keeps the
   optimum's value, not every feasible point. Everything else is primal.
 - **Coefficient tightening** (`src/presolve_coef.cpp`, #327;
@@ -2751,6 +2751,30 @@ under `NlToModelOptions::presolve` (#326, #342).
   a fold (`2·|shift|` added to `row_scale`). Equality, two-sided and implied
   sides are left alone (`d >= |a_k|` means the side is implied, dropped above).
   `cbls_mipfeas --no-presolve-coef-tightening` is the off arm.
+- **Doubleton aggregation** (`src/presolve_aggregate.cpp`, #328/#337;
+  `PresolveOptions::doubleton_aggregation`, on). A live equality row
+  `a x + b y = c` with exactly two entries eliminates y = d − k x (k = a/b,
+  d = c/b): y's bounds move onto x, y is substituted into its other rows (x's
+  coefficient gains `−e k`, the sides lose `e d`), the objective folds, and the
+  row and y go; postsolve recomputes y = (c − a x)/b, rounded when y is integral,
+  never clamped. Limits: neither column frozen; `|k| <= max_aggregation_ratio`
+  (1.0), so the coefficients and errors substitution carries never grow; an
+  integral y only through an integral x, with k exactly an integer and d one
+  within `feasibility_tolerance` plus the side's `row_roundoff` (c is then
+  taken as `round(d)·b`), so substitution and postsolve are exact; at most
+  `max_fill` rows gaining an x entry (default unlimited: each elimination drops
+  y's entries and the row's two and adds at most one per row, so the total
+  nnz never grows; #331 measures it). Orientation: a continuous y first, then
+  the y in fewer rows, then the lower index; if its checks fail, the other is
+  tried. Every check (transferred bounds finite and below `1e20`, every moved
+  side and new coefficient finite) passes before anything changes, so an
+  aggregation is all or nothing. The transferred bounds are relaxed outward by
+  the quotient's error (the singleton rule, with the numerator's roundings),
+  the slack is `min(tol, tol/|k|)`, and an empty intersection is `Infeasible`.
+  Each moved side is tracked as a fold that also carries the eliminated row's
+  side error, scaled by `|e/b|`. Runs after the row reductions in a round, so
+  a row they shrink to two entries is seen the same round; rows are scanned
+  once per round, and a chain unwinds in reverse through the postsolve stack.
 - **Floating point.** A row bound carries `(folds + 1)·DBL_EPSILON·row_scale`
   of error from the fixed columns folded into it. Every bound derived from it
   is relaxed outward by that error first, so roundoff never cuts off a feasible
@@ -2768,7 +2792,7 @@ under `NlToModelOptions::presolve` (#326, #342).
 - **Infeasible** returns the original problem with an identity postsolve, as the
   adapters already do for propagation: the search reports infeasibility.
 - **Postsolve** is one LIFO stack of tagged steps (`Postsolve::Step`: `Fixed`
-  today; aggregation adds its kind, #328): `apply` places the reduced values and
+  and `Aggregated`): `apply` places the reduced values and
   undoes the steps last to first, whatever their kind. A column no step
   restored comes back NaN, loudly.
 - **Cost.** O(nnz) per round. The working copy is about 20 B per nonzero
@@ -2795,7 +2819,10 @@ integer point of a small reduced box postsolves to an original-feasible point
 with the same objective. `tests/test_presolve_coef.cpp` pins (3.6), its mirror
 and the `>=` case by hand, and enumerates 2000 random one-sided rows over small
 boxes (continuous columns on a quarter grid): the tightened row admits exactly
-the original row's points.
+the original row's points. `tests/test_presolve_aggregate.cpp` pins each
+aggregation rule by hand; the two property checks also run over an
+equality-heavy family (set-partition binary pairs and doubleton equalities)
+that must aggregate.
 
 **MPS adapter (#325).** With `MpsToModelOptions::presolve.enabled`,
 `mps_to_model` moves its row matrix into a `LinearProblem` (objective

@@ -143,5 +143,7 @@ void reduce_rows(Work& w);  ///< Empty, free, singleton and redundant rows.
 void reduce_empty_columns(Work& w);
 /// Integral coefficients of one-sided rows (src/presolve_coef.cpp, #327).
 void reduce_coef_tightening(Work& w);
+/// Doubleton equalities `a x + b y = c`: y eliminated (src/presolve_aggregate.cpp, #328).
+void reduce_doubleton_aggregation(Work& w);
 
 }  // namespace cbls::presolve_detail

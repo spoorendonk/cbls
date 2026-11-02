@@ -215,6 +215,7 @@ add_library(cbls_lib
     src/bound_propagation.cpp
     src/presolve.cpp
     src/presolve_coef.cpp
+    src/presolve_aggregate.cpp
     src/feasibility_jump.cpp
     src/linear_jump.cpp
     src/domain_propagation.cpp

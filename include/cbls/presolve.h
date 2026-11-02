@@ -17,6 +17,14 @@
 //   - coefficient tightening: an integral column's coefficient in a one-sided
 //     row moves toward 0 with the side, keeping the row's integer solutions
 //     (Achterberg et al. 2020, eq. (3.6); src/presolve_coef.cpp);
+//   - doubleton-equality aggregation: a row `a x + b y = c` with two live
+//     entries eliminates y = (c - a x)/b (src/presolve_aggregate.cpp, #328).
+//     y's bounds move onto x, y is substituted in its other rows and the
+//     objective, and the row and y go; postsolve recomputes y from x. Only
+//     |a/b| <= `max_aggregation_ratio`; an integral y only when x is
+//     integral and a/b and c/b are integers. Limits: a frozen column is
+//     never eliminated or kept in y's place, and no dual reasoning is used;
+//     x's new coefficients carry their rounding (exact for integer ratios);
 //   - empty columns (in no row): fixed at their best bound for the objective.
 //     This is the only optimality-based (dual) reduction here: it keeps every
 //     optimum's objective value, not every feasible point.
@@ -31,6 +39,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <vector>
 
 namespace cbls {
@@ -69,6 +78,16 @@ struct PresolveOptions {
     bool propagate_bounds = true;
     /// Coefficient tightening on one-sided rows (#327).
     bool coefficient_tightening = true;
+    /// Doubleton-equality aggregation (#328): `a x + b y = c` eliminates y.
+    bool doubleton_aggregation = true;
+    /// Largest |a/b| for which y is eliminated: x's coefficients in y's other
+    /// rows change by `-a_ry a/b`, so a large ratio inflates them.
+    double max_aggregation_ratio = 1.0;
+    /// Most entries one aggregation may add (fill). No limit by default: an
+    /// aggregation removes y's k other entries and adds at most k, and drops
+    /// the row, so the total never grows; the limit only caps how much x's
+    /// column grows. Unmeasured; #331 measures presolve.
+    int max_fill = std::numeric_limits<int>::max();
     /// Hard stop on the number of rounds; each round is O(nnz).
     int max_rounds = 20;
     /// Passed to `propagate_bounds` each round.
@@ -102,6 +121,8 @@ struct PresolveStats {
     int bounds_tightened = 0;     ///< Kept columns whose lb or ub moved.
     int coefs_tightened = 0;      ///< Coefficient-tightening steps (a column may count again).
     int rows_coef_tightened = 0;  ///< Row passes in which a coefficient was tightened.
+    int cols_aggregated = 0;      ///< Columns eliminated through a doubleton equality.
+    int aggregation_fill = 0;     ///< Entries added by those eliminations.
     double seconds = 0.0;
 };
 
@@ -116,11 +137,16 @@ public:
     /// `apply` undoes them in exactly the reverse of the order presolve took.
     struct Step {
         enum class Kind : uint8_t {
-            Fixed,  ///< x[col] = value.
+            Fixed,       ///< x[col] = value.
+            Aggregated,  ///< x[col] = (value - a * x[other]) / b, rounded if `integral`.
         };
-        Kind kind;
-        int32_t col;
-        double value;
+        Kind kind = Kind::Fixed;
+        uint8_t integral = 0;
+        int32_t col = -1;
+        int32_t other = -1;
+        double value = 0.0;
+        double a = 0.0;
+        double b = 0.0;
     };
 
     /// `n_original` columns, of which `reduced_to_col[i]` is reduced column i.
@@ -128,7 +154,24 @@ public:
     void set_mapping(std::size_t n_original, std::vector<int32_t> reduced_to_col);
 
     void push_fixed(int32_t col, double value) {
-        steps_.push_back({Step::Kind::Fixed, col, value});
+        Step s;
+        s.col = col;
+        s.value = value;
+        steps_.push_back(s);
+    }
+
+    /// y = (c - a x) / b, rounded when y is integral and never clamped:
+    /// clamping would break the equality it came from.
+    void push_aggregated(int32_t y, int32_t x, double a, double b, double c, bool y_integral) {
+        Step s;
+        s.kind = Step::Kind::Aggregated;
+        s.integral = y_integral ? 1 : 0;
+        s.col = y;
+        s.other = x;
+        s.value = c;
+        s.a = a;
+        s.b = b;
+        steps_.push_back(s);
     }
 
     /// One value per original column. Throws `std::invalid_argument` unless
@@ -166,7 +209,8 @@ struct PresolveResult {
 ///
 /// Cost: O(nnz) per round, `max_rounds` at most. Peak working memory is about
 /// 20 bytes per nonzero (row-major entries 12 B, column-major index 8 B), plus
-/// the reduced copy (12 B per kept nonzero), on top of the caller's input.
+/// the reduced copy (12 B per kept nonzero), on top of the caller's input,
+/// plus 40 B per postsolve step (one per removed column).
 /// Disabled, or once proven infeasible, the column index is not built.
 PresolveResult presolve(const LinearProblem& problem, const PresolveOptions& opts = {});
 

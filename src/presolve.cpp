@@ -42,6 +42,12 @@ std::vector<double> Postsolve::apply(const std::vector<double>& reduced_x) const
             case Step::Kind::Fixed:
                 x[static_cast<std::size_t>(it->col)] = it->value;
                 break;
+            case Step::Kind::Aggregated: {
+                const double y =
+                    (it->value - (it->a * x[static_cast<std::size_t>(it->other)])) / it->b;
+                x[static_cast<std::size_t>(it->col)] = it->integral != 0 ? std::round(y) : y;
+                break;
+            }
         }
     }
     return x;
@@ -434,7 +440,7 @@ PresolveResult build_result(Work& w, const std::vector<double>& lb0,
     const PresolveStats& s = w.stats;
     const bool reduced = s.cols_fixed + s.cols_empty + s.rows_empty + s.rows_free +
                              s.rows_singleton + s.rows_redundant + s.row_sides_dropped +
-                             s.bounds_tightened + s.coefs_tightened >
+                             s.bounds_tightened + s.coefs_tightened + s.cols_aggregated >
                          0;
     w.stats.status = reduced ? PresolveStatus::Reduced : PresolveStatus::Unchanged;
     res.stats = w.stats;
@@ -745,6 +751,12 @@ PresolveResult presolve(const LinearProblem& problem, const PresolveOptions& opt
             }
             if (!w.infeasible) {
                 presolve_detail::reduce_rows(w);
+            }
+            // After `reduce_rows`, so a row it shrinks to two entries is seen
+            // in the same round; a row aggregation leaves empty or singleton
+            // is handled next round.
+            if (!w.infeasible && opts.doubleton_aggregation) {
+                presolve_detail::reduce_doubleton_aggregation(w);
             }
             // After the implied sides are dropped, so a redundant side is
             // removed rather than tightened.

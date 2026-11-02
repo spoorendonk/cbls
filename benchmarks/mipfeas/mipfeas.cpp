@@ -705,6 +705,8 @@ void add_presolve_stats(const cbls::MpsToModelResult& built, nlohmann::json& j) 
     j["presolve_bounds_tightened"] = ps.bounds_tightened;
     j["presolve_coefs_tightened"] = ps.coefs_tightened;
     j["presolve_rows_coef_tightened"] = ps.rows_coef_tightened;
+    j["presolve_cols_aggregated"] = ps.cols_aggregated;
+    j["presolve_aggregation_fill"] = ps.aggregation_fill;
     j["presolve_n_vars"] = built.var_handles.size();
     j["presolve_n_cons"] =
         std::count_if(built.constraint_node_ids.begin(), built.constraint_node_ids.end(),
