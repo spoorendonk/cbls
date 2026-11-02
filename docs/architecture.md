@@ -2172,11 +2172,11 @@ const-handle split described below.
 Callers: `src/cli.cpp` and the `cvrp`, `uc-chped` and `minlplib` runners at
 `--threads > 1` use the master overload (#262), as does
 `cbls_minlplib_portfolio` at every thread count; `benchmarks/mipfeas/` uses the
-factory over pre-built copies of its frozen master.
+factory, as above.
 
 Sharing roughly halves a worker's marginal memory on a large model, at no
-throughput cost (#157). What remains per worker is genuinely per-worker: the variables, the node
-values, at least three `Model::State` snapshots, FJ's per-variable and
+throughput cost (#157; per-worker terms: #176). What remains per worker is
+genuinely per-worker: the variables, the node values, at least three `Model::State` snapshots, FJ's per-variable and
 per-constraint tables, `ViolationManager`'s two per-constraint vectors, FJ's
 `LinearJumpScorer` (its slope table is structure, but each worker builds its
 own) and `dag_ops.cpp`'s `thread_local` adjoint scratch, which that scorer's
@@ -2220,11 +2220,11 @@ the single-threaded trajectory bit-identical:
    read without it. At each **batch boundary** a worker whose bound is looser
    than `G - eps(G)` -- the same `eps` rule `record_best` uses -- tightens to
    it, then `fj.resync()`, so a worker behind a peer stops searching for points
-   the portfolio has already beaten. The rules, each argued at
-   `sync_shared_bound` in `src/search.cpp`:
+   the portfolio has already beaten. The rules, argued at
+   `sync_shared_bound`, `record_best` and in `solution_pool.h`:
    - **never loosen past the shared cap.** The boundary test is strict, and
      every other writer of the bound during a solve (`record_best`, the
-     adoption and stall re-groundings, #241) takes the min with the shared cap
+     adoption and the stall (#241) re-groundings) takes the min with the shared cap
      at the current step; the witness sentinel writes only over `+inf`. The one
      deliberate loosening is the stall re-grounding on a continuous objective,
      which gives up the part of a tightening that was the step, never a peer's
@@ -2252,8 +2252,9 @@ the single-threaded trajectory bit-identical:
      closest-approach states or #100's `+inf` witness. `G` is not re-evaluated
      on the reader's model; a factory returning different models misdirects
      the row's pressure but cannot corrupt an incumbent.
-   - **the row's weight is never masked**: `solve()` runs FJ single-phase, and
-     the bound is only written when the model has an objective row.
+   - **the row's weight is never masked**: two-phase FJ would zero it, but
+     `solve()` runs FJ single-phase, and the bound is only written when the
+     model has an objective row.
 
    `ParallelConfig::share_objective_bound` (default on; `cbls_mipfeas
    --no-share-bound`) switches it off, which is the A/B control.
@@ -2278,8 +2279,7 @@ the single-threaded trajectory bit-identical:
    genuinely different portfolios. A worker whose `solve()` throws is retried
    a bounded number of times rather than left to idle its core; a factory that
    throws is not retried, since it will not succeed on a second ask. The one
-   case where
-   finishing early is correct -- a pure-feasibility model, whose first feasible
+   case where finishing early is correct -- a pure-feasibility model, whose first feasible
    solution *is* the answer -- raises `SearchCoordination::stop`, which every
    other worker observes at its next batch boundary and reports as
    `TerminationReason::Stopped`.
@@ -2302,18 +2302,18 @@ worker's own thread, **once per worker and not once per restart**. Return a
 fresh object per call: the search never locks the hook or the LNS, so one
 object shared by workers is a silent data race. Both return a
 `std::shared_ptr` rather than a `unique_ptr` because nanobind cannot
-relinquish ownership of a Python-constructed instance, so this one factory
-type serves C++ and Python callers (#129; the reasoning is in
+relinquish a Python-constructed instance to a default-deleter one, so this one factory
+type serves C++ and Python callers (#129; reasoning in
 `include/cbls/pool.h`).
 
-What a *Python* factory can usefully return is narrower than it looks. Neither
+A *Python* factory is narrower than it looks. Neither
 `InnerSolverHook` nor `LNS` has a nanobind trampoline, so C++ dispatches
 through the base vtable and a Python override of `solve` or `destroy_repair`
 is never called by the search. `LNS.destroy_repair` is the trap: it *is*
 bound, so an override works when called from Python and silently does not
-when the search calls it from C++. The same holds for the `hook` and `lns`
-arguments of the single-threaded `solve()`: they buy a separately configured
-`FloatIntensifyHook` or `LNS`, not a Python implementation (#132).
+when the search calls it from C++. So these factories, like the `hook`
+and `lns` arguments of the single-threaded `solve()`, buy a separately
+configured `FloatIntensifyHook` or `LNS`, not a Python implementation (#132).
 
 ---
 
@@ -2379,7 +2379,8 @@ by default; LNS (destroy + GFJ repair, lexicographic accept) every
 **Alternative:** population-based search (GA, scatter search) or systematic
 restart schedules (Luby). The pool gives warm restarts *across* the workers of
 a `ParallelSearch`; a single-threaded `solve()` gets its form of the same idea
-from each kick restoring its own incumbent first ([Diversification](#diversification)).
+from each kick, once there is an incumbent, restoring it first
+([Diversification](#diversification)).
 Luby is available as the opt-in `SearchConfig::luby_restart_unit`, but the
 smoke A/B (#239) found it no better than #102's stall trigger and slower to a
 first feasible point, so it stays off.
