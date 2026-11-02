@@ -142,6 +142,8 @@ public:
     /// Restores the state as of `checkpoint()` returning `level`, and drops
     /// that checkpoint and every later one.
     void backtrack(int32_t level);
+    /// Checkpoints held: 0 at the root.
+    [[nodiscard]] int32_t depth() const noexcept { return static_cast<int32_t>(levels_.size()); }
 
     /// Fixes `var` to `value`: `tighten(var, value, value)`.
     bool fix(int32_t var, double value);

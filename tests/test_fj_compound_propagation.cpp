@@ -10,7 +10,9 @@
 #include <cbls/cbls.h>
 #include <cbls/domain_propagation.h>
 #include <cstdint>
+#include <memory>
 #include <random>
+#include <stdexcept>
 #include <vector>
 
 using namespace cbls;
@@ -53,7 +55,7 @@ LinearJumpScorer make_scorer(const Model& m) {
 // The trajectory fence's random over-constrained integer model (as in
 // test_fj_novelty_incremental.cpp): Novelty reaches local minima, backtracks
 // and bumps, so legs narrow domains and some fixes conflict.
-void build_random_int_model(Model& m, uint32_t seed, int num_vars, int num_rows) {
+std::vector<int32_t> build_random_int_model(Model& m, uint32_t seed, int num_vars, int num_rows) {
     std::mt19937 gen(seed);
     std::uniform_int_distribution<int> pick_var(0, num_vars - 1);
     std::uniform_int_distribution<int> pick_coef(1, 3);
@@ -81,6 +83,7 @@ void build_random_int_model(Model& m, uint32_t seed, int num_vars, int num_rows)
         const double rhs = pick_rhs(gen);
         m.add_constraint(r % 2 == 0 ? m.leq(sum, m.constant(rhs)) : m.geq(sum, m.constant(rhs)));
     }
+    return handles;
 }
 
 // The same shape with every row nonlinear (a product of two vars plus a
@@ -109,6 +112,31 @@ void build_random_nonlinear_model(Model& m, uint32_t seed, int num_vars, int num
         m.add_constraint(r % 2 == 0 ? m.leq(body, m.constant(rhs)) : m.geq(body, m.constant(rhs)));
     }
 }
+
+// Reads its one input through; once armed, it throws on exactly its `at`-th
+// evaluation (evaluate or delta), standing in for user code that fails once
+// partway into a Novelty search.
+class ThrowOnce : public CustomInvariant {
+public:
+    ThrowOnce(int64_t at, const bool* armed) : at_(at), armed_(armed) {}
+    double evaluate(const InvariantInputs& in) override {
+        if (*armed_ && ++calls_ == at_) {
+            throw std::runtime_error("invariant failed once");
+        }
+        return in.value(0);
+    }
+    double delta(const InvariantInputs& in, ConstSpan<int32_t> /*changed*/) override {
+        return evaluate(in);
+    }
+    [[nodiscard]] std::unique_ptr<CustomInvariant> clone() const override {
+        return std::make_unique<ThrowOnce>(*this);
+    }
+
+private:
+    int64_t at_;
+    const bool* armed_;
+    int64_t calls_ = 0;
+};
 
 struct NoveltyRun {
     std::vector<double> values;
@@ -273,4 +301,49 @@ TEST_CASE("compound propagation with no linear row leaves the trajectory unchang
         REQUIRE(on.conflicts == 0);
         REQUIRE(off.tightenings == 0);
     }
+}
+
+TEST_CASE("a Novelty search that throws leaves the next one at the propagator's root",
+          "[fj][novelty][compound_propagation]") {
+    // Round-1 review of #339: an undo that throws between popping its leg and
+    // backtracking left a checkpoint no stack entry named, so every later
+    // compound move was scored inside that stale fix. Swept over the call
+    // that throws, so some throw lands in such an undo; after a clean batch
+    // the propagator must be back at its root whatever the throw interrupted.
+    int thrown = 0;
+    for (int64_t at = 1; at <= 400; ++at) {
+        Model m;
+        const std::vector<int32_t> h = build_random_int_model(m, 5, 12, 14);
+        // One more row, through the throwing node, on the first var.
+        bool armed = false;
+        const int32_t c = m.custom({h[0]}, std::make_unique<ThrowOnce>(at, &armed), "throws");
+        m.add_constraint(m.geq(c, m.constant(3.0)));
+        m.close();
+        ViolationManager vm(m);
+        RNG rng(5);
+        GFJConfig cfg;
+        cfg.compound_propagation = true;
+        FeasibilityJump fj(m, vm, rng, cfg);
+        fj.begin(/*set_initial_x=*/false);
+        armed = true;
+        try {
+            for (int b = 0; b < 8; ++b) {
+                fj.novelty_batch(200);
+            }
+            continue;  // `at` was never reached
+        } catch (const std::runtime_error&) {
+            ++thrown;
+        }
+        fj.resync();
+        fj.novelty_batch(200);
+        const DomainPropagator* p = fj.novelty_propagator();
+        CAPTURE(at);
+        REQUIRE(p != nullptr);
+        REQUIRE(p->depth() == 0);
+        for (int32_t v = 0; v < static_cast<int32_t>(m.num_vars()); ++v) {
+            REQUIRE(p->lo(v) == m.var(v).lb);
+            REQUIRE(p->hi(v) == m.var(v).ub);
+        }
+    }
+    REQUIRE(thrown > 0);
 }

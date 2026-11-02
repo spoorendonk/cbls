@@ -1204,6 +1204,40 @@ struct SecondWeighting {
     double winner_delta = 0.0;   // ...and this is its delta under `weights`
 };
 
+// compute_var_jump's `box` (#339): when narrower than `declared`'s box, a copy
+// whose lb/ub are the intersection, handed to every candidate path in place of
+// the declared Variable -- they read the box through it only. Only the fields
+// they read are copied (no name, no elements).
+std::optional<Variable> narrow_to_box(const Variable& declared, const JumpBox* box) {
+    if (box == nullptr || (box->lo <= declared.lb && box->hi >= declared.ub)) {
+        return std::nullopt;
+    }
+    std::optional<Variable> out;
+    Variable& n = out.emplace();
+    n.id = declared.id;
+    n.type = declared.type;
+    n.value = declared.value;
+    n.lb = std::max(declared.lb, box->lo);
+    n.ub = std::min(declared.ub, box->hi);
+    return out;
+}
+
+// Whether `var`'s box holds fewer than two values (integers, for Bool/Int);
+// then `point` is the one it holds, or NaN for none.
+bool pinned_box(const Variable& var, double& point) {
+    double lo = var.lb;
+    double hi = var.ub;
+    if (var.type != VarType::Float) {
+        lo = std::ceil(lo);
+        hi = std::floor(hi);
+    }
+    if (lo < hi) {
+        return false;
+    }
+    point = lo == hi ? lo : std::numeric_limits<double>::quiet_NaN();
+    return true;
+}
+
 // compute_var_jump, and with `second` non-null its prepare and its probes also
 // weigh under second->weights, in the same pass.
 JumpResult compute_var_jump_core(Model& model, const std::vector<double>& weights, int32_t var_id,
@@ -1212,18 +1246,7 @@ JumpResult compute_var_jump_core(Model& model, const std::vector<double>& weight
                                  SecondWeighting* second, const JumpBox* box) {
     const Variable& declared = model.var(var_id);
     const double x0 = declared.value;
-    // A narrower box (#339) is handed to every candidate path as a Variable
-    // whose lb/ub are the intersection: they read the box through `var` only.
-    // Only the fields they read are copied (no name, no elements).
-    std::optional<Variable> narrowed;
-    if (box != nullptr && (box->lo > declared.lb || box->hi < declared.ub)) {
-        Variable& n = narrowed.emplace();
-        n.id = declared.id;
-        n.type = declared.type;
-        n.value = x0;
-        n.lb = std::max(declared.lb, box->lo);
-        n.ub = std::min(declared.ub, box->hi);
-    }
+    const std::optional<Variable> narrowed = narrow_to_box(declared, box);
     const Variable& var = narrowed.has_value() ? *narrowed : declared;
 
     // f(j) = weighted violation delta of moving var_id to j (0 at the current
@@ -1266,23 +1289,15 @@ JumpResult compute_var_jump_core(Model& model, const std::vector<double>& weight
             second->winner_delta = probed2;
         }
     };
-    if (narrowed.has_value()) {
-        // Fewer than two values left: the candidate paths treat a pinned box
-        // as "no jump exists", which on a narrowed box is wrong when x0 lies
-        // outside it, so the one value left is offered here (exact_int_jump
-        // declines on such a box, so nothing above took it).
-        double lo = var.lb;
-        double hi = var.ub;
-        if (var.type != VarType::Float) {
-            lo = std::ceil(lo);
-            hi = std::floor(hi);
+    // Fewer than two values left in a narrowed box: the candidate paths treat
+    // a pinned box as "no jump exists", which is wrong when x0 lies outside
+    // it, so the one value left (if any) is offered here. exact_int_jump
+    // declines on such a box, so nothing above took it.
+    if (double point = 0.0; narrowed.has_value() && pinned_box(var, point)) {
+        if (!std::isnan(point)) {
+            consider(point);
         }
-        if (!(lo < hi)) {
-            if (lo == hi) {
-                consider(lo);
-            }
-            return best.result();
-        }
+        return best.result();
     }
     offer_jump_candidates(model, var_id, var, x0, allow_escape_probe, linear, tol, best, consider);
     return best.result();
@@ -3338,6 +3353,11 @@ void FeasibilityJump::begin_novelty_run() {
     }
     nw_changed_.clear();
     clear_novelty_stack();
+    if (nj_domains_ && nj_domains_->depth() > 0) {
+        // Only after an exception: an undo that threw between popping its leg
+        // and backtracking leaves a checkpoint the stack no longer names.
+        nj_domains_->backtrack(0);
+    }
     if (config_.compound_propagation && !nj_domains_) {
         // Variable bounds are fixed once the model is built, so one build
         // serves every later run.
