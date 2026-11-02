@@ -115,7 +115,11 @@ presolved, columns appearing in a nonlinear term are frozen. The search runs on
 the reduced model; its point is then postsolved onto the model built without
 presolve, every check (objective, residuals, `verify_model`) runs there, and a
 failure there is a `VERIFY-FAILED` row. The `.sol` holds every original column.
-The row's `search_config` records `presolve`. It is an experiment arm:
+`wall_seconds` times the search alone, not that second build. The row's
+`search_config` records `presolve`; what presolve did to the instance goes to
+stdout as `<instance>  presolve=<status> rows= cols= bounds=` (statuses
+`reduced`, `unchanged`, `infeasible`, `rejected`, `not-run`; the last three
+searched the plain model). It is an experiment arm:
 `cbls_minlplib` and `run_benchmark.py --presolve` both refuse to write a
 published table, and the driver stages it apart (`threads<N>-presolve`, and a
 `presolve=on` stamp line).

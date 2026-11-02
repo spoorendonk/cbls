@@ -1060,6 +1060,8 @@ COMPLETED_NOTE_SITES: tuple[tuple[str, str, int], ...] = (
     ("bool verify_assignment(", r'buf\.size\(\),\s*"([^"]+)"', 1),
     ("std::string describe_infeasible(", r'buf\.size\(\),\s*"([^"]+)"', 2),
     ("void run_instance(", r'note = [^;]*?"([^"]+)"', 2),
+    # The postsolved point's check on the model built without presolve (#343).
+    ("bool verify_original(", r'note = [^;]*?"([^"]+)"', 1),
 )
 
 
@@ -1091,9 +1093,13 @@ def test_every_completed_search_note_the_runner_writes_is_allowlisted() -> None:
     # not sentence-initial notes in their own right: the first is only ever
     # appended after `; `, and the second is a no-search note.
     file_wide = set(re.findall(r'note = [^;]*?"([^"]+)"', source, re.S))
-    assert file_wide == {"integrality-mismatch(nl=", "unsupported", "non-finite", "feasible"}, (
-        file_wide
-    )
+    assert file_wide == {
+        "integrality-mismatch(nl=",
+        "unsupported",
+        "non-finite",
+        "feasible",
+        "VERIFY-FAILED(original model: ",
+    }, file_wide
 
 
 # --- the floor is sized in the units of the gap it bounds (issue #151) ---------

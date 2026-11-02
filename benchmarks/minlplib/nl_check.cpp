@@ -12,12 +12,15 @@
 //
 //   <path> \t modelled \t presolve=<status> rows=<removed> cols=<removed> bounds=<tightened>
 //
+// with the statuses of `presolve_outcome` (presolve_outcome.h).
+//
 // benchmarks/instances/minlplib/status.py runs it over the unpacked MINLPLib
 // archive to give every catalogue instance a status (#283). Reader refusals
 // are split as the runner splits them (nl_refusal.h). Every control character
 // in a message (reader messages quote raw file bytes) becomes a space, so each
 // file is exactly one line.
 #include <benchmarks/minlplib/nl_refusal.h>
+#include <benchmarks/minlplib/presolve_outcome.h>
 #include <cbls/io_nl.h>
 #include <cstdio>
 #include <exception>
@@ -35,25 +38,6 @@ std::string one_line(std::string s) {
     return s;
 }
 
-const char* status_name(cbls::PresolveStatus s) {
-    switch (s) {
-        case cbls::PresolveStatus::Unchanged:
-            return "unchanged";
-        case cbls::PresolveStatus::Reduced:
-            return "reduced";
-        case cbls::PresolveStatus::Infeasible:
-            return "infeasible";
-    }
-    return "?";
-}
-
-std::string presolve_cells(const cbls::PresolveStats& s) {
-    const int rows = s.rows_empty + s.rows_free + s.rows_singleton + s.rows_redundant;
-    const int cols = s.cols_fixed + s.cols_empty;
-    return std::string("\tpresolve=") + status_name(s.status) + " rows=" + std::to_string(rows) +
-           " cols=" + std::to_string(cols) + " bounds=" + std::to_string(s.bounds_tightened);
-}
-
 std::string check(const std::string& path, bool presolve) {
     cbls::NlProblem prob;
     try {
@@ -69,7 +53,7 @@ std::string check(const std::string& path, bool presolve) {
         opts.presolve.enabled = presolve;
         const cbls::NlToModelResult built = cbls::nl_to_model(prob, opts);
         if (built.supported) {
-            return presolve ? "modelled" + presolve_cells(built.presolve_stats) : "modelled";
+            return presolve ? "modelled\t" + cbls::bench::presolve_outcome(built) : "modelled";
         }
         return "adapter-unsupported\t" + one_line(built.skipped_reasons.empty()
                                                       ? std::string("(no reason given)")

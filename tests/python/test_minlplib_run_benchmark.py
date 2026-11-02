@@ -14,6 +14,7 @@ import argparse
 import csv
 import json
 import os
+import re
 import socket
 import subprocess
 from pathlib import Path
@@ -1567,6 +1568,8 @@ def test_a_presolved_row_is_verified_and_written_over_the_original_columns(
         tmp_path, {"pre": PRESOLVABLE_NL}, ["--presolve", "--solution-dir", str(sols)]
     )
     assert result.returncode == 0, result.stdout + result.stderr
+    # The edge this fixture exists for: presolve removed both columns.
+    assert re.search(r"^pre\s+presolve=reduced rows=1 cols=2 ", result.stdout, re.M), result.stdout
     with (tmp_path / "out.csv").open(newline="") as fh:
         (row,) = list(csv.DictReader(fh))
     assert row["feasible"] == "true", row

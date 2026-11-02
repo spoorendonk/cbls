@@ -14,6 +14,7 @@
 #include <benchmarks/common/search_config_flags.h>
 #include <benchmarks/minlplib/nl_refusal.h>
 #include <benchmarks/minlplib/note_policy.h>
+#include <benchmarks/minlplib/presolve_outcome.h>
 #include <benchmarks/mipfeas/worker_accounting.h>
 #include <cbls/cbls.h>
 #include <cbls/io_nl.h>
@@ -138,6 +139,47 @@ void check_flag_values(Args& a) {
     }
 }
 
+/// The first flag that makes this run other than the full published
+/// measurement, or nullptr: what `resolve_out_csv` refuses to publish under.
+/// A run that is not the full published measurement must never overwrite the
+/// published results table. A partial roster would truncate it to the rows it
+/// ran; an ablation arm would republish it as though the default
+/// configuration had produced it, which is worse -- the numbers would look
+/// like the published ones and would not be (#136).
+///
+/// The BUDGET and the numerics belong in this ladder too, and the sibling
+/// uc-chped runner has always had them. `--time-limit 1` over the full
+/// roster satisfies every other rung and republishes the table with
+/// one-second results -- the #88 hazard by name -- and `--seed`/`--feas-tol`
+/// do the same with rows that differ from the published protocol in a way no
+/// column records. `--commit` is required for the converse reason: a
+/// published row whose provenance reads "unknown" is one a later reader
+/// cannot tell engine drift from a bug with.
+const char* unpublishable_flag(const Args& a) {
+    if (!a.instances.empty()) {
+        return "--instance";
+    }
+    if (a.time_limit_set) {
+        return "--time-limit";
+    }
+    if (a.seed_set) {
+        return "--seed";
+    }
+    if (a.feas_tol_set) {
+        return "--feas-tol";
+    }
+    if (a.threads != 1 && a.threads != kCampaignThreads) {
+        // 1 is the committed table's count and kCampaignThreads the campaign
+        // protocol's (#255, #256); any other count is neither, and a table
+        // holds one thread count.
+        return "--threads";
+    }
+    if (a.presolve) {
+        return "--presolve";
+    }
+    return cbls::bench::first_non_default_search_flag(a.search);
+}
+
 /// Fills in `--out` and enforces what may overwrite the published comparison
 /// table. Its own step because the guards are about the FILE rather than about
 /// which flags were typed: a run that names the published table explicitly --
@@ -180,39 +222,7 @@ void resolve_out_csv(Args& a) {
                      published_trace.c_str());
         std::exit(2);
     }
-    // A run that is not the full published measurement must never overwrite the
-    // published results table. A partial roster would truncate it to the rows it
-    // ran; an ablation arm would republish it as though the default
-    // configuration had produced it, which is worse -- the numbers would look
-    // like the published ones and would not be (#136).
-    //
-    // The BUDGET and the numerics belong in this ladder too, and the sibling
-    // uc-chped runner has always had them. `--time-limit 1` over the full
-    // roster satisfies every other rung and republishes the table with
-    // one-second results -- the #88 hazard by name -- and `--seed`/`--feas-tol`
-    // do the same with rows that differ from the published protocol in a way no
-    // column records. `--commit` is required for the converse reason: a
-    // published row whose provenance reads "unknown" is one a later reader
-    // cannot tell engine drift from a bug with.
-    const char* why = nullptr;
-    if (!a.instances.empty()) {
-        why = "--instance";
-    } else if (a.time_limit_set) {
-        why = "--time-limit";
-    } else if (a.seed_set) {
-        why = "--seed";
-    } else if (a.feas_tol_set) {
-        why = "--feas-tol";
-    } else if (a.threads != 1 && a.threads != kCampaignThreads) {
-        // 1 is the committed table's count and kCampaignThreads the campaign
-        // protocol's (#255, #256); any other count is neither, and a table
-        // holds one thread count.
-        why = "--threads";
-    } else if (a.presolve) {
-        why = "--presolve";
-    } else {
-        why = cbls::bench::first_non_default_search_flag(a.search);
-    }
+    const char* why = unpublishable_flag(a);
     const bool writes_table = cbls::bench::same_file(a.out_csv, published);
     const bool writes_trace =
         !a.trace_csv.empty() && cbls::bench::same_file(a.trace_csv, published_trace);
@@ -1074,6 +1084,11 @@ bool prepare_instance(std::ostream& csv, const Args& args, const std::string& na
     if (prob.n_discrete_vars > 0) {
         ++t.mixed_integer;
     }
+    // What presolve did to this instance (#343): the row's `search_config` says
+    // only that it was asked for, so an A/B reads which rows it touched here.
+    if (args.presolve) {
+        std::printf("%-22s  %s\n", name.c_str(), cbls::bench::presolve_outcome(built).c_str());
+    }
 
     return true;
 }
@@ -1128,9 +1143,15 @@ cbls::SearchResult search_instance(const Args& args, cbls::Model& model,
 
 /// The model built without presolve, holding `presolved`'s current point
 /// postsolved onto the original columns and full-evaluated: what the row is
-/// verified, described and written from under `--presolve`.
+/// verified, described and written from under `--presolve`. A build that is
+/// not presolved (no `--presolve`, or presolve fell back to the plain build) is
+/// returned as is. `postsolve`, not `reduced_to_original`, says which: presolve
+/// can remove every column.
 cbls::NlToModelResult postsolve_onto_plain(const cbls::NlProblem& prob,
-                                           const cbls::NlToModelResult& presolved) {
+                                           cbls::NlToModelResult presolved) {
+    if (presolved.postsolve.n_original() == 0) {
+        return presolved;
+    }
     const std::vector<double> x = presolved.original_values(presolved.model);
     cbls::NlToModelResult plain = cbls::nl_to_model(prob);
     if (!plain.supported || x.size() != plain.var_handles.size()) {
@@ -1178,7 +1199,11 @@ void run_instance(std::ostream& csv, std::ofstream& trace, const Args& args,
     std::printf("%-22s ", name.c_str());
     std::fflush(stdout);
 
+    // Only a presolved build is checked again on the model built without it
+    // (#343): presolve that fell back searched the plain model itself.
+    const bool presolved = built.postsolve.n_original() != 0;
     auto t0 = std::chrono::steady_clock::now();
+    auto t1 = t0;
     cbls::SearchResult result;
     try {
         // Test seam: the solve-error path needs a solve that throws, and since
@@ -1196,15 +1221,14 @@ void run_instance(std::ostream& csv, std::ofstream& trace, const Args& args,
                        stderr);
             ++t.lost_workers;
         }
+        t1 = std::chrono::steady_clock::now();
         // Under presolve the search ran on the reduced model: postsolve its
         // point onto the model built without presolve, so the residuals, the
         // objective check, the infeasibility note and the `.sol` all describe
-        // the original instance (#343). Inside the bracket: a throw here is a
-        // solve-error row, not a lost one. `postsolve`, not `reduced_to_original`,
-        // says the build was presolved: presolve can remove every column.
-        if (built.postsolve.n_original() != 0) {
-            built = postsolve_onto_plain(prob, built);
-        }
+        // the original instance (#343). Inside the bracket, so a throw here is
+        // a solve-error row, not a lost one; after `t1`, so `wall_seconds`
+        // times the search alone and not the second build.
+        built = postsolve_onto_plain(prob, std::move(built));
     } catch (const std::exception& e) {
         std::printf(" ERROR solving: %s\n", e.what());
         ++t.errored;
@@ -1213,7 +1237,6 @@ void run_instance(std::ostream& csv, std::ofstream& trace, const Args& args,
                            FirstFeasibleCells{});
         return;
     }
-    auto t1 = std::chrono::steady_clock::now();
     double wall = std::chrono::duration<double>(t1 - t0).count();
 
     // solve() reports the *minimised* objective. For a maximize instance the
@@ -1246,13 +1269,9 @@ void run_instance(std::ostream& csv, std::ofstream& trace, const Args& args,
     double gap_bks = safe_gap(obj, b.primal, maximizing);
     double gap_dual = safe_gap(obj, b.dual, maximizing);
 
-    bool verified = result.feasible;
-    if (result.feasible) {
-        verified = verify_assignment(prob, built, args, obj, name, t, note, max_violation);
-    }
-    if (verified && args.presolve) {
-        verified = verify_original(built, args, name, t, note);
-    }
+    const bool verified = result.feasible &&
+                          verify_assignment(prob, built, args, obj, name, t, note, max_violation) &&
+                          (!presolved || verify_original(built, args, name, t, note));
 
     if (verified) {
         ++t.feasible;
