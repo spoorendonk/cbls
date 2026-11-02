@@ -51,10 +51,10 @@ as separate: expressiveness (rows 2-3) or the same algorithm in the baseline
 
 **Every comparison solver runs at its own default parameters** (Simon,
 2026-11-01, [#87](https://github.com/spoorendonk/cbls/issues/87#issuecomment-6558356494)):
-CP-SAT, SCIP and HiGHS with no setting changed. CP-SAT runs as it ships —
-presolve on, its full default portfolio — not restricted to its `fj` + `ls`
-workers under `num_violation_ls`, as row 1 was until then (#106, #256). The
-comparison reports what each solver does and does not try to even out their
+CP-SAT and SCIP with no setting changed, and HiGHS likewise should a benchmark
+ever run it (none does today). CP-SAT runs as it ships — presolve on, its full
+default portfolio — not restricted to its `fj` + `ls` workers under
+`num_violation_ls`, as row 1 was until #284 (#106). The comparison reports what each solver does and does not try to even out their
 differences; the MIPfeas table records each engine's version and the threads,
 CPU and wall time of every solve (#285). Xpress, Gurobi and CPLEX stay out of
 every table (#87).
@@ -76,8 +76,6 @@ comparative claim, so the table's ordering rule does not gate them:
   PyVRP baseline landed in #196-#200, the OR-Tools baseline in #204, but until #204 publishes results `List` still has no evidence (next
   section), and the single-seed smoke numbers quoted in #201-#203 are not
   results.
-
-Engine-wide (cross-cutting) work is tracked under epic #24.
 
 ## Structured variables: the claim is currently unsupported
 
@@ -184,7 +182,7 @@ loop, review and pushing. The steps specific to a benchmark:
 
 0. **Plan first.** Read the benchmark's issue and `docs/architecture.md` (solver
    internals), and check what already exists (data, reference solver, model
-   code). Put the plan on the issue.
+   code). Put the plan on the issue and wait for approval before implementing.
 
 1. **Prepare instance data.** Write a download or generation script into
    `benchmarks/instances/{name}/`, from public benchmark libraries, competition
