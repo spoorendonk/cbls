@@ -917,7 +917,13 @@ def run(args: argparse.Namespace) -> Score:
         )
         derived = {"cbls staging stamp": staging_budget(args.cbls_staging)}
     scip = load_scip_shards(args.scip_shards, roster)
-    budget = reconcile_budget({"SCIP scip_version": scip_budget(scip), **derived}, args.budget)
+    # The shard stamp (`scip_shards.shard_stamp`, same name and `time-limit=` key
+    # as the staging stamp) records the budget the `.failed` attempts ran under,
+    # which the markers themselves do not (#312).
+    shard_stamp = {"SCIP shard stamp": staging_budget(args.scip_shards)}
+    budget = reconcile_budget(
+        {"SCIP scip_version": scip_budget(scip), **shard_stamp, **derived}, args.budget
+    )
     return score(
         bounds,
         cbls,

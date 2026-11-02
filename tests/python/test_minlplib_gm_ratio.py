@@ -510,6 +510,21 @@ def test_a_scip_budget_unlike_the_staging_stamp_is_refused_and_agreement_printed
     assert "--budget 45s, but the data records 60s" in capsys.readouterr().err
 
 
+def test_a_shard_stamp_unlike_the_scip_rows_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """#312: `.failed` attempts carry no budget; a `--restart` at 120s beside 60s rows."""
+    bounds, table, shards = campaign(tmp_path, [("a", 0.0, 0.0), ("y", 0.0, 0.0)])
+    (shards / "y.csv").unlink()
+    write_failed(shards, "y")
+    (shards / "stamp.txt").write_text("time-limit=120\nseed=0\n")
+    argv = ["--bounds", str(bounds), "--cbls", str(table), "--scip-shards", str(shards)]
+    assert main(argv) == EXIT_REFUSED
+    assert "SCIP scip_version 60s, SCIP shard stamp 120s" in capsys.readouterr().err
+    (shards / "stamp.txt").write_text("time-limit=60\nseed=0\n")
+    assert main(argv) == 0
+
+
 # --------------------------------------------------------------------------
 # Staging and shard directories.
 # --------------------------------------------------------------------------

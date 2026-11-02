@@ -142,7 +142,8 @@ def reset_on_new_stamp(shards: Path, stamp: str, *, restart: bool) -> list[str]:
                 f"{path} was written for another budget or seed:\n--- recorded ---\n"
                 f"{recorded}--- now ---\n{stamp}Use another --shards directory, or pass "
                 "--restart to delete every .failed marker here and start the attempts over "
-                "(rows solved under the old budget stay, and the scorer refuses mixed budgets)."
+                "(rows solved under the old budget stay; the scorer refuses them beside "
+                "the new stamp)."
             )
         for marker in sorted(shards.glob(f"*{SCIP_FAILED_SUFFIX}")):
             marker.unlink()
