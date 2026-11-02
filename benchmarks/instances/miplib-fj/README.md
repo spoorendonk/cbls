@@ -80,8 +80,6 @@ fresh clone needs no download.
 ## Caveats
 
 - This is **not** the verbatim Luteberget & Sartor 2023 Table 1 roster.
-  When the original paper roster becomes available, replace this list and
-  re-record `comparison.csv` against it.
 - Some instances may not have `=opt=` entries in the current `.solu` —
   in that case `comparison.csv` reports `NaN` for `gap_to_opt%` (the row
   is still useful for solver-vs-solver regression).

@@ -147,8 +147,8 @@ measurement and was not regenerated. What is already measured elsewhere in this
 file bounds it rather than states it — propagation, one of setup's three parts,
 costs ~1.1s worst case and ~7s summed over the roster (**Implied bounds shrink
 that restriction**), and the read+build asymmetry under **Configuration, and
-what is recorded** is a few seconds on the largest instances. Both are well under the double digits an earlier planning note asserted,
-and neither is a substitute for the per-row columns.
+what is recorded** is read per row from `setup_seconds`. Neither is a substitute for the per-row
+columns.
 
 ## Metric: Primal Integral
 
@@ -396,7 +396,7 @@ Verification reads each instance a second time and sums every nonzero in Python,
 inside the job slot and under the same memory cap as the solve. It checks one row
 at a time and never holds the matrix: PySCIPOpt builds a fresh `str` key per
 nonzero, measured at ~245 bytes each, so retaining it would cost ~6.7 GB on
-`square47`'s 27.4M nonzeros — more than the `--mem-limit-gb 6` below. Peak is
+`square47`'s 27.4M nonzeros — more than a `--mem-limit-gb 6` cap. Peak is
 SCIP's own model plus a single row. The `peak_rss_kib` figures recorded per
 result are the **solve's**, so they do not bound a job's peak on their own.
 
@@ -432,8 +432,10 @@ uv sync --extra dev --extra benchmarks
 #    defaults takes the machine's cores, so the driver runs one job at a time.
 .venv/bin/python benchmarks/mipfeas/run_benchmark.py --roster smoke --budget 60 --jobs 1
 
-# 5. The full run. #255 used 60s (233 x 60s x 2 engines, one job at a time:
-#    ~8 wall-hours); its table waits on #253.
+# 5. The full roster: 233 x 60s x 2 engines, one job at a time, ~8 wall-hours.
+#    #255 ran the 211 outside tuned.txt at 60s, seed 1, with --cbls-threads 16
+#    --cpuset 0-15, and scored them with --held-out tuned.txt in step 6; its table
+#    waits on #253.
 .venv/bin/python benchmarks/mipfeas/run_benchmark.py --roster full --budget 60 --jobs 1
 
 # 6. Score it — into the results directory, beside what it scores
@@ -575,9 +577,10 @@ also why the #157 issue body's 1.16 GB / 4.99 GB baseline no longer reproduces.
 Re-derive rather than trusting either number if it is going to be multiplied.
 
 It is not the roster's largest model, though: `square47` carries 27.4M nonzeros
-(5.6x kasavu) and `supportcase19` 1.43M columns (2x). `square47` also spends
+(5.6x kasavu) and `supportcase19` 1.43M columns (2x). `square47` also spent
 ~100-150s on model build and un-deadlined search initialisation before its first
-iteration, so budget wall-clock accordingly — the driver allows 900s of slack on
+iteration in the 2026-08-07 wiring runs (not today's figure: read `setup_seconds`
+in a recent run), so budget wall-clock accordingly — the driver allows 900s of slack on
 top of the budget for exactly this. Note also that
 `--mem-limit-gb` caps *address space* (`ulimit -v`), not resident set. CBLS runs
 about 1.4x its RSS; CP-SAT adds a roughly constant ~0.7 GB of reservations on top
@@ -659,8 +662,8 @@ seed pins the code and the configuration, not the exact objective.
 
 Whether any of this holds over the roster is what the full run is for (#255,
 at 60s and at CP-SAT's defaults; its table waits on #253). One thing to expect
-there: `neos-5114902-kasavu` (961k rows) took
-87s against a 60s budget, because model build and search initialisation are not
+when the whole roster runs: `neos-5114902-kasavu` (961k rows) took 87s against a
+60s budget in this check, because model build and search initialisation are not
 bounded by the deadline. The Primal Integral is unaffected — it integrates over
 [0, budget] whatever the wall clock does — but the run takes longer than the
 budget times the job count implies.
@@ -682,7 +685,8 @@ by measurement on exactly those 11, so on them a row is in-sample:
 #209 and #226 carry the numbers. The `xk tune` study (#264) then tuned on 11 more
 roster instances, and it confirmed no setting, so no default changed.
 `tuned.txt` lists all 22. A table scored with `--held-out tuned.txt` reports the
-other 211, none of them tuned on; one scored over the whole roster names the 22.
+other 211, none of them tuned on. One scored over the whole roster names the 22:
+the effect on a roster-wide aggregate is small, but it is not zero.
 
 Every CBLS result record carries the tie-break's state as `objective_tie_break`
 (a record from before `6492993`, #218, has no such key, and one from before
@@ -806,8 +810,8 @@ established empirically against ortools 9.15 and both re-checked by
 
 One asymmetry is not configuration and cannot be tuned away: CBLS's clock starts
 inside `solve()`, so its MPS read and model build are free, while CP-SAT's log
-timestamps include its presolve. On the largest instances that is a few seconds,
-which favours CBLS: under 1% of a 600s budget, several percent of #255's 60s. Since #139 both runners
+timestamps include its presolve. It favours CBLS, by a share of the budget that
+grows as the budget shrinks. Since #139 both runners
 measure it and the table carries it as `setup_seconds`, so it is a number a
 reader can check per row rather than a caveat taken on trust.
 

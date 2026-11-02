@@ -55,12 +55,12 @@ report's section 8 render in the fixture and therefore be pinned byte for byte
 like every other section (issue #137). Its host, core count, memory, timings and
 solver versions are invented — the version strings are plausible, not a record of
 what was installed; its concurrency (2 jobs at a time, one CP-SAT worker, a 6 GB cap)
-is the shape a real one has, not a machine anyone ran this on. `engine_commit` is
+is the shape a real fj+ls run has, not a machine anyone ran this on. `engine_commit` is
 `fixture`, matching the two real rows' own `commit_sha`.
 
 Nothing here may be quoted as a measurement. Every aggregate — the defect totals,
 the parity counts, the anytime table, the timing split — is a fixture number:
 eleven of the thirteen rows never ran at all. The two that did are two instances
-at 2 seconds against a benchmark of 233 at 600, and their CBLS side records
+at 2 seconds against a benchmark of 233 at 60, and their CBLS side records
 `commit_sha: "fixture"`, so not even the engine that produced them is identified.
 The report the scorer writes from this directory says as much in its own banner.
