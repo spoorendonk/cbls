@@ -2795,7 +2795,9 @@ under `NlToModelOptions::presolve` (#326, #342).
   and `Aggregated`): `apply` places the reduced values and
   undoes the steps last to first, whatever their kind. A column no step
   restored comes back NaN, loudly.
-- **Cost.** O(nnz) per round. The working copy is about 20 B per nonzero
+- **Cost.** O(nnz) per round, bar aggregation: each eliminated y costs the
+  length of its other rows (x's slot is searched in each), so a dense row
+  holding n eliminated columns costs O(n²) per round. The working copy is about 20 B per nonzero
   (row-major 12 B, column index 8 B), plus 16 B per row and per column for the
   extents (`*_end`, `*_cap`; #336), plus the reduced copy, on top of the
   caller's input; the disabled and infeasible paths build no column index.

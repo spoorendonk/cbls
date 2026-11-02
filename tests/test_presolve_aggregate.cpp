@@ -63,8 +63,10 @@ TEST_CASE("aggregation of an integral column needs integral ratio and side", "[p
         b.row({{x, 2.0}, {y, 2.0}}, 4, 4);
         const PresolveResult r = run(b.p);
         CHECK(r.stats.cols_aggregated == 1);
-        CHECK(r.postsolve.apply({1.0}).size() == 2);
-        (void)y;
+        // A tie on integrality and row count: the lower index, x, goes.
+        REQUIRE(r.reduced_to_col == std::vector<int32_t>{y});
+        CHECK(r.postsolve.apply({0.0}) == std::vector<double>{2.0, 0.0});
+        CHECK(r.postsolve.apply({5.0}) == std::vector<double>{-3.0, 5.0});
     }
     SECTION("2x + 2y = 3: d = 1.5") {
         Builder b;
@@ -92,11 +94,17 @@ TEST_CASE("aggregation of an integral column needs integral ratio and side", "[p
         Builder b;
         const int32_t x = b.col(0, 5);
         const int32_t y = b.col(0, 5, true);
+        const int32_t z = b.col(0, 5);
         b.row({{x, 1.0}, {y, 1.0}}, 3, 3);
+        // Eliminating x would add y to both rows: fill 2, over max_fill 1,
+        // so only y = 3 - x is left, which needs x integral.
+        b.row({{x, 1.0}, {z, 1.0}}, -kInf, 3);
+        b.row({{x, 1.0}, {z, -1.0}}, -kInf, 1);
+        CHECK(run(b.p, 1).stats.cols_aggregated == 0);
+        // Unlimited fill: the continuous x goes instead.
         const PresolveResult r = run(b.p);
         CHECK(r.stats.cols_aggregated == 1);
-        CHECK(r.reduced_to_col == std::vector<int32_t>{y});  // the continuous x went
-        (void)x;
+        CHECK(r.reduced_to_col == std::vector<int32_t>{y, z});
     }
 }
 

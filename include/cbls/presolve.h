@@ -207,7 +207,9 @@ struct PresolveResult {
 /// `duplicates_merged`: as in the adapters today, an infeasible instance is
 /// reported by the search, not by the reader.
 ///
-/// Cost: O(nnz) per round, `max_rounds` at most. Peak working memory is about
+/// Cost: O(nnz) per round, `max_rounds` at most, except doubleton aggregation:
+/// O(length of y's other rows) per eliminated y, so quadratic in a dense row
+/// that holds many eliminated columns. Peak working memory is about
 /// 20 bytes per nonzero (row-major entries 12 B, column-major index 8 B), plus
 /// the reduced copy (12 B per kept nonzero), on top of the caller's input,
 /// plus 40 B per postsolve step (one per removed column).

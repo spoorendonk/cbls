@@ -14,6 +14,12 @@
 // Nothing changes until every check has passed, so an aggregation is all or
 // nothing. Rows are scanned once per round in index order; a chain (x
 // eliminated later through another row) is undone in reverse by postsolve.
+//
+// Cost: one aggregation walks each of y's other rows twice (x's slot looked
+// up in `substitution_ok`, then in `add_entry`), so O(sum of their lengths),
+// not O(nnz) per round: a dense row holding n eliminated columns costs O(n^2)
+// per round. Sparse rows, the common case, stay linear; a column-to-slot map
+// per row would buy the dense case back at 8 B per entry and its upkeep.
 
 #include "presolve_internal.h"
 
