@@ -261,7 +261,7 @@ def resolve_paths(args: argparse.Namespace, sha: str) -> Paths:
         default_staging_root()
         / sha
         / f"{args.time_limit:g}s"
-        / f"threads{args.threads}"
+        / (f"threads{args.threads}" + ("-presolve" if args.presolve else ""))
         / f"seed{args.seed}"
     )
     preregistered = args.seed == DEFAULT_SEED
@@ -489,6 +489,7 @@ def usage_error(args: argparse.Namespace, published_out: Path) -> str | None:
         or seed_policy_error(args, published_out)
         or budget_policy_error(args, published_out)
         or threads_policy_error(args, published_out)
+        or presolve_policy_error(args, published_out)
     )
     if seed_refusal:
         return seed_refusal
@@ -731,6 +732,26 @@ def threads_policy_error(args: argparse.Namespace, published_out: Path) -> str |
     return None
 
 
+def presolve_policy_error(args: argparse.Namespace, published_out: Path) -> str | None:
+    """Refuse `--presolve` writing a published table (#343).
+
+    The published tables are the engine without presolve; a presolved run is an
+    experiment, and like a run at another budget or thread count it must name
+    a scratch `--out` (and `--trace-out`). The runner refuses the published
+    table itself too, but every instance is staged, so this is that guard here.
+    """
+    if not args.presolve or args.instances:
+        return None
+    if args.out is None or args.out.resolve() == published_out.resolve():
+        return (
+            "--presolve: the published tables are measured without presolve, and this run "
+            f"would publish into "
+            f"{published_out.name if args.seed == DEFAULT_SEED else SEEDS_TABLE_NAME}; pass a "
+            "scratch --out (and --trace-out) for a presolved run"
+        )
+    return None
+
+
 def seed_policy_error(args: argparse.Namespace, published_out: Path) -> str | None:
     """Refuse any route by which a seed other than `DEFAULT_SEED` reaches a published file.
 
@@ -773,12 +794,14 @@ def staging_stamp(args: argparse.Namespace, sha: str) -> str:
     the build tree: a home directory can be shared between machines, and a
     campaign resumed on another one would publish one table measured on two. The
     thread count since #299: a campaign resumed at another `--threads` would
-    publish one table measured with two portfolio sizes.
+    publish one table measured with two portfolio sizes. A `presolve` line since
+    #343, written only when it is on, so a stamp from before it still matches.
     """
     return (
         f"commit={sha}\ntime-limit={args.time_limit:g}\nseed={args.seed}\n"
         f"threads={args.threads}\n"
-        f"host={socket.gethostname()}\nroster={roster_fingerprint(args.inst_dir)}\n"
+        + ("presolve=on\n" if args.presolve else "")
+        + f"host={socket.gethostname()}\nroster={roster_fingerprint(args.inst_dir)}\n"
     )
 
 
@@ -927,7 +950,8 @@ def runner_command(args: argparse.Namespace, sha: str, name: str, stage: Path) -
         out=stage / f"{name}.csv",
         solution_dir=stage,
         threads=args.threads,
-        extra=["--trace", str(stage / f"{name}.trace.csv")] if args.trace else [],
+        extra=(["--trace", str(stage / f"{name}.trace.csv")] if args.trace else [])
+        + (["--presolve"] if args.presolve else []),
     )
 
 
@@ -1415,6 +1439,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default=DEFAULT_THREADS,
         help=f"portfolio threads per solve; {CAMPAIGN_THREADS} is the campaign protocol "
         "(#255, #256), and one table holds one thread count",
+    )
+    parser.add_argument(
+        "--presolve",
+        action="store_true",
+        help="presolve each instance's linear part (#343); never writes a published table",
     )
     parser.add_argument("--build-jobs", type=int, default=DEFAULT_BUILD_JOBS)
     # nargs="+", not "*": a bare `--instances` would otherwise be an empty list,

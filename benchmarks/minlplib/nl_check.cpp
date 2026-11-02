@@ -7,6 +7,11 @@
 //   <path> \t adapter-unsupported \t <reason>    an op the adapter lacks
 //   <path> \t checker-failed \t <message>        the adapter or model threw
 //
+// With `--presolve` first, the model is built with the linear-part presolve
+// (#326, #343) and a modelled line also carries its outcome, for the census:
+//
+//   <path> \t modelled \t presolve=<status> rows=<removed> cols=<removed> bounds=<tightened>
+//
 // benchmarks/instances/minlplib/status.py runs it over the unpacked MINLPLib
 // archive to give every catalogue instance a status (#283). Reader refusals
 // are split as the runner splits them (nl_refusal.h). Every control character
@@ -30,7 +35,26 @@ std::string one_line(std::string s) {
     return s;
 }
 
-std::string check(const std::string& path) {
+const char* status_name(cbls::PresolveStatus s) {
+    switch (s) {
+        case cbls::PresolveStatus::Unchanged:
+            return "unchanged";
+        case cbls::PresolveStatus::Reduced:
+            return "reduced";
+        case cbls::PresolveStatus::Infeasible:
+            return "infeasible";
+    }
+    return "?";
+}
+
+std::string presolve_cells(const cbls::PresolveStats& s) {
+    const int rows = s.rows_empty + s.rows_free + s.rows_singleton + s.rows_redundant;
+    const int cols = s.cols_fixed + s.cols_empty;
+    return std::string("\tpresolve=") + status_name(s.status) + " rows=" + std::to_string(rows) +
+           " cols=" + std::to_string(cols) + " bounds=" + std::to_string(s.bounds_tightened);
+}
+
+std::string check(const std::string& path, bool presolve) {
     cbls::NlProblem prob;
     try {
         prob = cbls::read_nl(path);
@@ -41,9 +65,11 @@ std::string check(const std::string& path) {
                one_line(what);
     }
     try {
-        const cbls::NlToModelResult built = cbls::nl_to_model(prob);
+        cbls::NlToModelOptions opts;
+        opts.presolve.enabled = presolve;
+        const cbls::NlToModelResult built = cbls::nl_to_model(prob, opts);
         if (built.supported) {
-            return "modelled";
+            return presolve ? "modelled" + presolve_cells(built.presolve_stats) : "modelled";
         }
         return "adapter-unsupported\t" + one_line(built.skipped_reasons.empty()
                                                       ? std::string("(no reason given)")
@@ -56,13 +82,15 @@ std::string check(const std::string& path) {
 }  // namespace
 
 int main(int argc, char** argv) {
-    if (argc < 2) {
-        std::fprintf(stderr, "usage: %s FILE.nl...\n", argv[0]);
+    const bool presolve = argc > 1 && std::string(argv[1]) == "--presolve";
+    const int first = presolve ? 2 : 1;
+    if (argc <= first) {
+        std::fprintf(stderr, "usage: %s [--presolve] FILE.nl...\n", argv[0]);
         return 2;
     }
-    for (int i = 1; i < argc; ++i) {
+    for (int i = first; i < argc; ++i) {
         const std::string path = argv[i];
-        std::printf("%s\t%s\n", one_line(path).c_str(), check(path).c_str());
+        std::printf("%s\t%s\n", one_line(path).c_str(), check(path, presolve).c_str());
         std::fflush(stdout);
     }
     return 0;

@@ -107,6 +107,24 @@ catalogue instance one status, the first that applies: `unsupported-op`,
 which takes one instance directory, so it goes next to the NL files. Counts per
 status for a given catalogue and engine commit are recorded on #280.
 
+### Presolve (#326, #343)
+
+`--presolve` (default off; `--no-presolve` restores it) builds each model with
+the linear-part presolve of #342: rows the reader can see as linear are
+presolved, columns appearing in a nonlinear term are frozen. The search runs on
+the reduced model; its point is then postsolved onto the model built without
+presolve, every check (objective, residuals, `verify_model`) runs there, and a
+failure there is a `VERIFY-FAILED` row. The `.sol` holds every original column.
+The row's `search_config` records `presolve`. It is an experiment arm:
+`cbls_minlplib` and `run_benchmark.py --presolve` both refuse to write a
+published table, and the driver stages it apart (`threads<N>-presolve`, and a
+`presolve=on` stamp line).
+
+`cbls_minlplib_nl_check --presolve FILE.nl...` adds
+`presolve=<status> rows=<removed> cols=<removed> bounds=<tightened>` to each
+modelled line: the census of how many instances presolve changes. Counts for a
+given engine commit are recorded on #326 and #343.
+
 ### Full-library campaign (#256)
 
 Both halves read that `bounds.csv`, and neither writes under

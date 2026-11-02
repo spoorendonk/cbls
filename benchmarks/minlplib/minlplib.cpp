@@ -82,6 +82,11 @@ struct Args {
     // produced which table.
     cbls::bench::SearchFlags search;
     std::string search_config;  // search_config_string(search); filled in by parse_args
+    // Presolve the linear part before the search (#326, #343): the model is built
+    // with `NlToModelOptions::presolve`, and the point is postsolved and checked
+    // on the model built without it. Off by default; recorded in `search_config`
+    // when on, and refused for the published table.
+    bool presolve = false;
 };
 
 // Flag-value parsing lives in benchmarks/common/runner_args.h, shared with the
@@ -111,6 +116,10 @@ void check_flag_values(Args& a) {
     if (a.threads != 1) {
         a.search_config += (a.search_config.empty() ? "" : ";");
         a.search_config += "threads=" + std::to_string(a.threads);
+    }
+    if (a.presolve) {
+        a.search_config += (a.search_config.empty() ? "" : ";");
+        a.search_config += "presolve";
     }
     if (a.search.no_time_limit) {
         // The wall-clock-free arm (#136): solve() disables its clock at
@@ -199,6 +208,8 @@ void resolve_out_csv(Args& a) {
         // protocol's (#255, #256); any other count is neither, and a table
         // holds one thread count.
         why = "--threads";
+    } else if (a.presolve) {
+        why = "--presolve";
     } else {
         why = cbls::bench::first_non_default_search_flag(a.search);
     }
@@ -268,6 +279,10 @@ Args parse_args(int argc, char** argv) {
             a.trace_csv = v;
         } else if (c.value_flag("--solution-dir", v)) {
             a.solution_dir = v;
+        } else if (s == "--presolve") {
+            a.presolve = true;
+        } else if (s == "--no-presolve") {
+            a.presolve = false;
         } else if (cbls::bench::match_search_flag(c, s, a.search)) {
             // A search-configuration flag (#136); the table, the parse and the
             // recorded spelling all live in benchmarks/common/search_config_flags.h.
@@ -275,7 +290,8 @@ Args parse_args(int argc, char** argv) {
             std::printf(
                 "Usage: cbls_minlplib [inst-dir] [--time-limit S] [--seed N]"
                 " [--feas-tol T] [--instance NAME ...] [--threads N] [--commit SHA]"
-                " [--out CSV] [--trace CSV] [--solution-dir DIR]\n"
+                " [--out CSV] [--trace CSV] [--solution-dir DIR]"
+                " [--presolve|--no-presolve]\n"
                 "       %s\n",
                 cbls::bench::search_flags_usage(kSearchFlagFamilies).c_str());
             std::exit(0);
@@ -1027,7 +1043,9 @@ bool prepare_instance(std::ostream& csv, const Args& args, const std::string& na
     }
 
     try {
-        built = cbls::nl_to_model(prob);
+        cbls::NlToModelOptions opts;
+        opts.presolve.enabled = args.presolve;
+        built = cbls::nl_to_model(prob, opts);
     } catch (const std::exception& e) {
         std::printf("%-22s  ERROR building model: %s\n", name.c_str(), e.what());
         ++t.errored;
@@ -1108,6 +1126,39 @@ cbls::SearchResult search_instance(const Args& args, cbls::Model& model,
     return result;
 }
 
+/// The model built without presolve, holding `presolved`'s current point
+/// postsolved onto the original columns and full-evaluated: what the row is
+/// verified, described and written from under `--presolve`.
+cbls::NlToModelResult postsolve_onto_plain(const cbls::NlProblem& prob,
+                                           const cbls::NlToModelResult& presolved) {
+    const std::vector<double> x = presolved.original_values(presolved.model);
+    cbls::NlToModelResult plain = cbls::nl_to_model(prob);
+    if (!plain.supported || x.size() != plain.var_handles.size()) {
+        throw std::runtime_error("presolve: the plain build cannot hold the postsolved point");
+    }
+    for (std::size_t j = 0; j < x.size(); ++j) {
+        plain.model.var_mut(cbls::handle_to_var_id(plain.var_handles[j])).value = x[j];
+    }
+    cbls::full_evaluate(plain.model);
+    return plain;
+}
+
+/// `verify_model` on the postsolved point (column bounds, integrality, every
+/// constraint, DAG consistency). Returns false having set the VERIFY-FAILED
+/// note, as `verify_assignment` does, when it fails.
+bool verify_original(const cbls::NlToModelResult& plain, const Args& args, const std::string& name,
+                     Tally& t, std::string& note) {
+    const cbls::VerifyResult v = cbls::verify_model(plain.model, args.feas_tol);
+    if (v.ok) {
+        return true;
+    }
+    ++t.verify_failed;
+    note = "VERIFY-FAILED(original model: " + std::to_string(v.errors.size()) + " errors; first " +
+           v.errors.front().entity + ")";
+    std::printf("%-22s  WARNING: %s\n", name.c_str(), note.c_str());
+    return false;
+}
+
 /// Read, build, solve and score one instance, and write its row. Every exit
 /// writes exactly one row.
 void run_instance(std::ostream& csv, std::ofstream& trace, const Args& args,
@@ -1144,6 +1195,15 @@ void run_instance(std::ostream& csv, std::ofstream& trace, const Args& args,
             std::fputs(cbls::mipfeas::lost_workers_message(name, args.threads, result).c_str(),
                        stderr);
             ++t.lost_workers;
+        }
+        // Under presolve the search ran on the reduced model: postsolve its
+        // point onto the model built without presolve, so the residuals, the
+        // objective check, the infeasibility note and the `.sol` all describe
+        // the original instance (#343). Inside the bracket: a throw here is a
+        // solve-error row, not a lost one. `postsolve`, not `reduced_to_original`,
+        // says the build was presolved: presolve can remove every column.
+        if (built.postsolve.n_original() != 0) {
+            built = postsolve_onto_plain(prob, built);
         }
     } catch (const std::exception& e) {
         std::printf(" ERROR solving: %s\n", e.what());
@@ -1189,6 +1249,9 @@ void run_instance(std::ostream& csv, std::ofstream& trace, const Args& args,
     bool verified = result.feasible;
     if (result.feasible) {
         verified = verify_assignment(prob, built, args, obj, name, t, note, max_violation);
+    }
+    if (verified && args.presolve) {
+        verified = verify_original(built, args, name, t, note);
     }
 
     if (verified) {

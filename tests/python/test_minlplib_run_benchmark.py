@@ -109,6 +109,7 @@ def make_args(tmp_path: Path, **overrides: object) -> argparse.Namespace:
         "time_limit": 60.0,
         "seed": 1,
         "threads": 1,
+        "presolve": False,
         "build_jobs": 4,
         "instances": [],
         "out": None,
@@ -615,6 +616,40 @@ def test_threads_reach_the_runner_and_the_run_record(tmp_path: Path) -> None:
     record = run_record(args, "abc1234", ["nvs01"], {})
     assert record.concurrency["threads_per_solve"] == 16
     assert run_benchmark.parse_args([]).threads == 1
+
+
+def test_presolve_reaches_the_runner_and_keys_the_staging_dir(tmp_path: Path) -> None:
+    """`--presolve` (#343) runs `cbls_minlplib --presolve`, off by default."""
+    args = run_benchmark.parse_args(["--inst-dir", str(tmp_path / "inst"), "--presolve"])
+    assert args.presolve
+    assert "--presolve" in runner_command(args, "abc1234", "nvs01", tmp_path / "stage")
+    assert not run_benchmark.parse_args([]).presolve
+    plain = make_args(tmp_path)
+    assert "--presolve" not in runner_command(plain, "abc1234", "nvs01", tmp_path / "stage")
+    # A presolved campaign never resumes a plain one's rows, nor the reverse.
+    on, off = (
+        resolve_paths(make_args(tmp_path, presolve=p), "abc1234").stage for p in (True, False)
+    )
+    assert on != off
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    assert staging_stamp_conflict(stage, plain, "abc1234") is None
+    assert "presolve" not in (stage / STAMP_NAME).read_text(), "a pre-#343 stamp still matches"
+    conflict = staging_stamp_conflict(stage, make_args(tmp_path, presolve=True), "abc1234")
+    assert conflict is not None and "presolve=on" in conflict
+
+
+def test_presolve_never_writes_a_published_table(tmp_path: Path) -> None:
+    published = tmp_path / "inst" / "comparison.csv"
+    for seed in (1, 2):
+        refusal = usage_error(make_args(tmp_path, presolve=True, seed=seed), published)
+        assert refusal is not None and "--presolve" in refusal
+        explicit = make_args(tmp_path, presolve=True, seed=seed, out=published)
+        assert usage_error(explicit, published) is not None
+    scratch = make_args(
+        tmp_path, presolve=True, out=tmp_path / "x.csv", trace_out=tmp_path / "t.csv"
+    )
+    assert usage_error(scratch, published) is None
 
 
 def test_the_merge_step_solves_nothing(tmp_path: Path) -> None:
@@ -1436,7 +1471,9 @@ def minlplib_binary() -> Path:
     return binary
 
 
-def run_the_runner(tmp_path: Path, fixtures: dict[str, str]) -> subprocess.CompletedProcess[str]:
+def run_the_runner(
+    tmp_path: Path, fixtures: dict[str, str], extra: Sequence[str] = ()
+) -> subprocess.CompletedProcess[str]:
     """Run the real binary over a roster built from `fixtures`.
 
     A name mapped to the empty string gets a `bounds.csv` entry and no `.nl`
@@ -1458,6 +1495,7 @@ def run_the_runner(tmp_path: Path, fixtures: dict[str, str]) -> subprocess.Compl
             str(binary),
             str(inst_dir),
             *("--time-limit", "1", "--commit", "abc1234", "--out", str(tmp_path / "out.csv")),
+            *extra,
         ],
         capture_output=True,
         text=True,
@@ -1506,6 +1544,39 @@ def test_a_solve_that_throws_makes_the_runner_exit_nonzero(tmp_path: Path) -> No
     # is the engine's business, not this test's -- pinning `matches-bks` would
     # red a process-contract test on a tie-band change.
     assert notes["ok"] in COMPLETED_VERDICTS
+
+
+#: Two columns: x0 in [0,10] and x1 fixed at 3. One row `x0 + x1 >= 4`, minimise
+#: `x0 + 2 x1`: optimum 7 at (1, 3). Presolve removes x1 (fixed), the row (a
+#: singleton once x1 is gone) and then x0, so the search runs on no column at
+#: all (the edge where `reduced_to_original` is empty) and the point written and
+#: verified is the postsolved one over both columns.
+PRESOLVABLE_NL = (
+    nl_header(2, 1, 1)
+    + "b\n0 0 10\n4 3\nr\n2 4\nO0 0\nn0\nG0 2\n0 1\n1 2\nC0\nn0\nJ0 2\n0 1\n1 1\n"
+)
+
+
+def test_a_presolved_row_is_verified_and_written_over_the_original_columns(
+    tmp_path: Path,
+) -> None:
+    """`--presolve` (#343): the `.sol` holds every original column, and the row verifies."""
+    sols = tmp_path / "sols"
+    sols.mkdir()
+    result = run_the_runner(
+        tmp_path, {"pre": PRESOLVABLE_NL}, ["--presolve", "--solution-dir", str(sols)]
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    with (tmp_path / "out.csv").open(newline="") as fh:
+        (row,) = list(csv.DictReader(fh))
+    assert row["feasible"] == "true", row
+    assert "presolve" in row["search_config"].split(";")
+    lines = (sols / "pre.sol").read_text().splitlines()
+    assert "columns 2" in lines
+    values = [float(v) for v in lines[lines.index("columns 2") + 1 :]]
+    assert values[1] == 3.0  # the removed column, restored by postsolve
+    assert values[0] >= 1.0 - 1e-6
+    assert float(row["objective"]) == pytest.approx(values[0] + 2.0 * values[1])
 
 
 def test_an_unreadable_instance_makes_the_runner_exit_nonzero(tmp_path: Path) -> None:

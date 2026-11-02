@@ -205,7 +205,8 @@ struct NlToModelResult {
     /// Maps reduced values back to the NL columns; empty (n_original 0) unless
     /// the model was built from a presolved problem.
     Postsolve postsolve;
-    /// NL column of each reduced column; empty unless built from presolve.
+    /// NL column of each reduced column; empty unless built from presolve, and
+    /// empty too when presolve removed every column (test `postsolve.n_original()`).
     std::vector<int32_t> reduced_to_original;
 
     /// The model's current point as one value per NL column: the variable

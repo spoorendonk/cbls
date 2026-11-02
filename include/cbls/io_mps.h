@@ -151,7 +151,8 @@ struct MpsToModelResult {
     /// Maps reduced values back to the MPS columns; empty (n_original 0)
     /// unless the model was built from a presolved problem.
     Postsolve postsolve;
-    /// MPS column of each reduced column; empty unless built from presolve.
+    /// MPS column of each reduced column; empty unless built from presolve, and
+    /// empty too when presolve removed every column (test `postsolve.n_original()`).
     std::vector<int32_t> reduced_to_original;
 
     /// The model's current point as one value per MPS column: the variable
