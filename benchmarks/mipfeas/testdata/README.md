@@ -18,7 +18,7 @@ Regenerate both after any deliberate change to the report — the command the te
 runs, and the one whose output is committed here:
 
 ```bash
-python benchmarks/mipfeas/primal_integral.py \
+.venv/bin/python benchmarks/mipfeas/primal_integral.py \
     --results-dir benchmarks/mipfeas/testdata/results \
     --roster benchmarks/mipfeas/testdata/roster.csv --budget 2 \
     --out benchmarks/mipfeas/testdata/expected_comparison.csv \

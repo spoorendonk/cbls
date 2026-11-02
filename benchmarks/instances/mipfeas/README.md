@@ -147,8 +147,7 @@ measurement and was not regenerated. What is already measured elsewhere in this
 file bounds it rather than states it — propagation, one of setup's three parts,
 costs ~1.1s worst case and ~7s summed over the roster (**Implied bounds shrink
 that restriction**), and the read+build asymmetry under **Configuration, and
-what is recorded** is a few seconds on the largest instances against a 600s
-budget. Both are well under the double digits an earlier planning note asserted,
+what is recorded** is a few seconds on the largest instances. Both are well under the double digits an earlier planning note asserted,
 and neither is a substitute for the per-row columns.
 
 ## Metric: Primal Integral
@@ -417,29 +416,30 @@ scorer withholds.
 
 ```bash
 # 1. Fetch the roster (~546 MiB via benchmark.zip; --subset smoke for the 11)
-python benchmarks/instances/mipfeas/download.py
+.venv/bin/python benchmarks/instances/mipfeas/download.py
 
 # 1b. Check the pinned bytes at any later point (offline, no download)
-python benchmarks/instances/mipfeas/download.py --verify
+.venv/bin/python benchmarks/instances/mipfeas/download.py --verify
 
 # 2. Build the CBLS runner
 cmake -B build && cmake --build build -j$(nproc) --target cbls_mipfeas
 
 # 3. Install the baseline (OR-Tools) and the verifier's reader (PySCIPOpt)
-pip install -e '.[benchmarks]'
-python benchmarks/mipfeas/cpsat_solve.py --preflight   # ~2s, no instance, no network
+uv sync --extra dev --extra benchmarks
+.venv/bin/python benchmarks/mipfeas/cpsat_solve.py --preflight   # ~2s, no instance, no network
 
 # 4. Wiring check: 11 instances, both engines, short budget. CP-SAT at its
 #    defaults takes the machine's cores, so the driver runs one job at a time.
-python benchmarks/mipfeas/run_benchmark.py --roster smoke --budget 60 --jobs 1
+.venv/bin/python benchmarks/mipfeas/run_benchmark.py --roster smoke --budget 60 --jobs 1
 
-# 5. The publishable run (233 x 600s x 2 engines, one job at a time: ~78 wall-hours)
-python benchmarks/mipfeas/run_benchmark.py --roster full --budget 600 --jobs 1
+# 5. The full run. #255 used 60s (233 x 60s x 2 engines, one job at a time:
+#    ~8 wall-hours); its table waits on #253.
+.venv/bin/python benchmarks/mipfeas/run_benchmark.py --roster full --budget 60 --jobs 1
 
 # 6. Score it — into the results directory, beside what it scores
-python benchmarks/mipfeas/primal_integral.py \
+.venv/bin/python benchmarks/mipfeas/primal_integral.py \
     --results-dir results/mipfeas --roster benchmarks/instances/mipfeas/roster.csv \
-    --budget 600 --out results/mipfeas/comparison.csv
+    --budget 60 --out results/mipfeas/comparison.csv
 ```
 
 Step 6 writes `comparison_report.md` beside the table; see **What the scorer
@@ -587,7 +587,8 @@ rather than reading 6 GB off the RSS figures above.
 
 ## What the wiring check found
 
-`smoke_comparison.csv` is 11 instances at 60s — enough to prove the harness end
+`smoke_comparison.csv` is 11 instances at 60s, with CP-SAT in the fj+ls mode —
+enough to prove the harness end
 to end, and **not** a result. Both engines honoured the budget, the largest
 instance in the subset ran without OOM, and the driver resumed correctly after
 being interrupted.
@@ -612,8 +613,8 @@ The first run of it found two defects in the harness rather than in either
 solver, which is what a wiring check is for. The MPS reader was binarising
 general-integer columns carrying an `LI` bound — under that restriction
 `gen-ip054` and `enlight_hard` have no feasible point at all, and `gen-ip002`'s
-optimum moves, so all three read as CBLS failing. And CP-SAT was being given two
-workers on a mistaken belief that one would not run its `ls` worker.
+optimum moves, so all three read as CBLS failing. And CP-SAT, in the fj+ls mode,
+was being given two workers on a mistaken belief that one would not run its `ls` worker.
 
 It also settled the two configuration choices above by measurement rather than
 argument. Each was run over the whole smoke roster, CBLS only:
@@ -639,7 +640,8 @@ no clamped column to begin with. The numbers below were measured before that
 change and have not been re-run; treat them as the pre-propagation baseline they
 are.
 
-At that configuration, on this subset at 60s: both engines reach feasibility on
+At that configuration, with CP-SAT in the fj+ls mode, on this subset at 60s: both
+engines reach feasibility on
 8 of 11, and CP-SAT leads on the shifted geometric mean (0.258 vs 0.566) — it
 gets to good solutions much earlier, which is what the metric is built to
 reward. CBLS ends ahead on `pk1` (74 vs 473), `mad` (1.79 vs 2.00) and `neos5`
@@ -655,8 +657,9 @@ is deterministic only when bounded by iterations, `time_limit = 0`), so re-runni
 this roster moves the aggregate in the third decimal. Recording the commit SHA and
 seed pins the code and the configuration, not the exact objective.
 
-Whether any of this holds over 233 instances at 600s is exactly what the full
-run is for. One thing to expect there: `neos-5114902-kasavu` (961k rows) took
+Whether any of this holds over the roster is what the full run is for (#255,
+at 60s and at CP-SAT's defaults; its table waits on #253). One thing to expect
+there: `neos-5114902-kasavu` (961k rows) took
 87s against a 60s budget, because model build and search initialisation are not
 bounded by the deadline. The Primal Integral is unaffected — it integrates over
 [0, budget] whatever the wall clock does — but the run takes longer than the
@@ -666,9 +669,8 @@ budget times the job count implies.
 
 All 11 instances in `smoke.csv` — `enlight_hard`, `markshare2`, `gen-ip054`,
 `gen-ip002`, `pk1`, `mas76`, `neos5`, `mad`, `binkar10_1`, `atlanta-ip` and
-`neos-5114902-kasavu` — are also in `roster.csv`, the roster a full run
-publishes. Several defaults were chosen by measurement on exactly those 11, so
-on them a published row is in-sample:
+`neos-5114902-kasavu` — are also in `roster.csv`. Several defaults were chosen
+by measurement on exactly those 11, so on them a row is in-sample:
 
 | Choice | Decided by | Shipped in |
 |---|---|---|
@@ -677,9 +679,10 @@ on them a published row is in-sample:
 | objective tie-break on | #226 Run A, 5 seeds at 10s; gap at first feasible 0.748 | `9e1cce9` (#220) |
 | near-value kick off | #226 Run B on MINLPLib; Run A on this roster passed it | default kept since #217 (#219) |
 
-#209 and #226 carry the numbers. The other 222 instances were
-never tuned on. With 11 of 233 the effect on a roster-wide aggregate is small,
-but it is not zero, so a published table names these 11 when it quotes one.
+#209 and #226 carry the numbers. The `xk tune` study (#264) then tuned on 11 more
+roster instances, and it confirmed no setting, so no default changed.
+`tuned.txt` lists all 22. A table scored with `--held-out tuned.txt` reports the
+other 211, none of them tuned on; one scored over the whole roster names the 22.
 
 Every CBLS result record carries the tie-break's state as `objective_tie_break`
 (a record from before `6492993`, #218, has no such key, and one from before
@@ -765,8 +768,8 @@ difference is smaller than the run-to-run noise): **~1.1s worst case**, on
 `square47` — 0.38s assembling the rows plus 0.73s propagating over its 27.4M
 nonzeros. `neos-5114902-kasavu`, the largest by rows, costs 0.26s over 4.9M
 nonzeros in 3 passes. `supportcase12` is the only instance that reaches the
-10-pass cap, at 0.31s. Roughly 7s summed over the whole roster, against a 600s
-per-instance budget.
+10-pass cap, at 0.31s. Roughly 7s summed over the whole roster, against a
+per-instance budget of 60s in #255.
 
 Two caveats a reader should have:
 
@@ -803,8 +806,8 @@ established empirically against ortools 9.15 and both re-checked by
 
 One asymmetry is not configuration and cannot be tuned away: CBLS's clock starts
 inside `solve()`, so its MPS read and model build are free, while CP-SAT's log
-timestamps include its presolve. On the largest instances that is a few seconds
-against a 600s budget — under 1%, but it favours CBLS. Since #139 both runners
+timestamps include its presolve. On the largest instances that is a few seconds,
+which favours CBLS: under 1% of a 600s budget, several percent of #255's 60s. Since #139 both runners
 measure it and the table carries it as `setup_seconds`, so it is a number a
 reader can check per row rather than a caveat taken on trust.
 
@@ -829,12 +832,13 @@ cited at
   (`use_restart = index % 16 != 15`), so in the fj+ls mode, at fewer than 16
   workers on one state set, the CP-SAT arm never takes that path. At its
   defaults CP-SAT picks its own worker count and portfolio, so it may.
-* **CBLS kicks.** One search state, fixed options, no Luby schedule and no reset
-  to zero or the bound. On stagnation it perturbs from `kick_origin()`: the
+* **CBLS kicks.** One search state, fixed options, no reset to zero or the bound,
+  and by default no Luby schedule. On stagnation it perturbs from `kick_origin()`: the
   incumbent once one exists, an adopted pool solution in a portfolio, in place
   before the first feasible point. Portfolio workers restart from the pool.
-  `docs/architecture.md` records Luby as a rejected alternative; which restart
-  rule is best for this engine, regardless of parity, is #239.
+  `luby_restart_unit` and `restart_randomization` are default-off arms, and the
+  runner takes `--luby-restart-unit` and `--restart-randomization`; neither
+  separated in #239's smoke A/B.
 
 ## Provenance
 
