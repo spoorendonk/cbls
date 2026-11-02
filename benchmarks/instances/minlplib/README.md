@@ -129,9 +129,21 @@ published table, and the driver stages it apart (`threads<N>-presolve`, and a
 `presolve=on` stamp line).
 
 `cbls_minlplib_nl_check --presolve FILE.nl...` adds
-`presolve=<status> rows=<removed> cols=<removed> bounds=<tightened>` to each
+the same `presolve=<status> rows= cols= bounds= seconds=` cells to each
 modelled line: the census of how many instances presolve changes. Counts for a
 given engine commit are recorded on #326 and #343.
+
+### Search counters (#341)
+
+`cbls_minlplib --counters CSV` writes one row per instance the search ran on:
+`instance, iterations, fj_batches, novelty_batches, novelty_moves,
+novelty_propagation_tightenings, novelty_propagation_conflicts, cpu_seconds,
+peak_rss_kb, search_config`. `cpu_seconds` is process CPU time around the
+search: the search's own at `--threads 1`, summed over workers above it.
+`peak_rss_kb` is the process's peak so far, so it is per instance only with one
+`--instance` per call. The table is unchanged; the sidecar never takes the
+table's, the trace's or a published file's path. A solve that throws writes no
+counters row.
 
 ### Full-library campaign (#256)
 

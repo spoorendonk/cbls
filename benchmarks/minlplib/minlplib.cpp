@@ -23,6 +23,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <ctime>
 #include <exception>
 #include <fstream>
 #include <functional>
@@ -32,6 +33,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <sys/resource.h>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -74,6 +76,9 @@ struct Args {
     std::string commit_sha = "unknown";
     std::string out_csv;    // default: <inst_dir>/comparison.csv
     std::string trace_csv;  // optional: anytime profile (best objective vs time)
+    // optional: one row of search counters and CPU time per searched instance
+    // (#341), beside the table so the table's test-checked schema stays put
+    std::string counters_csv;
     // optional: where each verified row's assignment is written, one
     // `<instance>.sol` per instance, for the DAG-independent check (#205)
     std::string solution_dir;
@@ -261,6 +266,29 @@ void resolve_out_csv(Args& a) {
     std::exit(2);
 }
 
+/// `--counters` names a file of its own: never the table, the trace, the
+/// table's temp file or a published file, each of which it would truncate on
+/// open (the hole `resolve_out_csv` closes for `--trace`).
+void check_counters_path(const Args& a) {
+    if (a.counters_csv.empty()) {
+        return;
+    }
+    const std::vector<std::string> taken = {a.out_csv, a.out_csv + ".tmp",
+                                            a.inst_dir + "/comparison.csv",
+                                            a.inst_dir + "/anytime_trace.csv"};
+    for (const std::string& other : taken) {
+        if (cbls::bench::same_file(a.counters_csv, other)) {
+            std::fprintf(stderr, "--counters names %s, which another output owns\n", other.c_str());
+            std::exit(2);
+        }
+    }
+    if (!a.trace_csv.empty() && cbls::bench::same_file(a.counters_csv, a.trace_csv)) {
+        std::fprintf(stderr, "--counters and --trace name the same file %s\n",
+                     a.counters_csv.c_str());
+        std::exit(2);
+    }
+}
+
 Args parse_args(int argc, char** argv) {
     Args a;
     cbls::bench::ArgCursor c(argc, argv);
@@ -287,6 +315,8 @@ Args parse_args(int argc, char** argv) {
             a.out_csv = v;
         } else if (c.value_flag("--trace", v)) {
             a.trace_csv = v;
+        } else if (c.value_flag("--counters", v)) {
+            a.counters_csv = v;
         } else if (c.value_flag("--solution-dir", v)) {
             a.solution_dir = v;
         } else if (s == "--presolve") {
@@ -300,7 +330,7 @@ Args parse_args(int argc, char** argv) {
             std::printf(
                 "Usage: cbls_minlplib [inst-dir] [--time-limit S] [--seed N]"
                 " [--feas-tol T] [--instance NAME ...] [--threads N] [--commit SHA]"
-                " [--out CSV] [--trace CSV] [--solution-dir DIR]"
+                " [--out CSV] [--trace CSV] [--counters CSV] [--solution-dir DIR]"
                 " [--presolve|--no-presolve]\n"
                 "       %s\n",
                 cbls::bench::search_flags_usage(kSearchFlagFamilies).c_str());
@@ -317,6 +347,7 @@ Args parse_args(int argc, char** argv) {
     }
     check_flag_values(a);
     resolve_out_csv(a);
+    check_counters_path(a);
     return a;
 }
 
@@ -1180,6 +1211,38 @@ bool verify_original(const cbls::NlToModelResult& plain, const Args& args, const
     return false;
 }
 
+/// Process CPU seconds: at `--threads 1` the search's own CPU time, which is
+/// what #341's throughput ratios divide by (wall time is noisy on a shared
+/// machine). At more threads it sums the workers.
+double process_cpu_seconds() {
+    timespec ts{};
+    clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &ts);
+    return static_cast<double>(ts.tv_sec) + (1e-9 * static_cast<double>(ts.tv_nsec));
+}
+
+/// `search_instance`, and under `--counters` one row of what the search did
+/// (#341): iterations and batches, the Novelty and propagated-leg counters,
+/// CPU time, and the process's peak RSS so far (per instance only with one
+/// instance per call). Counters are summed over workers.
+cbls::SearchResult counted_search(const Args& args, cbls::Model& model,
+                                  cbls::SolveCallback* callback, std::ofstream& counters,
+                                  const std::string& name) {
+    const double cpu0 = process_cpu_seconds();
+    cbls::SearchResult result = search_instance(args, model, callback);
+    const double cpu = process_cpu_seconds() - cpu0;
+    if (counters.is_open()) {
+        rusage usage{};
+        getrusage(RUSAGE_SELF, &usage);
+        const cbls::SearchCounters& k = result.counters;
+        counters << name << "," << result.iterations << "," << k.fj_batches << ","
+                 << k.novelty_batches << "," << k.novelty_moves << ","
+                 << k.novelty_propagation_tightenings << "," << k.novelty_propagation_conflicts
+                 << "," << cpu << "," << usage.ru_maxrss << "," << args.search_config << "\n";
+        counters.flush();
+    }
+    return result;
+}
+
 /// Whether a feasible search's point stands: `verify_assignment` on the NL
 /// problem, then, for a presolved build, `verify_original` on the model built
 /// without presolve. On failure `note` holds the VERIFY-FAILED string.
@@ -1194,9 +1257,9 @@ bool verify_row(const cbls::NlProblem& prob, const cbls::NlToModelResult& built,
 
 /// Read, build, solve and score one instance, and write its row. Every exit
 /// writes exactly one row.
-void run_instance(std::ostream& csv, std::ofstream& trace, const Args& args,
-                  const BoundsMap& bounds, const NotesMap& analysis_notes, const std::string& name,
-                  Tally& t) {
+void run_instance(std::ostream& csv, std::ofstream& trace, std::ofstream& counters,
+                  const Args& args, const BoundsMap& bounds, const NotesMap& analysis_notes,
+                  const std::string& name, Tally& t) {
     cbls::NlProblem prob;
     cbls::NlToModelResult built;
     Bounds b;
@@ -1227,7 +1290,8 @@ void run_instance(std::ostream& csv, std::ofstream& trace, const Args& args,
             throw std::runtime_error("CBLS_MINLPLIB_THROW_IN_SOLVE names this instance");
         }
         TraceRecorder recorder(trace, name);
-        result = search_instance(args, built.model, trace.is_open() ? &recorder : nullptr);
+        result = counted_search(args, built.model, trace.is_open() ? &recorder : nullptr, counters,
+                                name);
         if (cbls::mipfeas::lost_workers(result, args.threads)) {
             std::fputs(cbls::mipfeas::lost_workers_message(name, args.threads, result).c_str(),
                        stderr);
@@ -1394,6 +1458,18 @@ int run_benchmark(int argc, char** argv) {
         trace << "instance,time_seconds,objective,new_best\n";
     }
 
+    std::ofstream counters;
+    if (!args.counters_csv.empty()) {
+        counters.open(args.counters_csv);
+        if (!counters.is_open()) {
+            std::fprintf(stderr, "Failed to open %s for writing\n", args.counters_csv.c_str());
+            return 2;
+        }
+        counters << "instance,iterations,fj_batches,novelty_batches,novelty_moves,"
+                    "novelty_propagation_tightenings,novelty_propagation_conflicts,cpu_seconds,"
+                    "peak_rss_kb,search_config\n";
+    }
+
     std::ofstream csv(args.out_csv);
     if (!csv.is_open()) {
         std::fprintf(stderr, "Failed to open %s for writing\n", args.out_csv.c_str());
@@ -1427,7 +1503,7 @@ int run_benchmark(int argc, char** argv) {
 
     Tally t;
     for (const std::string& name : insts) {
-        run_instance(csv, trace, args, bounds, analysis_notes, name, t);
+        run_instance(csv, trace, counters, args, bounds, analysis_notes, name, t);
     }
 
     print_tally(args, t);

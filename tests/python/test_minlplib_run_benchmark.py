@@ -1591,6 +1591,36 @@ def test_a_presolved_row_is_verified_and_written_over_the_original_columns(
     assert float(row["objective"]) == pytest.approx(values[0] + 2.0 * values[1])
 
 
+def test_the_counters_sidecar_holds_one_row_per_search_and_leaves_the_table_alone(
+    tmp_path: Path,
+) -> None:
+    """`--counters` (#341): the throughput A/B's counters, beside an unchanged table."""
+    counters = tmp_path / "counters.csv"
+    result = run_the_runner(tmp_path, {"ok": SOLVABLE_NL}, ["--counters", str(counters)])
+    assert result.returncode == 0, result.stdout + result.stderr
+    with (tmp_path / "out.csv").open(newline="") as fh:
+        assert list(csv.DictReader(fh).fieldnames or []) == list(RUNNER_COLUMNS)
+    with counters.open(newline="") as fh:
+        (row,) = list(csv.DictReader(fh))
+    assert row["instance"] == "ok"
+    for column in (
+        "iterations",
+        "fj_batches",
+        "novelty_batches",
+        "novelty_moves",
+        "novelty_propagation_tightenings",
+        "novelty_propagation_conflicts",
+        "peak_rss_kb",
+    ):
+        assert int(row[column]) >= 0, column
+    assert int(row["iterations"]) > 0
+    assert float(row["cpu_seconds"]) > 0.0
+    assert int(row["peak_rss_kb"]) > 0
+    # It never takes the table's path.
+    clash = run_the_runner(tmp_path, {"ok": SOLVABLE_NL}, ["--counters", str(tmp_path / "out.csv")])
+    assert clash.returncode == 2 and "--counters" in clash.stderr
+
+
 def test_an_unreadable_instance_makes_the_runner_exit_nonzero(tmp_path: Path) -> None:
     """`read-error` and `build-error` feed the same tally as `solve-error`."""
     result = run_the_runner(tmp_path, {"ok": SOLVABLE_NL, "junk": UNREADABLE_NL})
