@@ -2489,7 +2489,7 @@ solve(model, time_limit, seed, use_fj, hook, lns, lns_interval, callback, config
 | `tracer` | null | `SearchConfig` | caller's event sink, per worker (#169) |
 | `auditor` | null | `SearchConfig` | test-facing consistency hook (#225) |
 | `rho` (GLS decay) | {0.95, 1.0} | sampled per batch | GLS weight decay factor |
-| `sample_size_general` | 5 | `GFJConfig` | best-of-N scan-set sample, general phase (ViolationLS §3; 3 until #211) |
+| `sample_size_general` | 5 | `GFJConfig` | best-of-N scan-set sample, general phase (ViolationLS §3, #211) |
 | `sample_size_linear` | 5 | `GFJConfig` | best-of-N scan-set sample, linear phase |
 | `two_phase` | true (solver) / false (outer loop, warm-start) | `GFJConfig` | linear-first GLS pass |
 | `set_initial_x` | true | `GFJConfig` | set X to domain value nearest 0 first |
@@ -2536,64 +2536,40 @@ cbls [OPTIONS] MODEL.cbls
 | `--quiet` | suppress progress, print only the final result |
 | `--help` / `--version` | usage / `cbls::kVersion` |
 
-> **Removed flags** (SA-era): `--cooling-rate`, `--reheat-interval`,
-> `--hook-frequency`, `--fj-time-fraction`. These no longer exist; the
-> corresponding mechanisms were deleted in the ViolationLS port.
->
-> **Removed flags** (epoch-sync): `--deterministic`, `--epoch-iters`,
-> `--max-epochs`. Epoch-sync mode went when `ParallelSearch` became a
-> cooperative portfolio; each now exits 1 as an unknown option. `--threads 1`
-> is the reproducible run -- on the same hardware under the same load, since it
-> is still wall-clock bounded. There is no longer any bit-reproducible
-> multi-threaded mode.
+Any other option exits 1.
 
 ### What the parallel path does to the output
 
-`--threads` defaults to 0, so **this is the default reading of `cbls`'s output**,
-not a footnote about an opt-in mode. Five things differ from a `--threads 1` run,
-in both the human and the JSONL format:
+`--threads` defaults to 0, so **this is the default reading of `cbls`'s output**.
+Five things differ from a `--threads 1` run, in both the human and the JSONL
+format:
 
 - **`iterations` is a sum over workers; `time_seconds` is a max.** The two are
-  not a rate. A 12-worker 10s run reports roughly 12 workers' iterations against
-  10 seconds.
-- **Every progress record is a hybrid, and has to be read as one.** All workers
-  report, through one mutex-guarded wrapper (`PortfolioProgress`, `src/pool.cpp`).
-  It rewrites `time_seconds` onto the **portfolio** clock and `objective` onto
-  the **portfolio's** incumbent, with `new_best` set when that incumbent
-  improved — so the stream is monotone in both and its last row matches the
-  reported result, which is what a harness integrating it as a step function
-  needs. `iteration`, `total_violation`, `feasible` and `perturbations` stay the
-  *reporting* worker's own, and consecutive rows come from different workers, so
-  those four jump around and are not a rate. Worker 0 alone also carries the
-  periodic no-new-best tick, which is what keeps a liveness row flowing.
-- **One `SearchResult` field is still dropped.** `best_violation` now comes from
-  the pooled solution itself, which carries the residual of the state it holds;
-  `perturbations`, `lns_repairs` and `lns_repairs_accepted` are **sums** over the
-  workers, as `iterations` is, and so are not comparable to a single run's counts
-  at the same wall time; `counters` is summed the same way, through
-  `SearchCounters::merge` at **both** aggregation sites (across a worker's
-  restarts in `WorkerAccumulator::absorb`, and across the workers in
-  `solve_portfolio`) so the two cannot drift apart, with the per-generator rows
-  matched by NAME — a worker that threw before building its batch contributes an
-  empty vector, and a blind index-wise merge would attribute the survivors' rows
-  to the wrong generator. When the two vectors do
-  agree name-for-name — the normal case, since every worker builds the same
-  generators in the same order — the merge is a positional walk rather than the
-  O(G²) scan, which matters because `by_generator` has one entry per structured
-  variable, and an empty target simply takes every row. `GeneratorCounters::name`
-  additionally carries a `#<index>` suffix wherever one batch built two
-  generators of the same name, since the built-ins name themselves by type; that
-  is *defensive*, because the two fast paths already merge same-named rows
-  correctly and only the by-name scan could collapse them;
-  `first_feasible_objective` and `time_to_first_feasible` are the pair from the earliest worker *and restart* to reach feasibility, with
-  the time shifted onto the portfolio clock. Only `escape_probe_armed` reads its
-  "not recorded" value: it is a latch on one worker's end state, and a pooled
-  solution carries no worker identity for it to belong to.
+  not a rate.
+- **Every progress record is a hybrid.** All workers report through one
+  mutex-guarded wrapper (`PortfolioProgress`, `src/pool.cpp`). It rewrites
+  `time_seconds` onto the **portfolio** clock and `objective` onto the
+  **portfolio's** incumbent, with `new_best` set when that incumbent improved,
+  so the stream is monotone in both and its last row matches the reported
+  result. `iteration`, `total_violation`, `feasible` and `perturbations` stay
+  the *reporting* worker's own, and consecutive rows come from different
+  workers, so those four jump around and are not a rate. Worker 0 alone carries
+  the periodic no-new-best tick that keeps a liveness row flowing.
+- **One `SearchResult` field is dropped; the rest are pooled.** `best_violation`
+  comes from the pooled solution, which carries the residual of the state it
+  holds. `perturbations`, `lns_repairs`, `lns_repairs_accepted` and `counters`
+  are **sums** over the workers, as `iterations` is, so not comparable to a
+  single run's counts at the same wall time; `counters` goes through
+  `SearchCounters::merge` at **both** aggregation sites (a worker's restarts in
+  `WorkerAccumulator::absorb`, the workers in `solve_portfolio`), matching
+  per-generator rows by name (`include/cbls/counters.h`).
+  `first_feasible_objective` and `time_to_first_feasible` are the pair from the
+  earliest worker *and restart* to reach feasibility, on the portfolio clock.
+  Only `escape_probe_armed` reads its "not recorded" value: it latches one
+  worker's end state, and a pooled solution carries no worker identity.
 - **The model is read once, whatever `--threads` says.** `run_cli` loads it and
   hands it to `ParallelSearch::solve(Model&, ...)`, which freezes it and gives
-  each worker a replica sharing one immutable structure (#157). It used to re-read
-  the file per worker, so a 32-thread default run parsed it 33 times and held 33
-  full `Model` copies.
+  each worker a replica sharing one immutable structure (#157).
 - **The run is not reproducible.** `--seed` still seeds every worker (through
   `portfolio_worker_seed`, which decorrelates adjacent base seeds), but which
   solution a stalled worker adopts depends on thread interleaving. `--threads 1`
@@ -2604,64 +2580,51 @@ in both the human and the JSONL format:
 
 **Files:** `include/cbls/bound_propagation.h`, `src/bound_propagation.cpp`
 
-CBLS variables need finite bounds, and a MIP column need not have any. The
-adapters used to substitute a fixed magnitude (`inf_clamp`), which is **not
-implied by the constraints** and can therefore put the optimum outside the box
-the search ever looks at.
-
-`propagate_bounds` derives bounds that *are* implied, by standard activity-based
-tightening over linear rows. For a row `lo <= Σ aⱼxⱼ <= hi`, the min/max activity
-of every term but one bounds the remaining one:
+CBLS variables need finite bounds, and a MIP column need not have any. A fixed
+substitute magnitude is **not implied by the constraints** and can put the
+optimum outside the box the search ever looks at, so `propagate_bounds` derives
+bounds that *are* implied (#120), by standard activity-based tightening over
+linear rows. For a row `lo <= Σ aⱼxⱼ <= hi`, the min/max activity of every term
+but one bounds the remaining one:
 
 ```
 aₖxₖ <= hi − minactivity(rest)      aₖxₖ >= lo − maxactivity(rest)
 ```
 
-Four details carry the implementation:
-
 - **Infinite contributions are counted, not summed.** A row where exactly one
-  term is unbounded still bounds that term — the rest of the row is finite. This
-  is the case that matters: it is what finitizes a genuinely free column.
+  term is unbounded still bounds that term; this is what finitizes a genuinely
+  free column.
 - **Derived bounds are relaxed outward** by the larger of `max(1e-9, 1e-12·|b|)`
   and a rounding bound scaled to the ACTIVITY the bound came from,
   `(nnz + 3)·DBL_EPSILON·(|row bound| + Σ|contributions|)/|coef|`, before being
-  applied. Integral columns round inward *after* that relaxation. Until #211 the
-  margin was the bound-scaled term alone, and a slack of 3 left over from
-  activities of ~1e8 floored to 2, cutting off a feasible point
-  (`tests/test_bound_propagation.cpp` carries the instance).
+  applied; integral columns round inward *after* that relaxation. A bound-scaled
+  margin alone cut off a feasible point (#211; `tests/test_bound_propagation.cpp`
+  carries the instance).
 - **`1e20` and beyond is "no bound"** (the MPS/CPLEX/SCIP convention), read
   through `is_unbounded_below`/`is_unbounded_above`.
-- **Fixed-point iteration is capped** (`max_passes`, default 10) and each pass
-  is O(nnz). Timed in isolation on the MIPLIB roster: 0.13s to assemble the rows
-  plus 0.13s to propagate on the largest instance by rows (710k columns, 961k
-  rows, 4.9M nonzeros, 3 passes), and ~1.1s worst case on the densest
-  (`square47`, 27.4M nonzeros). Do not measure this by differencing two model
-  builds — the difference is smaller than the run-to-run noise.
+- **Fixed-point iteration is capped** (`max_passes`, default 10); each pass is
+  O(nnz), about 1.1 s worst case on the MIPLIB roster (timings on #120). Do not
+  measure it by differencing two model builds: the difference is below the
+  run-to-run noise.
 
-The rule the adapters follow afterwards: a bound that **exists**, declared or
-derived, is honoured however wide; only a missing one is invented. `inf_clamp`
-(and the `.nl` side's `int_inf_clamp`) is the fallback, and
-`MpsToModelResult::n_clamped_columns` reports how often it was still needed.
-Propagation is on by default in both adapters and can be turned off. That
-disables propagation only: the other half of #120 — the clamp supplying a bound
-where none exists, rather than narrowing every bound wider than it — is
-unconditional, so the switch does not restore the pre-#120 engine.
+A bound that **exists**, declared or derived, is honoured however wide; only a
+missing one is invented, by `inf_clamp` (and the `.nl` side's `int_inf_clamp`),
+and `MpsToModelResult::n_clamped_columns` reports how often. Propagation is on by
+default in both adapters and can be turned off; that disables propagation only,
+not the rule that the clamp supplies missing bounds rather than narrowing wide
+ones.
 
-`LinearRow` is a **view**: `cols`/`coefs` point into arrays the caller owns.
-The constraint matrix of a large MIP is hundreds of megabytes — `square47` alone
-is 27.4M nonzeros — so the rows are never copied to hand them over. The MPS
-adapter builds one flat CSR that both the expression builder and propagation
-read, rather than grouping the matrix once and copying it again.
+`LinearRow` is a **view** into caller-owned arrays, so a large MIP's matrix is
+never copied to hand it over; the MPS adapter builds one flat CSR that both the
+expression builder and propagation read.
 
 Deliberately **not** here: coefficient tightening, redundant-row removal,
 aggregation, probing, dual reductions, and anything nonlinear. The `.nl` adapter
-simply skips rows with a nonlinear part — omitting a row costs tightening, never
-validity.
-
-Where propagation proves the linear system empty, the adapters **discard** the
-derived bounds and build the model from the declared ones: an infeasible
-instance should be reported by the search, not by the reader silently handing it
-an empty box.
+skips rows with a nonlinear part: omitting a row costs tightening, never
+validity. Where propagation proves the linear system empty, the adapters
+**discard** the derived bounds and build the model from the declared ones: an
+infeasible instance should be reported by the search, not by the reader handing
+it an empty box.
 
 ### JSONL Model Format
 
@@ -2670,10 +2633,10 @@ an empty box.
 Models are serialized as `.cbls` files — one JSON object per line (JSONL),
 describing a variable, a list partition, an expression node, a constraint, or an
 objective. A List variable carries `n` (its universe) alone when it is a
-permutation — the bytes every pre-#164 file holds — and additionally `min_len`,
-`max_len` and `init` (`identity` / `empty` / `random`) when it is not. A
-partition is `{"partition": [<list names>], "cover": "exact" | "at_most_once"}`,
-written after the variables and before the nodes so its members always resolve:
+permutation, and additionally `min_len`, `max_len` and `init` (`identity` /
+`empty` / `random`) when it is not. A partition is
+`{"partition": [<list names>], "cover": "exact" | "at_most_once"}`, written after
+the variables and before the nodes so its members always resolve:
 
 ```jsonl
 {"var":"x","type":"int","lb":0,"ub":10}
@@ -2688,9 +2651,8 @@ tabulated over their input domain on save and reconstructed on load, and a
 PairLambda additionally carries its `mode` and its `head`/`tail` tables when
 they are not the default (see the
 [Lambda serialization note](#expression-dag)). The objective soft constraint is
-*not* part of the serialized model — `freeze()`, which `solve()` calls, appends it at runtime.
-
-Models can also be built programmatically via the C++ or Python API.
+*not* part of the serialized model — `freeze()`, which `solve()` calls, appends
+it at runtime.
 
 ### NL Model Format (#280-#291)
 
@@ -2711,10 +2673,8 @@ or two comparison rows from its `r` bound, the first objective with its sense.
 - **Unsupported operators** do not throw: `nl_to_model` sets `supported = false`
   with a reason, and the model must not be solved.
 
-`cbls_minlplib_nl_check` (`benchmarks/minlplib/nl_check.cpp`) reads and models
-each file named on its command line without solving and prints one status line
-per file (`modelled`, `reader-error`, `reader-unsupported`,
-`adapter-unsupported`, `checker-failed`);
+`cbls_minlplib_nl_check` (`benchmarks/minlplib/nl_check.cpp`) models each file
+named without solving and prints one status per file;
 `benchmarks/instances/minlplib/status.py` runs it over the MINLPLib catalogue
 (#283).
 
@@ -2722,31 +2682,28 @@ per file (`modelled`, `reader-error`, `reader-unsupported`,
 
 **File:** `include/cbls/search.h`
 
-`SolveCallback::on_progress(const SolveProgress&)` receives progress updates. It
-fires on a ~1 s cadence and immediately on any new best. Pass a `SolveCallback*`
-to `solve()` (the CLI passes a formatter). See
-[`SolveProgress`](#solveprogress) for the fields.
+`SolveCallback::on_progress(const SolveProgress&)` fires on a ~1 s cadence and
+immediately on any new best. Pass a `SolveCallback*` to `solve()` (the CLI
+passes a formatter). Fields: [`SolveProgress`](#solveprogress).
 
 ### Formatters
 
 **Files:** `include/cbls/formatter.h`, `src/formatter.cpp`
 
-Two `SolveCallback` implementations format solver output:
+Two `SolveCallback` implementations, both writing to a configurable
+`std::ostream` (default `std::cout`); the CLI selects one with `--format`, and
+`--quiet` attaches neither:
 
-- **`HumanFormatter`** — tabular output: header (model path, var/constraint
-  counts, objective sense, seed, time limit), periodic progress lines
-  (Time / Iter / Objective / Violation / Perturbs, `*` on a new best), and a
-  final solution summary.
+- **`HumanFormatter`** — header (model path, var/constraint counts, objective
+  sense, seed, time limit), progress lines (Time / Iter / Objective / Violation /
+  Perturbs, `*` on a new best), and a final solution summary.
 - **`JsonlFormatter`** — one JSON object per event (`start` / `progress` /
   `result`). `progress` carries iteration, time, objective (null when not
   feasible or not finite), violation, feasibility, perturbations and `new_best`;
   `result` carries time, iterations, `termination` (the `TerminationReason`
   token — `time_limit` / `iteration_limit` / `feasible` / `no_budget` /
-  `stopped` / `cancelled`, which
-  qualifies the two above), objective, `feasible`, `status` and `solution`.
-
-Both write to a configurable `std::ostream` (default `std::cout`). The CLI
-selects via `--format` and suppresses both with `--quiet`.
+  `stopped` / `cancelled`, which qualifies the two above), objective,
+  `feasible`, `status` and `solution`.
 
 ### Version
 
@@ -2754,11 +2711,11 @@ selects via `--format` and suppresses both with `--quiet`.
 
 ### Parameter Locations
 
-Top-level `solve()` arguments carry defaults (`time_limit=10.0`, `seed=42`,
-`use_fj=true`, `hook=nullptr`, `lns=nullptr`, `lns_interval=3`,
-`callback=nullptr`, `config={}`, `coord=nullptr`, the portfolio's `SearchCoordination*`). Algorithmic tuning lives in `SearchConfig`
-(outer loop) and `GFJConfig` (engine); inner-solver knobs are fields on
-`FloatIntensifyHook`; LNS takes `destroy_fraction`. See the
+`solve()` takes `time_limit=10.0`, `seed=42`, `use_fj=true`, `hook=nullptr`,
+`lns=nullptr`, `lns_interval=3`, `callback=nullptr`, `config={}` and
+`coord=nullptr` (the portfolio's `SearchCoordination*`). Algorithmic tuning
+lives in `SearchConfig` (outer loop) and `GFJConfig` (engine), inner-solver
+knobs on `FloatIntensifyHook`, LNS's `destroy_fraction` on its constructor:
 [Parameters Table](#parameters-table).
 
 ---
