@@ -73,10 +73,22 @@ int main(int argc, char** argv) {
     const bool no_aggregation =
         presolve && argc > 2 && std::string(argv[2]) == "--no-presolve-aggregation";
     const int first = 1 + (presolve ? 1 : 0) + (no_aggregation ? 1 : 0);
-    if (argc <= first) {
+    const auto usage = [&] {
         std::fprintf(stderr, "usage: %s [--presolve [--no-presolve-aggregation]] FILE.nl...\n",
                      argv[0]);
+    };
+    if (argc <= first) {
+        usage();
         return 2;
+    }
+    // A flag out of place must not become a file name: the census would then
+    // run with the setting it names silently off, and exit 0.
+    for (int i = first; i < argc; ++i) {
+        if (std::string(argv[i]).rfind("--", 0) == 0) {
+            std::fprintf(stderr, "misplaced or unknown option: %s\n", argv[i]);
+            usage();
+            return 2;
+        }
     }
     for (int i = first; i < argc; ++i) {
         const std::string path = argv[i];

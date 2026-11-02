@@ -995,7 +995,9 @@ def runner_command(args: argparse.Namespace, sha: str, name: str, stage: Path) -
         threads=args.threads,
         extra=(["--trace", str(stage / f"{name}.trace.csv")] if args.trace else [])
         + (["--presolve"] if args.presolve else [])
-        + ([] if args.presolve_aggregation else ["--no-presolve-aggregation"]),
+        + (
+            ["--no-presolve-aggregation"] if args.presolve and not args.presolve_aggregation else []
+        ),
     )
 
 

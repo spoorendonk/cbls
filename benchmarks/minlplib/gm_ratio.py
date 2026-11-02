@@ -517,8 +517,9 @@ class Provenance:
     scip_version: str
     budget: Budget
     memory_cap: str
-    #: "on", "off" or "none" (no rows), as `_one` reads it: a presolved run's rows
-    #: record `presolve` in `search_config` (#343) and are not the plain engine.
+    #: "on", "on-no-aggregation", "off" or "none" (no rows), as `_one` reads it: a
+    #: presolved run's rows record `presolve` in `search_config` (#343), and its
+    #: aggregation off arm `no-presolve-aggregation` too (#347).
     cbls_presolve: str = "off"
 
 
@@ -539,10 +540,21 @@ def provenance(
         budget=budget or Budget(),
         memory_cap=memory_cap or NOT_STATED,
         cbls_presolve=_one(
-            ("on" if "presolve" in r.search_config.split(";") else "off" for r in rows),
-            "cbls presolve settings",
+            (presolve_setting(r.search_config) for r in rows), "cbls presolve settings"
         ),
     )
+
+
+def presolve_setting(search_config: str) -> str:
+    """`on`, `on-no-aggregation` (#347) or `off`, as a row's `search_config` records it.
+
+    Aggregation's off arm is its own setting, so a table mixing it with the on
+    arm is refused like one mixing presolve with the plain engine.
+    """
+    tokens = search_config.split(";")
+    if "presolve" not in tokens:
+        return "off"
+    return "on-no-aggregation" if "no-presolve-aggregation" in tokens else "on"
 
 
 # --------------------------------------------------------------------------

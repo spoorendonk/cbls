@@ -196,9 +196,8 @@ const char* unpublishable_flag(const Args& a) {
     if (a.presolve) {
         return "--presolve";
     }
-    if (!a.presolve_aggregation) {
-        return "--no-presolve-aggregation";  // refused without --presolve already
-    }
+    // `--no-presolve-aggregation` needs no rung: it is refused without
+    // `--presolve` (check_flag_values), and `--presolve` is refused above.
     return cbls::bench::first_non_default_search_flag(a.search);
 }
 
