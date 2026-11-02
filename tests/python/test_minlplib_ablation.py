@@ -1231,12 +1231,13 @@ def test_the_transfer_dry_run_prints_the_grid_and_no_gate_probe(
 
 
 def presolve_echoing_runner(
-    *, ignore: str = "", presolve_by_default: bool = False
+    *, ignore: str = "", presolve_by_default: bool = False, aggregation_off: bool = False
 ) -> Callable[..., FakeCompleted]:
     """A fake runner whose `search_config` cell reports `--presolve` and
     `--compound-propagation` the way the real one does -- or, with `ignore`
     naming one of them, a binary that drops that flag; with
-    `presolve_by_default`, one whose presolve default has flipped to on."""
+    `presolve_by_default`, one whose presolve default has flipped to on; with
+    `aggregation_off`, one whose presolve aggregation default has flipped off."""
 
     def run(cmd: Sequence[str], **kwargs: object) -> FakeCompleted:
         cell = DEFAULT_ARM_CELL
@@ -1244,6 +1245,8 @@ def presolve_echoing_runner(
             cell += ";compound_propagation=on"
         if presolve_by_default or ("--presolve" in cmd and ignore != "--presolve"):
             cell += ";presolve"
+            if aggregation_off:
+                cell += ";no-presolve-aggregation"
         row = f"{{name}},1,1,1,5,5,10,true,feasible,{{sha}},0,0,0,0,3,0.5,{cell}"
         return fake_runner(row=row)(cmd, **kwargs)
 
@@ -1363,6 +1366,40 @@ def test_a_runner_whose_presolve_default_flipped_stops_the_control(
     with pytest.raises(ArmConfigMismatchError, match="must not"):
         execute_runs(make_args(tmp_path), "abc1234", plan, tmp_path / "scratch", "campaign")
     assert _recorded(tmp_path / "scratch") == []
+
+
+def test_a_runner_whose_aggregation_default_flipped_stops_the_presolve_arm(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#331 decides on the default presolve; one without doubleton aggregation
+    would be filed under `presolve` and pass its `config` check."""
+    monkeypatch.setattr(subprocess, "run", presolve_echoing_runner(aggregation_off=True))
+    plan = campaign_plan(["a"], [1], PRESOLVE_ARMS)
+    with pytest.raises(ArmConfigMismatchError, match="no-presolve-aggregation"):
+        execute_runs(make_args(tmp_path), "abc1234", plan, tmp_path / "scratch", "campaign")
+    assert [r["arm"] for r in _recorded(tmp_path / "scratch")] == [CONTROL_ARM]
+
+
+def test_the_presolve_arms_assume_both_settings_off_by_default() -> None:
+    """The control is "both off" only while both defaults are off. A flipped
+    presolve default is caught per row (`Arm.absent`); compound propagation is
+    an opt-in key that vanishes from the cell under a flipped default, so it
+    can only be pinned here, at its source."""
+    search = (REPO_ROOT / "include" / "cbls" / "search.h").read_text()
+    assert re.findall(r"bool compound_move_propagation = (\w+);", search) == ["false"]
+    flags = (REPO_ROOT / "benchmarks" / "common" / "search_config_flags.h").read_text()
+    assert "bool compound_propagation = SearchConfig{}.compound_move_propagation;" in flags
+    runner = (REPO_ROOT / "benchmarks" / "minlplib" / "minlplib.cpp").read_text()
+    assert re.findall(r"bool presolve = (\w+);", runner) == ["false"]
+    assert re.findall(r"bool presolve_aggregation = (\w+);", runner) == ["true"]
+
+
+def test_the_presolve_campaign_refuses_instances_outside_its_sample(tmp_path: Path) -> None:
+    out = ["--out-dir", str(tmp_path / "scratch"), "--campaign", PRESOLVE_CAMPAIGN]
+    refusal = resolve_campaign(parse_args([*out, "--instances", "tln4", "not_in_sample"]))
+    assert refusal is not None
+    assert "not_in_sample" in refusal
+    assert "tln4" not in refusal
 
 
 def test_report_only_does_not_need_the_presolve_sample(

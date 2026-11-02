@@ -178,10 +178,12 @@ class Arm:
     #: arm the row is about to be filed under. Empty for the ablation arms,
     #: whose flags are switches the cell already names one-to-one.
     config: tuple[str, ...] = ()
-    #: Entries the cell must NOT carry. An arm set whose arms differ by
-    #: switching a token on needs this as well: if the runner's default flipped
-    #: to on, every arm's cell would carry the token, `config` alone would pass,
-    #: and the campaign would compare the setting against itself.
+    #: Entries the cell must NOT carry. Only a token the runner writes whenever
+    #: its setting is on, default or not, can be checked this way: if that
+    #: default flipped on, every arm's cell would carry it, `config` alone would
+    #: pass, and the campaign would compare the setting against itself. An
+    #: opt-in search key (written only when it differs from the default)
+    #: vanishes instead under a flipped default, so it cannot go here.
     absent: tuple[str, ...] = ()
 
 
@@ -261,13 +263,20 @@ TRANSFER_ARMS: tuple[Arm, ...] = tuple(
 #: token the runner's `search_config` cell carries when it applied the flag:
 #: `presolve` from `cbls_minlplib` itself, `compound_propagation=on` from the
 #: shared search flags (an opt-in key, absent from the cell when off).
-#: Each arm also names the tokens it must NOT carry, so a runner whose default
-#: flipped cannot file a presolved row under `control`.
+#:
+#: `cbls_minlplib` writes `presolve` whenever presolve is on and
+#: `no-presolve-aggregation` whenever aggregation is off, so `absent` catches a
+#: flipped default of either: no presolved row under an arm without
+#: `--presolve`, no aggregation-free presolve under an arm that asked for the
+#: default presolve. `compound_propagation=on` is opt-in and cannot be guarded
+#: that way (see `Arm.absent`); a test pins both defaults at their source
+#: instead, so a flip fails the suite before any campaign runs at that commit.
 _PRESOLVE_TOKEN = "presolve"
+_NO_AGGREGATION_TOKEN = "no-presolve-aggregation"
 _PROPAGATION_TOKEN = "compound_propagation=on"
 PRESOLVE_ARMS: tuple[Arm, ...] = (
-    Arm(CONTROL_ARM, (), absent=(_PRESOLVE_TOKEN, _PROPAGATION_TOKEN)),
-    Arm("presolve", ("--presolve",), (_PRESOLVE_TOKEN,), (_PROPAGATION_TOKEN,)),
+    Arm(CONTROL_ARM, (), absent=(_PRESOLVE_TOKEN,)),
+    Arm("presolve", ("--presolve",), (_PRESOLVE_TOKEN,), (_NO_AGGREGATION_TOKEN,)),
     Arm(
         "compound-propagation",
         ("--compound-propagation",),
@@ -278,6 +287,7 @@ PRESOLVE_ARMS: tuple[Arm, ...] = (
         "both",
         ("--presolve", "--compound-propagation"),
         (_PRESOLVE_TOKEN, _PROPAGATION_TOKEN),
+        (_NO_AGGREGATION_TOKEN,),
     ),
 )
 
@@ -1428,11 +1438,20 @@ def resolve_campaign(args: argparse.Namespace) -> str | None:
         args.inst_dir = HELDOUT_INST_DIR if args.campaign in HELDOUT_CAMPAIGNS else DEFAULT_INST_DIR
     # Not under --report-only: the report does not read the sample, and a later
     # edit to it must not stop a finished campaign from being scored.
-    if args.campaign == PRESOLVE_CAMPAIGN and not args.instances and not args.report_only:
+    if args.campaign == PRESOLVE_CAMPAIGN and not args.report_only:
         try:
-            args.instances = load_sample(PRESOLVE_SAMPLE)
+            sample = load_sample(PRESOLVE_SAMPLE)
         except (OSError, ValueError) as exc:
             return f"cannot read the {PRESOLVE_CAMPAIGN} sample: {exc}"
+        # A subset is fine (the laptop smoke); an instance outside the sample
+        # is not, since the sample was fixed before any solve.
+        outside = [name for name in args.instances if name not in sample]
+        if outside:
+            return (
+                f"--instances {' '.join(outside)}: not in {PRESOLVE_SAMPLE.name}; "
+                f"{PRESOLVE_CAMPAIGN} runs only on its fixed sample or a subset of it"
+            )
+        args.instances = args.instances or sample
     return None
 
 
