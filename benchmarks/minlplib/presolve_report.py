@@ -76,8 +76,15 @@ def _scorable(row: RunRow) -> bool:
     return row.feasible and not row.no_search and math.isfinite(row.gap)
 
 
-def _fmt(value: float, spec: str = ".4f") -> str:
-    return format(value, spec) if math.isfinite(value) else "n/a"
+def _fmt(value: float) -> str:
+    """At most 10 characters: fixed point where it is readable, else scientific.
+
+    GMs of gap+1 span orders of magnitude (a 1e9-point gap is on the roster),
+    and a ratio of 1e-5 printed fixed would read as 0.
+    """
+    if not math.isfinite(value):
+        return "n/a"
+    return f"{value:.4f}" if 1e-3 <= abs(value) < 1e4 else f"{value:.3e}"
 
 
 def _ratio(arm: float, control: float) -> float:
@@ -210,7 +217,7 @@ def presolve_lines(rows: Sequence[RunRow], plan: PresolvePlan) -> list[str]:
         ),
         "",
         f"{'arm':<22}{'seed':>6}{'feasible':>10}{'ctl feas':>10}{'pool':>6}"
-        f"{'GM arm':>10}{'GM ctl':>10}{'ratio':>9}",
+        f"{'GM arm':>11}{'GM ctl':>11}{'ratio':>11}",
     ]
 
     def feasible(arm: str, *seeds: int) -> str:
@@ -229,14 +236,14 @@ def presolve_lines(rows: Sequence[RunRow], plan: PresolvePlan) -> list[str]:
             gm_arm, gm_ctl = gm_over(arm, pairs), gm_over(CONTROL_ARM, pairs)
             lines.append(
                 f"{arm:<22}{seed:>6}{feasible(arm, seed):>10}{feasible(CONTROL_ARM, seed):>10}"
-                f"{len(pairs):>6}{_fmt(gm_arm):>10}{_fmt(gm_ctl):>10}"
-                f"{_fmt(_ratio(gm_arm, gm_ctl)):>9}"
+                f"{len(pairs):>6}{_fmt(gm_arm):>11}{_fmt(gm_ctl):>11}"
+                f"{_fmt(_ratio(gm_arm, gm_ctl)):>11}"
             )
     lines += [
         "",
         "pooled over seeds:",
-        f"{'arm':<22}{'feasible':>10}{'ctl feas':>10}{'pool':>6}{'GM arm':>10}{'GM ctl':>10}"
-        f"{'ratio':>9}{'seed range':>17}  reading",
+        f"{'arm':<22}{'feasible':>10}{'ctl feas':>10}{'pool':>6}{'GM arm':>11}{'GM ctl':>11}"
+        f"{'ratio':>11}{'seed range':>23}  reading",
     ]
     for arm in arms:
         pairs = [(i, s) for s in plan.seeds for i in pool(arm, s)]
@@ -247,11 +254,11 @@ def presolve_lines(rows: Sequence[RunRow], plan: PresolvePlan) -> list[str]:
             for ps in ([(i, s) for i in pool(arm, s)] for s in plan.seeds)
         ]
         per_seed = [r for r in per_seed if math.isfinite(r)]
-        spread = f"{min(per_seed):.4f}-{max(per_seed):.4f}" if per_seed else "n/a"
+        spread = f"{_fmt(min(per_seed))}..{_fmt(max(per_seed))}" if per_seed else "n/a"
         lines.append(
             f"{arm:<22}{feasible(arm, *plan.seeds):>10}"
             f"{feasible(CONTROL_ARM, *plan.seeds):>10}{len(pairs):>6}"
-            f"{_fmt(gm_arm):>10}{_fmt(gm_ctl):>10}{_fmt(ratio):>9}{spread:>17}  "
+            f"{_fmt(gm_arm):>11}{_fmt(gm_ctl):>11}{_fmt(ratio):>11}{spread:>23}  "
             f"{_reading(ratio, floor)}"
         )
     return lines

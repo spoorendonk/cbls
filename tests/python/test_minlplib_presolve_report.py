@@ -181,6 +181,18 @@ def test_a_planned_instance_with_no_row_is_named_missing() -> None:
     assert any(" and 2 more" in line for line in lines)
 
 
+def test_gms_across_orders_of_magnitude_keep_their_columns_and_digits() -> None:
+    """The laptop smoke's ex14_2_1 has gaps near 1e9 points: fixed-point cells
+    ran together and a 1e-9 ratio printed as 0.0000."""
+
+    def gap(_instance: str, arm: str, _seed: int) -> float:
+        return 1e9 - 1.0 if arm == CONTROL_ARM else 0.0
+
+    lines = presolve_lines(grid(["a"], gap), plan(["a"]))
+    assert table_row(lines, "presolve", 1)[5:] == ["1.0000", "1.000e+09", "1.000e-09"]
+    assert "1.000e-09..1.000e-09" in pooled_row(lines, "presolve")
+
+
 def test_a_stray_instance_cannot_stand_in_for_a_missing_one() -> None:
     rows = grid(["a", "b", "d"], lambda *_: 1.0)
     counted = presolve_lines(rows, plan([], roster_size=3))  # names unknown: count only
