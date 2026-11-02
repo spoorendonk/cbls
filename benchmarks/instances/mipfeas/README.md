@@ -496,15 +496,22 @@ tightening and aggregation on), `compound-propagation`
   solved and verified is skipped without taking it.
 - **Arguments after `--` go to `run_benchmark.py`.** Flags the arms or the plan
   set (`--presolve`, `--compound-propagation`, `--seed`, `--budget`,
-  `--results-dir`, …) are refused there.
+  `--results-dir`, …) are refused there, and so is any abbreviation of them or
+  of `--cbls-bin`/`--engine-commit`, which argparse would expand.
 - **`campaign.json` stamps the out-dir.** A run refuses a directory stamped with
-  any other campaign, arm flags, instances, seeds, budget, pass-through or
-  engine commit; `--report-only` compares the first five.
-- **`arms_report.md`** has a row per arm and seed and a row per arm pooled over
-  seeds: feasible count, the shifted geometric mean of the primal integral, its
-  ratio to the control, median setup seconds and maximum peak RSS. The noise
-  floor is the control's PI SGM max / min over seeds; a ratio inside it is not a
-  difference. The report refuses arms run at different engine commits.
+  any other campaign, arm flags, instances, seeds, budget, pass-through, engine
+  commit or runner-binary sha256; `--report-only` compares the first five. The
+  binary's sha256 is re-checked before every solve, so a rebuild mid-campaign
+  stops it.
+- **`arms_report.md`** has a row per arm and seed (feasible count, the shifted
+  geometric mean of the primal integral, its ratio to the control, median setup
+  seconds, maximum peak RSS) and a row per arm pooled over seeds (feasible count,
+  PI SGM, ratio, per-seed ratio range). PI means cover only the instances
+  published in every arm at that seed, so a row one arm withholds leaves every
+  arm's mean. The noise floor is the control's PI SGM max / min over the seeds
+  it names; a ratio inside it is not a difference. The report refuses arms run
+  at different engine commits; a killed solve's row, which records none, is
+  scored as a failure and not counted as a commit.
 
 ### Running the portfolio (`--cbls-threads`)
 

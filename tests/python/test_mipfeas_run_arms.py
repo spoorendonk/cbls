@@ -44,7 +44,13 @@ record = {
 (out / f"{inst}.json").write_text(json.dumps(record))
 (out / f"{inst}.sol").write_text("x 1\\n")
 (out / f"{inst}.trace.csv").write_text(f"time_seconds,objective\\n0.5,{objective}\\n")
-verdict = "fail" if inst == "bad" else "pass"
+if inst == "killed" and presolve:
+    # What run_benchmark.write_failure_result writes for a solve it killed.
+    record = {"engine": "cbls", "instance": inst, "status": "timeout", "message": "killed",
+              "objective": None, "budget_seconds": 2.0, "driver_arm": {}}
+    (out / f"{inst}.json").write_text(json.dumps(record))
+    sys.exit(0)
+verdict = "fail" if inst == "bad" or (inst == "badpre" and presolve) else "pass"
 (out / f"{inst}.verify.json").write_text(json.dumps({
     "verdict": verdict, "reason": "" if verdict == "pass" else "row_violation",
     "marginal": False, "tolerances": {"row_absolute": 1e-06},
@@ -127,7 +133,7 @@ def test_a_cell_runs_one_locked_cbls_solve_into_its_arm_and_seed_directory(
     assert cmd[cmd.index("--engines") + 1] == "cbls"
     assert cmd[cmd.index("--results-dir") + 1] == str(tmp_path / "both" / "seed3")
     assert cmd[cmd.index("--seed") + 1] == "3"
-    assert cmd[cmd.index("--budget") + 1] == "60"
+    assert cmd[cmd.index("--budget") + 1] == "60.0"
     assert cmd[-4:] == ["--presolve", "--compound-propagation", "--cbls-threads", "4"]
 
 
@@ -205,3 +211,105 @@ def test_rows_from_two_engine_commits_are_refused(tmp_path: Path) -> None:
     row.write_text(json.dumps(record))
     with pytest.raises(ValueError, match="2 engine commits"):
         _main(tmp_path, inst_dir, names, fake, "--report-only")
+
+
+@pytest.mark.parametrize("flag", ["--pres", "--se=5", "--res", "--cbls-b", "--engine-c=x"])
+def test_an_abbreviation_of_a_flag_the_driver_owns_or_reads_is_refused(
+    tmp_path: Path, flag: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    inst_dir, names, fake = _campaign(tmp_path, ["a"])
+    code = run_arms.main(
+        ["--out-dir", str(tmp_path / "out"), "--roster", str(names), "--inst-dir", str(inst_dir)]
+        + ["--lock-command", f"{sys.executable} {fake}", "--", flag]
+    )
+    assert code == 2
+    assert "cannot be passed through" in capsys.readouterr().err
+    assert not (tmp_path / "out").exists()
+
+
+def test_full_runner_flags_pass_through() -> None:
+    passthrough = ["--cbls-threads", "4", "--cpuset", "0,2,4,6", "--mem-limit-gb", "8"]
+    assert run_arms.owned_flag_in(passthrough) is None
+    assert run_arms.owned_flag_in(["--cbls-bin", "/x", "--engine-commit=abc"]) is None
+
+
+def test_the_budget_reaches_the_runner_with_every_digit(tmp_path: Path) -> None:
+    cell = Cell("a", 1, ARMS[0])
+    cmd = run_arms.runner_command(cell, tmp_path / "r.csv", tmp_path, 0.1234567, tmp_path, [], [])
+    assert float(cmd[cmd.index("--budget") + 1]) == 0.1234567
+
+
+def test_a_killed_solve_without_a_commit_does_not_block_the_report(tmp_path: Path) -> None:
+    inst_dir, names, fake = _campaign(tmp_path, ["a", "killed"])
+    assert _main(tmp_path, inst_dir, names, fake) == 0
+    report = (tmp_path / "out" / run_arms.REPORT_NAME).read_text()
+    assert "Engine commit: abc1234\n" in report
+    # A killed solve scores as a failure, not as unrun: it stays in every mean.
+    assert "| control | 1 | 2/2 | 0 | 0 | 0 | 2 |" in report
+    assert "| presolve | 1 | 1/2 | 0 | 0 | 0 | 2 |" in report
+
+
+def test_the_pi_means_cover_only_instances_published_in_every_arm(tmp_path: Path) -> None:
+    inst_dir, names, fake = _campaign(tmp_path, ["a", "badpre"])
+    assert _main(tmp_path, inst_dir, names, fake) == 1
+    report = (tmp_path / "out" / run_arms.REPORT_NAME).read_text()
+    # `badpre` is rejected under presolve only, so it leaves the control's mean too.
+    assert "| control | 1 | 2/2 | 0 | 0 | 0 | 1 |" in report
+    assert "| presolve | 1 | 1/2 | 0 | 1 | 0 | 1 |" in report
+    alone = tmp_path / "alone"
+    alone.mkdir()
+    inst_dir, names, fake = _campaign(alone, ["a"])
+    assert _main(alone, inst_dir, names, fake) == 0
+    sgm = report.split("| control | 1 |", 1)[1].split(" | ")[6]
+    assert sgm in (alone / "out" / run_arms.REPORT_NAME).read_text()
+
+
+def test_the_noise_floor_names_the_seeds_it_covers(tmp_path: Path) -> None:
+    inst_dir, names, fake = _campaign(tmp_path, ["a"])
+    assert _main(tmp_path, inst_dir, names, fake) == 0
+    report = (tmp_path / "out" / run_arms.REPORT_NAME).read_text()
+    assert "max / min over seeds 1, 2 = " in report
+
+
+def test_a_missing_lock_tool_is_refused_before_anything_is_written(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    inst_dir, names, _ = _campaign(tmp_path, ["a"])
+    code = run_arms.main(
+        ["--out-dir", str(tmp_path / "out"), "--roster", str(names), "--inst-dir", str(inst_dir)]
+        + ["--lock-command", "no-such-lock-tool-350 --"]
+    )
+    assert code == 2
+    assert "not on PATH" in capsys.readouterr().err
+    assert not (tmp_path / "out").exists()
+
+
+def test_a_rebuilt_binary_stops_the_campaign_before_the_next_cell(tmp_path: Path) -> None:
+    inst_dir, _, fake = _campaign(tmp_path, ["a"])
+    binary = tmp_path / "cbls_mipfeas"
+    binary.write_bytes(b"build one")
+    digest = run_arms.binary_digest(binary)
+    binary.write_bytes(b"build two")
+    failed, stopped = run_arms.run_cells(
+        run_arms.plan(["a"], [1], ARMS),
+        tmp_path / "out",
+        inst_dir / "roster.csv",
+        2.0,
+        inst_dir,
+        [],
+        [sys.executable, str(fake)],
+        binary,
+        digest,
+    )
+    assert failed == []
+    assert stopped is not None and "changed since the campaign was stamped" in stopped
+    assert not (tmp_path / "calls.log").exists()
+
+
+def test_a_resume_after_a_rebuild_is_refused(tmp_path: Path) -> None:
+    one = run_arms.campaign_stamp("presolve-322", ["a"], [1], 60.0, [], "abc", "d1")
+    assert run_arms.check_stamp(tmp_path, one) is None
+    two = run_arms.campaign_stamp("presolve-322", ["a"], [1], 60.0, [], "abc", "d2")
+    refusal = run_arms.check_stamp(tmp_path, two)
+    assert refusal is not None and "cbls_bin_sha256" in refusal
+    assert run_arms.check_stamp(tmp_path, two, report_only=True) is None

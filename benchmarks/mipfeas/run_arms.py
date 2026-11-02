@@ -35,8 +35,10 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import shlex
+import shutil
 import statistics
 import subprocess
 import sys
@@ -117,6 +119,13 @@ OWNED_FLAGS = frozenset(
     }
 )
 
+#: Pass-through flags the driver reads itself (the binary it stamps, the commit
+#: it records), beside the owned ones. `run_benchmark.py`'s argparse accepts a
+#: unique prefix of any of them, so a prefix must be refused as the full name
+#: would be: `--pres` is `--presolve`, `--se 5` overrides the planned seed, and
+#: `--cbls-b X` runs a binary the stamp does not describe.
+READ_FLAGS = frozenset({"--cbls-bin", "--engine-commit"})
+
 
 class Cell(NamedTuple):
     instance: str
@@ -135,9 +144,21 @@ def arm_dir(out_dir: Path, arm: str, seed: int) -> Path:
 
 
 def owned_flag_in(passthrough: Sequence[str]) -> str | None:
-    """The first pass-through argument the driver owns, in `--flag` or `--flag=value` form."""
+    """The first pass-through argument the driver owns, or an abbreviation of one.
+
+    Matched in `--flag` or `--flag=value` form, and as any strict prefix of an
+    owned or read flag, since argparse would expand it. No full runner flag is
+    a strict prefix of one of these, so nothing legitimate is refused.
+    """
     for arg in passthrough:
-        if arg.split("=", 1)[0] in OWNED_FLAGS:
+        name = arg.split("=", 1)[0]
+        if name in OWNED_FLAGS:
+            return arg
+        if (
+            name.startswith("--")
+            and len(name) > 2
+            and any(f != name and f.startswith(name) for f in OWNED_FLAGS | READ_FLAGS)
+        ):
             return arg
     return None
 
@@ -193,7 +214,9 @@ def runner_command(
         "--results-dir",
         str(arm_dir(out_dir, cell.arm.name, cell.seed)),
         "--budget",
-        f"{budget:g}",
+        # repr, not :g: every row records the budget it ran at, and the scorer
+        # refuses a row whose budget differs from the one it is scored at.
+        repr(budget),
         "--seed",
         str(cell.seed),
         *cell.arm.flags,
@@ -208,6 +231,20 @@ def cell_done(out_dir: Path, cell: Cell) -> bool:
     )
 
 
+def binary_digest(path: Path) -> str | None:
+    """sha256 of the runner binary, or None when there is none to hash.
+
+    The commit names the source, not the build: a rebuild between two solves
+    (the lock is released between them) would change the binary under one
+    commit. Hashing a few-MiB file costs milliseconds against a solve of seconds
+    to minutes, so it is re-checked before every cell.
+    """
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
 def campaign_stamp(
     campaign: str,
     instances: Sequence[str],
@@ -215,6 +252,7 @@ def campaign_stamp(
     budget: float,
     passthrough: Sequence[str],
     commit: str,
+    digest: str | None = None,
 ) -> dict[str, object]:
     """What a resume must match. The arms' flags are in it, not only their names."""
     return {
@@ -225,6 +263,7 @@ def campaign_stamp(
         "budget": budget,
         "passthrough": list(passthrough),
         "engine_commit": commit,
+        "cbls_bin_sha256": digest,
     }
 
 
@@ -269,16 +308,26 @@ def run_cells(
     inst_dir: Path,
     passthrough: Sequence[str],
     lock_command: Sequence[str],
-) -> list[Cell]:
-    """Run every cell not already done, in order; return the ones that failed.
+    cbls_bin: Path,
+    digest: str | None,
+) -> tuple[list[Cell], str | None]:
+    """Run every cell not already done, in order; return the failed ones and a stop reason.
 
     A failed cell does not stop the campaign: its row (or its absence) is what
-    the report counts, and the remaining cells are still worth their hours.
+    the report counts, and the remaining cells are still worth their hours. A
+    runner binary that no longer matches the stamped digest does: every later
+    cell would run another build under the same arm names.
     """
     failed: list[Cell] = []
     pending = [c for c in cells if not cell_done(out_dir, c)]
     print(f"{len(cells) - len(pending)} of {len(cells)} cell(s) done; {len(pending)} to run.")
     for k, cell in enumerate(pending, 1):
+        if binary_digest(cbls_bin) != digest:
+            return failed, (
+                f"{cbls_bin} changed since the campaign was stamped (sha256 differs); "
+                f"stopped before {cell.instance} seed {cell.seed} {cell.arm.name}. "
+                "Rebuild the stamped commit, or start a fresh --out-dir."
+            )
         roster_file = write_cell_roster(out_dir, reference_roster, cell.instance)
         cmd = runner_command(
             cell, roster_file, out_dir, budget, inst_dir, passthrough, lock_command
@@ -286,7 +335,7 @@ def run_cells(
         print(f"[{k}/{len(pending)}] {cell.instance} seed {cell.seed} {cell.arm.name}", flush=True)
         if subprocess.run(cmd, check=False).returncode != 0:
             failed.append(cell)
-    return failed
+    return failed, None
 
 
 class ArmSeed(NamedTuple):
@@ -304,10 +353,29 @@ class ArmSeed(NamedTuple):
     max_peak_rss_mib: float | None
 
 
-def summarize_arm_seed(arm: str, seed: int, rows: Sequence[Scored]) -> ArmSeed:
-    """The aggregates of one (arm, seed). Withheld and not-run rows enter no PI mean."""
+def _published(rows: Sequence[Scored]) -> list[Scored]:
+    """Rows that ran and are not withheld (rejected or unverified): those a PI mean may use."""
+    return [r for r in rows if r.status != "not_run" and not r.withheld]
+
+
+def compared_instances(
+    scored: dict[tuple[str, int], list[Scored]], arms: Sequence[Arm], seed: int
+) -> set[str]:
+    """The instances published in EVERY arm at this seed.
+
+    The PI means are taken over this set alone. An arm whose hard instance is
+    withheld or missing would otherwise drop it from its own mean but not from
+    the control's, and read as better for a row it does not have.
+    """
+    sets = [{r.instance for r in _published(scored[(arm.name, seed)])} for arm in arms]
+    return set.intersection(*sets) if sets else set()
+
+
+def summarize_arm_seed(arm: str, seed: int, rows: Sequence[Scored], compared: set[str]) -> ArmSeed:
+    """The aggregates of one (arm, seed); the PI mean is over `compared` only."""
     ran = [r for r in rows if r.status != "not_run"]
-    published = [r for r in ran if not r.withheld]
+    published = _published(rows)
+    in_mean = [r.primal_integral for r in published if r.instance in compared]
     setups = [r.setup_seconds for r in ran if r.setup_seconds is not None]
     rss = [r.peak_rss_kib for r in ran if r.peak_rss_kib is not None]
     return ArmSeed(
@@ -318,13 +386,27 @@ def summarize_arm_seed(arm: str, seed: int, rows: Sequence[Scored]) -> ArmSeed:
         feasible=sum(1 for r in published if r.status == "feasible"),
         verification_failed=sum(1 for r in ran if r.verification == "fail"),
         unverified=sum(1 for r in ran if r.verification == "unverified" and r.withheld),
-        pi_sgm=(
-            shifted_geometric_mean([r.primal_integral for r in published])
-            if published
-            else float("nan")
-        ),
+        pi_sgm=shifted_geometric_mean(in_mean) if in_mean else float("nan"),
         median_setup_seconds=statistics.median(setups) if setups else None,
         max_peak_rss_mib=max(rss) / 1024.0 if rss else None,
+    )
+
+
+#: Provenance values that name no build: a row the driver wrote for a solve it
+#: killed (timeout, memory cap) carries no commit. The scorer leaves them out
+#: of its commit line for the same reason (`primal_integral.py`).
+_NO_COMMIT = ("unknown", "n/a")
+
+
+def engine_commits(scored: dict[tuple[str, int], list[Scored]]) -> list[str]:
+    """The engine commits the rows ran at, leaving out rows that record none."""
+    return sorted(
+        {
+            r.provenance
+            for rows in scored.values()
+            for r in rows
+            if r.status != "not_run" and r.provenance not in _NO_COMMIT
+        }
     )
 
 
@@ -345,10 +427,10 @@ def score_campaign(
             ]
             check_uniform_configuration(rows)
             scored[(arm.name, seed)] = rows
-    commits = {r.provenance for rows in scored.values() for r in rows if r.status != "not_run"}
+    commits = engine_commits(scored)
     if len(commits) > 1:
         raise ValueError(
-            f"the arms ran at {len(commits)} engine commits ({', '.join(sorted(commits))}); "
+            f"the arms ran at {len(commits)} engine commits ({', '.join(commits)}); "
             f"an arm comparison is one commit's flags against each other"
         )
     return scored
@@ -370,38 +452,44 @@ def render_report(
     scored: dict[tuple[str, int], list[Scored]],
 ) -> str:
     """The arms report: per (arm, seed), pooled per arm, and the control's noise floor."""
-    per = {key: summarize_arm_seed(key[0], key[1], rows) for key, rows in scored.items()}
-    commits = sorted(
-        {r.provenance for rows in scored.values() for r in rows if r.status != "not_run"}
-    )
+    compared = {s: compared_instances(scored, arms, s) for s in seeds}
+    per = {
+        key: summarize_arm_seed(key[0], key[1], rows, compared[key[1]])
+        for key, rows in scored.items()
+    }
+    commits = engine_commits(scored)
     n_instances = len(next(iter(scored.values()))) if scored else 0
     control_sgm = {s: per[(CONTROL, s)].pi_sgm for s in seeds}
-    finite = [v for v in control_sgm.values() if v == v and v > 0.0]
+    floor_seeds = [s for s, v in control_sgm.items() if v == v and v > 0.0]
+    finite = [control_sgm[s] for s in floor_seeds]
     noise = max(finite) / min(finite) if len(finite) > 1 else float("nan")
     lines = [
         f"# MIPfeas arms: campaign {campaign}",
         "",
-        f"- Engine commit: {', '.join(commits) or 'none ran'}",
+        f"- Engine commit: {', '.join(commits) or 'none recorded'}",
         f"- Budget: {budget:g} s; seeds: {', '.join(map(str, seeds))}; instances: {n_instances}",
         "- Arms: "
         + "; ".join(f"`{a.name}` = `{' '.join(a.flags) or '(runner defaults)'}`" for a in arms),
-        "- PI SGM: shifted geometric mean of the primal integral over published rows "
-        "(lower is better); ratio = arm / control, so below 1 is better.",
-        f"- Noise floor: the control's PI SGM, max / min over seeds = {_cell(noise, '.4f')}. "
+        "- PI SGM: shifted geometric mean of the primal integral (lower is better) over the "
+        "instances published in every arm at that seed (`compared`); ratio = arm / control, "
+        "so below 1 is better. Feasible counts are over all rows.",
+        f"- Noise floor: the control's PI SGM, max / min over seeds "
+        f"{', '.join(map(str, floor_seeds)) or 'none'} = {_cell(noise, '.4f')}. "
         "A pooled ratio inside [1/floor, floor] is not a difference.",
         "",
         "## Per arm and seed",
         "",
-        "| arm | seed | feasible | not run | verify failed | unverified | PI SGM | "
+        "| arm | seed | feasible | not run | verify failed | unverified | compared | PI SGM | "
         "ratio to control | median setup s | max peak RSS MiB |",
-        "|---|---|---|---|---|---|---|---|---|---|",
+        "|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for arm in arms:
         for seed in seeds:
             p = per[(arm.name, seed)]
             lines.append(
                 f"| {arm.name} | {seed} | {p.feasible}/{p.scored} | {p.not_run} | "
-                f"{p.verification_failed} | {p.unverified} | {_cell(p.pi_sgm, '.4f')} | "
+                f"{p.verification_failed} | {p.unverified} | {len(compared[seed])} | "
+                f"{_cell(p.pi_sgm, '.4f')} | "
                 f"{_cell(_ratio(p.pi_sgm, control_sgm[seed]), '.4f')} | "
                 f"{_cell(p.median_setup_seconds, '.3f')} | {_cell(p.max_peak_rss_mib, '.1f')} |"
             )
@@ -413,12 +501,12 @@ def render_report(
         "| per-seed ratio range |",
         "|---|---|---|---|---|---|",
     ]
-    pooled_control = _pooled_sgm(scored, CONTROL, seeds)
+    pooled_control = _pooled_sgm(scored, CONTROL, seeds, compared)
     for arm in arms:
         feasible = sum(per[(arm.name, s)].feasible for s in seeds)
         total = sum(per[(arm.name, s)].scored for s in seeds)
         lower = [s for s in seeds if per[(arm.name, s)].feasible < per[(CONTROL, s)].feasible]
-        pooled = _pooled_sgm(scored, arm.name, seeds)
+        pooled = _pooled_sgm(scored, arm.name, seeds, compared)
         ratios = [_ratio(per[(arm.name, s)].pi_sgm, control_sgm[s]) for s in seeds]
         ratios = [r for r in ratios if r == r]
         spread = f"{min(ratios):.4f}-{max(ratios):.4f}" if ratios else ""
@@ -430,13 +518,17 @@ def render_report(
 
 
 def _pooled_sgm(
-    scored: dict[tuple[str, int], list[Scored]], arm: str, seeds: Sequence[int]
+    scored: dict[tuple[str, int], list[Scored]],
+    arm: str,
+    seeds: Sequence[int],
+    compared: dict[int, set[str]],
 ) -> float:
+    """PI SGM over every (instance, seed) published in all arms."""
     values = [
         r.primal_integral
         for s in seeds
-        for r in scored[(arm, s)]
-        if r.status != "not_run" and not r.withheld
+        for r in _published(scored[(arm, s)])
+        if r.instance in compared[s]
     ]
     return shifted_geometric_mean(values) if values else float("nan")
 
@@ -476,7 +568,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     args, passthrough = parse_args(sys.argv[1:] if argv is None else argv)
     if (owned := owned_flag_in(passthrough)) is not None:
         print(
-            f"{owned} is set by the arms or the plan; it cannot be passed through", file=sys.stderr
+            f"{owned} is set by the arms or the plan, or abbreviates such a flag; "
+            "it cannot be passed through",
+            file=sys.stderr,
         )
         return 2
     if len(set(args.seeds)) != len(args.seeds):
@@ -496,20 +590,34 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     cbls_bin = Path(passthrough_value(passthrough, "--cbls-bin") or DEFAULT_CBLS_BIN)
     commit = engine_commit(cbls_bin, passthrough_value(passthrough, "--engine-commit"))
-    stamp = campaign_stamp(args.campaign, instances, args.seeds, args.budget, passthrough, commit)
+    lock_command = shlex.split(args.lock_command)
+    if not args.report_only and lock_command and shutil.which(lock_command[0]) is None:
+        print(
+            f"--lock-command {args.lock_command!r}: {lock_command[0]} is not on PATH "
+            "(pass '' to run without the machine lock)",
+            file=sys.stderr,
+        )
+        return 2
+    digest = binary_digest(cbls_bin)
+    stamp = campaign_stamp(
+        args.campaign, instances, args.seeds, args.budget, passthrough, commit, digest
+    )
     if (refusal := check_stamp(out_dir, stamp, report_only=args.report_only)) is not None:
         print(refusal, file=sys.stderr)
         return 2
     failed: list[Cell] = []
+    stopped: str | None = None
     if not args.report_only:
-        failed = run_cells(
+        failed, stopped = run_cells(
             plan(instances, args.seeds, arms),
             out_dir,
             reference_roster,
             args.budget,
             args.inst_dir,
             passthrough,
-            shlex.split(args.lock_command),
+            lock_command,
+            cbls_bin,
+            digest,
         )
 
     scored = score_campaign(out_dir, arms, args.seeds, [entries[i] for i in instances], args.budget)
@@ -522,6 +630,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"{len(failed)} cell(s) failed; see the lines above.", file=sys.stderr)
     if rejected:
         print(f"DEFECT: {rejected} solution(s) rejected by the independent check", file=sys.stderr)
+    if stopped is not None:
+        print(stopped, file=sys.stderr)
+        return 2
     return 1 if failed or rejected else 0
 
 
