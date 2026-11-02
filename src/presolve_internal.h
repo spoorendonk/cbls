@@ -78,10 +78,13 @@ struct Work {
                static_cast<std::size_t>(col_offs[q]);
     }
 
-    /// Add `a * x_j` to live row r, where j has no live entry (a != 0, finite).
-    /// Reuses j's own cleared slot in r if it has one; otherwise appends, moving
-    /// the row to the end of `cols`/`coefs` when it is full. Returns false, and
-    /// changes nothing, if the row would outgrow an int32 offset.
+    /// Add `a * x_j` to row r. If j has a slot in r, `a` is added to its
+    /// coefficient: a cleared slot comes back to life, and a live entry that
+    /// cancels to exactly 0 is cleared (the live counts follow). Otherwise the
+    /// entry is appended, moving the row to the end of `cols`/`coefs` when it
+    /// is full. Returns false, and changes nothing, if r or j is removed, `a`
+    /// is 0 or not finite, the sum is not finite, or the row would outgrow an
+    /// int32 offset.
     ///
     /// Cost: O(row length) to look for j's cleared slot, plus, when the row or
     /// column is full, a move of O(its length) into twice the room, so moves
@@ -120,6 +123,11 @@ struct Work {
 void load(const LinearProblem& p, Work& w);
 /// Build the column-major index and the live counts of a loaded `w`.
 void build_column_index(Work& w);
+/// Copy the live part of `w` out as the result, compacted (cleared entries,
+/// removed rows and columns dropped), and move its postsolve there. `lb0`/
+/// `ub0` are the loaded bounds, against which tightened bounds are counted.
+PresolveResult build_result(Work& w, const std::vector<double>& lb0,
+                            const std::vector<double>& ub0);
 
 // One function per reduction. Each sets `w.changed` when it changes anything
 // and `w.infeasible` when it proves infeasibility.

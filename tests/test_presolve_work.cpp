@@ -126,6 +126,81 @@ TEST_CASE("a presolve column grows across many rows", "[presolve]") {
     }
 }
 
+TEST_CASE("adding to a live presolve entry sums and a cancelling sum clears it", "[presolve]") {
+    const PresolveOptions opts;
+    Work w(opts);
+    load_indexed(make(2, {{{0, 1.0}, {1, 2.0}}}, 0.0, 5.0), w);
+    const std::size_t begin = w.row_begin[0];
+
+    REQUIRE(w.add_entry(0, 1, 3.0));
+    CHECK(w.row_begin[0] == begin);  // summed in place: no new slot
+    CHECK(row_of(w, 0) == Entries{{0, 1.0}, {1, 5.0}});
+    CHECK(col_of(w, 1) == Entries{{0, 5.0}});
+    CHECK(w.row_live[0] == 2);
+    CHECK(w.col_live[1] == 1);
+
+    REQUIRE(w.add_entry(0, 1, -5.0));
+    CHECK(row_of(w, 0) == Entries{{0, 1.0}, {1, 0.0}});
+    CHECK(w.row_live[0] == 1);
+    CHECK(w.col_live[1] == 0);
+}
+
+TEST_CASE("add_entry refuses a removed row or column and a zero coefficient", "[presolve]") {
+    const PresolveOptions opts;
+    Work w(opts);
+    load_indexed(make(3, {{{0, 1.0}}, {{1, 1.0}}}, 0.0, 5.0), w);
+    w.remove_row(1);
+    w.col_removed[2] = 1;
+    const std::vector<int32_t> row_live = w.row_live;
+    const std::vector<int32_t> col_live = w.col_live;
+    w.changed = false;
+
+    CHECK_FALSE(w.add_entry(1, 0, 1.0));  // removed row
+    CHECK_FALSE(w.add_entry(0, 2, 1.0));  // removed column
+    CHECK_FALSE(w.add_entry(0, 1, 0.0));  // zero coefficient
+    CHECK(w.row_live == row_live);
+    CHECK(w.col_live == col_live);
+    CHECK(row_of(w, 0) == Entries{{0, 1.0}});
+    CHECK_FALSE(w.changed);
+}
+
+TEST_CASE("a grown presolve row compacts into the result", "[presolve]") {
+    const PresolveOptions opts;
+    Work w(opts);
+    load_indexed(make(4, {{{0, 1.0}, {1, 2.0}}, {{1, 4.0}}, {{3, 1.0}}}, 0.0, 5.0), w);
+    const std::vector<double> lb0 = w.lb;
+    const std::vector<double> ub0 = w.ub;
+    REQUIRE(w.add_entry(0, 2, 3.0));   // row 0 moves to the end
+    REQUIRE(w.add_entry(0, 0, -1.0));  // x0 cancels: a cleared slot to drop
+    w.remove_row(1);
+
+    const PresolveResult res = presolve_detail::build_result(w, lb0, ub0);
+    const LinearProblem& out = res.reduced;
+    REQUIRE(out.n_rows() == 2);
+    CHECK(out.row_start == std::vector<std::size_t>{0, 2, 3});
+    CHECK(out.cols == std::vector<int32_t>{1, 2, 3});
+    CHECK(out.coefs == std::vector<double>{2.0, 3.0, 1.0});
+    CHECK(res.row_to_reduced == std::vector<int32_t>{0, -1, 1});
+}
+
+TEST_CASE("bound propagation reads an entry added to a moved row", "[presolve]") {
+    const PresolveOptions opts;
+    Work w(opts);
+    // x0 + x1 <= 4; adding x2 makes it x0 + x1 + x2 <= 4, so x2 <= 4.
+    load_indexed(make(3, {{{0, 1.0}, {1, 1.0}}, {{1, 1.0}}}, 0.0, 4.0), w);
+    const std::size_t before = w.row_begin[0];
+    REQUIRE(w.add_entry(0, 2, 1.0));
+    REQUIRE(w.row_begin[0] != before);
+    w.changed = false;
+
+    presolve_detail::reduce_propagate(w);
+    CHECK_FALSE(w.infeasible);
+    CHECK(w.changed);
+    // Propagation keeps a small safety margin above the exact bound 4.
+    CHECK(w.ub[2] >= 4.0);
+    CHECK(w.ub[2] < 4.0 + 1e-6);
+}
+
 TEST_CASE("fixing a column folds an entry added to a moved row", "[presolve]") {
     const PresolveOptions opts;
     Work w(opts);

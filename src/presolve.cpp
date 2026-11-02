@@ -388,7 +388,8 @@ void reduce_implied_sides(Work& w, std::size_t r) {
     }
 }
 
-/// Copy the live part of `w` out as the result.
+}  // namespace
+
 PresolveResult build_result(Work& w, const std::vector<double>& lb0,
                             const std::vector<double>& ub0) {
     PresolveResult res;
@@ -439,6 +440,8 @@ PresolveResult build_result(Work& w, const std::vector<double>& lb0,
     res.stats = w.stats;
     return res;
 }
+
+namespace {
 
 /// The loaded problem with nothing removed and an identity postsolve.
 PresolveResult identity_result(const LinearProblem& problem, const PresolveOptions& opts) {
@@ -555,21 +558,36 @@ std::size_t grown(std::size_t len) {
 bool Work::add_entry(int32_t r, int32_t j, double a) {
     const auto rr = static_cast<std::size_t>(r);
     const auto jj = static_cast<std::size_t>(j);
+    if (row_removed[rr] != 0 || col_removed[jj] != 0 || a == 0.0 || !std::isfinite(a)) {
+        return false;
+    }
     std::size_t p = row_begin[rr];
     while (p < row_end[rr] && cols[p] != j) {
         ++p;
     }
+    if (p < row_end[rr]) {  // j's own slot, live or cleared, listed in j's index
+        const double sum = coefs[p] + a;
+        if (!std::isfinite(sum)) {
+            return false;
+        }
+        changed = true;
+        if (coefs[p] == 0.0) {  // a cleared slot comes back to life
+            ++row_live[rr];
+            ++col_live[jj];
+        } else if (sum == 0.0) {  // the live entry cancels
+            --row_live[rr];
+            --col_live[jj];
+        }
+        coefs[p] = sum;
+        return true;
+    }
     const std::size_t len = row_end[rr] - row_begin[rr];
-    if (p == row_end[rr] && len >= static_cast<std::size_t>(std::numeric_limits<int32_t>::max())) {
+    if (len >= static_cast<std::size_t>(std::numeric_limits<int32_t>::max())) {
         return false;
     }
     ++row_live[rr];
     ++col_live[jj];
     changed = true;
-    if (p < row_end[rr]) {  // j's own cleared slot, still listed in j's index
-        coefs[p] = a;
-        return true;
-    }
     if (row_end[rr] == row_cap[rr]) {
         move_to_end(cols, coefs, row_begin[rr], row_end[rr], row_cap[rr], grown(len));
     }
