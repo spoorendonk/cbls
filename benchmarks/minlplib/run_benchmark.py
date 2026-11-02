@@ -1201,21 +1201,38 @@ def checked_marker(stage: Path, name: str) -> Path:
     return stage / f"{name}{CHECKED_SUFFIX}"
 
 
+class RowChangedError(RuntimeError):
+    """A staged row's bytes changed while `check_and_mark` was checking them."""
+
+
 def check_and_mark(inst_dir: Path, stage: Path, name: str) -> list[str]:
     """Check `name`'s staged row in SCIP, demoting it if SCIP rejects it, then mark it.
 
     The marker is written after the check and any demotion, so the hash it holds
     is of the row as it will be published. A check that raises writes none.
     Returns the demoted instances, as `independent_check.check_rows` does.
+
+    The row is hashed before the check and after it. Unless the check demoted
+    it (and so rewrote it itself), the two must agree, or something else wrote
+    the row meanwhile and the marker would vouch for bytes nobody checked: that
+    raises `RowChangedError` and writes no marker. The wall-clock lock keeps
+    this host's drivers out; the check is for a writer the lock cannot see.
     """
-    demoted = independent_check.check_rows(stage / f"{name}.csv", inst_dir, stage)
-    mark_checked(stage, name)
+    row = stage / f"{name}.csv"
+    before = campaign_report.file_sha256(row)
+    demoted = independent_check.check_rows(row, inst_dir, stage)
+    after = campaign_report.file_sha256(row)
+    if not demoted and after != before:
+        raise RowChangedError(f"{row} changed while it was checked; check it again")
+    mark_checked(stage, name, after)
     return demoted
 
 
-def mark_checked(stage: Path, name: str) -> None:
-    row = stage / f"{name}.csv"
-    atomic_write(checked_marker(stage, name), campaign_report.file_sha256(row) + "\n")
+def mark_checked(stage: Path, name: str, digest: str | None = None) -> None:
+    """Write `name`'s `.checked` marker for `digest`, by default the row file's sha256 now."""
+    if digest is None:
+        digest = campaign_report.file_sha256(stage / f"{name}.csv")
+    atomic_write(checked_marker(stage, name), digest + "\n")
 
 
 def checked_digest(stage: Path, name: str) -> str | None:

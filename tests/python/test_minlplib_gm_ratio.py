@@ -9,11 +9,12 @@ from __future__ import annotations
 
 import json
 import math
-from typing import TYPE_CHECKING
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from benchmarks.minlplib import gm_ratio
+from benchmarks.minlplib import campaign_report, gm_ratio
 from benchmarks.minlplib.gm_ratio import (
     EXIT_REFUSED,
     CblsSide,
@@ -34,8 +35,7 @@ from benchmarks.minlplib.run_benchmark import STAMP_NAME, checked_marker, mark_c
 from benchmarks.minlplib.runner import CLAIM_EXCLUDED, RUNNER_COLUMNS
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
-    from pathlib import Path
+    from collections.abc import Mapping, Sequence
 
     from benchmarks.minlplib.reference_solve import Bound
 
@@ -618,6 +618,7 @@ def test_an_unchecked_staged_row_is_refused_by_name_unless_partial(
     err = capsys.readouterr().err
     assert "1 staged cbls row(s) without a matching .checked marker" in err
     assert f"check: {named}. Run check_staged.py" in err
+    assert "rename NAME.csv to NAME.csv.rejected" in err
     assert main([*argv, "--partial"]) == 0
     assert capsys.readouterr().out.startswith("PARTIAL")
 
@@ -637,6 +638,60 @@ def test_a_row_rewritten_while_it_is_read_is_refused_even_with_a_matching_marker
         return side
 
     monkeypatch.setattr(gm_ratio, "load_cbls_staging", load_then_demote)
+    assert main(staging_argv(bounds, stage, shards)) == EXIT_REFUSED
+    assert "staged rows changed while they were read" in capsys.readouterr().err
+
+
+def test_markers_are_compared_with_the_rows_as_read_not_as_they_are_now(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A driver demotes and re-marks `a` after the scorer's second hash."""
+    bounds, stage, shards = checked_staging(tmp_path)
+    checked_marker(stage, "a").unlink()
+    real_digests = gm_ratio.staged_digests
+    calls = 0
+
+    def digests_then_demote(path: Path, roster: Sequence[Bound]) -> dict[str, str]:
+        nonlocal calls
+        calls += 1
+        digests = real_digests(path, roster)
+        if calls == 2:
+            demoted = [cbls_line("a", "NaN", feasible=False, note="VERIFY-FAILED")]
+            write_cbls(stage / "a.csv", demoted)
+            mark_checked(stage, "a")
+        return digests
+
+    monkeypatch.setattr(gm_ratio, "staged_digests", digests_then_demote)
+    assert main(staging_argv(bounds, stage, shards)) == EXIT_REFUSED
+    assert "without a matching .checked marker" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("vanishes", ["row", "marker"])
+def test_a_row_or_marker_vanishing_mid_read_is_the_same_refusal_not_a_traceback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    vanishes: str,
+) -> None:
+    """A driver quarantines `a`, or unlinks its marker, between a test for it and its read."""
+    bounds, stage, shards = checked_staging(tmp_path)
+    if vanishes == "row":
+
+        def sha_after_quarantine(path: Path) -> str:
+            (stage / "a.csv").unlink(missing_ok=True)
+            return campaign_report.file_sha256(path)
+
+        monkeypatch.setattr(gm_ratio, "file_sha256", sha_after_quarantine)
+    else:
+        marker = checked_marker(stage, "a")
+        real_read = Path.read_text
+
+        def read_after_unlink(path: Path, *args: Any, **kwargs: Any) -> str:
+            if path == marker:
+                marker.unlink(missing_ok=True)
+            return real_read(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", read_after_unlink)
     assert main(staging_argv(bounds, stage, shards)) == EXIT_REFUSED
     assert "staged rows changed while they were read" in capsys.readouterr().err
 

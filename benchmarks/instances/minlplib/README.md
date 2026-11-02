@@ -127,7 +127,13 @@ Both halves read that `bounds.csv`, and neither writes under
   holding the row's sha256. `../../minlplib/check_staged.py --inst-dir NL
   --staging-dir STAGE` does the same check and marking without solving, for
   rows a killed driver left unchecked or a driver older than #307 staged. A
-  later checkout's driver cannot: the staging stamp names the commit.
+  later checkout's driver cannot: the staging stamp names the commit. It
+  refuses a stamp for another roster or host, and lists a row whose check
+  raised (exit 1). It leaves header-only, torn and unstageable rows unmarked:
+  re-solve such a row with the driver at the stamp's commit (`--instances
+  NAME`), or rename `NAME.csv` to `NAME.csv.rejected` to score it as
+  no-solution (keep an existing `.rejected`, an earlier attempt, under another
+  name first).
 - Score: `../../minlplib/gm_ratio.py --bounds NL/bounds.csv --cbls
   comparison.csv --scip-shards DIR` prints the GM(gap+1) ratio cbls/SCIP with
   feasible and head-to-head counts, and names every no-solution instance on

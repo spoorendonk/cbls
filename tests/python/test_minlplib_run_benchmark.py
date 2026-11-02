@@ -1654,6 +1654,22 @@ def test_a_staged_row_changed_after_its_check_is_not_checked(tmp_path: Path) -> 
     assert not staged_checked(stage, "a")
 
 
+def test_a_row_rewritten_during_its_check_gets_no_marker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A writer the wall-clock lock cannot see (another host) rewrites the row mid-check."""
+    stage = _stage(tmp_path)
+
+    def check_then_rewritten(csv_path: Path, *_a: object) -> list[str]:
+        csv_path.write_text(csv_path.read_text().replace("false,feasible", "true,feasible"))
+        return []
+
+    monkeypatch.setattr(independent_check, "check_rows", check_then_rewritten)
+    with pytest.raises(run_benchmark.RowChangedError, match="changed while it was checked"):
+        run_benchmark.check_and_mark(tmp_path, stage, "a")
+    assert not checked_marker(stage, "a").exists()
+
+
 def test_a_fresh_solve_drops_the_marker_even_when_it_writes_the_same_bytes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

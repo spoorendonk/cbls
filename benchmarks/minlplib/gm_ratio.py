@@ -236,7 +236,7 @@ def reason_category(reason: str) -> str:
 # --------------------------------------------------------------------------
 
 
-def _names(names: Iterable[str], shown: int = NAMES_SHOWN) -> str:
+def names_list(names: Iterable[str], shown: int = NAMES_SHOWN) -> str:
     """Up to `shown` names, then how many more there are."""
     ordered = list(names)
     head = ", ".join(ordered[:shown])
@@ -256,7 +256,7 @@ def load_roster(path: Path) -> list[Bound]:
             dups.append(b.instance)
         seen.add(b.instance)
     if dups:
-        raise RefusedError(f"{path}: instance(s) listed twice in the roster: {_names(dups)}")
+        raise RefusedError(f"{path}: instance(s) listed twice in the roster: {names_list(dups)}")
     return bounds
 
 
@@ -565,10 +565,10 @@ def completeness_refusal(missing_cbls: Sequence[str], missing_scip: Sequence[str
     """The refusal for an incomplete campaign, or None when every roster instance is there."""
     parts = []
     if missing_cbls:
-        parts.append(f"{len(missing_cbls)} without a cbls row: {_names(missing_cbls)}")
+        parts.append(f"{len(missing_cbls)} without a cbls row: {names_list(missing_cbls)}")
     if missing_scip:
         parts.append(
-            f"{len(missing_scip)} without a SCIP row or failure marker: {_names(missing_scip)}"
+            f"{len(missing_scip)} without a SCIP row or failure marker: {names_list(missing_scip)}"
         )
     if not parts:
         return None
@@ -775,10 +775,13 @@ def unchecked_staged(stage: Path, digests: Mapping[str, str]) -> list[str]:
 def unchecked_refusal(unchecked: Sequence[str]) -> str:
     return (
         f"{len(unchecked)} staged cbls row(s) without a matching .checked marker, so not "
-        f"known to have passed the independent SCIP check: {_names(unchecked)}. Run "
+        f"known to have passed the independent SCIP check: {names_list(unchecked)}. Run "
         "check_staged.py --inst-dir NL --staging-dir STAGE: it checks and marks every "
-        "whole row, whatever commit staged it, and solves nothing. Or pass --partial for "
-        "an interim score"
+        "whole row, whatever commit staged it, and solves nothing. It leaves header-only, "
+        "torn and unstageable rows unmarked: re-solve such a row with run_benchmark.py at "
+        "the commit stamp.txt names (--instances NAME), or rename NAME.csv to "
+        "NAME.csv.rejected to score it as no-solution. Or pass --partial for an interim "
+        "score"
     )
 
 
@@ -788,16 +791,22 @@ def load_checked_staging(stage: Path, bounds: Sequence[Bound]) -> CblsSide:
     The rows are hashed before they are parsed and again after: a driver that
     rewrites a row in between (its check demoting it, then marking the new
     bytes) would otherwise pair a parsed, unchecked row with a marker that
-    matches the file as it is now.
+    matches the file as it is now. A row or marker that vanishes between a
+    test for it and its read (a driver quarantining a row, or deleting a marker
+    before a re-solve) is the same race and gets the same refusal.
     """
-    before = staged_digests(stage, bounds)
-    cbls = load_cbls_staging(stage, {b.instance: b for b in bounds})
-    if staged_digests(stage, bounds) != before:
-        raise RefusedError(
-            f"{stage}: staged rows changed while they were read (a driver is writing "
-            "there); score again once it has stopped"
-        )
-    unchecked = unchecked_staged(stage, before)
+    changed = RefusedError(
+        f"{stage}: staged rows changed while they were read (a driver is writing "
+        "there); score again once it has stopped"
+    )
+    try:
+        before = staged_digests(stage, bounds)
+        cbls = load_cbls_staging(stage, {b.instance: b for b in bounds})
+        if staged_digests(stage, bounds) != before:
+            raise changed
+        unchecked = unchecked_staged(stage, before)
+    except FileNotFoundError as exc:
+        raise changed from exc
     if unchecked:
         raise RefusedError(unchecked_refusal(unchecked))
     return cbls

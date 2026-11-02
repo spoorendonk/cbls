@@ -7,6 +7,7 @@ real `independent_check.check_rows`. Nothing is solved.
 
 from __future__ import annotations
 
+import socket
 import subprocess
 from typing import TYPE_CHECKING
 
@@ -15,8 +16,14 @@ import pytest
 from benchmarks.common import jobs
 from benchmarks.common.jobs import wallclock_lock
 from benchmarks.minlplib import independent_check
-from benchmarks.minlplib.check_staged import EXIT_REFUSED, main
-from benchmarks.minlplib.run_benchmark import checked_marker, mark_checked, staged_checked
+from benchmarks.minlplib.check_staged import EXIT_CHECK_ERRORS, EXIT_REFUSED, main
+from benchmarks.minlplib.run_benchmark import (
+    STAMP_NAME,
+    checked_marker,
+    mark_checked,
+    roster_fingerprint,
+    staged_checked,
+)
 from benchmarks.minlplib.runner import RUNNER_COLUMNS
 
 if TYPE_CHECKING:
@@ -59,7 +66,15 @@ def make_dirs(tmp_path: Path, names: list[str]) -> tuple[Path, Path]:
     (inst / "bounds.csv").write_text("\n".join(lines) + "\n")
     stage = tmp_path / "stage"
     stage.mkdir()
+    write_stamp(stage, roster=roster_fingerprint(inst), host=socket.gethostname())
     return inst, stage
+
+
+def write_stamp(stage: Path, *, roster: str, host: str) -> None:
+    """A staging stamp as an older driver wrote it: another commit than this checkout's."""
+    (stage / STAMP_NAME).write_text(
+        f"commit=old0000\ntime-limit=60\nseed=1\nthreads=16\nhost={host}\nroster={roster}\n"
+    )
 
 
 def test_rows_staged_at_another_commit_are_checked_and_marked_without_a_solve(
@@ -105,6 +120,8 @@ def test_rows_staged_at_another_commit_are_checked_and_marked_without_a_solve(
     assert "  header: no whole row (header-only or torn)\n" in out
     assert "  torn: no whole row (header-only or torn)\n" in out
     assert "  threw: unstageable note\n" in out
+    assert "check raised, left unmarked: 0\n" in out
+    assert "to clear a row left unmarked: re-solve it with run_benchmark.py" in out
 
 
 def test_instances_limits_the_check_to_the_names_given(tmp_path: Path) -> None:
@@ -135,3 +152,57 @@ def test_a_missing_staging_directory_is_refused(
     argv = ["--inst-dir", str(inst), "--staging-dir", str(tmp_path / "nowhere")]
     assert main(argv) == EXIT_REFUSED
     assert "not a directory" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("field", ["roster", "host"])
+def test_a_stamp_for_another_roster_or_host_is_refused_before_anything_is_checked(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    field: str,
+) -> None:
+    """Checked against another roster's models, a valid row would be demoted for good."""
+    inst, stage = make_dirs(tmp_path, ["a"])
+    stage_row(stage, "a", f"{HEADER}\n{row('a')}\n")
+    stamp = {"roster": roster_fingerprint(inst), "host": socket.gethostname()}
+    stamp[field] = "elsewhere"
+    write_stamp(stage, **stamp)
+    monkeypatch.setattr(independent_check, "check_solution", lambda nl, sol: "wrong model")
+    assert main(["--inst-dir", str(inst), "--staging-dir", str(stage)]) == EXIT_REFUSED
+    assert f"{field}=elsewhere" in capsys.readouterr().err
+    assert "VERIFY-FAILED" not in (stage / "a.csv").read_text()
+    assert not checked_marker(stage, "a").exists()
+
+
+@pytest.mark.parametrize("missing", ["bounds", "stamp"])
+def test_no_roster_or_no_stamp_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], missing: str
+) -> None:
+    """A mistyped --inst-dir must not report "checked and marked: 0" and exit 0."""
+    inst, stage = make_dirs(tmp_path, ["a"])
+    stage_row(stage, "a", f"{HEADER}\n{row('a', feasible=False, note='infeasible')}\n")
+    if missing == "bounds":
+        (inst / "bounds.csv").unlink()
+    else:
+        (stage / STAMP_NAME).unlink()
+    assert main(["--inst-dir", str(inst), "--staging-dir", str(stage)]) == EXIT_REFUSED
+    assert ("bounds.csv" if missing == "bounds" else STAMP_NAME) in capsys.readouterr().err
+    assert not checked_marker(stage, "a").exists()
+
+
+def test_a_row_whose_check_raises_is_listed_and_the_rest_are_still_marked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    inst, stage = make_dirs(tmp_path, ["a", "nosol", "z"])
+    stage_row(stage, "a", f"{HEADER}\n{row('a')}\n")
+    stage_row(stage, "nosol", f"{HEADER}\n{row('nosol')}\n", solution=False)
+    stage_row(stage, "z", f"{HEADER}\n{row('z')}\n")
+    monkeypatch.setattr(independent_check, "check_solution", lambda nl, sol: None)
+    argv = ["--inst-dir", str(inst), "--staging-dir", str(stage)]
+    assert main(argv) == EXIT_CHECK_ERRORS
+    assert staged_checked(stage, "a")
+    assert staged_checked(stage, "z")
+    assert not checked_marker(stage, "nosol").exists()
+    out = capsys.readouterr().out
+    assert "checked and marked: 2\n" in out
+    assert "check raised, left unmarked: 1\n  nosol: FileNotFoundError: " in out
