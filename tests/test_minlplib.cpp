@@ -1189,9 +1189,15 @@ bool in_reduced(const NlToModelResult& r, int32_t col) {
            r.reduced_to_original.end();
 }
 
+bool has_var(const NlExpr& e) {
+    return std::any_of(e.nodes.begin(), e.nodes.end(),
+                       [](const NlExprNode& n) { return n.kind == NlNodeKind::Var; });
+}
+
 // The columns a nonlinear part reaches, derived here independently of the
 // adapter: any column in an expression or a defined variable, and any column
-// in the linear part of a row that has a nonlinear part.
+// in the linear part of a row whose nonlinear part names a column. (A row whose
+// nonlinear part is a constant, as AMPL writes every linear row, reaches none.)
 std::vector<int32_t> nonlinear_columns(const NlProblem& p) {
     std::vector<uint8_t> hit(static_cast<std::size_t>(p.n_vars), 0);
     auto mark = [&](int32_t j) {
@@ -1208,7 +1214,7 @@ std::vector<int32_t> nonlinear_columns(const NlProblem& p) {
     };
     for (const NlConstraint& c : p.constraints) {
         mark_expr(c.nonlinear);
-        if (!c.nonlinear.empty()) {
+        if (has_var(c.nonlinear)) {
             for (const NlLinTerm& t : c.linear) {
                 mark(t.var);
             }
@@ -1279,6 +1285,56 @@ TEST_CASE("nl_to_model presolve keeps frozen columns and removes a linear-only o
     full_evaluate(r.model);
     vm.invalidate_cache();
     REQUIRE(vm.total_violation() > 0.0);
+}
+
+// AMPL writes a C segment for every row, `n0` for a linear one, and the reader
+// keeps it as a constant node. Presolve reads such a row as linear (#342
+// review 2): before, it froze every column in a row of any real .nl file.
+TEST_CASE("nl_to_model presolve reads a row whose nonlinear part is n0 as linear",
+          "[minlplib][presolve]") {
+    const NlProblem p = parse_nl(mixed_rows_text() + "C1\nn0\nC2\nn0\n", "ampl");
+    REQUIRE_FALSE(p.constraints[1].nonlinear.empty());
+    NlToModelResult r = nl_to_model(p, presolve_on());
+    REQUIRE(r.supported);
+    REQUIRE(r.presolve_stats.status == PresolveStatus::Reduced);
+    REQUIRE(r.reduced_to_original == std::vector<int32_t>{0, 1});
+    REQUIRE(r.constraint_node_ids[1] == -1);
+    REQUIRE(r.constraint_node_ids[2] == -1);
+    REQUIRE_THAT(r.model.var(1).lb, WithinAbs(0.5, 1e-12));
+    r.model.var_mut(0).value = 1.0;
+    r.model.var_mut(1).value = 1.0;
+    full_evaluate(r.model);
+    REQUIRE_THAT(r.model.node_value(r.objective_node_id), WithinAbs(7.0, 1e-12));
+    REQUIRE(r.original_values(r.model) == std::vector<double>{1.0, 1.0, 3.0});
+}
+
+// A nonzero constant `k` moves the row's sides by `-k`: x1 + x2 - 1 >= 3.5
+// with x2 == 3 gives x1 >= 1.5, and the postsolved point holds on the plain
+// build, which keeps the constant in the row.
+TEST_CASE("nl_to_model presolve shifts a row's sides by its constant nonlinear part",
+          "[minlplib][presolve]") {
+    const NlProblem p = parse_nl(mixed_rows_text() + "C1\nn0\nC2\nn-1\n", "shift");
+    NlToModelResult r = nl_to_model(p, presolve_on());
+    REQUIRE(r.supported);
+    REQUIRE(r.reduced_to_original == std::vector<int32_t>{0, 1});
+    REQUIRE_THAT(r.model.var(1).lb, WithinAbs(1.5, 1e-12));
+    r.model.var_mut(0).value = 1.0;
+    r.model.var_mut(1).value = 1.5;
+    full_evaluate(r.model);
+    const std::vector<double> x = r.original_values(r.model);
+    REQUIRE(x == std::vector<double>{1.0, 1.5, 3.0});
+
+    NlToModelResult plain = nl_to_model(p);
+    for (std::size_t j = 0; j < x.size(); ++j) {
+        plain.model.var_mut(static_cast<int32_t>(j)).value = x[j];
+    }
+    full_evaluate(plain.model);
+    REQUIRE(verify_model(plain.model).ok);
+    // Just below the shifted side, the plain build is violated: the shift is
+    // by -k, not +k.
+    plain.model.var_mut(1).value = 1.4;
+    full_evaluate(plain.model);
+    REQUIRE_FALSE(verify_model(plain.model).ok);
 }
 
 TEST_CASE("nl_to_model presolve off builds the model it builds without the option",
@@ -1394,12 +1450,11 @@ TEST_CASE("nl_to_model presolve drops a removed column's initial value", "[minlp
 }
 
 // Every vendored MINLPLib file: presolve does not change the supported
-// verdict, and where it reduces a file, no column a nonlinear part reaches is
-// removed and the postsolved starting point gives the plain model the same
-// objective. At #342 presolve reduced none of these files (their AMPL export
-// is already presolved; plain propagation tightens nothing on them either),
-// so on them this test checks only the verdict and the fallback: it pins no
-// reduction. The reductions are pinned only by the inline fixtures above.
+// verdict, no column a nonlinear part reaches is removed, and the presolved
+// model's starting point, postsolved, gives the plain model the same
+// objective. At #342 presolve reduced 42 of the 100 (84 rows, 4 columns,
+// 457 bounds), so these checks run on real reductions; which reductions
+// happen is pinned only by the inline fixtures above.
 TEST_CASE("nl_to_model presolve never removes a column a nonlinear part reaches",
           "[minlplib][presolve]") {
     std::vector<std::string> files;
@@ -1424,7 +1479,7 @@ TEST_CASE("nl_to_model presolve never removes a column a nonlinear part reaches"
         NlToModelResult pre = nl_to_model(p, presolve_on());
         REQUIRE(pre.supported == plain.supported);
         if (!pre.supported || pre.reduced_to_original.empty()) {
-            continue;  // unsupported, or presolve fell back to the plain build
+            continue;  // unsupported, or a fallback built the plain model
         }
         for (const int32_t j : nonlinear_columns(p)) {
             INFO("column " << j);

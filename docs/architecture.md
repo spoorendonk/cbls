@@ -2822,9 +2822,10 @@ is reported `original_mismatch` and carries no objective
 (`original_size_mismatch`/`original_non_finite` say why when the ratios cannot).
 
 **NL adapter (#326, #342).** With `NlToModelOptions::presolve.enabled`,
-`nl_to_model` presolves only the linear part: the rows propagation reads (no
-nonlinear part, not Free, every column in range; `linear_only_row`), the
-declared column boxes, and the first objective's linear part, negated when it
+`nl_to_model` presolves only the linear part: the linear rows
+(`presolvable_row`: no nonlinear part or a lone constant `k`, as AMPL writes
+`n0` for every linear row, read with the sides moved by `-k`; not Free; every
+column in range), the declared column boxes, and the first objective's linear part, negated when it
 maximises. Every other row is **opaque** and built verbatim, and every column a
 nonlinear part can reach is **frozen**: one in any expression, in any defined
 variable (all of them, used or not, which covers a chain without walking it),
@@ -2840,12 +2841,13 @@ by presolve stays a variable with `lb == ub`; the `x` segment seeds through
 `constraint_node_ids`, `original_values`, `presolve_rejected` and the
 `Infeasible` fallback read as for MPS; an objective linear term naming a
 non-column falls back to the plain build too, which reports it. Off, the model
-is node for node the plain one. Over the 100 vendored MINLPLib files presolve
-reduces none (their AMPL export is presolved already; plain propagation
-tightens none of them either). `tests/test_minlplib.cpp` pins the reductions
-only on inline fixtures; over the vendored files it checks that presolve keeps
-the supported verdict and falls back to the plain build, and would check the
-frozen columns and the postsolved objective on any file it did reduce.
+is node for node the plain one. At #342 presolve reduces 42 of the 100
+vendored MINLPLib files and 1020 of the 1553 modelled ones (#343 has the
+census). `tests/test_minlplib.cpp` pins the reductions on inline fixtures (the
+`n0` rows and a constant shift among them) and checks, over every vendored
+file, that no frozen column is removed and the postsolved start gives the
+plain model the same objective. Propagation without presolve still reads only
+rows with no nonlinear part at all, so on a real file it reads none (#344).
 
 ### JSONL Model Format
 

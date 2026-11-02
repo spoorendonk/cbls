@@ -483,14 +483,14 @@ std::optional<RowBounds> linear_row_bounds(const NlConBound& b) {
     return std::nullopt;
 }
 
-/// The bounds of a row propagation and presolve may read, or nullopt for one
-/// they must leave alone: a row with a nonlinear part (activity arithmetic does
-/// not apply to it), an empty or Free one, or one naming a column out of range.
-/// `propagate_bounds` and `presolve` reject an out-of-range column outright, and
-/// io_nl.h promises "skip, don't throw" on a malformed file; omitting a row
-/// costs tightening, never validity, and `build_body` refuses the model for it.
-std::optional<RowBounds> linear_only_row(const NlConstraint& c, std::size_t n_cols) {
-    if (!c.nonlinear.empty() || c.linear.empty()) {
+/// The bounds of a row's linear part, ignoring its nonlinear part, or nullopt
+/// when propagation and presolve must leave it alone: an empty or Free row, or
+/// one naming a column out of range. `propagate_bounds` and `presolve` reject
+/// an out-of-range column outright, and io_nl.h promises "skip, don't throw" on
+/// a malformed file; omitting a row costs tightening, never validity, and
+/// `build_body` refuses the model for it.
+std::optional<RowBounds> linear_part_bounds(const NlConstraint& c, std::size_t n_cols) {
+    if (c.linear.empty()) {
         return std::nullopt;
     }
     for (const NlLinTerm& t : c.linear) {
@@ -499,6 +499,55 @@ std::optional<RowBounds> linear_only_row(const NlConstraint& c, std::size_t n_co
         }
     }
     return linear_row_bounds(c.bound);
+}
+
+/// The rows propagation without presolve reads: `linear_part_bounds` of a row
+/// with no nonlinear part at all (activity arithmetic does not apply to one).
+std::optional<RowBounds> linear_only_row(const NlConstraint& c, std::size_t n_cols) {
+    if (!c.nonlinear.empty()) {
+        return std::nullopt;
+    }
+    return linear_part_bounds(c, n_cols);
+}
+
+/// The constant an expression is: 0 when it is empty, the value of a lone
+/// constant root, nullopt for anything else. AMPL writes a `C<i>` segment for
+/// every row, `n0` for a linear one, and the reader keeps it as a Num node.
+std::optional<double> constant_part(const NlExpr& e) {
+    if (e.empty()) {
+        return 0.0;
+    }
+    const auto root = static_cast<std::size_t>(e.root);
+    if (root < e.nodes.size() && e.nodes[root].kind == NlNodeKind::Num) {
+        return e.nodes[root].num;
+    }
+    return std::nullopt;
+}
+
+/// The rows presolve reads: those `linear_only_row` takes, and also a row whose
+/// nonlinear part is a lone constant `k` (every linear row of an AMPL export,
+/// #342 review 2), read as `lo - k <= linear <= hi - k`. A kept row is rebuilt
+/// from those shifted sides, so the constant is accounted for once.
+///
+/// Propagation without presolve still reads `linear_only_row` alone: taking the
+/// constant rows there too changes the default build of every real .nl file,
+/// so it is its own issue.
+std::optional<RowBounds> presolvable_row(const NlConstraint& c, std::size_t n_cols) {
+    const std::optional<double> k = constant_part(c.nonlinear);
+    if (!k.has_value()) {
+        return std::nullopt;
+    }
+    std::optional<RowBounds> rb = linear_part_bounds(c, n_cols);
+    if (!rb.has_value()) {
+        return std::nullopt;
+    }
+    if (!is_unbounded_below(rb->lo)) {
+        rb->lo -= *k;
+    }
+    if (!is_unbounded_above(rb->hi)) {
+        rb->hi -= *k;
+    }
+    return rb;
 }
 
 /// Derive implied column bounds from the *purely linear* rows. A row with a
@@ -689,7 +738,7 @@ void seed_reduced_values(Model& m, const NlProblem& prob,
 /// Which columns a nonlinear part can reach, and so must survive presolve: any
 /// column in an expression (a row's, the objective's, a defined variable's), in
 /// a defined variable's linear part, or in the linear part of a row presolve
-/// does not read (`linear_only_row`), which is built verbatim. Every defined
+/// does not read (`presolvable_row`), which is built verbatim. Every defined
 /// variable counts, used or not, which covers a chain of them without walking
 /// it: a column in one is frozen whichever expression reaches it. Indices that
 /// are not columns are left to the translator, which refuses them.
@@ -710,7 +759,7 @@ std::vector<uint8_t> frozen_columns(const NlProblem& prob) {
     };
     for (const NlConstraint& c : prob.constraints) {
         mark_expr(c.nonlinear);
-        if (!linear_only_row(c, n_cols).has_value()) {
+        if (!presolvable_row(c, n_cols).has_value()) {
             for (const NlLinTerm& t : c.linear) {
                 mark(t.var);
             }
@@ -728,7 +777,7 @@ std::vector<uint8_t> frozen_columns(const NlProblem& prob) {
     return frozen;
 }
 
-/// The linear part of `prob` as presolve's input: the rows `linear_only_row`
+/// The linear part of `prob` as presolve's input: the rows `presolvable_row`
 /// accepts, the declared column boxes (NaN read as no bound), the frozen
 /// columns, and the first objective's linear part, negated when it maximises.
 /// `lp_row[i]` is NL row i's row in the problem, -1 for an opaque one. Returns
@@ -759,7 +808,7 @@ std::optional<LinearProblem> to_linear_problem(const NlProblem& prob, const Colu
     lp_row.assign(prob.constraints.size(), -1);
     for (std::size_t i = 0; i < prob.constraints.size(); ++i) {
         const NlConstraint& c = prob.constraints[i];
-        const std::optional<RowBounds> rb = linear_only_row(c, n_cols);
+        const std::optional<RowBounds> rb = presolvable_row(c, n_cols);
         if (!rb.has_value()) {
             continue;
         }

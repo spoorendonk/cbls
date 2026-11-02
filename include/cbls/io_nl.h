@@ -138,10 +138,10 @@ NlProblem parse_nl(const std::string& text, const std::string& name = "");
 
 /// Build a closed CBLS `Model` from an `NlProblem`.
 ///
-/// One CBLS variable per NL column: Int for columns flagged in
-/// `var_is_discrete`, Float otherwise. A defined variable (`V` segment) is not
-/// a column: it is inlined, built once as an expression node that every use
-/// shares. Each constraint body
+/// One CBLS variable per NL column (per *kept* column with presolve on; see
+/// `var_handles`): Int for columns flagged in `var_is_discrete`, Float
+/// otherwise. A defined variable (`V` segment) is not a column: it is inlined,
+/// built once as an expression node that every use shares. Each constraint body
 /// (`nonlinear + linear`) is translated to one or two CBLS comparison
 /// constraints from its `r` bound. The first objective is used; its sense
 /// drives minimize/maximize.
@@ -162,13 +162,16 @@ struct NlToModelOptions {
     /// "small non-negative count", so a far tighter box is the useful default.
     double int_inf_clamp = 1.0e6;
     /// Off by default; off, the model is the one built without presolve. On,
-    /// the purely linear rows (the ones propagation reads), the column boxes
-    /// and the objective's linear part go through `presolve` (presolve.h).
-    /// Every column a nonlinear part can reach is frozen: one in an expression,
-    /// in a defined variable, or in the linear part of a row with a nonlinear
-    /// part. Those rows are kept verbatim ("opaque"), so no expression is
-    /// remapped. `propagate_bounds` and `propagation.max_passes` are taken from
-    /// the two fields above, so propagation runs once, inside presolve.
+    /// the linear rows, the column boxes and the objective's linear part go
+    /// through `presolve` (presolve.h). A linear row is one whose nonlinear
+    /// part is absent or a lone constant `k` (AMPL writes `n0` for every
+    /// linear row), read with its sides moved by `-k`; it must also have a
+    /// linear part, a finite side and only in-range columns. Every other row
+    /// is kept verbatim ("opaque"), and every column it or any expression can
+    /// reach is frozen: one in an expression, in a defined variable, or in
+    /// the linear part of an opaque row. So no expression is remapped.
+    /// `propagate_bounds` and `propagation.max_passes` are taken from the two
+    /// fields above, so propagation runs once, inside presolve.
     PresolveOptions presolve;
 };
 
