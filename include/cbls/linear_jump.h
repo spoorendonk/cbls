@@ -10,6 +10,31 @@ namespace cbls {
 
 class Model;
 
+/// The affine residual of constraint `ci` as `sum(terms) + constant`, where the
+/// row reads `residual <= 0` (Leq, Geq, Lt, Gt and a bare body) or
+/// `residual = 0` (Eq). Geq/Gt are swapped to `q - p` as everywhere else, and a
+/// strict row's margin (`ExprNode::const_value`) is in `constant`.
+///
+/// `terms` gets each variable at most once, sorted by id, with no zero entry. Its
+/// slopes are exactly the closed-form scorer's (`LinearJumpScorer`, `build_row`):
+/// the same sweep (`compute_partials_sparse` on the row node; for Eq, on each side
+/// then merged). `constant` is the residual at every variable zero, computed
+/// exactly: a variable-free subtree contributes its current value, `Neg`/`Sum`
+/// and `Prod` or `Div` by a variable-free subtree carry it through.
+///
+/// Returns false, with `terms` and `constant` unspecified, for a row that is not
+/// affine in that sense: `Neq`, a domain row (#258, whose DAG residual adds a
+/// margin once positive), any other op on a variable path (a comparison nested
+/// inside a side included), a divisor the DAG reads as zero, or a non-finite
+/// slope or constant. Reads node values, so they must be current, as for
+/// `compute_partials_sparse`.
+///
+/// Cost: two walks of the row's cone (the memoised constant walk, with a hash
+/// map allocated per call, and the partials sweep) plus O(k log k) for the k
+/// terms. Meant for a one-time load, not a per-move path.
+bool affine_row_terms(const Model& model, int32_t ci,
+                      std::vector<std::pair<int32_t, double>>& terms, double& constant);
+
 /// Closed-form scoring of a scalar jump over LINEAR rows: affine comparisons and
 /// affine bare bodies.
 ///

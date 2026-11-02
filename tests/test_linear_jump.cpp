@@ -1390,3 +1390,167 @@ TEST_CASE("an Int argmin on a plateau takes OR-Tools' binary-search point (#208)
         REQUIRE(r.score == 4.0);
     }
 }
+
+namespace {
+
+double term_of(const std::vector<std::pair<int32_t, double>>& terms, int32_t v) {
+    const auto it =
+        std::lower_bound(terms.begin(), terms.end(), std::make_pair(v, 0.0),
+                         [](const auto& a, const auto& b) { return a.first < b.first; });
+    return it != terms.end() && it->first == v ? it->second : 0.0;
+}
+
+}  // namespace
+
+TEST_CASE("affine_row_terms reads each row kind's residual and constant", "[fj][linear_jump]") {
+    Model m;
+    const int32_t x = m.int_var(0, 5);
+    const int32_t y = m.int_var(0, 5);
+    const int32_t z = m.float_var(-2.0, 2.0);
+    // 0: x + 2y <= 3 + z
+    m.add_constraint(m.leq(m.sum({x, m.prod(m.constant(2.0), y)}), m.sum({m.constant(3.0), z})));
+    // 1: 2x > 5 over integers: 5 - 2x + 1 <= 0
+    m.add_constraint(m.gt(m.prod(m.constant(2.0), x), m.constant(5.0)));
+    // 2: (x - y) / 4 == 1 - z
+    m.add_constraint(m.eq_expr(m.div_expr(m.sum({x, m.neg(y)}), m.constant(4.0)),
+                               m.sum({m.constant(1.0), m.neg(z)})));
+    // 3: bare body 3 * (x - 7) + sqrt(4) * y, a variable-free factor
+    m.add_constraint(m.sum({m.prod(m.constant(3.0), m.sum({x, m.constant(-7.0)})),
+                            m.prod(m.sqrt_expr(m.constant(4.0)), y)}));
+    m.add_constraint(m.neq(x, m.constant(2.0)));             // 4: Neq
+    m.add_constraint(m.leq(m.prod(x, y), m.constant(1.0)));  // 5: bilinear
+    m.add_constraint(m.leq(m.leq(x, y), m.constant(0.0)));   // 6: a nested comparison
+    // 7, 8: an inner constant carried through Neg and through Div
+    m.add_constraint(m.leq(m.neg(m.sum({x, m.constant(3.0)})), m.constant(0.0)));
+    m.add_constraint(
+        m.leq(m.div_expr(m.sum({x, m.constant(3.0)}), m.constant(2.0)), m.constant(0.0)));
+    // 9: a divisor the DAG reads as zero
+    m.add_constraint(m.leq(m.div_expr(x, m.constant(1e-16)), m.constant(1.0)));
+    m.close();
+    full_evaluate(m);
+
+    std::vector<std::pair<int32_t, double>> t;
+    double k = 0.0;
+    REQUIRE(affine_row_terms(m, 0, t, k));
+    REQUIRE(t.size() == 3);
+    CHECK(term_of(t, vid(x)) == 1.0);
+    CHECK(term_of(t, vid(y)) == 2.0);
+    CHECK(term_of(t, vid(z)) == -1.0);
+    CHECK(k == -3.0);
+
+    REQUIRE(affine_row_terms(m, 1, t, k));
+    REQUIRE(t.size() == 1);
+    CHECK(term_of(t, vid(x)) == -2.0);
+    CHECK(k == 6.0);
+
+    REQUIRE(affine_row_terms(m, 2, t, k));
+    REQUIRE(t.size() == 3);
+    CHECK(term_of(t, vid(x)) == 0.25);
+    CHECK(term_of(t, vid(y)) == -0.25);
+    CHECK(term_of(t, vid(z)) == 1.0);
+    CHECK(k == -1.0);
+
+    REQUIRE(affine_row_terms(m, 3, t, k));
+    CHECK(term_of(t, vid(x)) == 3.0);
+    CHECK(term_of(t, vid(y)) == 2.0);
+    CHECK(k == -21.0);
+
+    CHECK_FALSE(affine_row_terms(m, 4, t, k));
+    CHECK_FALSE(affine_row_terms(m, 5, t, k));
+    CHECK_FALSE(affine_row_terms(m, 6, t, k));
+
+    REQUIRE(affine_row_terms(m, 7, t, k));
+    REQUIRE(t.size() == 1);
+    CHECK(term_of(t, vid(x)) == -1.0);
+    CHECK(k == -3.0);
+
+    REQUIRE(affine_row_terms(m, 8, t, k));
+    REQUIRE(t.size() == 1);
+    CHECK(term_of(t, vid(x)) == 0.5);
+    CHECK(k == 1.5);
+
+    CHECK_FALSE(affine_row_terms(m, 9, t, k));
+}
+
+TEST_CASE("affine_row_terms reads the objective row's current bound", "[fj][linear_jump]") {
+    Model m;
+    const int32_t x = m.int_var(0, 5);
+    const int32_t y = m.int_var(0, 5);
+    m.add_constraint(m.leq(m.sum({x, y}), m.constant(8.0)));
+    m.minimize(m.sum({x, m.prod(m.constant(3.0), y)}));
+    m.close();
+    m.add_objective_soft_constraint();
+    m.set_objective_bound(42.0);
+    full_evaluate(m);
+    std::vector<std::pair<int32_t, double>> t;
+    double k = 0.0;
+    REQUIRE(affine_row_terms(m, m.objective_constraint_idx(), t, k));
+    REQUIRE(t.size() == 2);
+    CHECK(term_of(t, vid(x)) == 1.0);
+    CHECK(term_of(t, vid(y)) == 3.0);
+    CHECK(k == -42.0);
+}
+
+namespace {
+
+// Checks row c's affine_row_terms at the model's current assignment against
+// the scorer's slopes and the DAG's value; false when the row is not affine.
+bool check_affine_row(Model& m, LinearJumpScorer& sc, int32_t c) {
+    std::vector<std::pair<int32_t, double>> t;
+    double k = 0.0;
+    if (!affine_row_terms(m, c, t, k)) {
+        return false;
+    }
+    REQUIRE(std::is_sorted(t.begin(), t.end()));
+    double residual = k;
+    double magnitude = std::abs(k);
+    for (const auto& [v, a] : t) {
+        REQUIRE(a != 0.0);
+        const double xv = m.var(v).value;
+        residual += a * xv;
+        magnitude += std::abs(a * xv);
+    }
+    const int32_t nid = m.constraint_ids()[static_cast<size_t>(c)];
+    const bool is_eq = m.nodes()[static_cast<size_t>(nid)].op == NodeOp::Eq;
+    // The scorer's partial is of the row's violation: an Eq row's is |p - q|'s,
+    // signed by the live difference (row_partial), so the affine slope is
+    // compared through that sign. A difference within rounding of zero has no
+    // sign both sums agree on, so it is not compared.
+    const double tol = 64.0 * std::numeric_limits<double>::epsilon() * (magnitude + 1.0);
+    double sign = 1.0;
+    if (is_eq && residual < -tol) {
+        sign = -1.0;
+    } else if (is_eq && residual <= tol) {
+        sign = 0.0;
+    }
+    for (const auto& [v, a] : t) {
+        double g = 0.0;
+        if (sign != 0.0 && partial_of_row(m, sc, c, v, g)) {
+            REQUIRE(sign * a == g);
+        }
+    }
+    const double dag = m.node_values()[static_cast<size_t>(nid)];
+    const double want = is_eq ? std::abs(residual) : residual;
+    REQUIRE(std::abs(dag - want) <= tol);
+    return true;
+}
+
+}  // namespace
+
+TEST_CASE("affine_row_terms slopes are the scorer's, and its constant reproduces the row",
+          "[fj][linear_jump]") {
+    int checked_rows = 0;
+    for (uint64_t seed = 301; seed <= 310; ++seed) {
+        RandomLinearModel r;
+        build_random_linear(r, seed, /*integral=*/false, /*bare=*/true);
+        Model& m = r.m;
+        LinearJumpScorer sc(m);
+        mark_all_rows(m, sc);
+        RNG rng(seed);
+        randomise_assignment(m, rng);
+        for (int32_t c = 0; c < static_cast<int32_t>(m.constraint_ids().size()); ++c) {
+            checked_rows += check_affine_row(m, sc, c) ? 1 : 0;
+        }
+    }
+    REQUIRE(checked_rows > 100);
+}

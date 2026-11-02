@@ -14,6 +14,7 @@
 #include <new>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <utility>
 
 namespace cbls {
@@ -72,6 +73,110 @@ void merge_sides(const std::vector<std::pair<int32_t, double>>& s0,
     }
 }
 
+// The divisor magnitude below which the DAG's `div_value` (dag.cpp) reads a
+// quotient as a division by zero.
+constexpr double kDivZero = 1e-15;
+
+// One node of a side's cone, for `affine_row_terms`: its value at every variable
+// zero, whether it reads no variable, and whether it is affine.
+struct ConeConstant {
+    double value = 0.0;
+    bool var_free = true;
+    bool affine = true;
+};
+
+ConeConstant child_constant(const ChildRef& ref,
+                            const std::unordered_map<int32_t, ConeConstant>& memo) {
+    if (ref.is_var) {
+        return ConeConstant{0.0, false, true};
+    }
+    return memo.at(ref.id);
+}
+
+// The constant of one node, its children already in `memo`. A variable-free node
+// is its own value: `const_value` for a literal, else the node's current value,
+// which no variable can move. Above a variable, only the ops `node_is_affine`
+// (feasibility_jump.cpp) admits carry a constant; a nested comparison does not
+// (its residual has sentinel cases), so it is refused here.
+ConeConstant node_constant(const Model& model, int32_t id,
+                           const std::unordered_map<int32_t, ConeConstant>& memo) {
+    const ExprNode& nd = model.nodes()[static_cast<size_t>(id)];
+    const ConstSpan<ChildRef> children = model.children(nd);
+    bool var_free = true;
+    bool children_affine = true;
+    for (const ChildRef& c : children) {
+        const ConeConstant cc = child_constant(c, memo);
+        var_free = var_free && cc.var_free;
+        children_affine = children_affine && cc.affine;
+    }
+    if (var_free) {
+        // The current value, never `const_value`: the objective bound's node
+        // reads `objective_bound()`, which `set_objective_bound` writes only
+        // into the node values.
+        return ConeConstant{model.node_values()[static_cast<size_t>(id)], true, true};
+    }
+    ConeConstant out{0.0, false, false};
+    if (!children_affine) {
+        return out;
+    }
+    // An if-chain, not a NodeOp switch: every op not named here is refused,
+    // which a switch could say only through a `default:`.
+    if (nd.op == NodeOp::Neg) {
+        out.value = -child_constant(children[0], memo).value;
+        out.affine = true;
+    } else if (nd.op == NodeOp::Sum) {
+        for (const ChildRef& c : children) {
+            out.value += child_constant(c, memo).value;
+        }
+        out.affine = true;
+    } else if (nd.op == NodeOp::Prod) {
+        const ConeConstant a = child_constant(children[0], memo);
+        const ConeConstant b = child_constant(children[1], memo);
+        out.value = a.value * b.value;
+        out.affine = a.var_free || b.var_free;
+    } else if (nd.op == NodeOp::Div) {
+        // A divisor the DAG treats as zero (`div_value`, |b| < 1e-15) makes
+        // the quotient +/-inf or NaN, not affine: refused.
+        const ConeConstant b = child_constant(children[1], memo);
+        out.value = child_constant(children[0], memo).value / b.value;
+        out.affine = b.var_free && std::abs(b.value) >= kDivZero;
+    }
+    return out;
+}
+
+// The constant of side `ref` at every variable zero; false if the side is not
+// affine or its constant is not finite. An explicit post-order walk of the cone,
+// memoised, so a shared subtree is visited once and a deep one cannot overflow
+// the call stack.
+bool side_constant(const Model& model, const ChildRef& ref,
+                   std::unordered_map<int32_t, ConeConstant>& memo, double& out) {
+    if (ref.is_var) {
+        out = 0.0;
+        return true;
+    }
+    std::vector<std::pair<int32_t, bool>> stack{{ref.id, false}};
+    while (!stack.empty()) {
+        const auto [id, expanded] = stack.back();
+        stack.pop_back();
+        if (memo.count(id) != 0) {
+            continue;
+        }
+        if (expanded) {
+            memo.emplace(id, node_constant(model, id, memo));
+            continue;
+        }
+        stack.emplace_back(id, true);
+        for (const ChildRef& c : model.children(model.nodes()[static_cast<size_t>(id)])) {
+            if (!c.is_var && memo.count(c.id) == 0) {
+                stack.emplace_back(c.id, false);
+            }
+        }
+    }
+    const ConeConstant& cc = memo.at(ref.id);
+    out = cc.value;
+    return cc.affine && std::isfinite(cc.value);
+}
+
 // The sign `local_derivative` gives an Eq node: 0 for a zero OR NaN difference.
 double eq_sign(double diff) {
     if (diff > 0.0) {
@@ -84,6 +189,51 @@ double eq_sign(double diff) {
 }
 
 }  // namespace
+
+bool affine_row_terms(const Model& model, int32_t ci,
+                      std::vector<std::pair<int32_t, double>>& terms, double& constant) {
+    const int32_t nid = model.constraint_ids()[static_cast<size_t>(ci)];
+    const ExprNode& nd = model.nodes()[static_cast<size_t>(nid)];
+    // A domain row (#258) adds domain_margin() where its residual turns
+    // positive, so `p - q` is not the DAG's residual there.
+    if (nd.op == NodeOp::Neq || model.is_domain_node(nid)) {
+        return false;
+    }
+    const bool bare = !is_comparison_op(nd.op);
+    const auto [p, q] = residual_sides(model, nd, nid);
+    std::unordered_map<int32_t, ConeConstant> memo;
+    double p_constant = 0.0;
+    double q_constant = 0.0;
+    if (!side_constant(model, p, memo, p_constant) ||
+        (!bare && !side_constant(model, q, memo, q_constant))) {
+        return false;
+    }
+    // The slopes exactly as build_row takes them.
+    terms.clear();
+    if (nd.op == NodeOp::Eq) {
+        std::vector<std::pair<int32_t, double>> s0;
+        std::vector<std::pair<int32_t, double>> s1;
+        side_partials(model, p, s0);
+        side_partials(model, q, s1);
+        merge_sides(s0, s1, terms);
+    } else {
+        compute_partials_sparse(model, nid, terms);
+        std::sort(terms.begin(), terms.end());
+    }
+    terms.erase(std::remove_if(terms.begin(), terms.end(),
+                               [](const std::pair<int32_t, double>& t) { return t.second == 0.0; }),
+                terms.end());
+    for (const auto& t : terms) {
+        if (!std::isfinite(t.second)) {
+            return false;
+        }
+    }
+    constant = p_constant - q_constant;
+    if (nd.op == NodeOp::Lt || nd.op == NodeOp::Gt) {
+        constant += nd.const_value;
+    }
+    return std::isfinite(constant);
+}
 
 void LinearJumpScorer::FreeDeleter::operator()(double* p) const {
     std::free(p);  // paired with build_row's calloc
