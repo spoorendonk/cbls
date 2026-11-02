@@ -520,7 +520,7 @@ def _main_with(argv: list[str]) -> int:
         # Every runner job would refuse the pair at its start (#340).
         (
             ["--no-compound-moves", "--compound-propagation"],
-            "--compound-propagation has no effect with --no-compound-moves",
+            "--compound-propagation has no effect without --compound-moves",
             None,
         ),
     ],

@@ -1084,7 +1084,7 @@ def test_minlplib_rejects_a_negative_unproductive_iters(value: str, tmp_path: Pa
     unproductive-batch exit only on `> 0` -- so accepting both would put two
     different `search_config` cells on one configuration.
 
-    That invariant is what justifies refusing the two no-effect flag
+    That invariant is what justifies refusing the no-effect flag
     combinations, so it has to hold. 0 stays as the documented spelling for the
     fixed-cadence arm.
     """

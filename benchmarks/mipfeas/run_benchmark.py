@@ -1177,7 +1177,7 @@ def check_arguments(args: argparse.Namespace) -> int | None:
         # The runner refuses the pair (propagation is read only by Novelty
         # batches), so every CBLS job of the run would fail at its start.
         print(
-            "--compound-propagation has no effect with --no-compound-moves.",
+            "--compound-propagation has no effect without --compound-moves.",
             file=sys.stderr,
         )
         return 2

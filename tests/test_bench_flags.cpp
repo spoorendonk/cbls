@@ -516,7 +516,7 @@ TEST_CASE("a negative --unproductive-iters is the same run as zero, so it is ref
     // The engine arms the early exit only on `> 0`, so -1 and 0 produce the
     // IDENTICAL run -- but they record two different `search_config` cells.
     // That breaks the invariant search_config_string() states outright, and
-    // that invariant is the justification for refusing the two no-effect flag
+    // that invariant is the justification for refusing the no-effect flag
     // combinations elsewhere in this file. An earlier cut accepted both.
     std::string error;
     for (const char* value : {"-1", "-300"}) {

@@ -258,7 +258,9 @@ struct SearchConfig {
     // GFJConfig::compound_propagation for the batch FJ. Each leg of a compound
     // move is propagated over the linear rows and the next leg is drawn inside
     // the narrowed box. Read only by Novelty batches, so it has no effect
-    // without `use_compound_moves` or with `novelty_jump_probability == 0`; the
+    // without `use_compound_moves`, with `novelty_jump_probability == 0`, or
+    // when structural batches take every batch (`structural_batch_probability`
+    // 1 on a List/Set model), nor on a model with no linear row; the
     // LNS repair FJ runs no Novelty and ignores it. Off is today's search, draw
     // for draw.
     bool compound_move_propagation = false;

@@ -48,5 +48,9 @@ def test_compound_move_propagation_reaches_the_solve() -> None:
     off = cbls.solve(_tight(), 0.0, 42, config=_config(False)).counters
     assert on.novelty_batches > 0
     assert on.novelty_propagation_tightenings > 0
-    assert on.novelty_propagation_conflicts >= 0
+    # x0 + x3 <= 2 empties a domain whenever a leg sets x0 or x3 above 2, so
+    # this model has conflicts too; that the two counts differ is what catches
+    # one field bound under the other's name (1434 vs 136 at seed 42).
+    assert on.novelty_propagation_conflicts > 0
+    assert on.novelty_propagation_conflicts != on.novelty_propagation_tightenings
     assert (off.novelty_propagation_tightenings, off.novelty_propagation_conflicts) == (0, 0)
