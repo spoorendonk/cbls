@@ -2175,7 +2175,7 @@ Callers: `src/cli.cpp` and the `cvrp`, `uc-chped` and `minlplib` runners at
 factory over pre-built copies of its frozen master.
 
 Sharing roughly halves a worker's marginal memory on a large model, at no
-throughput cost (#157, #176). What remains per worker is genuinely per-worker: the variables, the node
+throughput cost (#157). What remains per worker is genuinely per-worker: the variables, the node
 values, at least three `Model::State` snapshots, FJ's per-variable and
 per-constraint tables, `ViolationManager`'s two per-constraint vectors, FJ's
 `LinearJumpScorer` (its slope table is structure, but each worker builds its
@@ -2191,13 +2191,12 @@ are reached through one parameter -- `cbls::solve()`'s trailing
 `SearchCoordination*`, which is null at every call site outside this class
 (`setcover` always, the other runners at `--threads 1`; the portfolio A/B
 harness `cbls_minlplib_portfolio` never takes this path), where null leaves
-the search unchanged:
+the single-threaded trajectory bit-identical:
 
 1. **Submit when found.** `record_best()` shares each new incumbent into the
-   pool the moment it records one, not once at the end of the run. One
-   `Model::State` copy and one mutex acquisition per improving batch; `submit`
-   takes its argument by value and moves it into the store, so the copy happens
-   outside the critical section.
+   pool the moment it records one, not once at the end of the run: one
+   `Model::State` copy, made outside the lock, and one mutex acquisition per
+   improving batch.
 2. **Restart from the pool.** On the full-stagnation route
    (`stagnation >= perturbation_period`) a worker draws `get_restart_point()`
    and restarts from it instead of perturbing its own assignment, and that
@@ -2211,7 +2210,8 @@ the search unchanged:
      and the only route that may draw LNS once a feasible solution exists;
    - adoption **disarms** the Float escape probe `maybe_diversify` just armed,
      since that diagnosis was about the assignment just left; so of #117's two
-     arming routes, workers with a non-empty pool keep only the time-based one;
+     arming routes, workers with a non-empty pool keep only the time-based one
+     (#117's single-threaded roster does not measure this);
    - adoption is **refused** on an empty pool, a state whose shape does not
      match the local model, or a draw equal to the worker's assignment, and
      the kick falls through to the ordinary `diversify()`.
@@ -2321,9 +2321,9 @@ arguments of the single-threaded `solve()`: they buy a separately configured
 
 ### Why ViolationLS instead of Simulated Annealing
 
-The engine was ported from a simulated-annealing core to ViolationLS, which
-replaces SA's tuning knobs (temperature, cooling, reheat, penalty multiplier)
-with one self-adapting mechanism: per-constraint GLS weights driving a greedy
+ViolationLS replaces the tuning knobs of the simulated-annealing core it was
+ported from (temperature, cooling, penalty multiplier) with one
+self-adapting mechanism: per-constraint GLS weights driving a greedy
 best-of-N jump. That gives a parameter-light core that adapts feasibility
 pressure per constraint, and folds optimization into a sequence of feasibility
 problems (objective-as-constraint) so the same engine handles both.
