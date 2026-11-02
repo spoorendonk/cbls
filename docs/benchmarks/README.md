@@ -8,13 +8,19 @@ Each benchmark follows the same pattern:
 - `data.h` — C++ data structures + constexpr data arrays
 - `*_model.h` — model builder function
 - `*.cpp` — runner executable
-- `reference_solve.py` — SCIP/PySCIPOpt baseline
+- a reference solver script, per benchmark:
+  - `minlplib`: `reference_solve.py` (SCIP/PySCIPOpt)
+  - `uc-chped`: `benchmarks/chped/reference_solve.py --uc` (SCIP/PySCIPOpt)
+  - `mipfeas`: `cpsat_solve.py` (CP-SAT)
+  - `cvrp`: `reference_solve.py` (PyVRP) and `ortools_solve.py` (OR-Tools)
+  - `setcover`: none; its optima are proven and pinned
 - `verify_*.h` — solution correctness checker
 
 Not every benchmark carries every file: `minlplib` and `mipfeas` read instances
 from disk rather than from a `data.h`, and no benchmark ships a custom
-`InnerSolverHook`. `benchmarks/chped/` is header-only — a model pattern consumed
-by `examples/chped.cpp` and `tests/test_chped.cpp`, with no runner of its own.
+`InnerSolverHook`. `benchmarks/chped/` has no runner of its own: its model
+pattern is consumed by `examples/chped.cpp` and `tests/test_chped.cpp`, and its
+`reference_solve.py` is UC-CHPED's live SCIP reference.
 
 ## Benchmark priority
 
@@ -36,9 +42,12 @@ as separate: expressiveness (rows 2-3) or the same algorithm in the baseline
 
 | # | Benchmark | Compared against | Purpose | Tracking |
 |---|-----------|------------------|---------|----------|
-| 1 | `mipfeas` | OR-Tools CP-SAT at its default parameters | correctness *and* performance against CP-SAT as it ships, which holds the reference implementation of the same jump-based algorithm | #87, #106, #255 |
-| 2 | `minlplib` | SCIP (nonlinear) | performance on non-convex MINLP — the regime CP-SAT's LS worker cannot express | #87 |
-| 3 | `uc-chped` | Pedroso 2014 | a good result on a published unit-commitment formulation | #25, #92, #131 |
+| 1 | `mipfeas` | OR-Tools CP-SAT at its default parameters | correctness *and* performance against CP-SAT as it ships, which holds the reference implementation of the same jump-based algorithm | #87; campaign #255 is closed and its table waits on #253; #321 adds a CP-SAT `fj` + `ls` arm |
+| 2 | `minlplib` | SCIP (nonlinear) | performance on non-convex MINLP — the regime CP-SAT's LS worker cannot express | #87, campaign #256, scored by #306 |
+| 3 | `uc-chped` | Pedroso 2014 | a good result on a published unit-commitment formulation | #87, campaign #257 |
+
+#253 publishes the full-benchmark tables of all four sets: these three and CVRP
+(#204).
 
 **Every comparison solver runs at its own default parameters** (Simon,
 2026-11-01, [#87](https://github.com/spoorendonk/cbls/issues/87#issuecomment-6558356494)):
@@ -61,7 +70,8 @@ comparative claim, so the table's ordering rule does not gate them:
   don't grow it into an epic.
 - **`List` → CVRP** (CVRPLIB X set, Hexaly's List encoding, scored as gap to
   the pinned best-known values, with PyVRP and OR-Tools' routing library at
-  equal budget and threads as context). Tracked under epic #182 (#196-#204).
+  equal budget and threads as context). Built under epic #182, now closed; its
+  campaign, #204, moved to #87.
   **In the tree, unpublished**: `cbls_cvrp`, its driver, verifier, scorer and
   PyVRP baseline landed in #196-#200, the OR-Tools baseline in #204, but until #204 publishes results `List` still has no evidence (next
   section), and the single-seed smoke numbers quoted in #201-#203 are not
@@ -76,7 +86,9 @@ validated on a published formulation. The evidence position is:
 
 - **`Set`** — measured and **negative**. The `Set` encoding lands at
   3.4-5.1x the proven optimum where the same data in Bools is within 4-9%
-  (engine `35ec07c`, after #201; it was 8.6-11.0x against 9-20% at `adc8ee4`).
+  (engine `35ec07c`, after #201, which took `Set` from 4.0-6.2x at `1304c43`).
+  The first published table, at `adc8ee4`, had 8.6-11.0x against 9-20%; the
+  engine moved between `adc8ee4` and `1304c43`, so that difference is not #201's.
   `35ec07c` predates two defaults that act on the Bool encoding, compound moves
   (on since 2026-10-07) and the FJ objective tie-break (on since #226, and
   setcover's Bool objective is affine); the Bool figure was measured without
@@ -126,7 +138,8 @@ cost at least two heap allocations and three O(|elements|) copies. (Not "no
 allocation at all": an `EditKind::Replace` allocates by construction, and the
 per-call membership scans still do.)
 
-Measured under that representation, at engine commit `8dc906b`, **20 seeds per
+Measured under that representation, at engine commit `8dc906b`, which predates
+#201 (`35ec07c`) and so describes the engine at that commit, **20 seeds per
 arm** at a 10s budget, paired per seed: on the weighted instances
 `ViolationGuided` is **−76.2** against `FirstImprovingSample` on a base of ~2900
 (−2.6%), 95% CI **[−161.4, +9.0]** — 1.75 SE from zero, crossing it, 60/100
@@ -154,44 +167,61 @@ moves maintain. That is **new capability, not new evidence**: until CVRP
 publishes (#204) there is no measured `List` result, the evidence position above
 stands, and nothing in the tree may claim otherwise.
 
-**Epic #182 (compact route-network models) is where List work lives, and it has
-resumed with CVRP as the `List` example** (2026-10-03). Its first sub-issues —
-the CVRP benchmark #183, guided List search #184, expensive-invariant screening
-#185, repeated List elements #187 and O(edits) lambda deltas #189 — were closed
-as not planned in the 2026-09-30 triage, because each was speculative with no
-benchmark to measure it against. That rule still holds: the CVRP benchmark comes
-first (#196, #198, #197, #199), and List engine work is filed against measured
-CVRP data, not ahead of it. #201-#203 cite smoke runs and qualify; #201 is a
-prerequisite of the campaign (#204). Don't reopen the closed ones.
+**Epic #182 (compact route-network models) is closed as not planned**
+(2026-10-30): the route-network direction is not on the plan, and its CVRP
+benchmark moved to #87 as #204. Its first sub-issues — the CVRP benchmark #183,
+guided List search #184, expensive-invariant screening #185, repeated List
+elements #187 and O(edits) lambda deltas #189 — were closed as not planned in
+the 2026-09-30 triage, because each was speculative with no benchmark to measure
+it against. That rule still holds: List engine work is filed against measured
+CVRP data, not ahead of it. #201-#203 cite smoke runs and qualify. Don't reopen
+the closed ones.
 
 ## Benchmark workflow
 
-Each benchmark session must follow these steps in order:
+Adding a benchmark follows CLAUDE.md's **Working Through Issues** for the issue
+loop, review and pushing. The steps specific to a benchmark:
 
-0. **Plan first** — Read the benchmark's epic (linked above) and its open sub-issues, plus `docs/architecture.md` (solver internals). Investigate what already exists for your benchmark (data, reference solver, model code). Propose an approach and wait for approval before implementing. This is the Plan phase — do not skip it.
+0. **Plan first.** Read the benchmark's issue and `docs/architecture.md` (solver
+   internals), and check what already exists (data, reference solver, model
+   code). Put the plan on the issue.
 
-1. **Download/prepare instance data** — Write a download/generation script into `benchmarks/instances/{name}/`. Follow the pattern of `benchmarks/instances/uc-chped/` (Python data definitions + JSONL serialization). Source data from public benchmark libraries, competition archives, or papers.
+1. **Prepare instance data.** Write a download or generation script into
+   `benchmarks/instances/{name}/`, from public benchmark libraries, competition
+   archives or papers. `benchmarks/instances/setcover/download.py` is the pattern
+   for a download; `benchmarks/instances/uc-chped/gen_jsonl.py` for generated
+   data.
 
-2. **Find a reference solver** — Implement a reference solver in `benchmarks/{name}/reference_solve.py` using SCIP (PySCIPOpt) or another open-source solver if SCIP can't handle the formulation. Follow the pattern in `benchmarks/chped/reference_solve.py`.
+2. **Find a reference solver.** Implement it in `benchmarks/{name}/`, using SCIP
+   (PySCIPOpt), or another open-source solver if SCIP can't handle the
+   formulation. Follow `benchmarks/chped/reference_solve.py`.
 
-3. **Collect best-known results** — Find published results from papers/competitions. Record them per `docs/measuring.md`: a README with the engine commit named in the text, or a `comparison.csv` (columns: instance, method, objective, gap, source) if a test will read it.
+3. **Collect best-known results** from papers and competitions, and pin them per
+   `docs/measuring.md`.
 
-4. **Implement CBLS model** — Create `benchmarks/{name}/data.h` (C++ data structs + loaders) and `benchmarks/{name}/{name}_model.h` (model builder). Follow the pattern of `benchmarks/chped/chped_model.h`. **Critical rules:**
-   - Implement features generically in `include/cbls/` and `src/` — not benchmark-specific hacks
-   - If the solver needs new ops, moves, or hooks — implement them in the core library so all benchmarks benefit
-   - Add a runner executable in `benchmarks/{name}/{name}.cpp`
-   - Add Catch2 tests in `tests/test_{name}.cpp`
-   - Update the root `CMakeLists.txt` and `tests/CMakeLists.txt` for new executables and tests
+4. **Implement the CBLS model.** `benchmarks/{name}/data.h` (structs and loaders),
+   `benchmarks/{name}/{name}_model.h` (model builder, following
+   `benchmarks/chped/chped_model.h`), a runner `benchmarks/{name}/{name}.cpp` and
+   Catch2 tests `tests/test_{name}.cpp`, all registered per CLAUDE.md's **CMake**.
+   New ops, moves or hooks go in `include/cbls/` and `src/` so every benchmark
+   benefits, never as benchmark-specific hacks.
 
-5. **Run comparison** — Compare CBLS vs reference solver vs best-known results. Report objective, gap %, and solve time.
+5. **Run the comparison** of CBLS against the reference solver and the best-known
+   results, per `docs/measuring.md`: objective, gap % and solve time.
 
-6. **Verify correctness** — Check CBLS solutions against best-known solutions. Feasibility must be verified (all constraints satisfied). Objective should be within reasonable gap of BKS.
+6. **Verify correctness** against the instance: every constraint satisfied,
+   recomputed independently of the engine, and the objective compared with the
+   best-known value.
 
-7. **Commit often** — Commit after each meaningful step. Use descriptive commit messages.
+## Experiment records
 
-8. **Self-review loop** — After each commit, review your own changes for issues/nits. Fix and commit again. Repeat until clean.
+Engine experiments, not benchmarks, kept beside them:
 
-9. **Do not interrupt the user** — No exceptions. Keep going until the benchmark is fully implemented, running, and producing correct results. Only stop if you hit a fundamental blocker that requires API/architecture changes.
+- `incremental-sum-drift.md`: bounded-drift incremental `Sum`, pre-registration
+  and record (#188).
+- `linear-jump-pingpong.md` and `linear-jump-pingpong.patch`: whether the
+  closed-form jump scorer ping-pongs on Float plateaus (#178).
+- `benchmarks/tune/`: one `xk tune` study file per benchmark class (#261).
 
 ## Retiring a benchmark
 

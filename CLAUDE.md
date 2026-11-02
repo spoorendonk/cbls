@@ -267,8 +267,8 @@ Detail: `docs/benchmarks/README.md`. Comparative benchmarks, worked top down:
 | # | Benchmark | Compared against | Purpose |
 |---|---|---|---|
 | 1 | `mipfeas` | CP-SAT at its defaults | same algorithm as CP-SAT's `fj`/`ls` workers; MILP, so no expressiveness claim (#87, #255) |
-| 2 | `minlplib` | SCIP (nonlinear) | non-convex MINLP, beyond CP-SAT's LS (#87) |
-| 3 | `uc-chped` | Pedroso 2014 | published unit-commitment formulation (#25, #92, #131) |
+| 2 | `minlplib` | SCIP (nonlinear) | non-convex MINLP, beyond CP-SAT's LS (#87, #256) |
+| 3 | `uc-chped` | Pedroso 2014 | published unit-commitment formulation (#87, #257) |
 
 - **Comparison solvers run at their defaults**, CP-SAT too (not `fj`+`ls`
   only); differences are recorded per row, not evened out (Simon, 2026-11-01,
