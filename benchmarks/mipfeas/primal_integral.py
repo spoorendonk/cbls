@@ -168,10 +168,15 @@ def presolve_steps(cells: dict[str, object]) -> None:
     dropped there; under presolve its off arm is what a presolve row from
     before it ran, so off is dropped too (as the resume guard back-reads a
     missing key as off) and only the on arm carries the key. Aggregation
-    (#337, #346) the same way, except that it came on by default a commit
+    (#337, #346) the same way, except that it came on by default commits
     before its flag, in the commit that started writing
     `presolve_cols_aggregated`: a keyless row with that count aggregated, so it
-    is back-filled as the on arm.
+    is back-filled as the on arm. A keyless presolve row with neither that count
+    nor `presolve_status` (an error row, which gets no presolve stats) carries no
+    evidence of its arm. It is not back-filled, so it reads as off: that keeps
+    every pre-#337 table byte-identical, and in the commits between, where
+    aggregation was on without the key, such a row splits the config cell and
+    `check_uniform_configuration` refuses the table rather than guess its arm.
     """
     presolve = cells.get("presolve") is True
     if presolve and "presolve_aggregation" not in cells and "presolve_cols_aggregated" in cells:

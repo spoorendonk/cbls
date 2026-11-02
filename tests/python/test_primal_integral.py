@@ -471,7 +471,7 @@ def test_a_presolve_step_is_a_configuration_only_under_presolve(
 
 
 def test_a_keyless_row_that_aggregated_is_the_aggregation_on_arm(tmp_path: Path) -> None:
-    # Aggregation (#337) came on a commit before its flag, with its count: a
+    # Aggregation (#337) came on commits before its flag, with its count: a
     # presolve row from then has `presolve_cols_aggregated` but no key.
     window: dict[str, object] = {"presolve": True, "presolve_cols_aggregated": 3}
     for instance, extra in (
@@ -489,6 +489,28 @@ def test_a_keyless_row_that_aggregated_is_the_aggregation_on_arm(tmp_path: Path)
     check_uniform_configuration([_score(tmp_path, name) for name in ("window", "on")])
     with pytest.raises(ValueError, match="span 2 configurations"):
         check_uniform_configuration([_score(tmp_path, name) for name in ("window", "off")])
+
+
+def test_a_keyless_error_row_is_not_guessed_into_the_aggregation_on_arm(tmp_path: Path) -> None:
+    # An error row gets no presolve stats, so a keyless one carries no evidence
+    # of its arm. It is not back-filled: it shares the cell of a full pre-#337
+    # row (`presolve_status`, no count), and next to a window row that
+    # aggregated it splits the cell, so the table is refused, not guessed.
+    for instance, status, extra in (
+        ("error", "solve_error", {}),
+        ("before", "feasible", {"presolve_status": "reduced"}),
+        ("window", "feasible", {"presolve_cols_aggregated": 3}),
+    ):
+        _write_result(
+            tmp_path,
+            "cbls",
+            instance,
+            {"status": status, "objective": 100.0, "presolve": True, **extra},
+            trace=[(1.0, 100.0)],
+        )
+    check_uniform_configuration([_score(tmp_path, name) for name in ("error", "before")])
+    with pytest.raises(ValueError, match="span 2 configurations"):
+        check_uniform_configuration([_score(tmp_path, name) for name in ("error", "window")])
 
 
 def test_summarize_excludes_not_run_instances_from_the_aggregates(tmp_path: Path) -> None:

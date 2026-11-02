@@ -975,15 +975,17 @@ def aggregation_back_read(row: dict[str, object]) -> bool | None:
     """What a presolve row without `presolve_aggregation` ran (#337, #346).
 
     Aggregation came on by default in the commit that started writing
-    `presolve_cols_aggregated`, a commit before the flag: a row with that
-    count aggregated, and a full row without it predates aggregation. A row the
-    driver wrote for a killed job carries neither, so it is unknown (None).
+    `presolve_cols_aggregated`, commits before the flag: a row with that
+    count aggregated, and a full row without it (one with `presolve_status`,
+    which every successful presolve row carries since #325) predates
+    aggregation. An error row, or one the driver wrote for a killed job,
+    carries neither stat, so it is unknown (None).
     """
     if "presolve_cols_aggregated" in row:
         return True
-    if isinstance(row.get("driver_arm"), dict):
-        return None
-    return False
+    if "presolve_status" in row:
+        return False
+    return None
 
 
 def check_resume_configuration(

@@ -639,7 +639,14 @@ def test_resuming_under_a_different_search_arm_is_refused(tmp_path: Path) -> Non
     # Its coefficient tightening (#327) is checked only under presolve, and a
     # presolve row from before it never tightened, so it is read as off.
     # Aggregation (#337) is held off here, so this block isolates tightening.
-    old_presolve = {"instance": "a", "threads": 1, "presolve": True, **tie}
+    # A successful presolve row carries `presolve_status` (#325).
+    old_presolve = {
+        "instance": "a",
+        "threads": 1,
+        "presolve": True,
+        "presolve_status": "reduced",
+        **tie,
+    }
     result.write_text(json.dumps(old_presolve))
     assert check(presolve=True, presolve_aggregation=False) == 2
     assert check(presolve=True, presolve_coef_tightening=False, presolve_aggregation=False) is None
@@ -661,7 +668,7 @@ def test_resuming_under_a_different_search_arm_is_refused(tmp_path: Path) -> Non
     no_presolve = {"instance": "a", "threads": 1, "presolve_aggregation": True, **tie}
     result.write_text(json.dumps(no_presolve))
     assert check(presolve_aggregation=False) is None
-    # But aggregation came on a commit before its flag, with its count: a
+    # But aggregation came on commits before its flag, with its count: a
     # keyless row carrying `presolve_cols_aggregated` aggregated, so it is on.
     result.write_text(json.dumps({**tightened, "presolve_cols_aggregated": 3}))
     assert check(presolve=True) is None
@@ -675,6 +682,19 @@ def test_resuming_under_a_different_search_arm_is_refused(tmp_path: Path) -> Non
     assert check(presolve=True) is None
     assert check(presolve=True, presolve_aggregation=False) is None
     assert check(presolve=True, presolve_coef_tightening=False) == 2
+    # So does an error row from then: it got no presolve stats, so it carries
+    # no evidence of its arm and is left alone, not read as off.
+    window_error = {
+        "instance": "a",
+        "threads": 1,
+        "status": "solve_error",
+        "presolve": True,
+        "presolve_coef_tightening": True,
+        **tie,
+    }
+    result.write_text(json.dumps(window_error))
+    assert check(presolve=True) is None
+    assert check(presolve=True, presolve_aggregation=False) is None
 
 
 def test_a_default_run_resumes_over_a_job_it_killed(tmp_path: Path) -> None:
