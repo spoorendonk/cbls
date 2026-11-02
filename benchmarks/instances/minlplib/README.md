@@ -120,12 +120,20 @@ Both halves read that `bounds.csv`, and neither writes under
   the memory cap raised, then a remaining failure counts as SCIP no-solution,
   named with its exit.
 - cbls: `../../minlplib/run_benchmark.py`, one instance per call, at the
-  campaign's thread count.
+  campaign's thread count. A call whose runner exits nonzero sets the row aside
+  as `<instance>.csv.rejected`, and the next call solves it again (the #256 rule
+is one retry, then the rejected row is cbls no-solution). After SCIP has
+  checked a staged row, the driver writes `<instance>.checked` beside it,
+  holding the row's sha256.
 - Score: `../../minlplib/gm_ratio.py --bounds NL/bounds.csv --cbls
   comparison.csv --scip-shards DIR` prints the GM(gap+1) ratio cbls/SCIP with
   feasible and head-to-head counts, and names every no-solution instance on
-  both sides. It refuses an incomplete roster; `--cbls-staging STAGE --partial`
-  gives an interim score from the driver's staging directory.
+  both sides. It refuses an incomplete roster. `--cbls-staging STAGE` scores
+  the driver's staging directory instead. Every staged row must then carry a
+  matching `.checked` marker; an instance with only a `.rejected` row counts as
+  cbls no-solution. With `--partial` it gives an interim score without either
+  requirement. A row staged by a driver older than #307 has no marker: one more
+  call per instance checks and marks it without solving it again.
 
 ## Yuck / fzn-oscar-cbls coverage
 

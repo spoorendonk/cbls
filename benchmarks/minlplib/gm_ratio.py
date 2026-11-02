@@ -16,9 +16,14 @@ Usage, from any directory:
         [--budget 60] --memory-cap "110G cgroup" [--json summary.json]
 
 `--cbls-staging DIR` reads the driver's staging directory instead of the
-assembled table, and only with `--partial`: the driver demotes a staged row to
-`VERIFY-FAILED` in `verify_staged` (`run_benchmark.py`), after the solves, and a
-driver killed in between leaves a row unchecked with nothing to mark it (#307).
+assembled table. The driver demotes a staged row to `VERIFY-FAILED` in
+`verify_staged` (`run_benchmark.py`), after the solve, and a driver killed in
+between leaves the row unchecked. So without `--partial`, every staged
+`<instance>.csv` must carry the `<instance>.checked` marker `verify_staged`
+writes, holding that file's sha256 (#307); an instance whose only row is a
+`.rejected` one needs none, as it is scored as no-solution. Any other row is
+refused by name. Re-running the driver on it (`--instances NAME`) checks and
+marks a solved row without solving it again.
 
 The SCIP shards are `scip_shards.py`'s output: `<instance>.csv`, or an
 `<instance>.failed` marker holding `exit <rc>`.
@@ -97,6 +102,7 @@ from benchmarks.minlplib.run_benchmark import (  # noqa: E402
     REJECTED_SUFFIX,
     SEARCH_CONFIG_THREADS,
     STAMP_NAME,
+    staged_checked,
 )
 from benchmarks.minlplib.runner import CLAIM_EXCLUDED  # noqa: E402
 
@@ -740,11 +746,29 @@ def budget_seconds(text: str) -> float:
     return float(match.group(1))
 
 
-STAGING_NEEDS_PARTIAL = (
-    "--cbls-staging requires --partial: a staged row may not have passed the independent "
-    "SCIP check (a driver killed between a solve and the check leaves it unchecked, and "
-    "nothing marks a checked row); score the assembled comparison.csv for a result"
-)
+def unchecked_staged(stage: Path, roster: Sequence[Bound]) -> list[str]:
+    """Roster instances whose staged `<instance>.csv` has no `.checked` marker matching it.
+
+    Header-only and torn files count: a re-solve that is running or was killed
+    has not been checked either, even with an older `.rejected` row beside it.
+    An instance with no `<instance>.csv` is not listed: a lone `.rejected` row
+    is its no-solution, and no row at all is the completeness refusal's.
+    """
+    return [
+        b.instance
+        for b in roster
+        if (stage / f"{b.instance}.csv").exists() and not staged_checked(stage, b.instance)
+    ]
+
+
+def unchecked_refusal(unchecked: Sequence[str]) -> str:
+    return (
+        f"{len(unchecked)} staged cbls row(s) without a matching .checked marker, so not "
+        f"known to have passed the independent SCIP check: {_names(unchecked)}. Re-run "
+        "run_benchmark.py on each (--instances NAME, same staging directory): a solved "
+        "row is not solved again, only checked and marked. Or pass --partial for an "
+        "interim score"
+    )
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -753,7 +777,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     cbls = parser.add_mutually_exclusive_group(required=True)
     cbls.add_argument("--cbls", type=Path, help="the assembled comparison.csv")
     cbls.add_argument(
-        "--cbls-staging", type=Path, help="the driver's staging directory (needs --partial)"
+        "--cbls-staging",
+        type=Path,
+        help="the driver's staging directory (every row checked, or --partial)",
     )
     parser.add_argument(
         "--scip-shards", type=Path, required=True, help="one <instance>.csv or .failed each"
@@ -766,10 +792,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--memory-cap", help="the campaign's memory cap, as stated")
     parser.add_argument("--json", type=Path, help="also write the score as JSON here")
-    args = parser.parse_args(argv)
-    if args.cbls_staging is not None and not args.partial:
-        parser.error(STAGING_NEEDS_PARTIAL)
-    return args
+    return parser.parse_args(argv)
 
 
 def run(args: argparse.Namespace) -> Score:
@@ -780,6 +803,9 @@ def run(args: argparse.Namespace) -> Score:
         derived = {"cbls run record": table_budget(args.cbls)}
     else:
         cbls = load_cbls_staging(args.cbls_staging, roster)
+        unchecked = unchecked_staged(args.cbls_staging, bounds)
+        if unchecked and not args.partial:
+            raise RefusedError(unchecked_refusal(unchecked))
         derived = {"cbls staging stamp": staging_budget(args.cbls_staging)}
     scip = load_scip_shards(args.scip_shards, roster)
     budget = reconcile_budget({"SCIP scip_version": scip_budget(scip), **derived}, args.budget)

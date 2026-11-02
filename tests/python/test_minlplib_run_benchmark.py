@@ -38,6 +38,7 @@ from benchmarks.minlplib.run_benchmark import (
     SEEDS_TABLE_COLUMNS,
     STAMP_NAME,
     assemble,
+    checked_marker,
     common_preflight,
     default_staging_root,
     describe_plan,
@@ -50,11 +51,13 @@ from benchmarks.minlplib.run_benchmark import (
     run_record,
     run_roster,
     runner_command,
+    staged_checked,
     staged_complete,
     staged_row_complete,
     staging_stamp_conflict,
     summarize,
     usage_error,
+    verify_staged,
 )
 from benchmarks.minlplib.runner import (
     CLAIM_EXCLUDED,
@@ -1619,6 +1622,51 @@ def test_a_row_scip_rejects_is_published_as_verify_failed(
     assert rows["b"]["feasible"] == "false"
     assert rows["b"]["objective"] == "NaN"
     assert rows["b"]["note"].startswith("VERIFY-FAILED(independent: SCIP rejects")
+
+
+def test_verify_staged_marks_each_row_with_the_hash_of_the_row_as_published(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The marker is written after a demotion, so it vouches for the VERIFY-FAILED row (#307)."""
+    monkeypatch.setattr(independent_check, "check_rows", REAL_CHECK_ROWS)
+    monkeypatch.setattr(
+        independent_check,
+        "check_solution",
+        lambda nl, sol: "SCIP rejects the assignment" if sol.instance == "b" else None,
+    )
+    make_inst_dir(tmp_path, ["a", "b"])
+    monkeypatch.setattr(subprocess, "run", _runner_with_solutions())
+    assert _execute(tmp_path, 1) == 0
+    stage = resolve_paths(make_args(tmp_path, seed=1), "abc1234").stage
+    assert "VERIFY-FAILED" in (stage / "b.csv").read_text()
+    for name in ("a", "b"):
+        assert checked_marker(stage, name).read_text() == file_sha256(stage / f"{name}.csv") + "\n"
+        assert staged_checked(stage, name)
+
+
+def test_a_staged_row_changed_after_its_check_is_not_checked(tmp_path: Path) -> None:
+    stage = _stage(tmp_path)
+    verify_staged(make_args(tmp_path), ["a"], stage)
+    assert staged_checked(stage, "a")
+    (stage / "a.csv").write_text((stage / "a.csv").read_text().replace("feasible", "infeasible"))
+    assert not staged_checked(stage, "a")
+    (stage / "a.csv").unlink()
+    assert not staged_checked(stage, "a")
+
+
+def test_a_fresh_solve_drops_the_marker_even_when_it_writes_the_same_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A re-solve's row was not checked, whatever it looks like; its .sol may differ."""
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    monkeypatch.setattr(subprocess, "run", fake_runner())
+    run_roster(make_args(tmp_path), "abc1234", ["a"], stage)
+    verify_staged(make_args(tmp_path), ["a"], stage)
+    assert staged_checked(stage, "a")
+    run_roster(make_args(tmp_path, resume=False), "abc1234", ["a"], stage)
+    assert not checked_marker(stage, "a").exists()
+    assert not staged_checked(stage, "a")
 
 
 def test_a_verified_row_without_its_solution_file_is_not_published(

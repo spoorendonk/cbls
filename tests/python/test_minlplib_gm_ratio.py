@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from benchmarks.minlplib.campaign_report import file_sha256
 from benchmarks.minlplib.gm_ratio import (
     EXIT_REFUSED,
     CblsSide,
@@ -29,7 +30,7 @@ from benchmarks.minlplib.gm_ratio import (
     reason_category,
     score,
 )
-from benchmarks.minlplib.run_benchmark import STAMP_NAME
+from benchmarks.minlplib.run_benchmark import STAMP_NAME, checked_marker
 from benchmarks.minlplib.runner import CLAIM_EXCLUDED, RUNNER_COLUMNS
 
 if TYPE_CHECKING:
@@ -562,17 +563,65 @@ def test_a_whole_staged_row_beside_a_rejected_one_is_a_re_solve_and_wins(
     assert side.rows["c"].gap_pct == 2.0
 
 
-def test_cbls_staging_without_partial_is_a_usage_error_saying_why(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    bounds, _, shards = campaign(tmp_path, [("a", 0.0, 0.0)])
+def mark_checked(stage: Path, name: str) -> None:
+    """What `run_benchmark.verify_staged` leaves beside a row it has checked."""
+    checked_marker(stage, name).write_text(file_sha256(stage / f"{name}.csv") + "\n")
+
+
+def checked_staging(tmp_path: Path) -> tuple[Path, Path, Path]:
+    """A complete campaign, staged: `a` solved and checked, `c` rejected twice over."""
+    bounds, _, shards = campaign(tmp_path, [("a", 0.0, 0.0), ("c", "-", 0.0)])
     stage = tmp_path / "stage"
     write_stamp(stage)
     write_cbls(stage / "a.csv", [cbls_line("a", 0.0)])
-    with pytest.raises(SystemExit) as exc:
-        main(staging_argv(bounds, stage, shards))
-    assert exc.value.code == EXIT_REFUSED
-    assert "may not have passed the independent" in capsys.readouterr().err
+    mark_checked(stage, "a")
+    write_cbls(
+        stage / "c.csv.rejected",
+        [cbls_line("c", "NaN", feasible=False, note="solve-error(bad_alloc)")],
+    )
+    return bounds, stage, shards
+
+
+def test_a_checked_staging_dir_with_a_rejected_instance_scores_without_partial(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """#307: a cbls instance that kept failing is no-solution in a final score."""
+    bounds, stage, shards = checked_staging(tmp_path)
+    out = tmp_path / "score.json"
+    assert main([*staging_argv(bounds, stage, shards), "--json", str(out)]) == 0
+    text = capsys.readouterr().out
+    assert "PARTIAL" not in text
+    assert "  - rejected: 1 (c)" in text
+    record = json.loads(out.read_text())
+    assert record["partial"] is False
+    assert record["cbls_no_solution"] == {"c": "rejected: solve-error(bad_alloc)"}
+    assert (record["cbls_feasible"], record["only_scip"]) == (1, 1)
+
+
+@pytest.mark.parametrize(
+    "spoil",
+    ["no-marker", "stale-marker", "re-solve-in-progress"],
+)
+def test_an_unchecked_staged_row_is_refused_by_name_unless_partial(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], spoil: str
+) -> None:
+    bounds, stage, shards = checked_staging(tmp_path)
+    if spoil == "no-marker":
+        checked_marker(stage, "a").unlink()
+        named = "a"
+    elif spoil == "stale-marker":
+        write_cbls(stage / "a.csv", [cbls_line("a", 5.0)])
+        named = "a"
+    else:  # a killed re-solve left its header beside the old rejected row
+        write_cbls(stage / "c.csv", [])
+        named = "c"
+    argv = staging_argv(bounds, stage, shards)
+    assert main(argv) == EXIT_REFUSED
+    err = capsys.readouterr().err
+    assert "1 staged cbls row(s) without a matching .checked marker" in err
+    assert f"check: {named}. Re-run run_benchmark.py" in err
+    assert main([*argv, "--partial"]) == 0
+    assert capsys.readouterr().out.startswith("PARTIAL")
 
 
 def test_a_staged_row_filed_under_another_instance_is_refused(tmp_path: Path) -> None:

@@ -78,6 +78,9 @@ Guards, because this file's output is published:
 * sets aside (`.rejected`) the staged row of any solve whose runner exited
   nonzero, so a resume re-solves it: a solve that lost portfolio workers (#170)
   writes an ordinary-looking row and says so only in its exit status;
+* marks each staged row the independent SCIP check has passed (or demoted) with
+  `<instance>.checked`, holding the CSV's sha256, so a scorer reading the
+  staging directory can tell a checked row from one a killed driver left (#307);
 * runs the runner at `--threads N` (default 1; every campaign runs at
   `CAMPAIGN_THREADS`, Simon, 2026-11-01, #255, #256) and never mixes thread
   counts in one table: each row's `search_config` cell and each run record carry
@@ -924,10 +927,15 @@ def verify_staged(args: argparse.Namespace, roster: Sequence[str], stage: Path) 
     check would otherwise leave a complete, unchecked row that the next resume
     publishes. It is idempotent -- a demoted row is `feasible=false` and is not
     looked at again -- so re-checking a row costs one SCIP read and nothing else.
+
+    Each row checked gets its `.checked` marker, written after the check and
+    any demotion, so the hash it holds is of the row as it will be published.
     """
     demoted: list[str] = []
     for name in roster:
-        demoted += independent_check.check_rows(stage / f"{name}.csv", args.inst_dir, stage)
+        row = stage / f"{name}.csv"
+        demoted += independent_check.check_rows(row, args.inst_dir, stage)
+        atomic_write(checked_marker(stage, name), campaign_report.file_sha256(row) + "\n")
     for name in demoted:
         print(
             f"{name}: the independent SCIP check rejected the runner's verified row; "
@@ -1155,6 +1163,8 @@ def run_roster(args: argparse.Namespace, sha: str, roster: Sequence[str], stage:
             continue
         cmd = runner_command(args, sha, name, stage)
         print(f"[{index}/{len(roster)}] {name}: {' '.join(cmd)}", flush=True)
+        # The old row's check says nothing about the new one.
+        checked_marker(stage, name).unlink(missing_ok=True)
         log = stage / f"{name}.log"
         completed = run_process(cmd, log=log)
         if completed.returncode != 0:
@@ -1178,6 +1188,27 @@ def run_roster(args: argparse.Namespace, sha: str, roster: Sequence[str], stage:
 #: The suffix a staged file gets when its solve exited nonzero; `staged_complete`
 #: then finds no row, so a re-run solves the instance again.
 REJECTED_SUFFIX = ".rejected"
+
+#: The suffix of the marker `verify_staged` writes beside a staged row it has
+#: checked: `<instance>.checked`, holding the row file's sha256 (#307).
+CHECKED_SUFFIX = ".checked"
+
+
+def checked_marker(stage: Path, name: str) -> Path:
+    return stage / f"{name}{CHECKED_SUFFIX}"
+
+
+def staged_checked(stage: Path, name: str) -> bool:
+    """Whether `name`'s staged row is the one `verify_staged` checked, byte for byte.
+
+    The hash, not the marker's presence, is what counts: a re-solve rewrites the
+    row, and `run_roster` also deletes the marker before it starts one, so a
+    marker can never vouch for a row the check did not see.
+    """
+    row, marker = stage / f"{name}.csv", checked_marker(stage, name)
+    if not (row.is_file() and marker.is_file()):
+        return False
+    return marker.read_text().strip() == campaign_report.file_sha256(row)
 
 
 def quarantine_staged(stage: Path, name: str) -> None:
