@@ -109,6 +109,9 @@ ABLATION_HEADING = "=== MINLPLib ablation campaign (issue #143) ==="
 TRANSFER_HEADING = (
     "=== MINLPLib unproductive-exit transfer check on the held-out roster (issue #145) ==="
 )
+PRESOLVE_HEADING = (
+    "=== MINLPLib presolve and compound propagation on the held-out sample (issue #331) ==="
+)
 
 #: Notes known to mean NO SEARCH COMPLETED. Nothing is classified by this tuple
 #: any more -- `completed_search` decides that from `COMPLETED_SEARCH_NOTES`

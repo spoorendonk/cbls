@@ -67,6 +67,19 @@ LNS arm. Its `--inst-dir` defaults to the held-out roster, and the published
 roster -- the one the value was fitted on -- is refused for it. The stamp records
 which campaign an out-dir belongs to and each arm's flags, so neither campaign can
 resume into the other's rows.
+
+A THIRD ARM SET, `--campaign presolve-322`. Issue #331 asks whether presolve and
+compound-move propagation should be on by default. Same shape again, on the
+held-out roster, with no gate probe and no LNS arm:
+
+    control               (all defaults: both off)
+    presolve              --presolve
+    compound-propagation  --compound-propagation
+    both                  --presolve --compound-propagation
+
+It runs on the 25-instance dev sample `heldout/presolve_322_sample.txt` (the
+held-out instances presolve reduces, fixed before any solve; HELDOUT.md) unless
+`--instances` names a subset, and refuses the published roster.
 """
 
 from __future__ import annotations
@@ -108,6 +121,7 @@ from benchmarks.minlplib import independent_check  # noqa: E402
 from benchmarks.minlplib import runner as runner_contract  # noqa: E402
 from benchmarks.minlplib.ablation_report import (  # noqa: E402
     CONTROL_ARM,
+    PRESOLVE_HEADING,
     PROBE_ARM_NAME,
     TRANSFER_HEADING,
     TransferPlan,
@@ -190,15 +204,26 @@ GATED_ARM = Arm("no-lns", ("--no-lns",))
 #: protocol says makes a control unusable as a comparison baseline.
 PROBE_ARM = Arm(PROBE_ARM_NAME, ())
 
-#: The two arm sets this driver runs, selected with `--campaign`.
+#: The arm sets this driver runs, selected with `--campaign`.
 ABLATION_CAMPAIGN = "ablation"
 TRANSFER_CAMPAIGN = "transfer-145"
-CAMPAIGNS: tuple[str, ...] = (ABLATION_CAMPAIGN, TRANSFER_CAMPAIGN)
+PRESOLVE_CAMPAIGN = "presolve-322"
+CAMPAIGNS: tuple[str, ...] = (ABLATION_CAMPAIGN, TRANSFER_CAMPAIGN, PRESOLVE_CAMPAIGN)
 
-#: The held-out roster of #144, which `--campaign transfer-145` runs on by
-#: default. The published roster is refused for it: the shipped value was fitted
-#: there, which is the exposure #145 exists to check.
+#: The campaigns that run on the held-out roster, with no gate probe and no LNS
+#: arm. Both refuse the published roster.
+HELDOUT_CAMPAIGNS: tuple[str, ...] = (TRANSFER_CAMPAIGN, PRESOLVE_CAMPAIGN)
+
+#: The held-out roster of #144, which the held-out campaigns run on by default.
+#: The published roster is refused for them: #145's shipped value was fitted
+#: there, which is the exposure #145 exists to check, and #331 sets defaults
+#: that must not be tuned on the roster they will be published on.
 HELDOUT_INST_DIR = DEFAULT_INST_DIR / "heldout"
+
+#: #331's dev sample: the held-out instances the A4-NL presolve reduces, fixed
+#: before any solve (HELDOUT.md). `--campaign presolve-322` runs on it unless
+#: `--instances` names a subset.
+PRESOLVE_SAMPLE = HELDOUT_INST_DIR / "presolve_322_sample.txt"
 
 #: The shipped `GFJConfig::unproductive_iterations`, and the grid it came from
 #: (the provenance comment on that field: {100, 300, 1000}, one roster, one 2s
@@ -225,6 +250,45 @@ TRANSFER_ARMS: tuple[Arm, ...] = tuple(
     _unproductive_arm(value)
     for value in sorted(TRANSFER_GRID, key=lambda v: v != SHIPPED_UNPRODUCTIVE_ITERS)
 )
+
+#: #331's arms, control first: presolve and compound propagation, each alone
+#: and together, against the shipped defaults (both off). Each arm names the
+#: token the runner's `search_config` cell carries when it applied the flag:
+#: `presolve` from `cbls_minlplib` itself, `compound_propagation=on` from the
+#: shared search flags (an opt-in key, absent from the cell when off).
+PRESOLVE_ARMS: tuple[Arm, ...] = (
+    Arm(CONTROL_ARM, ()),
+    Arm("presolve", ("--presolve",), ("presolve",)),
+    Arm("compound-propagation", ("--compound-propagation",), ("compound_propagation=on",)),
+    Arm(
+        "both",
+        ("--presolve", "--compound-propagation"),
+        ("presolve", "compound_propagation=on"),
+    ),
+)
+
+#: The fixed arm set of each held-out campaign.
+HELDOUT_ARMS: dict[str, tuple[Arm, ...]] = {
+    TRANSFER_CAMPAIGN: TRANSFER_ARMS,
+    PRESOLVE_CAMPAIGN: PRESOLVE_ARMS,
+}
+
+
+def load_sample(path: Path) -> list[str]:
+    """The instance names a sample file lists, in file order.
+
+    One name per line; blank lines and `#` comments are skipped. A repeated
+    name is refused: it would plan the same triple twice.
+    """
+    names = [
+        line.strip()
+        for line in path.read_text().splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    if len(set(names)) != len(names):
+        raise ValueError(f"{path} lists an instance twice")
+    return names
+
 
 #: Three seeds, as the protocol requires. 1 is the seed the published table was
 #: measured at, so the control arm stays comparable with it -- once that table
@@ -1114,10 +1178,10 @@ def describe_plan(
     """`--dry-run`: print the plan and the cost, touch nothing."""
     for problem in problems:
         print(f"WOULD REFUSE: {problem}")
-    transfer = args.campaign == TRANSFER_CAMPAIGN
-    probe = [] if transfer or args.lns_arm != "auto" else probe_plan(roster, args.seeds[0])
-    if transfer:
-        arms = list(TRANSFER_ARMS)
+    heldout = args.campaign in HELDOUT_CAMPAIGNS
+    probe = [] if heldout or args.lns_arm != "auto" else probe_plan(roster, args.seeds[0])
+    if heldout:
+        arms = list(HELDOUT_ARMS[args.campaign])
     else:
         arms = [*ARMS, GATED_ARM] if args.lns_arm != "off" else list(ARMS)
     main = campaign_plan(roster, args.seeds, arms)
@@ -1132,7 +1196,7 @@ def describe_plan(
     print(
         f"campaign: {len(main)} run(s) -- {' '.join(runner_command(args, sha, main[0], out_dir))}"
     )
-    if transfer:
+    if heldout:
         print(f"estimated {estimate_hours(len(main), args.time_limit):.1f}h of solving")
     else:
         print(
@@ -1147,11 +1211,12 @@ def describe_plan(
 def execute(args: argparse.Namespace, sha: str, roster: Sequence[str], out_dir: Path) -> int:
     """The campaign: probe, gate, interleaved arms, report.
 
-    `--campaign transfer-145` skips the probe and the gate -- it has no LNS arm
-    to gate -- and runs `TRANSFER_ARMS` instead; everything else is shared.
+    The held-out campaigns (`transfer-145`, `presolve-322`) skip the probe and
+    the gate -- they have no LNS arm to gate -- and run their own fixed arm set
+    instead; everything else is shared.
     """
-    transfer = args.campaign == TRANSFER_CAMPAIGN
-    stamp_arms = list(TRANSFER_ARMS) if transfer else [*ARMS, GATED_ARM]
+    heldout_arms = HELDOUT_ARMS.get(args.campaign)
+    stamp_arms = list(heldout_arms) if heldout_arms else [*ARMS, GATED_ARM]
     conflict = stamp_conflict(
         out_dir,
         campaign_stamp(
@@ -1187,9 +1252,9 @@ def execute(args: argparse.Namespace, sha: str, roster: Sequence[str], out_dir: 
         print(schema, file=sys.stderr)
         return 2
     open_results(results)
-    if transfer:
+    if heldout_arms:
         execute_runs(
-            args, sha, campaign_plan(roster, args.seeds, TRANSFER_ARMS), out_dir, "campaign"
+            args, sha, campaign_plan(roster, args.seeds, heldout_arms), out_dir, "campaign"
         )
         print(report_for(args, results, gate=None))
         return 0
@@ -1207,7 +1272,11 @@ def report_for(args: argparse.Namespace, results: Path, gate: dict[str, object] 
     roster's structure class and size per instance -- read from the same
     `bounds.csv` the run took its roster from, so the bands are the held-out
     roster's own and nothing is imported from the published one.
+
+    The presolve campaign gets the shared per-arm scoring under its own heading.
     """
+    if args.campaign == PRESOLVE_CAMPAIGN:
+        return render_report(results, gate=gate, heading=PRESOLVE_HEADING)
     if args.campaign != TRANSFER_CAMPAIGN:
         return render_report(results, gate=gate)
     meta = roster_meta(args.inst_dir / "bounds.csv")
@@ -1238,17 +1307,22 @@ def usage_error(args: argparse.Namespace) -> str | None:
         )
     if len(set(args.seeds)) != len(args.seeds):
         return f"--seeds must be distinct (got {args.seeds}); a repeated seed is a repeated run"
-    if args.campaign == TRANSFER_CAMPAIGN:
+    if args.campaign in HELDOUT_CAMPAIGNS:
         if args.lns_arm != "auto":
             return (
                 f"--lns-arm {args.lns_arm} belongs to the ablation's LNS gate; the "
-                f"{TRANSFER_CAMPAIGN} campaign has no LNS arm and runs no gate probe"
+                f"{args.campaign} campaign has no LNS arm and runs no gate probe"
             )
         if args.inst_dir.resolve() == DEFAULT_INST_DIR.resolve():
+            why = (
+                "re-run the grid on the roster the shipped value was fitted on, which is the "
+                "exposure #145 exists to check"
+                if args.campaign == TRANSFER_CAMPAIGN
+                else "fit #331's defaults on the roster they will be published on"
+            )
             return (
-                f"--campaign {TRANSFER_CAMPAIGN} on {args.inst_dir} would re-run the grid on the "
-                "roster the shipped value was fitted on, which is the exposure #145 exists to "
-                f"check; run it on the held-out roster ({HELDOUT_INST_DIR}, the default)"
+                f"--campaign {args.campaign} on {args.inst_dir} would {why}; run it on the "
+                f"held-out roster ({HELDOUT_INST_DIR}, the default)"
             )
     return scratch_refusal(args.out_dir)
 
@@ -1260,20 +1334,26 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--campaign",
         choices=CAMPAIGNS,
         default=None,
-        help=f"arm set: {ABLATION_CAMPAIGN} (#143, the default) or {TRANSFER_CAMPAIGN} (#145's "
-        "unproductive-iters grid); --report-only reads it from the out-dir's stamp",
+        help=f"arm set: {ABLATION_CAMPAIGN} (#143, the default), {TRANSFER_CAMPAIGN} (#145's "
+        f"unproductive-iters grid) or {PRESOLVE_CAMPAIGN} (#331's presolve and compound "
+        "propagation arms); --report-only reads it from the out-dir's stamp",
     )
     parser.add_argument(
         "--inst-dir",
         type=Path,
         default=None,
         help=f"roster directory; default {DEFAULT_INST_DIR} for {ABLATION_CAMPAIGN}, "
-        f"{HELDOUT_INST_DIR} for {TRANSFER_CAMPAIGN}",
+        f"{HELDOUT_INST_DIR} for {TRANSFER_CAMPAIGN} and {PRESOLVE_CAMPAIGN}",
     )
     parser.add_argument("--build-dir", type=Path, default=DEFAULT_BUILD_DIR)
     parser.add_argument("--time-limit", type=float, default=DEFAULT_TIME_LIMIT)
     parser.add_argument("--seeds", type=int, nargs="+", default=list(DEFAULT_SEEDS))
-    parser.add_argument("--instances", nargs="+", default=[], help="subset; default whole roster")
+    parser.add_argument(
+        "--instances",
+        nargs="+",
+        default=[],
+        help=f"subset; default whole roster ({PRESOLVE_CAMPAIGN}: {PRESOLVE_SAMPLE.name})",
+    )
     parser.add_argument(
         "--lns-arm",
         choices=("auto", "on", "off"),
@@ -1309,7 +1389,8 @@ def resolve_campaign(args: argparse.Namespace) -> str | None:
     out-dir's stamp, else it is the ablation. A flag that contradicts the stamp
     is refused rather than obeyed: scoring a transfer run as an ablation (or the
     reverse) prints a report for arms the rows do not contain. The roster
-    directory then defaults per campaign.
+    directory then defaults per campaign, and `presolve-322`'s instances default
+    to its committed sample.
     """
     stamped = recorded_campaign(args.out_dir)
     if args.report_only and stamped is not None:
@@ -1322,7 +1403,12 @@ def resolve_campaign(args: argparse.Namespace) -> str | None:
     if args.campaign is None:
         args.campaign = ABLATION_CAMPAIGN
     if args.inst_dir is None:
-        args.inst_dir = HELDOUT_INST_DIR if args.campaign == TRANSFER_CAMPAIGN else DEFAULT_INST_DIR
+        args.inst_dir = HELDOUT_INST_DIR if args.campaign in HELDOUT_CAMPAIGNS else DEFAULT_INST_DIR
+    if args.campaign == PRESOLVE_CAMPAIGN and not args.instances:
+        try:
+            args.instances = load_sample(PRESOLVE_SAMPLE)
+        except (OSError, ValueError) as exc:
+            return f"cannot read the {PRESOLVE_CAMPAIGN} sample: {exc}"
     return None
 
 

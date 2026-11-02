@@ -294,8 +294,10 @@ documents. No published Yuck numbers exist for these instances.
 - `../../minlplib/run_ablation.py`, `../../minlplib/ablation_report.py` — the
   ablation campaign driver and its scoring (issue #143). See "The ablation
   campaign" below. With `--campaign transfer-145` the same driver runs issue
-  #145's unproductive-exit transfer check on the held-out roster; see
-  [HELDOUT.md](HELDOUT.md). It writes only to a scratch `--out-dir` and refuses one
+  #145's unproductive-exit transfer check on the held-out roster, and with
+  `--campaign presolve-322` issue #331's presolve and compound-propagation
+  arms on a 25-instance held-out sample (`heldout/presolve_322_sample.txt`);
+  see [HELDOUT.md](HELDOUT.md). It writes only to a scratch `--out-dir` and refuses one
   anywhere inside `benchmarks/instances/`, so it can never touch the files
   listed above.
 

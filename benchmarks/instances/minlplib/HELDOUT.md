@@ -509,6 +509,33 @@ by rule would mean choosing a threshold across two neighbours tested against
 one control, with no multiplicity correction, over clustered instances and a
 three-seed floor. Such a rule would sometimes pick winners from noise.
 
+## #331: the presolve-322 sample
+
+#331 asks whether presolve and compound-move propagation should be on by
+default. Its MINLPLib arms run with
+`run_ablation.py --campaign presolve-322` (control, `--presolve`,
+`--compound-propagation`, both) on a 25-instance dev sample of this roster,
+`heldout/presolve_322_sample.txt`.
+
+**Rule, fixed before any solve:** the held-out instances the A4-NL presolve
+reduces, filled up to 25 with instances it leaves untouched if fewer reduce.
+The census reads and presolves each model without solving it:
+
+    build/cbls_minlplib_nl_check --presolve benchmarks/instances/minlplib/heldout/*.nl
+
+At commit 408a4bf exactly 25 of the 50 print `presolve=reduced`, so the
+sample is those 25 and no fill was needed. A presolve change that alters the
+census does not alter the sample: it is a committed list, and the campaign's
+stamp records its hash. The sample is a dev set, chosen because presolve acts
+on it, so it says nothing about instances presolve leaves untouched (there the
+`presolve` arm is the control up to the presolve pass's own cost).
+
+    .venv/bin/python3 -m benchmarks.minlplib.run_ablation --campaign presolve-322 \
+        --out-dir <scratch> [--dry-run]
+
+defaults to this sample and to `heldout/`, refuses the published roster, and
+takes `--instances` for a subset (the laptop smoke).
+
 ## Reproducing and checking
 
     .venv/bin/pytest tests/python/test_minlplib_heldout.py -q

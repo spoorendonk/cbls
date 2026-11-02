@@ -21,7 +21,7 @@ import pytest
 from benchmarks.common import jobs
 from benchmarks.common.jobs import wallclock_lock
 from benchmarks.common.provenance import REPO_ROOT
-from benchmarks.minlplib import independent_check
+from benchmarks.minlplib import independent_check, run_ablation
 from benchmarks.minlplib.ablation_report import (
     CONTROL_ARM,
     PROBE_ARM_NAME,
@@ -34,6 +34,9 @@ from benchmarks.minlplib.run_ablation import (
     HELDOUT_INST_DIR,
     LOCK_NAME,
     MAX_LOAD_AVERAGE,
+    PRESOLVE_ARMS,
+    PRESOLVE_CAMPAIGN,
+    PRESOLVE_SAMPLE,
     PROBE_ARM,
     RESULT_COLUMNS,
     RESULTS_NAME,
@@ -56,6 +59,7 @@ from benchmarks.minlplib.run_ablation import (
     failed_row,
     header_conflict,
     load_refusal,
+    load_sample,
     main,
     parse_args,
     probe_plan,
@@ -1220,6 +1224,142 @@ def test_the_transfer_dry_run_prints_the_grid_and_no_gate_probe(
     assert "campaign: 450 run(s)" in out
     assert "gate probe" not in out
     assert "estimated 1.2h of solving" in out  # 450 x 10s
+    assert not out_dir.exists()
+
+
+# --- the presolve-322 campaign (#331, #353) -----------------------------------
+
+
+def presolve_echoing_runner(*, ignore: str = "") -> Callable[..., FakeCompleted]:
+    """A fake runner whose `search_config` cell reports `--presolve` and
+    `--compound-propagation` the way the real one does -- or, with `ignore`
+    naming one of them, a binary that drops that flag."""
+
+    def run(cmd: Sequence[str], **kwargs: object) -> FakeCompleted:
+        cell = DEFAULT_ARM_CELL
+        if "--compound-propagation" in cmd and ignore != "--compound-propagation":
+            cell += ";compound_propagation=on"
+        if "--presolve" in cmd and ignore != "--presolve":
+            cell += ";presolve"
+        row = f"{{name}},1,1,1,5,5,10,true,feasible,{{sha}},0,0,0,0,3,0.5,{cell}"
+        return fake_runner(row=row)(cmd, **kwargs)
+
+    return run
+
+
+def test_the_presolve_sample_is_the_census_set_of_heldout_instances() -> None:
+    """#331's sample: 25 distinct held-out instances, each with its `.nl`."""
+    sample = load_sample(PRESOLVE_SAMPLE)
+    assert len(sample) == 25
+    roster = set(roster_from_bounds(HELDOUT_INST_DIR / "bounds.csv"))
+    assert set(sample) <= roster
+    assert all((HELDOUT_INST_DIR / f"{name}.nl").is_file() for name in sample)
+
+
+def test_load_sample_skips_comments_and_refuses_a_repeated_name(tmp_path: Path) -> None:
+    path = tmp_path / "sample.txt"
+    path.write_text("# header\n\na\n  # indented comment\nb\n")
+    assert load_sample(path) == ["a", "b"]
+    path.write_text("a\nb\na\n")
+    with pytest.raises(ValueError, match="twice"):
+        load_sample(path)
+
+
+def test_the_presolve_campaign_defaults_to_the_heldout_sample_and_refuses_the_published(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    out = ["--out-dir", str(tmp_path / "scratch"), "--campaign", PRESOLVE_CAMPAIGN]
+    args = parse_args(out)
+    assert resolve_campaign(args) is None
+    assert args.inst_dir == HELDOUT_INST_DIR
+    assert args.instances == load_sample(PRESOLVE_SAMPLE)
+    assert usage_error(args) is None
+
+    subset = parse_args([*out, "--instances", "tln4", "hydro"])
+    assert resolve_campaign(subset) is None
+    assert subset.instances == ["tln4", "hydro"]
+
+    published = parse_args([*out, "--inst-dir", str(DEFAULT_INST_DIR)])
+    assert resolve_campaign(published) is None
+    refusal = usage_error(published)
+    assert refusal is not None
+    assert "published on" in refusal
+
+    gated = parse_args([*out, "--lns-arm", "off"])
+    assert resolve_campaign(gated) is None
+    refusal = usage_error(gated)
+    assert refusal is not None
+    assert "no LNS arm" in refusal
+
+    monkeypatch.setattr(run_ablation, "PRESOLVE_SAMPLE", tmp_path / "missing.txt")
+    refusal = resolve_campaign(parse_args(out))
+    assert refusal is not None
+    assert "sample" in refusal
+
+
+def test_a_presolve_campaign_runs_its_four_arms_and_rows_carry_what_the_runner_applied(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(subprocess, "run", presolve_echoing_runner())
+    out_dir = tmp_path / "scratch"
+    out_dir.mkdir()  # `campaign_lock` creates it in a real run
+    args = make_args(tmp_path, campaign=PRESOLVE_CAMPAIGN, time_limit=10.0)
+    assert execute(args, "abc1234", ["a", "b"], out_dir) == 0
+
+    rows = _recorded(out_dir)
+    assert [(r["instance"], r["arm"], r["seed"]) for r in rows[:4]] == [
+        ("a", CONTROL_ARM, "1"),
+        ("a", "presolve", "1"),
+        ("a", "compound-propagation", "1"),
+        ("a", "both", "1"),
+    ]
+    assert len(rows) == 2 * 4 * 3
+    for row in rows:
+        applied = set(row["search_config"].split(";"))
+        presolve = row["arm"] in ("presolve", "both")
+        propagation = row["arm"] in ("compound-propagation", "both")
+        assert ("presolve" in applied) == presolve
+        assert ("compound_propagation=on" in applied) == propagation
+        assert ("--presolve" in row["arm_flags"]) == presolve
+        assert ("--compound-propagation" in row["arm_flags"]) == propagation
+    assert not any(r["arm"] in (PROBE_ARM.name, GATED_ARM.name) for r in rows)
+    assert not (out_dir / "lns_gate.json").exists()
+    assert "campaign=presolve-322" in (out_dir / STAMP_NAME).read_text()
+    assert "issue #331" in capsys.readouterr().out
+
+    # Neither held-out campaign resumes into the other's out-dir.
+    transfer = make_args(tmp_path, campaign=TRANSFER_CAMPAIGN, time_limit=10.0)
+    assert execute(transfer, "abc1234", ["a", "b"], out_dir) == 2
+    assert "campaign=presolve-322" in capsys.readouterr().err
+
+    assert main(["--out-dir", str(out_dir), "--report-only"]) == 0
+    assert "issue #331" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("dropped", ["--presolve", "--compound-propagation"])
+def test_a_runner_that_drops_a_presolve_arm_flag_stops_the_campaign(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, dropped: str
+) -> None:
+    """A binary that ignores either flag would file the control under that arm."""
+    monkeypatch.setattr(subprocess, "run", presolve_echoing_runner(ignore=dropped))
+    plan = campaign_plan(["a"], [1], PRESOLVE_ARMS)
+    token = "presolve" if dropped == "--presolve" else "compound_propagation=on"
+    with pytest.raises(ArmConfigMismatchError, match=token):
+        execute_runs(make_args(tmp_path), "abc1234", plan, tmp_path / "scratch", "campaign")
+
+
+def test_the_presolve_dry_run_prints_four_arms_over_the_sample(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    out_dir = tmp_path / "scratch"
+    main(["--out-dir", str(out_dir), "--campaign", PRESOLVE_CAMPAIGN, "--dry-run"])
+    out = capsys.readouterr().out
+    assert "campaign: presolve-322" in out
+    assert "roster: 25 instance(s)" in out
+    assert "both[--presolve --compound-propagation]" in out
+    assert "campaign: 300 run(s)" in out  # 25 x 4 arms x 3 seeds
+    assert "gate probe" not in out
+    assert "estimated 5.0h of solving" in out  # 300 x 60s
     assert not out_dir.exists()
 
 

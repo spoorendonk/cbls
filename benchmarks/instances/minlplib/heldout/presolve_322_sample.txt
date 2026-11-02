@@ -1,0 +1,30 @@
+# The #331 presolve dev sample (run_ablation.py --campaign presolve-322).
+# Fixed before any solve: the held-out instances the A4-NL presolve reduces,
+# per `build/cbls_minlplib_nl_check --presolve heldout/*.nl` at 408a4bf.
+# Exactly 25 of the 50 reduce, so no untouched fill was needed.
+# Rule and command: HELDOUT.md, "#331: the presolve-322 sample".
+bayes2_50
+ex1263a
+ex1264a
+ex1265a
+ex14_2_1
+ex14_2_6
+ex2_1_2
+ex3_1_4
+ex8_3_2
+ex8_3_4
+ex9_2_3
+hybriddynamic_fixedcc
+hydro
+kall_circles_c6a
+kall_congruentcircles_c41
+kall_congruentcircles_c63
+kriging_peaks-full030
+st_bpaf1b
+st_bpv1
+st_fp7b
+tln4
+tln6
+tloss
+tltr
+wastewater02m1
