@@ -213,6 +213,7 @@ add_library(cbls_lib
     src/structural_batch.cpp
     src/randomize.cpp
     src/bound_propagation.cpp
+    src/presolve.cpp
     src/feasibility_jump.cpp
     src/linear_jump.cpp
     src/search.cpp

@@ -87,7 +87,7 @@ A one-screen map of the pipeline, its files, the extension points, build targets
 7. **LNS** (`src/lns.cpp`) — every N-th diversification kick: SISR ruin-and-recreate on each `ListPartition`, destroy 30% and repair by FJ elsewhere; accepted on a lexicographic (real violation, objective) key.
 8. **Violation & penalty** (`src/violation.cpp`) — `total_violation = Σ W[c]·max(0, viol_c)`; `weighted_violation_delta` is the no-commit counterfactual δ_G; `augmented_objective()` is the inner solver's descent metric.
 9. **Parallel search** (`src/pool.cpp`) — `SolutionPool` + `ParallelSearch`, a cooperative portfolio that shares incumbents and the objective bound. Workers share the frozen model's immutable structure (#157) and copy only what a search writes. Nondeterministic; `--threads 1` is the reproducible run. See [Solution Pool & Parallel Search](#solution-pool--parallel-search); the benchmark driver's CPU policy is in `benchmarks/instances/mipfeas/README.md`.
-10. **I/O** (`src/io.cpp`, `src/io/`) — JSONL `.cbls` format; the MPS reader (`mps_reader.cpp` + `mps_to_model.cpp`, gzip, optional bzip2), the AMPL `.nl` reader (`nl_reader.cpp` + `nl_to_model.cpp`) and the MIPLIB `.solu` reader (`solu_reader.cpp`). CLI in `src/cli.cpp`.
+10. **I/O** (`src/io.cpp`, `src/io/`) — JSONL `.cbls` format; the MPS reader (`mps_reader.cpp` + `mps_to_model.cpp`, gzip, optional bzip2), the AMPL `.nl` reader (`nl_reader.cpp` + `nl_to_model.cpp`) and the MIPLIB `.solu` reader (`solu_reader.cpp`). CLI in `src/cli.cpp`. Load-time reductions for the adapters: implied bounds (`src/bound_propagation.cpp`) and presolve with postsolve (`include/cbls/presolve.h`, `src/presolve.cpp`, `src/presolve_internal.h`); see [Implied variable bounds](#implied-variable-bounds) and [Presolve](#presolve).
 
 ### Key extension points
 
@@ -2626,6 +2626,52 @@ validity. Where propagation proves the linear system empty, the adapters
 **discard** the derived bounds and build the model from the declared ones: an
 infeasible instance should be reported by the search, not by the reader handing
 it an empty box.
+
+### Presolve
+
+**Files:** `include/cbls/presolve.h`, `src/presolve.cpp`, `src/presolve_internal.h`
+(epic #322; framework #324)
+
+`presolve(LinearProblem, PresolveOptions)` reduces a linear problem and returns
+the reduced one with a `Postsolve` that maps a reduced solution back to one value
+per original column. **Default off** (`PresolveOptions::enabled`); no adapter
+calls it yet (MPS #325, `.nl` #326).
+
+- **Problem form.** `LinearProblem` is a neutral CSR: column bounds, integrality,
+  a minimisation objective with offset, and rows `lo <= a·x <= hi`. `1e20` and
+  beyond reads as infinite and comes out as `±inf`. Repeated (row, column)
+  entries are merged and zeros dropped on load.
+- **Frozen columns** (`frozen[j]`) are never removed or substituted; their bounds
+  may tighten. The `.nl` adapter freezes every column that appears outside the
+  purely linear rows, so its expressions need no remapping.
+- **Reductions**, round by round to a fixed point or `max_rounds` (20):
+  activity bound tightening (the `propagate_bounds` pass above, over the live
+  rows as views); fixed columns folded into row bounds and the objective offset;
+  empty rows (checked against the feasibility tolerance) and free rows removed;
+  singleton rows turned into column bounds (the exact quotient, rounded inward on
+  an integral column); a row side the activity range already implies dropped —
+  only when the activity clears it by its `(nnz + 3)·DBL_EPSILON` rounding bound,
+  the #211 scaling — and the row removed once it has no side; empty columns fixed
+  at their best bound. The last is the one **dual** reduction: it keeps the
+  optimum's value, not every feasible point. Everything else is primal.
+- **Integral bounds** are rounded inward at load; a box that rounds empty, or
+  bounds crossing beyond `feasibility_tolerance·max(1, |b|)`, is `Infeasible`.
+- **Infeasible** returns the original problem with an identity postsolve, as the
+  adapters already do for propagation: the search reports infeasibility.
+- **Postsolve** is a LIFO stack of steps (`FixedColumn` today; aggregation adds
+  its own, #328): `apply` places the reduced values and undoes the steps last to
+  first. A column no step restored comes back NaN, loudly.
+- **Cost.** O(nnz) per round. The working copy is about 20 B per nonzero
+  (row-major 12 B, column index 8 B), plus the reduced copy, on top of the
+  caller's input. Each reduction is one function over the shared `Work` in
+  `src/presolve_internal.h`, so later reductions (#327, #328) live in their own
+  files.
+
+`tests/test_presolve.cpp` checks each reduction by hand and two seeded property
+tests over 1000 random problems built around a known feasible point: the point
+survives into the reduced problem and postsolves back to itself, and every
+integer point of a small reduced box postsolves to an original-feasible point
+with the same objective.
 
 ### JSONL Model Format
 
