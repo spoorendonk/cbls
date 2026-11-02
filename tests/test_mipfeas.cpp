@@ -362,6 +362,9 @@ TEST_CASE("the runner's file check refuses a point the file does not accept", "[
     huge.rows[0] = {"c", cbls::MpsRowSense::G, 2.0};
     huge.nonzeros = {{-1, 0, 1.0}, {-1, 1, 1.0}, {0, 0, 1e308}, {0, 1, -1e308}};
     REQUIRE_FALSE(check_original_point(huge, {3.0, 3.0}, 6.0, tol).passes(6.0));
+    // Terms 1e308 and -1e308: the activity is 0, short of 2, but sum |term| is
+    // inf, which would make the tolerance infinite and pass the row.
+    REQUIRE_FALSE(check_original_point(huge, {1.0, 1.0}, 2.0, tol).passes(2.0));
 
     // Objective terms of 1e10 that cancel to 0: the engine's plain sum may sit
     // a few 1e-6 off the compensated one, which the drift gate alone refuses.

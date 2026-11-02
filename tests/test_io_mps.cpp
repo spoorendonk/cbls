@@ -660,6 +660,46 @@ TEST_CASE("a presolve-infeasible MPS falls back to the plain model", "[mps][adap
     REQUIRE(built.constraint_node_ids[0] >= 0);
     REQUIRE(built.bound_stats.infeasible);
     REQUIRE(built.model.num_nodes() == cbls::mps_to_model(prob).model.num_nodes());
+    REQUIRE(built.presolve_rejected.empty());
+
+    // A binary declared `BV` then `UP 5` is built in {0,1}: presolve must see
+    // [0, 1], so B >= 3 is infeasible to it too, not fixed at 3.
+    const std::string binary_up =
+        "NAME          BUP\n"
+        "ROWS\n"
+        " N  COST\n"
+        " G  C1\n"
+        "COLUMNS\n"
+        "    B    COST    1.0   C1    1.0\n"
+        "RHS\n"
+        "    RHS  C1      3.0\n"
+        "BOUNDS\n"
+        " BV BND  B\n"
+        " UP BND  B       5.0\n"
+        "ENDATA\n";
+    auto bup = cbls::read_mps(write_file("presolve_bup.mps", binary_up).string());
+    REQUIRE(cbls::mps_to_model(bup, presolve_on()).presolve_stats.status ==
+            cbls::PresolveStatus::Infeasible);
+
+    // A G row with RHS 1e30: presolve refuses a lower side at +infinity, the
+    // plain build accepts it, so --presolve falls back rather than throwing.
+    const std::string huge_rhs =
+        "NAME          BIG\n"
+        "ROWS\n"
+        " N  COST\n"
+        " G  C1\n"
+        "COLUMNS\n"
+        "    X    COST    1.0   C1    1.0\n"
+        "RHS\n"
+        "    RHS  C1      1e30\n"
+        "BOUNDS\n"
+        " UP BND  X      10.0\n"
+        "ENDATA\n";
+    auto big = cbls::read_mps(write_file("presolve_big.mps", huge_rhs).string());
+    auto rejected = cbls::mps_to_model(big, presolve_on());
+    REQUIRE_FALSE(rejected.presolve_rejected.empty());
+    REQUIRE(rejected.postsolve.n_original() == 0);
+    REQUIRE(rejected.model.num_nodes() == cbls::mps_to_model(big).model.num_nodes());
 }
 
 TEST_CASE("presolve can leave no column and a constant objective", "[mps][adapter]") {

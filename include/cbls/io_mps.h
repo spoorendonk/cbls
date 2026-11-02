@@ -144,6 +144,10 @@ struct MpsToModelResult {
     /// All-zero (status `Unchanged`) without presolve. `Infeasible` means
     /// presolve proved the problem empty and the model was built without it.
     PresolveStats presolve_stats;
+    /// Non-empty when presolve refused the input (its validation message: an
+    /// infinite or NaN side, a non-finite coefficient); the model was then
+    /// built without presolve, and `presolve_stats` is all-zero.
+    std::string presolve_rejected;
     /// Maps reduced values back to the MPS columns; empty (n_original 0)
     /// unless the model was built from a presolved problem.
     Postsolve postsolve;

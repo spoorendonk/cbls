@@ -659,8 +659,10 @@ cbls::mipfeas::OriginalCheck check_against_file(const Args& args, const cbls::Mp
 
 /// Presolve's verdict and counts, as `presolve_*` result keys. Under --presolve
 /// propagation runs inside it, so the `n_bounds_*` keys stay zero and
-/// `presolve_bounds_tightened` is its count. On `infeasible` the model was built
-/// without presolve and the counts are zero bar `presolve_rounds`.
+/// `presolve_bounds_tightened` is its count. On `infeasible` and `rejected`
+/// (presolve refused the input; `presolve_rejected` says why) the model was
+/// built without presolve: its own propagation then fills the `n_bounds_*`
+/// keys, and the presolve counts are zero bar `presolve_rounds`.
 /// `presolve_n_vars`/`presolve_n_cons` are the built model's columns and rows.
 void add_presolve_stats(const cbls::MpsToModelResult& built, nlohmann::json& j) {
     const cbls::PresolveStats& ps = built.presolve_stats;
@@ -670,7 +672,13 @@ void add_presolve_stats(const cbls::MpsToModelResult& built, nlohmann::json& j) 
     } else if (ps.status == cbls::PresolveStatus::Infeasible) {
         status = "infeasible";
     }
+    if (!built.presolve_rejected.empty()) {
+        status = "rejected";
+    }
     j["presolve_status"] = status;
+    j["presolve_rejected"] = built.presolve_rejected.empty()
+                                 ? nlohmann::json(nullptr)
+                                 : nlohmann::json(built.presolve_rejected);
     j["presolve_seconds"] = ps.seconds;
     j["presolve_rounds"] = ps.rounds;
     j["presolve_cols_fixed"] = ps.cols_fixed;
@@ -1052,6 +1060,11 @@ int run_benchmark(int argc, char** argv) {
         {"original_max_bound_ratio", original_check.max_bound_ratio},
         {"original_max_integrality", original_check.max_integrality},
         {"original_objective_drift", original_check.objective_drift},
+        // Why an `original_mismatch` was withdrawn when the ratios cannot say:
+        // the check stops at a wrong-sized point (also a postsolve failure) or a
+        // non-finite value or row activity, leaving the ratios at 0.
+        {"original_size_mismatch", original_check.size_mismatch},
+        {"original_non_finite", original_check.non_finite},
     };
     if (args.presolve) {
         add_presolve_stats(built, j);

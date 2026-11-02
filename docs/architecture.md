@@ -2688,22 +2688,27 @@ with the same objective.
 
 **MPS adapter (#325).** With `MpsToModelOptions::presolve.enabled`,
 `mps_to_model` moves its row matrix into a `LinearProblem` (objective
-coefficients summed per column, the offset carried), presolves it with
+coefficients summed per column with compensation, the offset carried, `Binary`
+columns clamped to [0, 1] as the plain build does), presolves it with
 propagation set by the adapter's own `propagate_bounds` and
 `max_propagation_passes` (so it runs once, inside presolve, and `bound_stats`
 stays zero), and builds the model from the reduced problem: one variable per
 reduced column, named and typed from its MPS column; per kept row `eq_expr` when
-`lo == hi`, else one comparison per finite side; the objective whenever the file
+`lo == hi`, else one comparison per finite side, the row's sense side listed
+(`>=` for `G`, `<=` otherwise, as the plain build lists it); the objective whenever the file
 had one, a constant if presolve emptied it. `var_handles` is then per reduced
 column, `constraint_node_ids` per MPS row with -1 for a removed one, and
 `original_values(model)` maps the model's point back through the postsolve (the
 identity without presolve). On `Infeasible` the plain model is built and only
-`presolve_stats` records the verdict. Off, the model is node for node the one
+`presolve_stats` records the verdict; when presolve refuses the input (an
+infinite or NaN side, a non-finite coefficient, which the plain build accepts)
+the plain model is built too and `presolve_rejected` holds the message. Off, the model is node for node the one
 built before #325. `cbls_mipfeas --presolve` writes `original_values` and, with
 or without presolve, first checks that point against the parsed `MpsProblem`
 (`benchmarks/mipfeas/original_check.h`: compensated row sums, declared bounds,
 integrality, `c·x + offset` against the reported objective); a point that fails
-is reported `original_mismatch` and carries no objective.
+is reported `original_mismatch` and carries no objective
+(`original_size_mismatch`/`original_non_finite` say why when the ratios cannot).
 
 ### JSONL Model Format
 

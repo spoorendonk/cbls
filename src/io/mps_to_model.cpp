@@ -446,6 +446,12 @@ LinearProblem to_linear_problem(const MpsProblem& prob, RowMatrix mat) {
         // NaN is "no bound", as in `column_boxes`; presolve rejects a NaN.
         lp.col_lb[j] = std::isnan(prob.vars[j].lb) ? -kMpsInf : prob.vars[j].lb;
         lp.col_ub[j] = std::isnan(prob.vars[j].ub) ? kMpsInf : prob.vars[j].ub;
+        if (prob.vars[j].kind == MpsVarKind::Binary) {
+            // The reader keeps `BV` then `UP 5` as Binary with ub 5; `add_column`
+            // builds it in {0,1}, so presolve must not reason from the 5.
+            lp.col_lb[j] = std::max(lp.col_lb[j], 0.0);
+            lp.col_ub[j] = std::min(lp.col_ub[j], 1.0);
+        }
         lp.integral[j] = prob.vars[j].kind == MpsVarKind::Continuous ? 0 : 1;
     }
     // A column listed twice in the objective row: its coefficients add up, as
@@ -543,7 +549,10 @@ int32_t add_reduced_objective(Model& m, const MpsProblem& prob, const RowMatrix&
 /// The model built from the presolved problem. Returns false, with only
 /// `result.presolve_stats` set, when presolve proved the problem infeasible:
 /// the caller then builds the plain model, as `column_boxes` hands the search
-/// the declared box when propagation proves it empty.
+/// the declared box when propagation proves it empty. Also false, with
+/// `result.presolve_rejected` set, when presolve refuses the input (an infinite
+/// or NaN side, a non-finite coefficient), which the plain build accepts:
+/// `--presolve` must not turn a file the plain arm searches into a build error.
 bool build_presolved(const MpsProblem& prob, RowMatrix mat, const MpsToModelOptions& opts,
                      MpsToModelResult& result) {
     PresolveOptions popts = opts.presolve;
@@ -553,7 +562,13 @@ bool build_presolved(const MpsProblem& prob, RowMatrix mat, const MpsToModelOpti
     // the problem and is freed with it, before the model is built.
     RowMatrix obj_only;
     obj_only.obj_nz = mat.obj_nz;
-    PresolveResult pr = presolve(to_linear_problem(prob, std::move(mat)), popts);
+    PresolveResult pr;
+    try {
+        pr = presolve(to_linear_problem(prob, std::move(mat)), popts);
+    } catch (const std::invalid_argument& e) {  // validate() is presolve's only throw
+        result.presolve_rejected = e.what();
+        return false;
+    }
     result.presolve_stats = pr.stats;
     if (pr.stats.status == PresolveStatus::Infeasible) {
         return false;
@@ -616,8 +631,9 @@ MpsToModelResult mps_to_model(const MpsProblem& prob, const MpsToModelOptions& o
         result.model.close();
         return result;
     }
-    // Without presolve, or after it proved the problem infeasible (the matrix
-    // moved into it is rebuilt here; O(nnz), and only on that path).
+    // Without presolve, or after it proved the problem infeasible or refused
+    // the input (the matrix moved into it is rebuilt here; O(nnz), and only on
+    // that path).
     build_plain(prob, build_row_matrix(prob, n_rows), opts, result);
     result.model.close();
     return result;

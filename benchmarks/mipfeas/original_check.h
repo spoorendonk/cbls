@@ -149,7 +149,10 @@ inline OriginalCheck check_original_point(const MpsProblem& prob, const std::vec
     }
     for (std::size_t r = 0; r < n_rows; ++r) {
         const double act = activity[r].value();
-        if (!std::isfinite(act)) {  // inf - inf is NaN, which no `<` or `>` flags
+        // inf - inf is NaN, which no `<` or `>` flags; and finite terms near
+        // DBL_MAX can sum |term| to inf while the activity stays finite, which
+        // would make the tolerance infinite.
+        if (!std::isfinite(act) || !std::isfinite(abs_terms[r])) {
             out.non_finite = true;
             return out;
         }
@@ -165,7 +168,7 @@ inline OriginalCheck check_original_point(const MpsProblem& prob, const std::vec
         out.max_row_ratio = std::max(out.max_row_ratio, sv.violation / (feas_tol + (1e-9 * scale)));
     }
     out.objective = obj.value();
-    out.non_finite = !std::isfinite(out.objective);
+    out.non_finite = !std::isfinite(out.objective) || !std::isfinite(out.objective_scale);
     out.objective_drift = std::abs(out.objective - reported_objective);
     return out;
 }
