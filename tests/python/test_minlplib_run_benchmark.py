@@ -24,6 +24,7 @@ import pytest
 from benchmarks.common import jobs
 from benchmarks.common.jobs import wallclock_lock
 from benchmarks.common.provenance import REPO_ROOT
+from benchmarks.common.records import append_attempt, recorded_attempts
 from benchmarks.minlplib import independent_check, run_benchmark
 from benchmarks.minlplib.campaign_report import (
     AGGREGATION_RULE,
@@ -762,11 +763,44 @@ def test_a_nonzero_exit_sets_its_row_aside_so_a_resume_solves_it_again(
     assert (stage / "a.csv.rejected").exists(), "the evidence was deleted, not set aside"
     assert (stage / "a.trace.csv.rejected").exists()
     capsys.readouterr()
+    assert recorded_attempts(stage / "a.failures") == ["exit 1"]
 
     monkeypatch.setattr(subprocess, "run", fake_runner())
     run_roster(make_args(tmp_path), "abc1234", ["a"], stage)
     assert "staged already" not in capsys.readouterr().out
     assert staged_complete(make_args(tmp_path), "abc1234", "a", stage)
+
+
+def test_each_failed_attempt_is_recorded_though_the_rejected_row_is_overwritten(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#312: the scorer counts this record; one attempt must not read as two, or two as one."""
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    for returncode in (1, RUNNER_EXIT_ERRORED):
+        monkeypatch.setattr(subprocess, "run", fake_runner(returncode=returncode))
+        with pytest.raises(RuntimeError):
+            run_roster(make_args(tmp_path), "abc1234", ["a"], stage)
+    assert recorded_attempts(stage / "a.failures") == ["exit 1", f"exit {RUNNER_EXIT_ERRORED}"]
+
+
+def test_a_new_configuration_clears_the_attempts_of_the_old_one(tmp_path: Path) -> None:
+    """#312: `--no-resume` at another commit keeps the rows, but no failure there is a retry."""
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    assert staging_stamp_conflict(stage, make_args(tmp_path), "abc1234") is None
+    append_attempt(stage / "a.failures", 1)
+
+    assert staging_stamp_conflict(stage, make_args(tmp_path), "abc1234") is None
+    assert recorded_attempts(stage / "a.failures") == ["exit 1"], "same stamp: a real retry"
+
+    refused = make_args(tmp_path)
+    assert staging_stamp_conflict(stage, refused, "def5678") is not None
+    assert recorded_attempts(stage / "a.failures") == ["exit 1"], "a refusal changes nothing"
+
+    fresh = make_args(tmp_path, resume=False)
+    assert staging_stamp_conflict(stage, fresh, "def5678") is None
+    assert not (stage / "a.failures").exists()
 
 
 def test_a_staged_row_at_another_thread_count_is_solved_again(tmp_path: Path) -> None:

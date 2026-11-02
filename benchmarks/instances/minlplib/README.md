@@ -115,14 +115,17 @@ Both halves read that `bounds.csv`, and neither writes under
 - SCIP: `../../minlplib/scip_shards.py --nl-dir NL --shards DIR` runs
   `reference_solve.py` once per instance, `--jobs` single-thread solves at a
   time, under one machine lock. Each instance leaves `<instance>.csv` or an
-  `<instance>.failed` marker (`exit <rc>`; 124 is the 15-min wrapper cap). A
-  re-run retries only the missing and failed ones. The #256 rule: one retry with
-  the memory cap raised, then a remaining failure counts as SCIP no-solution,
-  named with its exit.
+  `<instance>.failed` marker (one `exit <rc> <utc>` line per failed attempt; 124
+  is the 15-min wrapper cap). A re-run retries only the missing and failed ones.
+  The #256 rule: one retry with the memory cap raised, then a remaining failure
+  counts as SCIP no-solution, named with its exit.
 - cbls: `../../minlplib/run_benchmark.py`, one instance per call, at the
   campaign's thread count. A call whose runner exits nonzero sets the row aside
-  as `<instance>.csv.rejected`, and the next call solves it again (the #256 rule
-  is one retry, then the rejected row is cbls no-solution). After SCIP has
+  as `<instance>.csv.rejected`, appends `exit <rc> <utc>` to
+  `<instance>.failures`, and the next call solves it again (the #256 rule is one
+  retry, then the rejected row is cbls no-solution). A stamp change clears the
+  `.failures` records: an attempt under another configuration is no retry of
+  this one. After SCIP has
   checked a staged row, the driver writes `<instance>.checked` beside it,
   holding the row's sha256. `../../minlplib/check_staged.py --inst-dir NL
   --staging-dir STAGE` does the same check and marking without solving, for
@@ -131,9 +134,7 @@ Both halves read that `bounds.csv`, and neither writes under
   refuses a stamp for another roster or host, and lists a row whose check
   raised (exit 1). It leaves header-only, torn and unstageable rows unmarked:
   re-solve such a row with the driver at the stamp's commit (`--instances
-  NAME`), or rename `NAME.csv` to `NAME.csv.rejected` to score it as
-  no-solution (keep an existing `.rejected`, an earlier attempt, under another
-  name first).
+  NAME`).
 - Score: `../../minlplib/gm_ratio.py --bounds NL/bounds.csv --cbls
   comparison.csv --scip-shards DIR` prints the GM(gap+1) ratio cbls/SCIP with
   feasible and head-to-head counts, and names every no-solution instance on
@@ -141,9 +142,10 @@ Both halves read that `bounds.csv`, and neither writes under
   the driver's staging directory instead. Every staged row must then carry a
   matching `.checked` marker; an instance with only a `.rejected` row counts as
   cbls no-solution. With `--partial` it gives an interim score without either
-  requirement. The scorer cannot tell a `.rejected` or `.failed` left after one
-  attempt from one left after two; the campaign's retry pass is the evidence
-  (#312).
+  requirement. A lone `.rejected` or a `.failed` also needs two recorded failed
+  attempts, and fewer is refused by name unless `--partial` (#312). A campaign
+  staged before #312 has no record, so it scores only with `--partial`; for
+  those, the campaign's retry pass and its logs remain the evidence.
 
 ## Yuck / fzn-oscar-cbls coverage
 

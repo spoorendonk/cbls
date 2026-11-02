@@ -25,13 +25,15 @@ writes, holding that file's sha256 (#307); an instance whose only row is a
 refused by name. `check_staged.py` checks and marks the rows a driver left
 unchecked, whatever commit staged them, and solves nothing.
 
-The scorer cannot tell a lone `.rejected` (or a SCIP `.failed`) left after one
-failed attempt from one left after two: the #256 rule, one retry and then
-no-solution, holds by the campaign's retry pass, not by anything this module
-checks (#312).
+The #256 rule is one retry and then no-solution, and the data records it (#312).
+Without `--partial`, a scored instance left with a lone `.rejected` row or a SCIP
+`.failed` marker needs two recorded failed attempts (`exit <rc> <utc>` lines, in
+`<instance>.failures` beside the rejected row and in the `.failed` marker itself);
+fewer is refused by name. A campaign staged before #312 has no such lines, so it
+scores only with `--partial`.
 
 The SCIP shards are `scip_shards.py`'s output: `<instance>.csv`, or an
-`<instance>.failed` marker holding `exit <rc>`.
+`<instance>.failed` marker with one `exit <rc> <utc>` line per failed attempt.
 
 THE MEASURE, kept exactly as #228's smoke defined it (`MEASURE_RULE` below
 states it in every output):
@@ -54,7 +56,7 @@ SOLVED means, the same rule on both sides (decided at the hub, 2026-11-01): a
 row with `feasible == true` (for cbls, also a note that is not `VERIFY-FAILED`).
 Every other scored instance is that solver's NO SOLUTION, listed by name with
 its reason: the row's note (`read-error(...)`, `infeasible`, `no-solution(...)`,
-`CHECK-FAILED(...)`, ...), the exit in a SCIP `<instance>.failed` marker (the
+`CHECK-FAILED(...)`, ...), the last exit in a SCIP `<instance>.failed` marker (the
 solve process died after its retry), or, in a cbls staging directory,
 `rejected: <note>` for an instance whose only row is the driver's
 `<instance>.csv.rejected` (its runner exited nonzero). A whole `<instance>.csv`
@@ -71,9 +73,10 @@ disagree are refused, and so is a `--budget` that disagrees with them.
 COMPLETENESS (CLAUDE.md, Measuring): the roster is read first, and by default a
 roster instance without a cbls row or without a SCIP CSV or failure marker is
 refused (exit 2), as is any results file naming an instance outside the roster
-or naming one twice. `--partial` scores the instances present on both sides
-instead, and says so on the first line of every output. Nothing relaxes the
-unknown-instance and duplicate refusals.
+or naming one twice, and any scored failure with too few recorded attempts.
+`--partial` scores the instances present on both sides instead, and says so on
+the first line of every output. Nothing relaxes the unknown-instance and
+duplicate refusals.
 """
 
 from __future__ import annotations
@@ -92,7 +95,7 @@ from typing import TYPE_CHECKING
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from benchmarks.common.records import atomic_write  # noqa: E402
+from benchmarks.common.records import atomic_write, recorded_attempts  # noqa: E402
 from benchmarks.minlplib.campaign_report import (  # noqa: E402
     Row,
     ScipRow,
@@ -105,6 +108,7 @@ from benchmarks.minlplib.reference_solve import Bound, load_bounds  # noqa: E402
 from benchmarks.minlplib.run_benchmark import (  # noqa: E402
     ASSEMBLED_TABLE,
     ASSEMBLED_TRACE,
+    FAILURES_SUFFIX,
     REJECTED_SUFFIX,
     SEARCH_CONFIG_THREADS,
     STAMP_NAME,
@@ -121,6 +125,9 @@ WIN_FACTOR = 1.01
 #: Exit status of every refusal: an incomplete roster, an unknown or duplicated
 #: instance, mixed provenance.
 EXIT_REFUSED = 2
+
+#: Failed attempts a final no-solution needs: the first and its one retry (#256).
+FAILED_ATTEMPTS_REQUIRED = 2
 
 #: How many names a refusal or a list prints before it says how many more.
 NAMES_SHOWN = 10
@@ -300,6 +307,8 @@ class CblsSide:
     rows: dict[str, Row]
     #: instance -> `rejected: <note of the row inside>`.
     rejected: dict[str, str] = field(default_factory=dict)
+    #: Rejected instance -> how many failed attempts its record holds.
+    attempts: dict[str, int] = field(default_factory=dict)
 
     def present(self) -> set[str]:
         return set(self.rows) | set(self.rejected)
@@ -355,6 +364,7 @@ def load_cbls_staging(stage: Path, roster: Mapping[str, Bound]) -> CblsSide:
         if row is not None:
             rows[stem] = row
     rejected: dict[str, str] = {}
+    attempts: dict[str, int] = {}
     for path in _staged_rejected(stage):
         stem = path.name.removesuffix(STAGED_REJECTED_SUFFIX)
         if stem in rows:
@@ -362,15 +372,18 @@ def load_cbls_staging(stage: Path, roster: Mapping[str, Bound]) -> CblsSide:
         row = _staged_row(path, stem, roster)
         note = "no whole row" if row is None else row.note or NO_NOTE
         rejected[stem] = f"rejected: {note}"
-    return CblsSide(rows=rows, rejected=rejected)
+        attempts[stem] = len(recorded_attempts(stage / f"{stem}{FAILURES_SUFFIX}"))
+    return CblsSide(rows=rows, rejected=rejected, attempts=attempts)
 
 
 @dataclass(frozen=True)
 class ScipSide:
-    """The SCIP shards: one row per solved instance, one exit per failed process."""
+    """The SCIP shards: one row per solved instance, the last exit per failed one."""
 
     rows: dict[str, ScipRow]
     failures: dict[str, str]
+    #: Failed instance -> how many failed attempts its marker holds.
+    attempts: dict[str, int] = field(default_factory=dict)
 
     def present(self) -> set[str]:
         return set(self.rows) | set(self.failures)
@@ -396,14 +409,17 @@ def load_scip_shards(shards: Path, roster: Mapping[str, Bound]) -> ScipSide:
         _check_stem(path, stem, row.instance, roster)
         rows[stem] = row
     failures: dict[str, str] = {}
+    attempts: dict[str, int] = {}
     for path in sorted(shards.glob(f"*{SCIP_FAILED_SUFFIX}")):
         stem = path.name.removesuffix(SCIP_FAILED_SUFFIX)
         if stem not in roster:
             raise RefusedError(f"{path}: instance {stem!r} is not in the roster")
         if stem in rows:
             raise RefusedError(f"{path}: {stem!r} has both a result row and a failure marker")
-        failures[stem] = path.read_text().strip() or "no exit recorded"
-    return ScipSide(rows=rows, failures=failures)
+        exits = recorded_attempts(path)
+        attempts[stem] = len(exits)
+        failures[stem] = exits[-1] if exits else path.read_text().strip() or "no exit recorded"
+    return ScipSide(rows=rows, failures=failures, attempts=attempts)
 
 
 # --------------------------------------------------------------------------
@@ -575,6 +591,29 @@ def completeness_refusal(missing_cbls: Sequence[str], missing_scip: Sequence[str
     return "incomplete campaign (pass --partial for an interim score): " + "; ".join(parts)
 
 
+def attempts_refusal(
+    scored: Sequence[str], cbls_attempts: Mapping[str, int], scip_attempts: Mapping[str, int]
+) -> str | None:
+    """The refusal for a failure not yet retried, or None when each scored one has been (#312)."""
+    parts = []
+    for label, attempts in (("cbls", cbls_attempts), ("SCIP", scip_attempts)):
+        short = [
+            f"{name} ({attempts[name]})"
+            for name in scored
+            if attempts.get(name, FAILED_ATTEMPTS_REQUIRED) < FAILED_ATTEMPTS_REQUIRED
+        ]
+        if short:
+            parts.append(f"{label} {len(short)}: {names_list(short)}")
+    if not parts:
+        return None
+    return (
+        f"failed instance(s) with fewer than {FAILED_ATTEMPTS_REQUIRED} recorded attempts, so "
+        "not yet no-solution under the one-retry rule (pass --partial for an interim score): "
+        + "; ".join(parts)
+        + ". Solve them again: run_benchmark.py or scip_shards.py --instances NAME"
+    )
+
+
 def _pool_gaps(name: str, cbls: Row, scip: ScipRow) -> tuple[float, float]:
     gaps = (cbls.gap_pct, scip.gap_pct)
     if not all(math.isfinite(g) for g in gaps):
@@ -606,6 +645,10 @@ def score(
     prov = provenance(cbls, scip, budget, memory_cap)
     both = [b for b in roster if b.instance in cbls_present and b.instance in scip_present]
     scored = [b for b in both if b.instance not in CLAIM_EXCLUDED]
+    if not partial:
+        refusal = attempts_refusal([b.instance for b in scored], cbls.attempts, scip.attempts)
+        if refusal is not None:
+            raise RefusedError(refusal)
 
     solved_c = {b.instance for b in scored if cbls_solved(b.instance, cbls)}
     solved_s = {b.instance for b in scored if scip_solved(b.instance, scip)}
@@ -779,10 +822,8 @@ def unchecked_refusal(unchecked: Sequence[str]) -> str:
         "check_staged.py --inst-dir NL --staging-dir STAGE: it checks and marks every "
         "whole row, whatever commit staged it, and solves nothing. It leaves header-only, "
         "torn and unstageable rows unmarked: re-solve such a row with run_benchmark.py at "
-        "the commit stamp.txt names (--instances NAME), or rename NAME.csv to "
-        "NAME.csv.rejected to score it as no-solution (first move an existing "
-        "NAME.csv.rejected, an earlier attempt, to another name). Or pass --partial for "
-        "an interim score"
+        "the commit stamp.txt names (--instances NAME). Or pass --partial for an interim "
+        "score"
     )
 
 

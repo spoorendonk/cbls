@@ -59,6 +59,8 @@ import io
 import json
 import math
 import os
+import re
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -132,6 +134,31 @@ def append_csv_row(path: Path, values: Iterable[object]) -> None:
         csv.writer(fh).writerow(values)
         fh.flush()
         os.fsync(fh.fileno())
+
+
+#: One failed attempt on an instance: `exit <rc> <utc>`.
+ATTEMPT_LINE = re.compile(r"(exit -?[0-9]+) [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z")
+
+
+def append_attempt(path: Path, returncode: int) -> None:
+    """Record one failed attempt, durably, as `append_csv_row` does a row (#312)."""
+    stamp = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    with path.open("a") as fh:
+        fh.write(f"exit {returncode} {stamp}\n")
+        fh.flush()
+        os.fsync(fh.fileno())
+
+
+def recorded_attempts(path: Path) -> list[str]:
+    """The exits (`exit 134`) of `path`'s attempt lines, oldest first; [] without the file.
+
+    A line that is not a whole attempt does not count: a score refuses too few
+    attempts, so a torn or hand-written line can only ask for another retry.
+    """
+    if not path.exists():
+        return []
+    matches = (ATTEMPT_LINE.fullmatch(line) for line in path.read_text().splitlines())
+    return [m.group(1) for m in matches if m]
 
 
 def repair_torn_tail(path: Path) -> bool:

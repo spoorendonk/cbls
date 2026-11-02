@@ -103,9 +103,14 @@ def write_scip(
     (shards / f"{name}.csv").write_text(f"{SCIP_COLUMNS}\n{row}\n")
 
 
-def write_failed(shards: Path, name: str, detail: str = "exit 134") -> None:
+def attempt_lines(count: int = 2, rc: int = 134) -> str:
+    """`count` attempt lines as `records.append_attempt` writes them."""
+    return f"exit {rc} 2026-11-02T08:00:00Z\n" * count
+
+
+def write_failed(shards: Path, name: str, attempts: int = 2, rc: int = 134) -> None:
     shards.mkdir(exist_ok=True)
-    (shards / f"{name}.failed").write_text(detail + "\n")
+    (shards / f"{name}.failed").write_text(attempt_lines(attempts, rc))
 
 
 def campaign(
@@ -266,7 +271,7 @@ def test_a_scip_failure_marker_is_scip_no_solution_listed_with_its_exit(
     bounds, table, shards = campaign(tmp_path, [("a", 0.0, 0.0)])
     write_bounds(bounds, [("a", "1"), ("crashed", "1")])
     write_cbls(table, [cbls_line("a", 0.0), cbls_line("crashed", 0.0)])
-    write_failed(shards, "crashed", "exit 134")
+    write_failed(shards, "crashed")
     s = scored(bounds, table, shards)
     assert s.scip_feasible == 1
     assert s.only_cbls == 1
@@ -335,7 +340,7 @@ def test_markdown_groups_no_solution_instances_by_reason_category(
         write_scip(shards, name, "NaN", feasible=False)
     write_scip(shards, "w", "NaN", feasible=False, status="infeasible")
     (shards / "y.csv").unlink()
-    write_failed(shards, "y", "exit 134")
+    write_failed(shards, "y")
     write_scip(shards, "z", "NaN", feasible=False, note="read-error(OSError: x)")
     argv = ["--bounds", str(bounds), "--cbls", str(table), "--scip-shards", str(shards)]
     assert main(argv) == 0
@@ -543,6 +548,8 @@ def test_a_rejected_only_instance_is_cbls_no_solution_with_its_note_not_missing(
     )
     # lost workers: an ordinary-looking row, rejected on the exit status alone.
     write_cbls(stage / "t.csv.rejected", [cbls_line("t", 0.0)])
+    for name in ("c", "t"):
+        (stage / f"{name}.failures").write_text(attempt_lines(rc=3))
     side = load_cbls_staging(stage, roster)
     assert side.rejected == {"c": "rejected: solve-error(bad_alloc)", "t": "rejected: feasible"}
     s = score(roster_list, side, load_scip_shards(shards, roster))
@@ -577,6 +584,7 @@ def checked_staging(tmp_path: Path) -> tuple[Path, Path, Path]:
         stage / "c.csv.rejected",
         [cbls_line("c", "NaN", feasible=False, note="solve-error(bad_alloc)")],
     )
+    (stage / "c.failures").write_text(attempt_lines(rc=3))
     return bounds, stage, shards
 
 
@@ -618,9 +626,90 @@ def test_an_unchecked_staged_row_is_refused_by_name_unless_partial(
     err = capsys.readouterr().err
     assert "1 staged cbls row(s) without a matching .checked marker" in err
     assert f"check: {named}. Run check_staged.py" in err
-    assert "rename NAME.csv to NAME.csv.rejected" in err
+    assert "re-solve such a row with run_benchmark.py" in err
     assert main([*argv, "--partial"]) == 0
     assert capsys.readouterr().out.startswith("PARTIAL")
+
+
+@pytest.mark.parametrize(
+    "record",
+    [None, attempt_lines(1, rc=3), "exit 3\nexit 3\n"],
+    ids=["no-record", "one-attempt", "lines-without-a-time"],
+)
+def test_a_rejected_row_without_two_recorded_attempts_is_refused_by_name_unless_partial(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], record: str | None
+) -> None:
+    """#312: one failure, then a run capped before its retry pass, is no final no-solution."""
+    bounds, stage, shards = checked_staging(tmp_path)
+    if record is None:
+        (stage / "c.failures").unlink()
+    else:
+        (stage / "c.failures").write_text(record)
+    argv = staging_argv(bounds, stage, shards)
+    assert main(argv) == EXIT_REFUSED
+    err = capsys.readouterr().err
+    attempts = 1 if record == attempt_lines(1, rc=3) else 0
+    assert "fewer than 2 recorded attempts" in err
+    assert f"cbls 1: c ({attempts})" in err
+    assert main([*argv, "--partial"]) == 0
+    assert capsys.readouterr().out.startswith("PARTIAL")
+
+
+@pytest.mark.parametrize(
+    "marker",
+    [attempt_lines(1), "exit 134\n", ""],
+    ids=["one-attempt", "a-line-without-a-time", "empty"],
+)
+def test_a_scip_failure_without_two_recorded_attempts_is_refused_by_name_unless_partial(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], marker: str
+) -> None:
+    bounds, table, shards = campaign(tmp_path, [("a", 0.0, 0.0), ("y", 0.0, 0.0)])
+    (shards / "y.csv").unlink()
+    (shards / "y.failed").write_text(marker)
+    argv = ["--bounds", str(bounds), "--cbls", str(table), "--scip-shards", str(shards)]
+    assert main(argv) == EXIT_REFUSED
+    attempts = 1 if marker == attempt_lines(1) else 0
+    assert f"SCIP 1: y ({attempts})" in capsys.readouterr().err
+    assert main([*argv, "--partial"]) == 0
+    assert capsys.readouterr().out.startswith("PARTIAL")
+
+
+def test_a_scip_failure_reads_as_its_last_attempt(tmp_path: Path) -> None:
+    bounds = write_bounds(tmp_path / "bounds.csv", [("y", "1")])
+    shards = tmp_path / "scip"
+    shards.mkdir()
+    (shards / "y.failed").write_text(attempt_lines(1, rc=137) + attempt_lines(1, rc=134))
+    side = load_scip_shards(shards, {b.instance: b for b in load_roster(bounds)})
+    assert side.failures == {"y": "exit 134"}
+    assert side.attempts == {"y": 2}
+
+
+def test_a_re_solve_beside_a_rejected_row_needs_no_attempts(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    bounds, stage, shards = checked_staging(tmp_path)
+    (stage / "c.failures").write_text(attempt_lines(1, rc=3))
+    write_cbls(stage / "c.csv", [cbls_line("c", 1.0)])
+    mark_checked(stage, "c")
+    assert main(staging_argv(bounds, stage, shards)) == 0
+    assert "PARTIAL" not in capsys.readouterr().out
+
+
+def test_a_claim_excluded_failure_needs_no_retry(tmp_path: Path) -> None:
+    """It is out of every count, so its attempts cannot change the score."""
+    name = CLAIM_EXCLUDED[0]
+    bounds = write_bounds(tmp_path / "bounds.csv", [("a", "1"), (name, "1")])
+    roster_list = load_roster(bounds)
+    roster = {b.instance: b for b in roster_list}
+    shards = tmp_path / "scip"
+    write_scip(shards, "a", 0.0)
+    write_failed(shards, name, attempts=1)
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    for instance in ("a", name):
+        write_cbls(stage / f"{instance}.csv", [cbls_line(instance, 0.0)])
+    s = score(roster_list, load_cbls_staging(stage, roster), load_scip_shards(shards, roster))
+    assert s.claim_excluded == [name]
 
 
 def test_a_row_rewritten_while_it_is_read_is_refused_even_with_a_matching_marker(

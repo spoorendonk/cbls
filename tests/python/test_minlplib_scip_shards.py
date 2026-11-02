@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from benchmarks.common.records import recorded_attempts
 from benchmarks.minlplib.gm_ratio import load_scip_shards
 from benchmarks.minlplib.reference_solve import load_bounds
 from benchmarks.minlplib.scip_shards import (
@@ -91,7 +92,16 @@ def test_no_row_leaves_a_failure_marker_with_the_exit(tmp_path: Path) -> None:
     rc = solve_shard(shards, "a", stub_command(tmp_path, {"a": "nothing"}), cap_seconds=30)
     assert rc == 1
     assert not (shards / "a.csv").exists()
-    assert (shards / "a.failed").read_text() == "exit 1\n"
+    assert recorded_attempts(shards / "a.failed") == ["exit 1"]
+
+
+def test_a_retry_that_fails_again_appends_a_second_attempt(tmp_path: Path) -> None:
+    """#312: the scorer counts these lines, so a retry must not overwrite the first."""
+    shards = tmp_path / "shards"
+    shards.mkdir()
+    for outcome, cap in (("abort", 30), ("hang", 1)):
+        solve_shard(shards, "a", stub_command(tmp_path, {"a": outcome}), cap_seconds=cap)
+    assert recorded_attempts(shards / "a.failed") == ["exit 134", "exit 124"]
 
 
 def test_a_capped_solve_is_a_failure_even_with_a_row_written(tmp_path: Path) -> None:
@@ -100,7 +110,7 @@ def test_a_capped_solve_is_a_failure_even_with_a_row_written(tmp_path: Path) -> 
     rc = solve_shard(shards, "a", stub_command(tmp_path, {"a": "hang"}), cap_seconds=1)
     assert rc == 124
     assert not (shards / "a.csv").exists()
-    assert (shards / "a.failed").read_text() == "exit 124\n"
+    assert recorded_attempts(shards / "a.failed") == ["exit 124"]
 
 
 def test_a_solve_dying_by_signal_is_recorded_as_sh_reports_it(tmp_path: Path) -> None:
@@ -108,7 +118,7 @@ def test_a_solve_dying_by_signal_is_recorded_as_sh_reports_it(tmp_path: Path) ->
     shards.mkdir()
     rc = solve_shard(shards, "a", stub_command(tmp_path, {"a": "abort"}), cap_seconds=30)
     assert rc == 134
-    assert (shards / "a.failed").read_text() == "exit 134\n"
+    assert recorded_attempts(shards / "a.failed") == ["exit 134"]
 
 
 def test_ctrl_c_starts_no_further_solve(tmp_path: Path) -> None:
@@ -172,7 +182,7 @@ def test_a_torn_row_is_not_published(tmp_path: Path) -> None:
     rc = solve_shard(shards, "a", stub_command(tmp_path, {"a": "torn"}), cap_seconds=30)
     assert rc == 0
     assert not (shards / "a.csv").exists()
-    assert (shards / "a.failed").read_text() == "exit 0\n"
+    assert recorded_attempts(shards / "a.failed") == ["exit 0"]
 
 
 def test_the_scorer_reads_the_shards_the_driver_writes(tmp_path: Path) -> None:
@@ -185,6 +195,7 @@ def test_the_scorer_reads_the_shards_the_driver_writes(tmp_path: Path) -> None:
     assert set(side.rows) == {"good"}
     assert side.rows["good"].feasible
     assert side.failures == {"dead": "exit 1"}
+    assert side.attempts == {"dead": 1}
 
 
 def test_the_real_command_solves_one_instance_into_the_shard_paths(tmp_path: Path) -> None:

@@ -12,8 +12,9 @@ shard per instance in `SHARD_DIR`. That shard layout is what
   row. Any other exit with a row written keeps the row, as the #256 wrapper did.
 * `<instance>.merged.csv`: the subset run's merged CSV (`--merged-out`);
   the scorer ignores it.
-* `<instance>.failed`: one line, `exit <rc>`, when the process ran past the
-  wrapper cap (`timeout` exit 124, or 137 after `-k`) or wrote no row.
+* `<instance>.failed`: one line per failed attempt, `exit <rc> <utc>`, when the
+  process ran past the wrapper cap (`timeout` exit 124, or 137 after `-k`) or
+  wrote no row. A retry appends: the scorer counts the lines (#312).
 * `<instance>.log`: the process's stdout and stderr.
 
 SCIP runs at its defaults (`--seed 0`: no `randomseedshift`) for `--time-limit`
@@ -27,7 +28,8 @@ retries exactly the `.failed` and unfinished ones. A shard that succeeds on
 retry drops its `.failed` marker. The #256 rule for what is left after one
 retry (hub, 2026-11-01): run it again once with the memory cap raised (the
 campaign ran under a 110G cgroup cap), and a failure that remains counts as
-"SCIP: no solution", named with its exit.
+"SCIP: no solution", named with its exit. A final score refuses a marker with
+fewer than two attempts.
 
 Usage, from any directory, under the machine lock (one lock for the whole run;
 `--jobs` single-thread solves share the machine):
@@ -50,6 +52,7 @@ from typing import TYPE_CHECKING
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from benchmarks.common.records import append_attempt  # noqa: E402
 from benchmarks.minlplib.gm_ratio import (  # noqa: E402
     SCIP_FAILED_SUFFIX,
     SCIP_MERGED_SUFFIX,
@@ -126,7 +129,7 @@ def solve_shard(
 
     Returns the process's exit code, as a shell reports it. The row is published
     (renamed from `.csv.tmp`) when the process wrote one whole row and was not
-    stopped by the cap; otherwise `.failed` records the exit. "Whole row" is
+    stopped by the cap; otherwise `.failed` gains a line recording the exit. "Whole row" is
     `gm_ratio.has_whole_row`, the scorer's own test, so a torn file is neither
     published nor skipped on resume.
     """
@@ -150,7 +153,7 @@ def solve_shard(
         tmp.replace(csv_path)
         failed.unlink(missing_ok=True)
     else:
-        failed.write_text(f"exit {rc}\n")
+        append_attempt(failed, rc)
     return rc
 
 

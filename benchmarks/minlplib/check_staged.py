@@ -18,11 +18,10 @@ demoted to `VERIFY-FAILED` and marked, as the driver does. A row already
 marked and unchanged is skipped. Header-only, torn and unstageable rows, and
 instances with no `<instance>.csv`, are left alone and listed.
 
-A row left unmarked keeps a non-partial score refused. Clear it one of two
-ways: re-solve it with the driver at the commit the staging stamp names
-(`run_benchmark.py --instances NAME`), or set it aside as no-solution by
-renaming `NAME.csv` to `NAME.csv.rejected` (an existing `NAME.csv.rejected`
-is an earlier failed attempt: keep it under another name first).
+A row left unmarked keeps a non-partial score refused. Clear it by re-solving
+it with the driver at the commit the staging stamp names (`run_benchmark.py
+--instances NAME`). Renaming it to `.rejected` by hand does not make it a
+no-solution: the scorer wants two failed attempts in the driver's record (#312).
 
 It refuses a staging directory whose stamp names another roster (`bounds.csv`
 fingerprint) or another host than `--inst-dir` and this machine: SCIP would
@@ -76,11 +75,7 @@ EXIT_REFUSED = 2
 EXIT_CHECK_ERRORS = 1
 
 #: What clears a row this tool leaves unmarked; see the module docstring.
-REMEDY = (
-    "re-solve it with run_benchmark.py at the commit stamp.txt names (--instances NAME), "
-    "or rename NAME.csv to NAME.csv.rejected to score it as no-solution (first move an "
-    "existing NAME.csv.rejected, an earlier attempt, to another name)"
-)
+REMEDY = "re-solve it with run_benchmark.py at the commit stamp.txt names (--instances NAME)"
 
 
 @dataclass

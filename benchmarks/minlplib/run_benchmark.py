@@ -133,6 +133,7 @@ from benchmarks.common.provenance import (  # noqa: E402
     modified_paths,
 )
 from benchmarks.common.records import (  # noqa: E402
+    append_attempt,
     atomic_write,
     csv_header,
     stamp_refusal,
@@ -800,14 +801,22 @@ def staging_stamp_conflict(stage: Path, args: argparse.Namespace, sha: str) -> s
     at another — or a five-second smoke run over the whole roster — publishes one
     table built from two configurations, and only `wall_seconds` would betray it.
     """
-    return stamp_refusal(
-        stage / STAMP_NAME,
-        staging_stamp(args, sha),
+    stamp_path = stage / STAMP_NAME
+    stamp = staging_stamp(args, sha)
+    earlier = stamp_path.read_text() if stamp_path.exists() else None
+    conflict = stamp_refusal(
+        stamp_path,
+        stamp,
         resume=args.resume,
         label="staged",
         advice="Delete the staging directory, pass a fresh --staging-dir, or pass --no-resume; "
         "reusing these rows would mix two configurations into one table.",
     )
+    if conflict is None and earlier != stamp:
+        # An attempt under another configuration is no retry of this one (#312).
+        for record in stage.glob(f"*{FAILURES_SUFFIX}"):
+            record.unlink()
+    return conflict
 
 
 def staged_row_complete(path: Path, sha: str) -> bool:
@@ -1171,7 +1180,7 @@ def run_roster(args: argparse.Namespace, sha: str, roster: Sequence[str], stage:
         log = stage / f"{name}.log"
         completed = run_process(cmd, log=log)
         if completed.returncode != 0:
-            quarantine_staged(stage, name)
+            quarantine_staged(stage, name, completed.returncode)
         if completed.returncode != 0 or not staged_complete(args, sha, name, stage):
             what_next = (
                 f"The runner threw on this instance; its row, set aside as {name}.csv"
@@ -1191,6 +1200,10 @@ def run_roster(args: argparse.Namespace, sha: str, roster: Sequence[str], stage:
 #: The suffix a staged file gets when its solve exited nonzero; `staged_complete`
 #: then finds no row, so a re-run solves the instance again.
 REJECTED_SUFFIX = ".rejected"
+
+#: The record of `name`'s failed attempts, one `exit <rc> <utc>` line each, which
+#: `gm_ratio.py` counts: the `.rejected` row is overwritten by the next failure (#312).
+FAILURES_SUFFIX = ".failures"
 
 #: The suffix of the marker `verify_staged` writes beside a staged row it has
 #: checked: `<instance>.checked`, holding the row file's sha256 (#307).
@@ -1252,19 +1265,23 @@ def staged_checked(stage: Path, name: str) -> bool:
     return row.is_file() and checked_digest(stage, name) == campaign_report.file_sha256(row)
 
 
-def quarantine_staged(stage: Path, name: str) -> None:
-    """Set aside `name`'s staged row and trace after a nonzero runner exit.
+def quarantine_staged(stage: Path, name: str, returncode: int) -> None:
+    """Set aside `name`'s staged row and trace after a nonzero runner exit, and record it.
 
     A row can be whole and carry a stageable note yet measure the wrong thing:
     a solve that lost portfolio workers (#170) is written as usual and only the
     exit status says so. Left in place, the next resume would skip the instance
     and publish that row as a full-thread one. Renamed rather than deleted, so
     the evidence stays beside the log.
+
+    The attempt is recorded last: a driver killed in between leaves one attempt
+    too few, which a final score refuses, never one too many.
     """
     for suffix in (".csv", ".trace.csv"):
         path = stage / f"{name}{suffix}"
         if path.exists():
             path.replace(path.with_name(path.name + REJECTED_SUFFIX))
+    append_attempt(stage / f"{name}{FAILURES_SUFFIX}", returncode)
 
 
 def publish(
