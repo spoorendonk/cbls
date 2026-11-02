@@ -971,6 +971,21 @@ def has_usable_result(job: Job, results_dir: Path, verify: bool = False) -> bool
     )
 
 
+def aggregation_back_read(row: dict[str, object]) -> bool | None:
+    """What a presolve row without `presolve_aggregation` ran (#337, #346).
+
+    Aggregation came on by default in the commit that started writing
+    `presolve_cols_aggregated`, a commit before the flag: a row with that
+    count aggregated, and a full row without it predates aggregation. A row the
+    driver wrote for a killed job carries neither, so it is unknown (None).
+    """
+    if "presolve_cols_aggregated" in row:
+        return True
+    if isinstance(row.get("driver_arm"), dict):
+        return None
+    return False
+
+
 def check_resume_configuration(
     jobs: list[Job], results_dir: Path, args: argparse.Namespace
 ) -> int | None:
@@ -993,11 +1008,11 @@ def check_resume_configuration(
     Returns the exit code to fail with, or None to proceed.
     """
     # What a row without a key ran: `exact_int_jump`, `compound_propagation`,
-    # `perturb_near_value`, `objective_tie_break`, `presolve`,
-    # `presolve_coef_tightening` and `presolve_aggregation` (a presolve row from
-    # before #327 or #337 ran without them) are back-read as off, since every row
-    # from before a flag ran its off arm; any other missing key is unknown and
-    # left alone.
+    # `perturb_near_value`, `objective_tie_break`, `presolve` and
+    # `presolve_coef_tightening` (a presolve row from before #327 ran without
+    # it) are back-read as off, since every row from before a flag ran its off
+    # arm; `presolve_aggregation` by `aggregation_back_read`; any other missing
+    # key is unknown and left alone.
     back_read_off = {
         "exact_int_jump",
         "compound_propagation",
@@ -1005,7 +1020,6 @@ def check_resume_configuration(
         "objective_tie_break",
         "presolve",
         "presolve_coef_tightening",
-        "presolve_aggregation",
     }
     for job in jobs:
         result = read_json_object(job.result_path(results_dir))
@@ -1025,11 +1039,16 @@ def check_resume_configuration(
             )
             return 2
         # A row the driver wrote for a killed job keeps its arm apart.
+        row = result
         nested = result.get("driver_arm")
         if isinstance(nested, dict):
             result = nested
         for key, asked in arm_keys(job.engine, args).items():
-            recorded = result.get(key, False if key in back_read_off else None)
+            recorded: object
+            if key == "presolve_aggregation" and key not in result:
+                recorded = aggregation_back_read(row)
+            else:
+                recorded = result.get(key, False if key in back_read_off else None)
             if recorded is None:
                 continue  # predates the key; nothing to contradict
             if recorded != asked:

@@ -161,6 +161,26 @@ TUNABLE_DEFAULTS: dict[str, object] = {
 }
 
 
+def presolve_steps(cells: dict[str, object]) -> None:
+    """Normalise the presolve steps' keys in a config cell, in place.
+
+    Coefficient tightening (#327) names nothing without presolve, so it is
+    dropped there; under presolve its off arm is what a presolve row from
+    before it ran, so off is dropped too (as the resume guard back-reads a
+    missing key as off) and only the on arm carries the key. Aggregation
+    (#337, #346) the same way, except that it came on by default a commit
+    before its flag, in the commit that started writing
+    `presolve_cols_aggregated`: a keyless row with that count aggregated, so it
+    is back-filled as the on arm.
+    """
+    presolve = cells.get("presolve") is True
+    if presolve and "presolve_aggregation" not in cells and "presolve_cols_aggregated" in cells:
+        cells["presolve_aggregation"] = True
+    for step in ("presolve_coef_tightening", "presolve_aggregation"):
+        if not presolve or cells.get(step) is False:
+            cells.pop(step, None)
+
+
 def config_string(result: dict[str, object]) -> str:
     """The `config` cell: every CONFIG_KEYS entry the result carries.
 
@@ -191,16 +211,9 @@ def config_string(result: dict[str, object]) -> str:
     # #226, so a new default row carries `objective_tie_break=True` and does
     # not match a table scored before it -- which is the point: that table was
     # measured on the old default and must be regenerated, not averaged in.
-    # Presolve (#325) likewise: off is the model every earlier row was built from.
-    # Its coefficient tightening (#327) names nothing without presolve, so it is
-    # dropped there; under presolve its off arm is what a presolve row from
-    # before it ran, so off is dropped too (as the resume guard back-reads a
-    # missing key as off) and only the on arm carries the key.
-    # Aggregation (#337, #346) the same way: a presolve row from before it never
-    # aggregated, so it is the off arm.
-    for presolve_step in ("presolve_coef_tightening", "presolve_aggregation"):
-        if cells.get("presolve") is not True or cells.get(presolve_step) is False:
-            cells.pop(presolve_step, None)
+    # Presolve (#325) likewise: off is the model every earlier row was built
+    # from. Its steps: `presolve_steps`.
+    presolve_steps(cells)
     for opt_in in (
         "perturb_near_value",
         "objective_tie_break",

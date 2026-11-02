@@ -638,8 +638,7 @@ def test_resuming_under_a_different_search_arm_is_refused(tmp_path: Path) -> Non
     assert check(presolve=True) == 2
     # Its coefficient tightening (#327) is checked only under presolve, and a
     # presolve row from before it never tightened, so it is read as off.
-    # Aggregation (#337) is held off here, and the tightening off in its block
-    # below, so each block isolates one step.
+    # Aggregation (#337) is held off here, so this block isolates tightening.
     old_presolve = {"instance": "a", "threads": 1, "presolve": True, **tie}
     result.write_text(json.dumps(old_presolve))
     assert check(presolve=True, presolve_aggregation=False) == 2
@@ -662,6 +661,20 @@ def test_resuming_under_a_different_search_arm_is_refused(tmp_path: Path) -> Non
     no_presolve = {"instance": "a", "threads": 1, "presolve_aggregation": True, **tie}
     result.write_text(json.dumps(no_presolve))
     assert check(presolve_aggregation=False) is None
+    # But aggregation came on a commit before its flag, with its count: a
+    # keyless row carrying `presolve_cols_aggregated` aggregated, so it is on.
+    result.write_text(json.dumps({**tightened, "presolve_cols_aggregated": 3}))
+    assert check(presolve=True) is None
+    assert check(presolve=True, presolve_aggregation=False) == 2
+    # A killed job's row from then carries neither: unknown, left alone.
+    killed = {
+        "instance": "a",
+        "driver_arm": {k: v for k, v in tightened.items() if k != "instance"},
+    }
+    result.write_text(json.dumps(killed))
+    assert check(presolve=True) is None
+    assert check(presolve=True, presolve_aggregation=False) is None
+    assert check(presolve=True, presolve_coef_tightening=False) == 2
 
 
 def test_a_default_run_resumes_over_a_job_it_killed(tmp_path: Path) -> None:

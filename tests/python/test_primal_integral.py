@@ -470,6 +470,27 @@ def test_a_presolve_step_is_a_configuration_only_under_presolve(
             check_uniform_configuration(rows)
 
 
+def test_a_keyless_row_that_aggregated_is_the_aggregation_on_arm(tmp_path: Path) -> None:
+    # Aggregation (#337) came on a commit before its flag, with its count: a
+    # presolve row from then has `presolve_cols_aggregated` but no key.
+    window: dict[str, object] = {"presolve": True, "presolve_cols_aggregated": 3}
+    for instance, extra in (
+        ("window", window),
+        ("on", {"presolve": True, "presolve_aggregation": True}),
+        ("off", {"presolve": True, "presolve_aggregation": False}),
+    ):
+        _write_result(
+            tmp_path,
+            "cbls",
+            instance,
+            {"status": "feasible", "objective": 100.0, **extra},
+            trace=[(1.0, 100.0)],
+        )
+    check_uniform_configuration([_score(tmp_path, name) for name in ("window", "on")])
+    with pytest.raises(ValueError, match="span 2 configurations"):
+        check_uniform_configuration([_score(tmp_path, name) for name in ("window", "off")])
+
+
 def test_summarize_excludes_not_run_instances_from_the_aggregates(tmp_path: Path) -> None:
     _write_result(
         tmp_path, "cbls", "solved", {"status": "feasible", "objective": 100.0}, trace=[(0.0, 100.0)]
