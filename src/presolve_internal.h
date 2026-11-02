@@ -86,6 +86,12 @@ struct Work {
     /// is 0 or not finite, the sum is not finite, or the row would outgrow an
     /// int32 offset.
     ///
+    /// The sum is a plain one, tested against exact 0: repeated calls into one
+    /// slot are order-dependent (1e16 + 1 - 1e16 cancels to 0), and nothing
+    /// models a summed coefficient's rounding error. A caller adding several
+    /// terms to one (row, column) should sum them first, compensated, and call
+    /// once.
+    ///
     /// Cost: O(row length) to look for j's cleared slot, plus, when the row or
     /// column is full, a move of O(its length) into twice the room, so moves
     /// cost amortised O(1) per added entry. The vacated room is not reused

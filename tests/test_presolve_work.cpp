@@ -8,6 +8,7 @@
 #include <cbls/presolve.h>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <utility>
 #include <vector>
 
@@ -145,10 +146,11 @@ TEST_CASE("adding to a live presolve entry sums and a cancelling sum clears it",
     CHECK(w.col_live[1] == 0);
 }
 
-TEST_CASE("add_entry refuses a removed row or column and a zero coefficient", "[presolve]") {
+TEST_CASE("add_entry refuses a removed row or column and a zero or non-finite coefficient",
+          "[presolve]") {
     const PresolveOptions opts;
     Work w(opts);
-    load_indexed(make(3, {{{0, 1.0}}, {{1, 1.0}}}, 0.0, 5.0), w);
+    load_indexed(make(3, {{{0, 1e308}}, {{1, 1.0}}}, 0.0, 5.0), w);
     w.remove_row(1);
     w.col_removed[2] = 1;
     const std::vector<int32_t> row_live = w.row_live;
@@ -158,9 +160,12 @@ TEST_CASE("add_entry refuses a removed row or column and a zero coefficient", "[
     CHECK_FALSE(w.add_entry(1, 0, 1.0));  // removed row
     CHECK_FALSE(w.add_entry(0, 2, 1.0));  // removed column
     CHECK_FALSE(w.add_entry(0, 1, 0.0));  // zero coefficient
+    CHECK_FALSE(w.add_entry(0, 1, std::numeric_limits<double>::infinity()));
+    CHECK_FALSE(w.add_entry(0, 1, std::numeric_limits<double>::quiet_NaN()));
+    CHECK_FALSE(w.add_entry(0, 0, 1e308));  // the sum overflows
     CHECK(w.row_live == row_live);
     CHECK(w.col_live == col_live);
-    CHECK(row_of(w, 0) == Entries{{0, 1.0}});
+    CHECK(row_of(w, 0) == Entries{{0, 1e308}});
     CHECK_FALSE(w.changed);
 }
 
