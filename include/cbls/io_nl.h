@@ -17,6 +17,7 @@
 
 #include "bound_propagation.h"
 #include "model.h"
+#include "presolve.h"
 
 #include <cstdint>
 #include <limits>
@@ -160,14 +161,28 @@ struct NlToModelOptions {
     /// domain is not a searchable space; unbounded integers in practice mean
     /// "small non-negative count", so a far tighter box is the useful default.
     double int_inf_clamp = 1.0e6;
+    /// Off by default; off, the model is the one built without presolve. On,
+    /// the purely linear rows (the ones propagation reads), the column boxes
+    /// and the objective's linear part go through `presolve` (presolve.h).
+    /// Every column a nonlinear part can reach is frozen: one in an expression,
+    /// in a defined variable, or in the linear part of a row with a nonlinear
+    /// part. Those rows are kept verbatim ("opaque"), so no expression is
+    /// remapped. `propagate_bounds` and `propagation.max_passes` are taken from
+    /// the two fields above, so propagation runs once, inside presolve.
+    PresolveOptions presolve;
 };
 
 struct NlToModelResult {
     Model model;
-    /// `var_handles[i]` is the CBLS variable handle for NL column `i`.
+    /// `var_handles[i]` is the CBLS variable handle for NL column `i` without
+    /// presolve, and for *reduced* column `i` with it: map a point back with
+    /// `original_values`. Code that assumes one handle per NL column must check
+    /// the size first.
     std::vector<int32_t> var_handles;
     /// `constraint_node_ids[i]` is the *primary* constraint node for NL row `i`
-    /// (the second node of a range row is added to the model but not recorded).
+    /// (the second node of a range row is added to the model but not recorded):
+    /// the upper side of a range. -1 for a Free row and a row presolve removed;
+    /// with presolve a range row may have lost a side it implied.
     std::vector<int32_t> constraint_node_ids;
     int32_t objective_node_id = -1;  ///< -1 if no objective
     bool supported = true;           ///< false if any operator was unsupported
@@ -177,6 +192,22 @@ struct NlToModelResult {
     /// Columns whose bounds a clamp still had to supply *after* propagation,
     /// i.e. where the unsound fallback was actually used.
     int n_clamped_columns = 0;
+    /// All-zero (status `Unchanged`) without presolve. `Infeasible` means
+    /// presolve proved the linear part empty and the model was built without it.
+    PresolveStats presolve_stats;
+    /// Non-empty when presolve refused the input (its validation message); the
+    /// model was then built without presolve.
+    std::string presolve_rejected;
+    /// Maps reduced values back to the NL columns; empty (n_original 0) unless
+    /// the model was built from a presolved problem.
+    Postsolve postsolve;
+    /// NL column of each reduced column; empty unless built from presolve.
+    std::vector<int32_t> reduced_to_original;
+
+    /// The model's current point as one value per NL column: the variable
+    /// values, mapped back through `postsolve` when the model was presolved.
+    /// `model` must be this result's model (or a copy of it).
+    [[nodiscard]] std::vector<double> original_values(const Model& model) const;
 };
 
 NlToModelResult nl_to_model(const NlProblem& prob, const NlToModelOptions& opts = {});

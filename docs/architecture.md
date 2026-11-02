@@ -2716,7 +2716,8 @@ it an empty box.
 `presolve(LinearProblem, PresolveOptions)` reduces a linear problem and returns
 the reduced one with a `Postsolve` that maps a reduced solution back to one value
 per original column. **Default off** (`PresolveOptions::enabled`). The MPS
-adapter calls it under `MpsToModelOptions::presolve` (#325; `.nl` is #326).
+adapter calls it under `MpsToModelOptions::presolve` (#325), the `.nl` adapter
+under `NlToModelOptions::presolve` (#326, #342).
 
 - **Problem form.** `LinearProblem` is a neutral CSR: column bounds, integrality,
   a minimisation objective with offset, and rows `lo <= a·x <= hi`. `1e20` and
@@ -2819,6 +2820,31 @@ or without presolve, first checks that point against the parsed `MpsProblem`
 integrality, `c·x + offset` against the reported objective); a point that fails
 is reported `original_mismatch` and carries no objective
 (`original_size_mismatch`/`original_non_finite` say why when the ratios cannot).
+
+**NL adapter (#326, #342).** With `NlToModelOptions::presolve.enabled`,
+`nl_to_model` presolves only the linear part: the rows propagation reads (no
+nonlinear part, not Free, every column in range; `linear_only_row`), the
+declared column boxes, and the first objective's linear part, negated when it
+maximises. Every other row is **opaque** and built verbatim, and every column a
+nonlinear part can reach is **frozen**: one in any expression, in any defined
+variable (all of them, used or not, which covers a chain without walking it),
+or in the linear part of an opaque row. So no expression is remapped: the
+translator keeps a handle per NL column, and a column presolve removed has a
+sentinel it refuses (`supported` false) rather than build on, which a correct
+freeze never reaches. Kept linear rows are built as for MPS (`eq_expr` when
+`lo == hi`, else one comparison per finite side, the upper side listed, as the
+plain build lists a range); the objective is the reduced linear part and offset
+turned back to the file's sense, plus the nonlinear part. A frozen column fixed
+by presolve stays a variable with `lb == ub`; the `x` segment seeds through
+`reduced_to_original`, so a removed column's start is dropped. `var_handles`,
+`constraint_node_ids`, `original_values`, `presolve_rejected` and the
+`Infeasible` fallback read as for MPS; an objective linear term naming a
+non-column falls back to the plain build too, which reports it. Off, the model
+is node for node the plain one. Over the 100 vendored MINLPLib files presolve
+reduces none (their AMPL export is presolved already; plain propagation
+tightens none of them either); `tests/test_minlplib.cpp` pins the reductions on
+inline fixtures and, over every vendored file, that no frozen column is removed
+and the postsolved start gives the plain model the same objective.
 
 ### JSONL Model Format
 

@@ -19,6 +19,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -1171,4 +1172,306 @@ TEST_CASE("curated note is retired when the instance now solves", "[minlplib]") 
     // No curated note: nothing to do in any state.
     REQUIRE(note_action(false, true, true) == NoteAction::kNone);
     REQUIRE(note_action(false, false, false) == NoteAction::kNone);
+}
+
+// --- Presolve on the linear part, nonlinear columns frozen (#326, #342) -----
+
+namespace {
+
+NlToModelOptions presolve_on() {
+    NlToModelOptions opts;
+    opts.presolve.enabled = true;
+    return opts;
+}
+
+bool in_reduced(const NlToModelResult& r, int32_t col) {
+    return std::find(r.reduced_to_original.begin(), r.reduced_to_original.end(), col) !=
+           r.reduced_to_original.end();
+}
+
+// The columns a nonlinear part reaches, derived here independently of the
+// adapter: any column in an expression or a defined variable, and any column
+// in the linear part of a row that has a nonlinear part.
+std::vector<int32_t> nonlinear_columns(const NlProblem& p) {
+    std::vector<uint8_t> hit(static_cast<std::size_t>(p.n_vars), 0);
+    auto mark = [&](int32_t j) {
+        if (j >= 0 && j < p.n_vars) {
+            hit[static_cast<std::size_t>(j)] = 1;
+        }
+    };
+    auto mark_expr = [&](const NlExpr& e) {
+        for (const NlExprNode& n : e.nodes) {
+            if (n.kind == NlNodeKind::Var) {
+                mark(n.index);
+            }
+        }
+    };
+    for (const NlConstraint& c : p.constraints) {
+        mark_expr(c.nonlinear);
+        if (!c.nonlinear.empty()) {
+            for (const NlLinTerm& t : c.linear) {
+                mark(t.var);
+            }
+        }
+    }
+    for (const NlObjective& o : p.objectives) {
+        mark_expr(o.nonlinear);
+    }
+    for (const NlDefinedVar& dv : p.defined_vars) {
+        mark_expr(dv.nonlinear);
+        for (const NlLinTerm& t : dv.linear) {
+            mark(t.var);
+        }
+    }
+    std::vector<int32_t> out;
+    for (int32_t j = 0; j < p.n_vars; ++j) {
+        if (hit[static_cast<std::size_t>(j)] != 0) {
+            out.push_back(j);
+        }
+    }
+    return out;
+}
+
+// min x1 + 2 x2 ; x0^2 + x1 <= 4 ; x2 == 3 ; x1 + x2 >= 3.5 ; x in [0,10]^3.
+// x0 and x1 are in the nonlinear row; x2 is linear only.
+std::string mixed_rows_text() {
+    std::string text = nl_header(3, 3, 1);
+    text += "C0\no5\nv0\nn2\n";
+    text += "b\n0 0 10\n0 0 10\n0 0 10\n";
+    text += "r\n1 4\n4 3\n2 3.5\n";
+    text += "J0 1\n1 1\n";
+    text += "J1 1\n2 1\n";
+    text += "J2 2\n1 1\n2 1\n";
+    text += "O0 0\nn0\n";
+    text += "G0 2\n1 1\n2 2\n";
+    return text;
+}
+
+}  // namespace
+
+TEST_CASE("nl_to_model presolve keeps frozen columns and removes a linear-only one",
+          "[minlplib][presolve]") {
+    const NlProblem p = parse_nl(mixed_rows_text(), "mixed");
+    NlToModelResult r = nl_to_model(p, presolve_on());
+    REQUIRE(r.supported);
+    REQUIRE(r.presolve_stats.status == PresolveStatus::Reduced);
+    REQUIRE(r.reduced_to_original == std::vector<int32_t>{0, 1});
+    REQUIRE(r.model.num_vars() == 2);
+    REQUIRE(r.var_handles.size() == 2);
+    // The nonlinear row is kept; the two linear rows became bounds.
+    REQUIRE(r.constraint_node_ids[0] >= 0);
+    REQUIRE(r.constraint_node_ids[1] == -1);
+    REQUIRE(r.constraint_node_ids[2] == -1);
+    REQUIRE_THAT(r.model.var(1).lb, WithinAbs(0.5, 1e-12));
+
+    // x = (1, 1): the nonlinear row holds (2 <= 4); objective 1 + 2*3.
+    r.model.var_mut(0).value = 1.0;
+    r.model.var_mut(1).value = 1.0;
+    full_evaluate(r.model);
+    ViolationManager vm(r.model);
+    vm.invalidate_cache();
+    REQUIRE_THAT(vm.total_violation(), WithinAbs(0.0, 1e-12));
+    REQUIRE_THAT(r.model.node_value(r.objective_node_id), WithinAbs(7.0, 1e-12));
+    REQUIRE(r.original_values(r.model) == std::vector<double>{1.0, 1.0, 3.0});
+
+    // x = (2, 1): the nonlinear row, built verbatim, is violated (5 > 4).
+    r.model.var_mut(0).value = 2.0;
+    full_evaluate(r.model);
+    vm.invalidate_cache();
+    REQUIRE(vm.total_violation() > 0.0);
+}
+
+TEST_CASE("nl_to_model presolve off builds the model it builds without the option",
+          "[minlplib][presolve]") {
+    const NlProblem p = parse_nl(mixed_rows_text(), "mixed");
+    NlToModelOptions off;
+    off.presolve.enabled = false;
+    off.presolve.max_rounds = 1;  // ignored while disabled
+    const NlToModelResult a = nl_to_model(p);
+    const NlToModelResult b = nl_to_model(p, off);
+    REQUIRE(b.model.num_vars() == 3);
+    REQUIRE(b.model.num_nodes() == a.model.num_nodes());
+    REQUIRE(b.var_handles == a.var_handles);
+    REQUIRE(b.constraint_node_ids == a.constraint_node_ids);
+    REQUIRE(b.objective_node_id == a.objective_node_id);
+    REQUIRE(b.presolve_stats.status == PresolveStatus::Unchanged);
+    REQUIRE(b.presolve_stats.rounds == 0);
+    REQUIRE(b.reduced_to_original.empty());
+    REQUIRE(b.postsolve.n_original() == 0);
+    REQUIRE(b.original_values(b.model).size() == 3);
+}
+
+TEST_CASE("nl_to_model presolve restores a maximise objective's offset sign",
+          "[minlplib][presolve]") {
+    // maximize x0 + x1 ; x0^2 <= 9 ; x1 == 2 ; x in [0,10]^2. x1 is fixed and
+    // removed, so the objective is x0 + 2, maximised: the node is -(x0 + 2).
+    std::string text = nl_header(2, 2, 1);
+    text += "C0\no5\nv0\nn2\n";
+    text += "b\n0 0 10\n0 0 10\n";
+    text += "r\n1 9\n4 2\n";
+    text += "J1 1\n1 1\n";
+    text += "O0 1\nn0\n";
+    text += "G0 2\n0 1\n1 1\n";
+    NlToModelResult r = nl_to_model(parse_nl(text, "maxoff"), presolve_on());
+    REQUIRE(r.supported);
+    REQUIRE(r.reduced_to_original == std::vector<int32_t>{0});
+    r.model.var_mut(0).value = 3.0;
+    full_evaluate(r.model);
+    REQUIRE_THAT(r.model.node_value(r.objective_node_id), WithinAbs(-5.0, 1e-12));
+    REQUIRE(r.original_values(r.model) == std::vector<double>{3.0, 2.0});
+}
+
+TEST_CASE("nl_to_model presolve keeps a fixed frozen Int column as a variable",
+          "[minlplib][presolve]") {
+    // Col 0 is integer and in the nonlinear row x0^2 <= 9; the linear row
+    // x0 == 2 fixes it. Col 1 is in no row, minimised: fixed at 0 and removed.
+    std::string text = nl_header_disc(2, 2, 1, /*nlvc=*/1, 0, 0, 0, 0, 0, /*nlvci=*/1, 0);
+    text += "C0\no5\nv0\nn2\n";
+    text += bounds_segment(2);
+    text += "r\n1 9\n4 2\n";
+    text += "J1 1\n0 1\n";
+    text += "O0 0\nn0\n";
+    text += "G0 1\n1 1\n";
+    NlToModelResult r = nl_to_model(parse_nl(text, "fixedint"), presolve_on());
+    REQUIRE(r.supported);
+    REQUIRE(r.reduced_to_original == std::vector<int32_t>{0});
+    REQUIRE(r.model.var(0).type == VarType::Int);
+    REQUIRE(r.model.var(0).lb == 2.0);
+    REQUIRE(r.model.var(0).ub == 2.0);
+    REQUIRE(r.original_values(r.model) == std::vector<double>{2.0, 0.0});
+}
+
+TEST_CASE("nl_to_model presolve keeps a column used only in a defined variable",
+          "[minlplib][presolve]") {
+    // v2 := 2 x0 ; v2 <= 4 ; x1 == 1. x0 is reached only through v2.
+    std::string text = nl_header(2, 2, 1, /*ndef=*/1);
+    text += "V2 1 0\n0 2\nn0\n";
+    text += "C0\nv2\n";
+    text += "b\n0 0 10\n0 0 10\n";
+    text += "r\n1 4\n4 1\n";
+    text += "J1 1\n1 1\n";
+    text += "O0 0\nn0\n";
+    text += "G0 1\n1 1\n";
+    NlToModelResult r = nl_to_model(parse_nl(text, "defonly"), presolve_on());
+    REQUIRE(r.supported);
+    REQUIRE(r.reduced_to_original == std::vector<int32_t>{0});
+    r.model.var_mut(0).value = 3.0;  // v2 = 6 > 4
+    full_evaluate(r.model);
+    ViolationManager vm(r.model);
+    vm.invalidate_cache();
+    REQUIRE(vm.total_violation() > 0.0);
+    REQUIRE_THAT(r.model.node_value(r.objective_node_id), WithinAbs(1.0, 1e-12));
+}
+
+TEST_CASE("nl_to_model presolve leaves an all-nonlinear model unchanged", "[minlplib][presolve]") {
+    std::string text = nl_header(1, 1, 1);
+    text += "C0\no5\nv0\nn2\n";
+    text += "b\n0 0 10\n";
+    text += "r\n1 9\n";
+    text += "O0 0\nv0\n";
+    NlToModelResult r = nl_to_model(parse_nl(text, "allnl"), presolve_on());
+    REQUIRE(r.supported);
+    REQUIRE(r.presolve_stats.status == PresolveStatus::Unchanged);
+    REQUIRE(r.reduced_to_original == std::vector<int32_t>{0});
+    REQUIRE(r.constraint_node_ids[0] >= 0);
+}
+
+TEST_CASE("nl_to_model presolve drops a removed column's initial value", "[minlplib][presolve]") {
+    // x0 is frozen with x0 = 4 seeded; x1 is fixed at 2 by its row, seeded 7.
+    std::string text = nl_header(2, 2, 1);
+    text += "C0\no5\nv0\nn2\n";
+    text += "b\n0 0 10\n0 0 10\n";
+    text += "x2\n0 4\n1 7\n";
+    text += "r\n1 30\n4 2\n";
+    text += "J1 1\n1 1\n";
+    text += "O0 0\nn0\n";
+    text += "G0 1\n1 1\n";
+    const NlToModelResult r = nl_to_model(parse_nl(text, "seed"), presolve_on());
+    REQUIRE(r.supported);
+    REQUIRE(r.reduced_to_original == std::vector<int32_t>{0});
+    REQUIRE(r.model.var(0).value == 4.0);
+    REQUIRE(r.original_values(r.model) == std::vector<double>{4.0, 2.0});
+}
+
+// Every vendored MINLPLib file: no column a nonlinear part reaches is removed,
+// presolve does not change the supported verdict, and the presolved model's
+// starting point, postsolved, gives the plain model the same objective. At
+// #342 presolve reduced none of these files (their AMPL export is already
+// presolved; plain propagation tightens nothing on them either), so the
+// reductions themselves are pinned by the fixtures above.
+TEST_CASE("nl_to_model presolve never removes a column a nonlinear part reaches",
+          "[minlplib][presolve]") {
+    std::vector<std::string> files;
+    for (const char* dir :
+         {"benchmarks/instances/minlplib", "benchmarks/instances/minlplib/heldout", "tests/data"}) {
+        for (const auto& e : std::filesystem::directory_iterator(dir)) {
+            if (e.path().extension() == ".nl") {
+                files.push_back(e.path().string());
+            }
+        }
+    }
+    std::sort(files.begin(), files.end());
+    REQUIRE(files.size() >= 100);
+    for (const std::string& f : files) {
+        INFO(f);
+        const NlProblem p = read_nl(f);
+        NlToModelResult plain = nl_to_model(p);
+        NlToModelResult pre = nl_to_model(p, presolve_on());
+        REQUIRE(pre.supported == plain.supported);
+        if (!pre.supported || pre.reduced_to_original.empty()) {
+            continue;  // unsupported, or presolve fell back to the plain build
+        }
+        for (const int32_t j : nonlinear_columns(p)) {
+            INFO("column " << j);
+            REQUIRE(in_reduced(pre, j));
+        }
+        if (pre.objective_node_id < 0) {
+            continue;
+        }
+        const std::vector<double> x = pre.original_values(pre.model);
+        REQUIRE(x.size() == static_cast<std::size_t>(p.n_vars));
+        for (std::size_t j = 0; j < x.size(); ++j) {
+            plain.model.var_mut(static_cast<int32_t>(j)).value = x[j];
+        }
+        full_evaluate(pre.model);
+        full_evaluate(plain.model);
+        const double a = pre.model.node_value(pre.objective_node_id);
+        const double b = plain.model.node_value(plain.objective_node_id);
+        if (std::isfinite(a) || std::isfinite(b)) {
+            REQUIRE(std::abs(a - b) <= 1e-6 * (1.0 + std::abs(b)));
+        }
+    }
+}
+
+// ex4_1_8 and st_e40 solve with presolve on, and the postsolved point passes
+// verify_model() on the model built without presolve.
+TEST_CASE("MINLPLib instances solve with presolve and verify on the original model",
+          "[minlplib][presolve][solve]") {
+    for (const char* name : {"ex4_1_8", "st_e40"}) {
+        INFO(name);
+        const NlProblem prob =
+            read_nl(std::string("benchmarks/instances/minlplib/") + name + ".nl");
+        NlToModelResult built = nl_to_model(prob, presolve_on());
+        REQUIRE(built.supported);
+        FloatIntensifyHook hook;
+        LNS lns(0.3);
+        const SearchResult result = solve_deterministic(built.model, 30000, 11, &hook, &lns);
+        CAPTURE(result.best_violation, result.objective, result.iterations);
+        REQUIRE(result.feasible);
+
+        NlToModelResult plain = nl_to_model(prob);
+        const std::vector<double> x = built.original_values(built.model);
+        REQUIRE(x.size() == static_cast<std::size_t>(prob.n_vars));
+        for (std::size_t j = 0; j < x.size(); ++j) {
+            plain.model.var_mut(static_cast<int32_t>(j)).value = x[j];
+        }
+        full_evaluate(plain.model);
+        const VerifyResult v = verify_model(plain.model);
+        if (!v.ok) {
+            v.print_diagnostics();
+        }
+        REQUIRE(v.ok);
+        REQUIRE(std::abs(plain.model.node_value(plain.objective_node_id) - result.objective) <=
+                1e-6 * (std::abs(result.objective) + 1.0));
+    }
 }
