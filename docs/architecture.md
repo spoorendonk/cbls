@@ -2603,7 +2603,8 @@ aₖxₖ <= hi − minactivity(rest)      aₖxₖ >= lo − maxactivity(rest)
 - **`1e20` and beyond is "no bound"** (the MPS/CPLEX/SCIP convention), read
   through `is_unbounded_below`/`is_unbounded_above`.
 - **Fixed-point iteration is capped** (`max_passes`, default 10); each pass is
-  O(nnz), about 1.1 s worst case on the MIPLIB roster (timings on #120). Do not
+  O(nnz), and assembling the rows and propagating take about 1.1 s in the worst
+  case on the MIPLIB roster (`square47`; timings on #120). Do not
   measure it by differencing two model builds: the difference is below the
   run-to-run noise.
 
