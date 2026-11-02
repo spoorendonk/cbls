@@ -26,16 +26,20 @@ THE MEASURE:
   not seed noise (#350's round 2). A pooled ratio inside [1/floor, floor] is
   not a difference.
 * COMPLETENESS: the rows alone cannot say what is missing, so the plan (arms,
-  stamped seeds, stamped roster size) is handed in, and every missing
-  (instance, arm, seed) is named, as is every one recorded without a
-  completed search (the driver records a crash, so a resume does not retry
-  it). A report over a partial campaign says so first: #331's decision must
-  not be read off one.
+  stamped seeds, stamped roster size, and the instances where they are known:
+  `--instances`, or the committed sample whose hash the stamp records) is
+  handed in. Named under INCOMPLETE, right under the heading: every missing
+  (instance, arm, seed), every one recorded without a completed search (the
+  driver records a crash, so a resume does not retry it), every one recorded
+  twice, any instance outside the plan, and an instance count other than the
+  stamp's. #331's decision must not be read off a partial campaign.
+* A floor of exactly 1 is no seed noise measured, and is read as such.
 """
 
 from __future__ import annotations
 
 import math
+from collections import Counter
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -132,15 +136,26 @@ def _completeness_lines(rows: Sequence[RunRow], plan: PresolvePlan) -> list[str]
     present = len(_all_names(rows, plan))
     missing = missing_triples(rows, plan)
     unmeasured = unmeasured_triples(rows, plan)
-    short = plan.roster_size is not None and present < plan.roster_size
-    if not missing and not unmeasured and not short:
+    # Counted both ways: a stray instance can stand in for a missing one, and
+    # where the plan names its instances the stray is named too.
+    miscounted = plan.roster_size is not None and present != plan.roster_size
+    outside = sorted({r.instance for r in rows} - set(plan.instances)) if plan.instances else []
+    # The shared scoring reads every row; this section, one per triple. A
+    # repeated triple (a hand merge) would make the two disagree silently.
+    counts = Counter((r.instance, r.arm, r.seed) for r in rows)
+    repeated = sorted(t for t, n in counts.items() if n > 1)
+    if not (missing or unmeasured or miscounted or outside or repeated):
         return [
             f"complete: {len(_instances(rows, plan))} instance(s) x {len(plan.arms)} arm(s) x "
-            f"{len(plan.seeds)} seed(s), every run recorded with a completed search"
+            f"{len(plan.seeds)} seed(s), every run recorded once with a completed search"
         ]
     lines = ["INCOMPLETE -- do not read #331's decision off this report:"]
-    if short:
+    if miscounted:
         lines.append(f"  the stamp records {plan.roster_size} instance(s); the rows name {present}")
+    if outside:
+        lines.append(f"  instance(s) outside the planned roster: {', '.join(outside)}")
+    if repeated:
+        lines.append(f"  {len(repeated)} run(s) recorded more than once: {_named(repeated)}")
     if missing:
         lines.append(f"  {len(missing)} run(s) missing: {_named(missing)}")
     if unmeasured:
@@ -181,11 +196,11 @@ def presolve_lines(rows: Sequence[RunRow], plan: PresolvePlan) -> list[str]:
 
     lines = [
         PRESOLVE_SECTION,
+        *_completeness_lines(rows, plan),
         "gap+1 = max(gap_to_bks%, 0) + 1; GM over the instances feasible (finite gap) in BOTH the",
         "arm and the control at that seed; ratio = arm / control, BELOW 1 IS THE ARM AHEAD.",
         "Feasible counts are feasible / measured: a run with no completed search is out of",
         "both, and named under completeness. Claim-excluded instances are out of everything.",
-        *_completeness_lines(rows, plan),
         f"noise floor: control GM over the {len(floor_set)} instance(s) feasible in every arm at "
         f"every seed, max / min over seeds = {_fmt(floor)}"
         + (
@@ -248,6 +263,10 @@ def _reading(ratio: float, floor: float) -> str:
         return "no pool"
     if not math.isfinite(floor):
         return "no floor"
+    # A floor of 1 is no seed noise measured, not a licence to read any
+    # rounding-level ratio as a difference.
+    if floor <= 1.0:
+        return "no seed noise measured; read the ratio itself"
     if ratio < 1.0 / floor:
         return "arm ahead, outside the floor"
     if ratio > floor:

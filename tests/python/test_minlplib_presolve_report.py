@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from benchmarks.minlplib import independent_check
+from benchmarks.minlplib import independent_check, run_ablation
 from benchmarks.minlplib.ablation_report import CONTROL_ARM, RunRow
 from benchmarks.minlplib.presolve_report import (
     PRESOLVE_SECTION,
@@ -31,6 +31,7 @@ from benchmarks.minlplib.run_ablation import (
     campaign_stamp,
     main,
     recorded_roster_size,
+    stamped_presolve_roster,
 )
 from benchmarks.minlplib.runner import RUNNER_FAILED_NOTE
 
@@ -96,15 +97,25 @@ def pooled_row(lines: list[str], arm: str) -> str:
 
 
 def test_the_ratio_is_below_one_when_the_arm_is_ahead() -> None:
-    # gap+1 = 1 under presolve, 4 under the control: the arm is 4x ahead.
-    rows = grid(["a", "b"], lambda _i, arm, _s: 0.0 if arm == "presolve" else 3.0)
-    lines = presolve_lines(rows, plan(["a", "b"]))
+    # gap+1 = 1 under presolve, 4 (4.4 at seed 2) elsewhere: a floor of 1.1,
+    # and the arm about 4x ahead.
+    def gap(_instance: str, arm: str, seed: int) -> float:
+        return 0.0 if arm == "presolve" else (3.4 if seed == 2 else 3.0)
+
+    lines = presolve_lines(grid(["a", "b"], gap), plan(["a", "b"]))
     assert lines[0] == PRESOLVE_SECTION
+    assert lines[1].startswith("complete:")
     assert table_row(lines, "presolve", 1)[-1] == "0.2500"
-    pooled = pooled_row(lines, "presolve")
-    assert "0.2500" in pooled
-    assert pooled.endswith("arm ahead, outside the floor")
+    assert pooled_row(lines, "presolve").endswith("arm ahead, outside the floor")
     assert pooled_row(lines, "both").endswith("inside the floor")
+
+
+def test_a_floor_of_one_is_no_noise_measured_not_any_difference_counts() -> None:
+    def gap(_instance: str, arm: str, _seed: int) -> float:
+        return 2.9999 if arm == "presolve" else 3.0
+
+    lines = presolve_lines(grid(["a"], gap), plan(["a"]))
+    assert pooled_row(lines, "presolve").endswith("no seed noise measured; read the ratio itself")
 
 
 def test_the_pool_is_the_instances_feasible_in_both_the_arm_and_the_control() -> None:
@@ -168,6 +179,23 @@ def test_a_planned_instance_with_no_row_is_named_missing() -> None:
     lines = presolve_lines(grid(["a"], lambda *_: 1.0), plan(["a", "z"]))
     assert any("12 run(s) missing: z/control/seed1" in line for line in lines)
     assert any(" and 2 more" in line for line in lines)
+
+
+def test_a_stray_instance_cannot_stand_in_for_a_missing_one() -> None:
+    rows = grid(["a", "b", "d"], lambda *_: 1.0)
+    counted = presolve_lines(rows, plan([], roster_size=3))  # names unknown: count only
+    assert any(line.startswith("complete:") for line in counted)  # the count alone cannot tell
+    named = presolve_lines(rows, plan(["a", "b", "c"], roster_size=3))
+    assert any("the stamp records 3 instance(s); the rows name 4" in line for line in named)
+    assert any("outside the planned roster: d" in line for line in named)
+    assert any("12 run(s) missing: c/control/seed1" in line for line in named)
+
+
+def test_a_run_recorded_twice_is_flagged() -> None:
+    rows = grid(["a"], lambda *_: 1.0)
+    lines = presolve_lines([*rows, row("a", "presolve", 2, 5.0)], plan(["a"]))
+    assert any(line.startswith("INCOMPLETE") for line in lines)
+    assert any("1 run(s) recorded more than once: a/presolve/seed2" in line for line in lines)
 
 
 def test_a_crashed_run_is_neither_a_lost_feasibility_nor_a_recorded_run() -> None:
@@ -240,3 +268,29 @@ def test_report_only_reads_the_seeds_and_roster_size_off_the_stamp(
     assert main(["--out-dir", str(out_dir), "--report-only"]) == 0
     out = capsys.readouterr().out
     assert "complete: 2 instance(s) x 4 arm(s) x 3 seed(s), every run recorded" in out
+
+
+def test_report_only_names_the_sample_the_stamp_hashes_to(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The stamp holds a count and a hash; where the committed sample has that
+    hash, the report names the instance that never ran, and the stray one."""
+    sample = tmp_path / "sample.txt"
+    sample.write_text("a\nb\nc\n")
+    monkeypatch.setattr(run_ablation, "PRESOLVE_SAMPLE", sample)
+    out_dir = tmp_path / "scratch"
+    out_dir.mkdir()
+    (out_dir / STAMP_NAME).write_text(
+        campaign_stamp(
+            "abc1234", 10.0, list(SEEDS), PRESOLVE_ARMS, ["a", "b", "c"], campaign=PRESOLVE_CAMPAIGN
+        )
+    )
+    assert stamped_presolve_roster(out_dir) == ("a", "b", "c")
+    _results_csv(out_dir / RESULTS_NAME, grid(["a", "b", "d"], lambda *_: 1.0))
+    assert main(["--out-dir", str(out_dir), "--report-only"]) == 0
+    out = capsys.readouterr().out
+    assert "outside the planned roster: d" in out
+    assert "12 run(s) missing: c/control/seed1" in out
+
+    sample.write_text("a\nb\n")  # a sample edited since: not the stamp's, count only
+    assert stamped_presolve_roster(out_dir) == ()

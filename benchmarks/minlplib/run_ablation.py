@@ -527,6 +527,11 @@ def arm_label(arm: Arm) -> str:
     return f"{arm.name}[{flags}]"
 
 
+def roster_key(roster: Sequence[str]) -> str:
+    """The stamp's hash of a roster, in run order; `all` for the whole roster."""
+    return hashlib.sha256(",".join(roster).encode()).hexdigest()[:12] if roster else "all"
+
+
 def campaign_stamp(
     sha: str,
     time_limit: float,
@@ -551,14 +556,13 @@ def campaign_stamp(
     out-dir would otherwise be refused only by the accident that the other arm
     names differ.
     """
-    roster_key = hashlib.sha256(",".join(roster).encode()).hexdigest()[:12] if roster else "all"
     return (
         f"campaign={campaign}\n"
         f"commit={sha}\n"
         f"time-limit={time_limit:g}\n"
         f"seeds={','.join(str(s) for s in seeds)}\n"
         f"arms={','.join(arm_label(arm) for arm in arms)}\n"
-        f"roster={len(roster)}:{roster_key}\n"
+        f"roster={len(roster)}:{roster_key(roster)}\n"
         f"lns-arm={lns_arm}\n"
     )
 
@@ -611,6 +615,26 @@ def recorded_roster_size(out_dir: Path) -> int | None:
     except ValueError:
         return None
     return size or None
+
+
+def stamped_presolve_roster(out_dir: Path) -> tuple[str, ...]:
+    """The presolve campaign's instances, named, where the stamp proves them.
+
+    The stamp records the roster as a count and a hash, not names. A
+    `--report-only` call repeats no `--instances`, so the names are recovered
+    from the committed sample, where its hash is the stamp's. Empty otherwise
+    (a subset, such as the laptop smoke's, or an unreadable sample): the
+    report then checks the instance count alone.
+    """
+    text = stamp_field(out_dir, "roster")
+    if not text:
+        return ()
+    _, _, key = text.partition(":")
+    try:
+        sample = load_sample(PRESOLVE_SAMPLE)
+    except (OSError, ValueError):
+        return ()
+    return tuple(sample) if roster_key(sample) == key else ()
 
 
 def stamp_conflict(out_dir: Path, stamp: str, *, resume: bool) -> str | None:
@@ -1332,7 +1356,7 @@ def report_for(args: argparse.Namespace, results: Path, gate: dict[str, object] 
         presolve = PresolvePlan(
             arms=tuple(arm.name for arm in PRESOLVE_ARMS),
             seeds=tuple(recorded_seeds(args.out_dir) or args.seeds),
-            instances=tuple(args.instances),
+            instances=tuple(args.instances) or stamped_presolve_roster(args.out_dir),
             roster_size=recorded_roster_size(args.out_dir),
         )
         return render_report(
