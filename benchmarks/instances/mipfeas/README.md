@@ -500,16 +500,20 @@ tightening and aggregation on), `compound-propagation`
   of `--cbls-bin`/`--engine-commit`, which argparse would expand.
 - **`campaign.json` stamps the out-dir.** A run refuses a directory stamped with
   any other campaign, arm flags, instances, seeds, budget, pass-through, engine
-  commit or runner-binary sha256; `--report-only` compares the first five. The
-  binary's sha256 is re-checked before every solve, so a rebuild mid-campaign
-  stops it.
+  commit or runner-binary sha256; `--report-only` compares the first five. A
+  run refuses a missing binary. The sha256 and the commit are re-checked before
+  and after every solve: a rebuild or a commit mid-campaign stops it, and a
+  solve that ran across one has its result moved aside (`.drifted`) for a
+  resume to re-run.
 - **`arms_report.md`** has a row per arm and seed (feasible count, the shifted
   geometric mean of the primal integral, its ratio to the control, median setup
   seconds, maximum peak RSS) and a row per arm pooled over seeds (feasible count,
   PI SGM, ratio, per-seed ratio range). PI means cover only the instances
   published in every arm at that seed, so a row one arm withholds leaves every
   arm's mean. The noise floor is the control's PI SGM max / min over the seeds
-  it names; a ratio inside it is not a difference. The report refuses arms run
+  it names, over the instances published in every arm at every seed; a ratio
+  inside it is not a difference. A scorer refusal ends with "no report
+  written" and the row it names. The report refuses arms run
   at different engine commits; a killed solve's row, which records none, is
   scored as a failure and not counted as a commit.
 

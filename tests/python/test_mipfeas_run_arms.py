@@ -50,7 +50,13 @@ if inst == "killed" and presolve:
               "objective": None, "budget_seconds": 2.0, "driver_arm": {}}
     (out / f"{inst}.json").write_text(json.dumps(record))
     sys.exit(0)
+if "--touch-bin" in argv:
+    Path(value("--cbls-bin")).write_bytes(b"rebuilt while the cell ran")
 verdict = "fail" if inst == "bad" or (inst == "badpre" and presolve) else "pass"
+if inst == "badpre2" and presolve and seed == 2:
+    verdict = "fail"
+if inst == "errv":
+    verdict = "error"
 (out / f"{inst}.verify.json").write_text(json.dumps({
     "verdict": verdict, "reason": "" if verdict == "pass" else "row_violation",
     "marginal": False, "tolerances": {"row_absolute": 1e-06},
@@ -69,6 +75,7 @@ def _campaign(tmp_path: Path, instances: list[str]) -> tuple[Path, Path, Path]:
     names.write_text("# dev set\n" + "\n".join(instances) + "\n")
     fake = tmp_path / "fake_runner.py"
     fake.write_text(FAKE_RUNNER)
+    (tmp_path / "cbls_mipfeas").write_bytes(b"the stamped build")
     return inst_dir, names, fake
 
 
@@ -90,6 +97,8 @@ def _main(tmp_path: Path, inst_dir: Path, names: Path, fake: Path, *extra: str) 
             f"{sys.executable} {fake}",
             *extra,
             "--",
+            "--cbls-bin",
+            str(tmp_path / "cbls_mipfeas"),
             "--engine-commit",
             "abc1234",
         ]
@@ -202,15 +211,19 @@ def test_a_rejected_solution_fails_the_campaign(tmp_path: Path) -> None:
     assert "| control | 1 | 0/1 | 0 | 1 | 0 |" in report
 
 
-def test_rows_from_two_engine_commits_are_refused(tmp_path: Path) -> None:
+def test_rows_from_two_engine_commits_are_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     inst_dir, names, fake = _campaign(tmp_path, ["a"])
     assert _main(tmp_path, inst_dir, names, fake) == 0
     row = tmp_path / "out" / "both" / "seed2" / "cbls" / "a.json"
     record = json.loads(row.read_text())
     record["commit_sha"] = "fff0000"
     row.write_text(json.dumps(record))
-    with pytest.raises(ValueError, match="2 engine commits"):
-        _main(tmp_path, inst_dir, names, fake, "--report-only")
+    capsys.readouterr()
+    assert _main(tmp_path, inst_dir, names, fake, "--report-only") == 2
+    err = capsys.readouterr().err
+    assert "no report written" in err and "2 engine commits" in err
 
 
 @pytest.mark.parametrize("flag", ["--pres", "--se=5", "--res", "--cbls-b", "--engine-c=x"])
@@ -298,8 +311,7 @@ def test_a_rebuilt_binary_stops_the_campaign_before_the_next_cell(tmp_path: Path
         inst_dir,
         [],
         [sys.executable, str(fake)],
-        binary,
-        digest,
+        run_arms.Build(binary, "abc1234", digest, "abc1234"),
     )
     assert failed == []
     assert stopped is not None and "changed since the campaign was stamped" in stopped
@@ -313,3 +325,62 @@ def test_a_resume_after_a_rebuild_is_refused(tmp_path: Path) -> None:
     refusal = run_arms.check_stamp(tmp_path, two)
     assert refusal is not None and "cbls_bin_sha256" in refusal
     assert run_arms.check_stamp(tmp_path, two, report_only=True) is None
+
+
+def test_a_moved_engine_commit_is_build_drift(tmp_path: Path) -> None:
+    binary = tmp_path / "bin"
+    binary.write_bytes(b"x")
+    digest = run_arms.binary_digest(binary)
+    assert run_arms.Build(binary, "abc", digest, "abc").drift() is None
+    drift = run_arms.Build(binary, "def", digest, "abc").drift()
+    assert drift is not None and "commit moved from abc to def" in drift
+
+
+def test_a_rebuild_while_a_cell_runs_moves_its_result_aside_and_stops(tmp_path: Path) -> None:
+    inst_dir, _, fake = _campaign(tmp_path, ["a"])
+    binary = tmp_path / "cbls_mipfeas"
+    out = tmp_path / "out"
+    cells = run_arms.plan(["a"], [1], ARMS)
+    failed, stopped = run_arms.run_cells(
+        cells,
+        out,
+        inst_dir / "roster.csv",
+        2.0,
+        inst_dir,
+        ["--cbls-bin", str(binary), "--touch-bin"],
+        [sys.executable, str(fake)],
+        run_arms.Build(binary, "abc1234", run_arms.binary_digest(binary), "abc1234"),
+    )
+    assert failed == []
+    assert stopped is not None and "while a seed 1 control ran" in stopped
+    assert len((tmp_path / "calls.log").read_text().splitlines()) == 1
+    assert (out / CONTROL / "seed1" / "cbls" / "a.json.drifted").exists()
+    assert not run_arms.cell_done(out, cells[0])
+
+
+def test_a_missing_binary_is_refused_before_stamping(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    inst_dir, names, fake = _campaign(tmp_path, ["a"])
+    (tmp_path / "cbls_mipfeas").unlink()
+    assert _main(tmp_path, inst_dir, names, fake) == 2
+    assert "build it first" in capsys.readouterr().err
+    assert not (tmp_path / "out").exists()
+
+
+def test_a_withheld_row_with_an_error_verdict_is_counted(tmp_path: Path) -> None:
+    inst_dir, names, fake = _campaign(tmp_path, ["errv"])
+    _main(tmp_path, inst_dir, names, fake)
+    report = (tmp_path / "out" / run_arms.REPORT_NAME).read_text()
+    assert "| control | 1 | 0/1 | 0 | 0 | 1 |" in report
+
+
+def test_the_noise_floor_uses_one_instance_set_across_seeds(tmp_path: Path) -> None:
+    inst_dir, names, fake = _campaign(tmp_path, ["a", "badpre2"])
+    _main(tmp_path, inst_dir, names, fake)
+    report = (tmp_path / "out" / run_arms.REPORT_NAME).read_text()
+    # `badpre2` is published everywhere but presolve at seed 2: seed 1 compares
+    # two instances, seed 2 one, and the floor uses the one common to both.
+    assert "| control | 1 | 2/2 | 0 | 0 | 0 | 2 |" in report
+    assert "| control | 2 | 2/2 | 0 | 0 | 0 | 1 |" in report
+    assert "over the 1 instance(s) published in every arm at every seed" in report

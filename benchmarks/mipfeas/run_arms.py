@@ -245,6 +245,32 @@ def binary_digest(path: Path) -> str | None:
         return None
 
 
+DRIFT_ADVICE = "Restore the stamped build (commit and binary), or start a fresh --out-dir."
+
+
+class Build(NamedTuple):
+    """The build a campaign was stamped with: the binary's sha256 and its commit.
+
+    Each `run_benchmark.py` call recomputes the commit (with `-dirty`) for its
+    rows, so a commit or an edit to a tracked file mid-campaign changes what the
+    rows record without touching the binary. Both are re-checked per cell.
+    """
+
+    cbls_bin: Path
+    commit_override: str | None
+    digest: str | None
+    commit: str
+
+    def drift(self) -> str | None:
+        """Why the build no longer matches the stamp, or None."""
+        if binary_digest(self.cbls_bin) != self.digest:
+            return f"{self.cbls_bin} changed since the campaign was stamped (sha256 differs)"
+        now = engine_commit(self.cbls_bin, self.commit_override)
+        if now != self.commit:
+            return f"the engine commit moved from {self.commit} to {now}"
+        return None
+
+
 def campaign_stamp(
     campaign: str,
     instances: Sequence[str],
@@ -308,33 +334,44 @@ def run_cells(
     inst_dir: Path,
     passthrough: Sequence[str],
     lock_command: Sequence[str],
-    cbls_bin: Path,
-    digest: str | None,
+    build: Build,
 ) -> tuple[list[Cell], str | None]:
     """Run every cell not already done, in order; return the failed ones and a stop reason.
 
     A failed cell does not stop the campaign: its row (or its absence) is what
     the report counts, and the remaining cells are still worth their hours. A
-    runner binary that no longer matches the stamped digest does: every later
-    cell would run another build under the same arm names.
+    build that no longer matches the stamp does: every later cell would run
+    another build, or record another commit, under the same arm names.
+
+    The build is checked before each cell and again after it. The lock is
+    taken inside the child, so a rebuild can land while a cell waits for it;
+    the check after catches that, and moves the cell's result aside so a resume
+    re-runs it rather than keeping a row from the other build.
     """
     failed: list[Cell] = []
     pending = [c for c in cells if not cell_done(out_dir, c)]
     print(f"{len(cells) - len(pending)} of {len(cells)} cell(s) done; {len(pending)} to run.")
     for k, cell in enumerate(pending, 1):
-        if binary_digest(cbls_bin) != digest:
-            return failed, (
-                f"{cbls_bin} changed since the campaign was stamped (sha256 differs); "
-                f"stopped before {cell.instance} seed {cell.seed} {cell.arm.name}. "
-                "Rebuild the stamped commit, or start a fresh --out-dir."
-            )
+        label = f"{cell.instance} seed {cell.seed} {cell.arm.name}"
+        if (drift := build.drift()) is not None:
+            return failed, f"{drift}; stopped before {label}. {DRIFT_ADVICE}"
         roster_file = write_cell_roster(out_dir, reference_roster, cell.instance)
         cmd = runner_command(
             cell, roster_file, out_dir, budget, inst_dir, passthrough, lock_command
         )
-        print(f"[{k}/{len(pending)}] {cell.instance} seed {cell.seed} {cell.arm.name}", flush=True)
+        print(f"[{k}/{len(pending)}] {label}", flush=True)
         if subprocess.run(cmd, check=False).returncode != 0:
             failed.append(cell)
+        if (drift := build.drift()) is not None:
+            result = Job("cbls", cell.instance).result_path(
+                arm_dir(out_dir, cell.arm.name, cell.seed)
+            )
+            if result.exists():
+                result.rename(result.with_name(result.name + ".drifted"))
+            return failed, (
+                f"{drift} while {label} ran; its result was moved aside (.drifted) and a "
+                f"resume re-runs it. {DRIFT_ADVICE}"
+            )
     return failed, None
 
 
@@ -385,7 +422,9 @@ def summarize_arm_seed(arm: str, seed: int, rows: Sequence[Scored], compared: se
         not_run=len(rows) - len(ran),
         feasible=sum(1 for r in published if r.status == "feasible"),
         verification_failed=sum(1 for r in ran if r.verification == "fail"),
-        unverified=sum(1 for r in ran if r.verification == "unverified" and r.withheld),
+        # Every withheld row that is not a rejection: an `unverified` or
+        # `error` verdict, or a `solution_write_error` row, as the scorer counts.
+        unverified=sum(1 for r in ran if r.withheld and r.verification != "fail"),
         pi_sgm=shifted_geometric_mean(in_mean) if in_mean else float("nan"),
         median_setup_seconds=statistics.median(setups) if setups else None,
         max_peak_rss_mib=max(rss) / 1024.0 if rss else None,
@@ -460,8 +499,13 @@ def render_report(
     commits = engine_commits(scored)
     n_instances = len(next(iter(scored.values()))) if scored else 0
     control_sgm = {s: per[(CONTROL, s)].pi_sgm for s in seeds}
-    floor_seeds = [s for s, v in control_sgm.items() if v == v and v > 0.0]
-    finite = [control_sgm[s] for s in floor_seeds]
+    # The floor is the control's seed spread over ONE instance set, published in
+    # every arm at every seed: a per-seed set would let an instance an arm loses
+    # at one seed widen the floor, which is not seed noise.
+    floor_set = set.intersection(*compared.values()) if compared else set()
+    floor_sgm = {s: _pooled_sgm(scored, CONTROL, [s], {s: floor_set}) for s in seeds}
+    floor_seeds = [s for s, v in floor_sgm.items() if v == v and v > 0.0]
+    finite = [floor_sgm[s] for s in floor_seeds]
     noise = max(finite) / min(finite) if len(finite) > 1 else float("nan")
     lines = [
         f"# MIPfeas arms: campaign {campaign}",
@@ -473,7 +517,8 @@ def render_report(
         "- PI SGM: shifted geometric mean of the primal integral (lower is better) over the "
         "instances published in every arm at that seed (`compared`); ratio = arm / control, "
         "so below 1 is better. Feasible counts are over all rows.",
-        f"- Noise floor: the control's PI SGM, max / min over seeds "
+        f"- Noise floor: the control's PI SGM over the {len(floor_set)} instance(s) published "
+        f"in every arm at every seed, max / min over seeds "
         f"{', '.join(map(str, floor_seeds)) or 'none'} = {_cell(noise, '.4f')}. "
         "A pooled ratio inside [1/floor, floor] is not a difference.",
         "",
@@ -564,6 +609,24 @@ def parse_args(argv: Sequence[str]) -> tuple[argparse.Namespace, list[str]]:
     return parser.parse_args(own), passthrough
 
 
+def run_refusal(
+    args: argparse.Namespace, lock_command: Sequence[str], cbls_bin: Path, digest: str | None
+) -> str | None:
+    """Why a run (not a report) cannot start, checked before anything is written."""
+    if args.report_only:
+        return None
+    if lock_command and shutil.which(lock_command[0]) is None:
+        return (
+            f"--lock-command {args.lock_command!r}: {lock_command[0]} is not on PATH "
+            "(pass '' to run without the machine lock)"
+        )
+    if digest is None:
+        # Stamped as None, every cell would fail, and the build that fixes it
+        # would then change the stamp and refuse the resume.
+        return f"{cbls_bin} is not a readable file: build it first"
+    return None
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args, passthrough = parse_args(sys.argv[1:] if argv is None else argv)
     if (owned := owned_flag_in(passthrough)) is not None:
@@ -589,16 +652,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     out_dir: Path = args.out_dir
 
     cbls_bin = Path(passthrough_value(passthrough, "--cbls-bin") or DEFAULT_CBLS_BIN)
-    commit = engine_commit(cbls_bin, passthrough_value(passthrough, "--engine-commit"))
+    override = passthrough_value(passthrough, "--engine-commit")
+    commit = engine_commit(cbls_bin, override)
     lock_command = shlex.split(args.lock_command)
-    if not args.report_only and lock_command and shutil.which(lock_command[0]) is None:
-        print(
-            f"--lock-command {args.lock_command!r}: {lock_command[0]} is not on PATH "
-            "(pass '' to run without the machine lock)",
-            file=sys.stderr,
-        )
-        return 2
     digest = binary_digest(cbls_bin)
+    if (refusal := run_refusal(args, lock_command, cbls_bin, digest)) is not None:
+        print(refusal, file=sys.stderr)
+        return 2
     stamp = campaign_stamp(
         args.campaign, instances, args.seeds, args.budget, passthrough, commit, digest
     )
@@ -616,24 +676,40 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.inst_dir,
             passthrough,
             lock_command,
-            cbls_bin,
-            digest,
+            Build(cbls_bin, override, digest, commit),
         )
+    if failed:
+        print(f"{len(failed)} cell(s) failed; see the lines above.", file=sys.stderr)
+    if stopped is not None:
+        print(stopped, file=sys.stderr)
+    code = write_report(args, arms, [entries[i] for i in instances])
+    if stopped is not None:
+        return 2
+    return code or (1 if failed else 0)
 
-    scored = score_campaign(out_dir, arms, args.seeds, [entries[i] for i in instances], args.budget)
+
+def write_report(
+    args: argparse.Namespace, arms: Sequence[Arm], entries: Sequence[tuple[str, float, str]]
+) -> int:
+    """Score the out-dir and write the report: 2 when the scorer refuses, 1 on a rejection."""
+    out_dir: Path = args.out_dir
+    try:
+        scored = score_campaign(out_dir, arms, args.seeds, entries, args.budget)
+    except ValueError as exc:
+        # The scorer's refusals (mixed commits or configuration, a budget
+        # mismatch, lost workers, an unreadable row) name the row; say that no
+        # report was written rather than end on a traceback.
+        print(f"no report written: {exc}", file=sys.stderr)
+        return 2
     report = render_report(args.campaign, arms, args.seeds, args.budget, scored)
     out_dir.mkdir(parents=True, exist_ok=True)
     atomic_write(out_dir / REPORT_NAME, report)
     print(f"Report -> {out_dir / REPORT_NAME}")
     rejected = sum(r.verification == "fail" for rows in scored.values() for r in rows)
-    if failed:
-        print(f"{len(failed)} cell(s) failed; see the lines above.", file=sys.stderr)
     if rejected:
         print(f"DEFECT: {rejected} solution(s) rejected by the independent check", file=sys.stderr)
-    if stopped is not None:
-        print(stopped, file=sys.stderr)
-        return 2
-    return 1 if failed or rejected else 0
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
