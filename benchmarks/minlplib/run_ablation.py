@@ -178,6 +178,11 @@ class Arm:
     #: arm the row is about to be filed under. Empty for the ablation arms,
     #: whose flags are switches the cell already names one-to-one.
     config: tuple[str, ...] = ()
+    #: Entries the cell must NOT carry. An arm set whose arms differ by
+    #: switching a token on needs this as well: if the runner's default flipped
+    #: to on, every arm's cell would carry the token, `config` alone would pass,
+    #: and the campaign would compare the setting against itself.
+    absent: tuple[str, ...] = ()
 
 
 #: The arms that always run. `control` is first and is run in this same sitting
@@ -256,14 +261,23 @@ TRANSFER_ARMS: tuple[Arm, ...] = tuple(
 #: token the runner's `search_config` cell carries when it applied the flag:
 #: `presolve` from `cbls_minlplib` itself, `compound_propagation=on` from the
 #: shared search flags (an opt-in key, absent from the cell when off).
+#: Each arm also names the tokens it must NOT carry, so a runner whose default
+#: flipped cannot file a presolved row under `control`.
+_PRESOLVE_TOKEN = "presolve"
+_PROPAGATION_TOKEN = "compound_propagation=on"
 PRESOLVE_ARMS: tuple[Arm, ...] = (
-    Arm(CONTROL_ARM, ()),
-    Arm("presolve", ("--presolve",), ("presolve",)),
-    Arm("compound-propagation", ("--compound-propagation",), ("compound_propagation=on",)),
+    Arm(CONTROL_ARM, (), absent=(_PRESOLVE_TOKEN, _PROPAGATION_TOKEN)),
+    Arm("presolve", ("--presolve",), (_PRESOLVE_TOKEN,), (_PROPAGATION_TOKEN,)),
+    Arm(
+        "compound-propagation",
+        ("--compound-propagation",),
+        (_PROPAGATION_TOKEN,),
+        (_PRESOLVE_TOKEN,),
+    ),
     Arm(
         "both",
         ("--presolve", "--compound-propagation"),
-        ("presolve", "compound_propagation=on"),
+        (_PRESOLVE_TOKEN, _PROPAGATION_TOKEN),
     ),
 )
 
@@ -728,6 +742,14 @@ def read_runner_row(path: Path, run: Run, sha: str) -> dict[str, str]:
             "requires. The binary did not run the configuration this row would be filed "
             "under, so the campaign stops here rather than record it -- rebuild, or check "
             "that the runner still accepts the arm's flags."
+        )
+    unwanted = [entry for entry in run.arm.absent if entry in applied]
+    if unwanted:
+        raise ArmConfigMismatchError(
+            f"{path}: the runner's search_config cell {row['search_config']!r} carries "
+            f"{', '.join(unwanted)}, which arm {run.arm.name!r} ({' '.join(run.arm.flags)}) "
+            "must not. The runner's default has probably changed, so this row would compare "
+            "the setting against itself; the campaign stops here rather than record it."
         )
     return row
 
@@ -1404,7 +1426,9 @@ def resolve_campaign(args: argparse.Namespace) -> str | None:
         args.campaign = ABLATION_CAMPAIGN
     if args.inst_dir is None:
         args.inst_dir = HELDOUT_INST_DIR if args.campaign in HELDOUT_CAMPAIGNS else DEFAULT_INST_DIR
-    if args.campaign == PRESOLVE_CAMPAIGN and not args.instances:
+    # Not under --report-only: the report does not read the sample, and a later
+    # edit to it must not stop a finished campaign from being scored.
+    if args.campaign == PRESOLVE_CAMPAIGN and not args.instances and not args.report_only:
         try:
             args.instances = load_sample(PRESOLVE_SAMPLE)
         except (OSError, ValueError) as exc:

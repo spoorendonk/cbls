@@ -1230,16 +1230,19 @@ def test_the_transfer_dry_run_prints_the_grid_and_no_gate_probe(
 # --- the presolve-322 campaign (#331, #353) -----------------------------------
 
 
-def presolve_echoing_runner(*, ignore: str = "") -> Callable[..., FakeCompleted]:
+def presolve_echoing_runner(
+    *, ignore: str = "", presolve_by_default: bool = False
+) -> Callable[..., FakeCompleted]:
     """A fake runner whose `search_config` cell reports `--presolve` and
     `--compound-propagation` the way the real one does -- or, with `ignore`
-    naming one of them, a binary that drops that flag."""
+    naming one of them, a binary that drops that flag; with
+    `presolve_by_default`, one whose presolve default has flipped to on."""
 
     def run(cmd: Sequence[str], **kwargs: object) -> FakeCompleted:
         cell = DEFAULT_ARM_CELL
         if "--compound-propagation" in cmd and ignore != "--compound-propagation":
             cell += ";compound_propagation=on"
-        if "--presolve" in cmd and ignore != "--presolve":
+        if presolve_by_default or ("--presolve" in cmd and ignore != "--presolve"):
             cell += ";presolve"
         row = f"{{name}},1,1,1,5,5,10,true,feasible,{{sha}},0,0,0,0,3,0.5,{cell}"
         return fake_runner(row=row)(cmd, **kwargs)
@@ -1247,8 +1250,10 @@ def presolve_echoing_runner(*, ignore: str = "") -> Callable[..., FakeCompleted]
     return run
 
 
-def test_the_presolve_sample_is_the_census_set_of_heldout_instances() -> None:
-    """#331's sample: 25 distinct held-out instances, each with its `.nl`."""
+def test_the_presolve_sample_is_25_distinct_heldout_instances_with_their_nl() -> None:
+    """#331's sample: 25 distinct held-out instances, each with its `.nl`. That
+    they are the census's reducing set is recorded in HELDOUT.md, not checked
+    here: the census needs the built runner."""
     sample = load_sample(PRESOLVE_SAMPLE)
     assert len(sample) == 25
     roster = set(roster_from_bounds(HELDOUT_INST_DIR / "bounds.csv"))
@@ -1346,6 +1351,32 @@ def test_a_runner_that_drops_a_presolve_arm_flag_stops_the_campaign(
     token = "presolve" if dropped == "--presolve" else "compound_propagation=on"
     with pytest.raises(ArmConfigMismatchError, match=token):
         execute_runs(make_args(tmp_path), "abc1234", plan, tmp_path / "scratch", "campaign")
+
+
+def test_a_runner_whose_presolve_default_flipped_stops_the_control(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With presolve on by default every cell carries `presolve`; the control
+    must refuse it rather than compare presolve against itself."""
+    monkeypatch.setattr(subprocess, "run", presolve_echoing_runner(presolve_by_default=True))
+    plan = campaign_plan(["a"], [1], PRESOLVE_ARMS)
+    with pytest.raises(ArmConfigMismatchError, match="must not"):
+        execute_runs(make_args(tmp_path), "abc1234", plan, tmp_path / "scratch", "campaign")
+    assert _recorded(tmp_path / "scratch") == []
+
+
+def test_report_only_does_not_need_the_presolve_sample(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    out_dir = tmp_path / "scratch"
+    out_dir.mkdir()
+    (out_dir / STAMP_NAME).write_text(
+        campaign_stamp("abc1234", 10.0, [1, 2, 3], PRESOLVE_ARMS, campaign=PRESOLVE_CAMPAIGN)
+    )
+    write_results(out_dir / RESULTS_NAME, [("a", CONTROL_ARM, 1), ("a", "presolve", 1)])
+    monkeypatch.setattr(run_ablation, "PRESOLVE_SAMPLE", tmp_path / "missing.txt")
+    assert main(["--out-dir", str(out_dir), "--report-only"]) == 0
+    assert "issue #331" in capsys.readouterr().out
 
 
 def test_the_presolve_dry_run_prints_four_arms_over_the_sample(
