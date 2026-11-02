@@ -1855,8 +1855,8 @@ pool also holds closest-approach states submitted with `feasible = false`, and
 after adoption departs from the adopted point, not our incumbent" pins it: it
 goes red without the restore *and* with a `best_state`-only one.
 
-`LNS::destroy_repair` snapshots the state it is handed, and that is now the
-origin, so a rejected repair *moves* the search back to the origin and perturbs
+`LNS::destroy_repair` snapshots the state it is handed, which once there is an
+origin is the origin, so a rejected repair *moves* the search back to the origin and perturbs
 nothing: not free, and not a diversification either, since FJ re-descends from a
 point it has already converged on.
 
@@ -1905,8 +1905,8 @@ partition's inter-list moves anchored on this variable
 - **Size.** `k` scales how much of each structure moves, since a structure has
   no "randomise the whole variable" analogue that is not a restart. It is at
   least 1 (even on an empty structure) and at most `|elements|` otherwise, so
-  short of a deadline cut every structure moves on every kick, `p = 0`
-  included, and `p > 1` cannot make a kick unbounded. `|elements|` is the
+  short of a deadline cut or a dead end every structure moves on every kick,
+  `p = 0` included, and `p > 1` cannot make a kick unbounded. `|elements|` is the
   current membership: a 3-of-1000 Set is kicked on the 3 and cannot grow far in
   one kick; LNS, which resamples the cardinality, does that.
 - **Local in adjacency.** `k` counts moves, not displaced slots: a 2-opt
@@ -1915,8 +1915,8 @@ partition's inter-list moves anchored on this variable
   much coarser than `p` suggests for one read positionally (`at`). Measurements
   are on #111.
 - **Deadline-bounded.** Cost is `O(k * (|elements| + universe))` (a membership
-  scan per candidate) per structure, superlinear in one structure's size, so the pass checks the
-  deadline between *moves*, on a capped stride, and never before it has moved
+  scan per candidate) per structure, superlinear in one structure's size, so
+  the pass checks the deadline between *moves*, on a capped stride, and never before it has moved
   something; see [Bound 5](#bound-5-why-the-kick-is-checked-between-moves-115).
 - **No draw on scalar-only models.** The pass tests the variable type before
   drawing, so a model without List/Set variables keeps its exact draw sequence,
@@ -1924,7 +1924,7 @@ partition's inter-list moves anchored on this variable
   immovable List and requires identical assignment sequences.
 
 The kick's guarantee is model-wide: if anything can move, something moves. On a
-mixed model the structures always move, so the scalar half is left to the
+mixed model the structures move unless dead-ended, so the scalar half is left to the
 configured probability and the forced-scalar fallback fires only when nothing
 moved at all. A model with no movable variable anywhere still changes nothing.
 
@@ -1991,7 +1991,8 @@ Each coordinate step on a Float variable v reads only what v can move:
   returns, early stop included, so the search's raw reads after the hook see
   re-grounded values.
 
-A coordinate sweep is therefore O(Σ_v up-cone(v)), which wins on a separable
+A coordinate sweep is therefore O(Σ_v up-cone(v)), which wins over the
+per-variable reverse sweep it replaced (O(Float vars × nodes)) on a separable
 objective over many variables (UC-CHPED, any linear objective), where each
 up-cone is a handful of nodes. It gains nothing on a dense objective in a few
 variables (MINLPLib's least-squares shapes), where each up-cone is about the
@@ -2025,8 +2026,7 @@ Sweeps repeat up to `max_sweeps` times, stopping early when a sweep makes no
 improvement, or when the search's `stop` is raised (#191: the deadline, a peer
 worker's stop or a host cancel), polled every `vars_per_poll` variables
 (`src/inner_solver.cpp`, sized by model size) and before each Mechanism 3 step.
-The poll changes only whether the
-descent continues, so a pass that finishes within budget is unaffected by it.
+The poll changes only whether the descent continues, so a pass that finishes within budget is unaffected by it.
 
 ### Parameters
 
@@ -2080,8 +2080,8 @@ an element means: adj(seed) is a k-nearest row plus a random tail rather than a
 full distance order, and the removed set is reinserted in the reference's
 Random order only (its Demand, Far and Close orders are routing quantities).
 
-Every variable **outside** a partition (with no partition, every variable) is
-then destroyed and repaired:
+Every variable **outside** a partition (with no partition, every variable, on the
+same random draws) is then destroyed and repaired:
 
 - **Sequence-aware** (when the model registers `var_sequences`): pick
   `ceil(n_seqs * destroy_fraction)` whole sequences plus a proportional fraction
