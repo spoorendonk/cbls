@@ -29,6 +29,7 @@ large-neighborhood-search diversification.
 16. [I/O & Logging](#io--logging)
 17. [Threading & Determinism](#threading--determinism)
 18. [GPU](#gpu)
+19. [Reference](#reference)
 
 ---
 
@@ -2534,7 +2535,7 @@ cbls [OPTIONS] MODEL.cbls
 | `--threads N` | number of search threads (default: 0 = one per core) |
 | `--format human\|jsonl` | output format (default: human) |
 | `--quiet` | suppress progress, print only the final result |
-| `--help` / `--version` | usage / `cbls::kVersion` |
+| `--help` / `--version` | usage / `cbls::kVersion` (`include/cbls/cbls.h`) |
 
 Any other option exits 1.
 
@@ -2573,8 +2574,7 @@ format:
 - **The run is not reproducible.** `--seed` still seeds every worker (through
   `portfolio_worker_seed`, which decorrelates adjacent base seeds), but which
   solution a stalled worker adopts depends on thread interleaving. `--threads 1`
-  is the reproducible run, subject to the wall-clock caveat in
-  [Determinism](#determinism) -- same seed, same hardware, same load.
+  is the reproducible run, with [Determinism](#determinism)'s wall-clock caveat.
 
 ### Implied variable bounds
 
@@ -2706,10 +2706,6 @@ Two `SolveCallback` implementations, both writing to a configurable
   `stopped` / `cancelled`, which qualifies the two above), objective,
   `feasible`, `status` and `solution`.
 
-### Version
-
-`cbls::kVersion` is a `constexpr const char*` in `include/cbls/cbls.h`.
-
 ### Parameter Locations
 
 `solve()` takes `time_limit=10.0`, `seed=42`, `use_fj=true`, `hook=nullptr`,
@@ -2725,195 +2721,139 @@ knobs on `FloatIntensifyHook`, LNS's `destroy_fraction` on its constructor:
 
 ### Multi-threading
 
-The core `solve()` is single-threaded. `ParallelSearch` is a cooperative
-portfolio over it (see
-[Parallel Search](#solution-pool--parallel-search)): staggered seeds, a shared
-mutex-protected pool read and written mid-search, and a shared stop flag. No
-OpenMP, no work-stealing, no parallel DAG evaluation.
+The core `solve()` is single-threaded; `ParallelSearch` is a cooperative
+portfolio over it ([Parallel Search](#solution-pool--parallel-search)):
+staggered seeds, a shared mutex-protected pool read and written mid-search, a
+shared stop flag. No OpenMP, work-stealing or parallel DAG evaluation.
 
 ### Determinism
 
-The solver is deterministic given the same seed, modulo wall-clock. All
-randomness flows through a single `RNG` (`mt19937_64`). `delta_evaluate` and AD
-keep their scratch in flat `thread_local` vectors and recompute in topological
-order, so no container's iteration order reaches a result.
-
-That holds for a **single-threaded** run. With `time_limit = 0` and
+A **single-threaded** run is deterministic given the same seed, modulo
+wall-clock. All randomness flows through a single `RNG` (`mt19937_64`);
+`delta_evaluate` and AD keep their scratch in flat `thread_local` vectors and
+recompute in topological order, so no container's iteration order reaches a
+result. With `time_limit = 0` and
 `SearchConfig::max_iterations` set, such a run reads no clock at all and is
 bit-reproducible on any machine; with a wall clock it is reproducible for the
 same seed on the same hardware under the same load, since `steady_clock`
 determines where it stops.
 
-**A portfolio run is not reproducible, by construction.** Workers submit to and
-draw from a shared pool as they go, so which solution a stalled worker adopts
-depends on thread interleaving. There is no longer a deterministic
-multi-threaded mode: epoch-sync was removed because every property the
-cooperative portfolio exists for -- live sharing, pool restarts, a global stop
--- is nondeterministic, and the epoch barrier that made the old mode
-reproducible was also what left workers idling at it. Pass `--threads 1` (or
-call `cbls::solve()` directly) when reproducibility is what is wanted.
+**A portfolio run is not reproducible, by construction**: which pool solution a
+stalled worker adopts depends on thread interleaving, and live sharing, pool
+restarts and a global stop are all nondeterministic, so there is no
+deterministic multi-threaded mode. Use `--threads 1` (or `cbls::solve()`) for
+reproducibility.
 
 ### Caller-owned threads
 
 `ParallelConfig::executor` is a `std::optional<ExecutorRef>`
 (`include/cbls/executor.h`), unset by default. Unset, `ParallelSearch` creates one
-`std::thread` per worker as it always has. Set, **it creates none**: worker `i`
-runs as index `i` of `parallel_for_chunked(0, n_workers, ...)` on the caller's own
-pool, with `n_workers = min(n_threads, executor->n_threads())`.
+`std::thread` per worker. Set, **it creates none**: worker `i` runs as index `i`
+of `parallel_for_chunked(0, n_workers, ...)` on the caller's own pool, with
+`n_workers = min(n_threads, executor->n_threads())`.
 
-This exists because a host that already owns a thread pool — another solver, a
-pipeline stage, a batch job — oversubscribes its cores the moment it runs cbls
-next to anything else, and had no way to say "use mine". `ExecutorRef` is a
-type-erased, non-owning view (a pointer plus a vtable pointer) of anything with
-`parallel_for`, `parallel_for_chunked`, `parallel_invoke` and `n_threads`; the
-caller owns and outlives the pool, exactly as with `StopRef`. Under C++20 a
-caller can check its type against the `cbls::Executor` concept in the same header;
-the library itself is C++17, so the concept is compiled only when the *including*
-translation unit is C++20 or later.
+It lets a host that owns a thread pool run cbls on it instead of
+oversubscribing its cores. `ExecutorRef` is a type-erased, non-owning view of
+anything with `parallel_for`, `parallel_for_chunked`, `parallel_invoke` and
+`n_threads`; the caller owns and outlives the pool, as with `StopRef`. The
+`cbls::Executor` concept in the same header compiles only in a C++20 (or later)
+including translation unit.
 
-Three things about it are worth stating, because none is guessable:
+- **The width cap is not cosmetic.** A worker holds its chunk for the whole
+  shared deadline, so one queued behind another would search on no budget:
+  asking for more workers than the pool is wide gets fewer workers, not slower
+  ones.
+- **The executor must run chunks concurrently.** A *sequential* executor is not
+  rejected or detected: under a wall clock it degenerates to a one-worker
+  portfolio (the first worker takes the whole deadline); with
+  `time_limit <= 0` it runs each worker's full `max_iterations` budget in
+  series, N times the wall time.
+- **Chunk index is not worker index.** `src/pool.cpp` ignores `chunk_idx` (a
+  chunk's number in `[0, n_threads())`), keys `results`, `failures` and
+  `portfolio_worker_seed` on the loop index, and loops over
+  `[chunk_begin, chunk_end)` for *any* chunking.
 
-- **The width cap is not cosmetic.** A portfolio worker holds its chunk for the
-  whole shared deadline, so a worker queued behind another would search on no
-  budget at all. Asking for more workers than the pool is wide silently gets
-  fewer workers, not slower ones.
-- **The executor must run chunks concurrently.** Workers are cooperative — they
-  share incumbents through the pool as they find them and restart from a peer's —
-  which is not a portfolio if they run one after another. A *sequential* executor
-  is not rejected, and what it degenerates to depends on the budget: under a wall
-  clock it is a one-worker portfolio, because the first worker takes the whole
-  deadline and every later one finds it already past. With `time_limit <= 0` there
-  is no shared deadline to consume, so it instead runs each worker's full
-  `max_iterations` budget in series — N solves back to back, N times the wall
-  time. Nothing detects either, and nothing should; both are properties of the
-  executor the caller supplied.
-- **Chunk index is not worker index.** `chunk_idx` is a chunk's number in
-  `[0, n_threads())`, so `src/pool.cpp` ignores it and keys `results`, `failures`
-  and `portfolio_worker_seed` on the loop index instead. The loop over
-  `[chunk_begin, chunk_end)` is written for *any* chunking rather than assuming
-  one index per chunk.
-
-`launch_workers` in `src/pool.cpp` is the one place the two paths differ, and one
-worker's body (`run_one`) is shared between them. `run_one` swallows every
-exception a worker can raise, which is what makes an executor usable: an executor
-is free to do anything at all with an escaping exception, including abort. An
-exception out of the *executor call itself* is left to propagate — that is the
-caller's failure to report, not a worker's to absorb.
-
-C++-only, deliberately. A Python "executor" would have to be called back into
-under the GIL, which is the serialisation a portfolio exists to avoid.
+`launch_workers` (`src/pool.cpp`) is the one place the two paths differ; both
+run one worker body, `run_one`, which swallows every exception a worker can
+raise, since an executor may do anything with an escaping one, including abort.
+An exception out of the *executor call itself* propagates: the caller reports
+it. C++-only, deliberately: a Python executor would be called back under the
+GIL, the serialisation a portfolio exists to avoid.
 
 ### External cancellation
 
 `SearchConfig::stop` and `ParallelConfig::stop` are a `StopRef`
 (`include/cbls/stop.h`): a type-erased, **non-owning** view of anything with
-`bool requested() const`, such as the built-in `cbls::StopToken`. A host that
-cancels for its own reasons -- a peer component finished, the user pressed stop
--- raises it and the run ends at its next **batch** boundary with
-`TerminationReason::Cancelled`.
-
-A C++20 `std::stop_token` is **not** directly adaptable: its member is
-`stop_requested()`. `include/cbls/stop.h` carries the three-line adaptor a host
-writes instead (a struct holding the token by value and forwarding
-`requested()`), which has to be a **named lvalue** outliving the solve -- the
-deleted rvalue constructor refuses a temporary at compile time rather than
-leaving a dangling view.
-
-Three things are worth stating precisely:
+`bool requested() const`, such as the built-in `cbls::StopToken`. A host raises
+it and the run ends at its next **batch** boundary with
+`TerminationReason::Cancelled`. A C++20 `std::stop_token` (member
+`stop_requested()`) needs the three-line adaptor in that header, a **named
+lvalue** outliving the solve: the deleted rvalue constructor refuses a
+temporary at compile time.
 
 - **The granularity is the batch, not the iteration.** `requested()` is polled
-  exactly where the wall clock is read (`past_deadline()`), so a batch already
-  running finishes first. A batch is `batch_iterations` GLS iterations, which is
-  microseconds on a small model and seconds on an expensive one.
+  exactly where the wall clock is read (`past_deadline()`), so a running batch
+  finishes first.
 - **`Cancelled` is not `Stopped`.** `Stopped` is a *peer worker* ending a
-  portfolio run from the inside, which only `ParallelSearch` can cause;
-  `Cancelled` is the host. When both are true the host's cancel is reported,
-  because it is the outer cause. `Feasible` still outranks both -- a worker that
-  solved the model finished rather than stopped.
+  portfolio run, which only `ParallelSearch` can cause; `Cancelled` is the host,
+  and is reported when both hold, as the outer cause. `Feasible` outranks both.
 - **The two `stop` fields are OR-ed, not alternatives.** `solve_portfolio`
-  combines `ParallelConfig::stop` with `SearchConfig::stop` into one `StopRef`
-  that lives on the calling thread's frame for the duration of the call. The
-  objects both of them name must outlive the solve; nothing in the engine owns
+  combines them into one `StopRef` on the calling thread's frame for the call;
+  the objects both name must outlive the solve, and nothing in the engine owns
   or extends them.
 
 **An attached stop is not a budget.** A run with no `time_limit` and no
-`max_iterations` returns at once with `TerminationReason::NoBudget` whether or
-not a stop is attached, because "run until the host cancels" would hang forever
-the first time the host forgot to. Give such a run a generous `time_limit` and
-cancel inside it; `StopRef::attached()` says the same.
+`max_iterations` returns at once with `TerminationReason::NoBudget`, stop or no
+stop, because "run until the host cancels" would hang forever the first time the
+host forgot to; give it a generous `time_limit` and cancel inside it
+(`StopRef::attached()` says the same). A portfolio cancelled before its first
+worker ran reports `Cancelled`, not `NoBudget`.
 
-A portfolio cancelled before its first worker ran reports `Cancelled` rather
-than `NoBudget` -- that run did not lack a budget, the host took it away.
-
-From Python, `cbls.StopToken` has `request()`, `reset()` and `requested()`, and
-`SearchConfig.stop` / `ParallelConfig.stop` accept one (or `None`), reading back
-as a bool. The single-threaded `cbls.solve` releases the GIL for the whole call,
-which is what makes a token raised from another Python thread reach a running
-solve at all; `tests/python/test_stop.py` pins that in a child process, since a
-regression there starves the interpreter rather than failing an assertion.
+From Python, `SearchConfig.stop` / `ParallelConfig.stop` accept a
+`cbls.StopToken` (`request()`, `reset()`, `requested()`) or `None`, and read
+back as a bool. The single-threaded `cbls.solve` releases the GIL for the whole call, so a token raised
+from another Python thread reaches a running solve (`tests/python/test_stop.py`,
+in a child process: a regression starves the interpreter).
 
 ### Event tracing
 
-`SearchConfig::tracer` is a `Tracer*` (`include/cbls/tracer.h`), null by default.
-It is **not** `SolveCallback` and must not become it: that is a throttled
-progress stream, one row about every second, rewritten by `ParallelSearch` onto
-the portfolio's clock and incumbent so a harness can integrate it as a step
-function. A `Tracer` is an unthrottled event stream delivered on the search's own
-thread with nothing rewritten, and under a portfolio each worker gets **its own**
-(`ParallelConfig::tracer_factory`, called once per worker with that worker's
-index, not once per restart). A factory, once set, **decides**: a call that
-returns null means that worker is untraced, and does *not* fall back to
-`SearchConfig::tracer` — falling back would hand the declining workers one
-shared, unsynchronised sink, which is the race the factory exists to remove. And
-a `SearchConfig::tracer` with **no** factory is refused outright
-(`std::invalid_argument`, on the calling thread, before any worker exists)
-whenever more than one worker would run: one tracer cannot serve N worker
-threads, and neither silent repair is defensible — dropping it loses events the
-caller asked for, keeping it is the race. A one-worker portfolio is allowed
-through, since there is no peer to race with.
-Routing N workers through one instance would either
-need a lock inside the host's tracer or serialise the portfolio on one — which is
-the price `SolveCallback` pays for an ordered stream, and the reason these are
-two mechanisms rather than one.
+`SearchConfig::tracer` is a `Tracer*` (`include/cbls/tracer.h`), null by
+default: an unthrottled event stream on the search's own thread, nothing
+rewritten. It is **not** `SolveCallback` (a throttled stream rewritten onto the
+portfolio's clock and incumbent) and must not become it: N workers through one
+instance would need a lock in the host's tracer or serialise the portfolio.
 
-Five events: `batch_end(kind, iterations, improved)`, `new_best(objective,
-seconds)`, `kick(KickKind)`, `lns(accepted)`, `hook(seconds)`. **The granularity
-is the batch, the kick or the inner-solver call — never the GLS iteration.** A
-per-iteration hook would put a virtual call on the engine's hottest loop, which
-runs `batch_iterations` (1000 by default) times per batch. `iterations` on
-`batch_end` is the run's cumulative GLS count, so a consumer differences
-consecutive events to get one batch's cost, and the value repeats across
-structural and novelty batches, which charge the GLS counter nothing.
+Under a portfolio each worker gets **its own** (`ParallelConfig::tracer_factory`,
+called once per worker with its index, not once per restart). A factory, once
+set, **decides**: a null return leaves that worker untraced, with *no* fallback
+to `SearchConfig::tracer` (one shared, unsynchronised sink). A
+`SearchConfig::tracer` with **no** factory is refused (`std::invalid_argument`,
+on the calling thread, before any worker exists) whenever more than one worker
+would run: dropping it loses events, keeping it is a race. A one-worker
+portfolio is allowed through.
 
-Ordering rules a consumer can rely on: `new_best` arrives before the `batch_end`
-of the batch that produced it, and that `batch_end` carries `improved = true`; a
-`KickKind::LNS` is immediately followed by exactly one `lns()` carrying the
-repair's outcome. `KickKind::Adopt` is portfolio-only — it is the kick a pool
-restart replaces the perturb with, and `adopt_from_pool` returns false at once
-without a pool.
+Five events, `batch_end`, `new_best`, `kick`, `lns` and `hook` (signatures and
+iteration accounting in `include/cbls/tracer.h`). **The granularity is the
+batch, the kick or the inner-solver call — never the GLS iteration**, which
+would put a virtual call on the engine's hottest loop. A consumer can rely on
+`new_best` arriving before the `batch_end` of the batch that produced it, which
+carries `improved = true`, and on a `KickKind::LNS` being followed by exactly
+one `lns()` carrying the repair's outcome. `KickKind::Adopt`, the kick a pool
+restart replaces the perturb with, is portfolio-only.
 
-A null tracer changes nothing: `tests/test_tracer.cpp` compares the objective,
-feasibility, the residual, the iteration count, the perturbation and LNS
-counters, the termination reason, the escape-probe latch, every field of
-`SearchCounters` (including the per-generator rows) and the **full final
-assignment** between a traced and an untraced run of the same seed. The one
-exclusion is `inner_solver_seconds`, which is a duration: that run has no wall
-clock, so both arms are asserted to read 0.0 instead.
-
-### CLI flags
-
-```
---threads N           number of search threads (default: 0 = one per core)
-```
+A null tracer changes nothing: `tests/test_tracer.cpp` compares objective,
+feasibility, residual, iteration count, perturbation and LNS counters,
+termination reason, escape-probe latch, every `SearchCounters` field (per-generator rows included) and the
+**full final assignment** between a traced and an untraced run of the same
+seed, except `inner_solver_seconds`, a duration, which reads 0.0 in both arms
+of that clockless run.
 
 ---
 
 ## GPU
 
-No GPU code. All computation is CPU-only. The bottleneck (`delta_evaluate`,
-invoked per jump candidate) is inherently serial per-jump. GPU acceleration
-would require batch-parallel evaluation of multiple candidate jumps
-simultaneously, which the current architecture does not support.
+No GPU code: the bottleneck, `delta_evaluate` per jump candidate, is serial per
+jump, and the architecture has no batch-parallel evaluation of candidates.
 
 ---
 
