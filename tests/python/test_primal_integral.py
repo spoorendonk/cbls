@@ -381,6 +381,7 @@ def test_a_row_without_the_shared_bound_key_scores_only_where_it_is_equivalent(
         ("objective_tie_break", False, True),
         ("restart_randomization", False, True),
         ("luby_restart_unit", 0, 1),
+        ("presolve", False, True),
         # #267's tunable knobs: "off" is the value every row before them ran.
         ("lns", True, False),
         ("lns_interval", 3, 5),
@@ -394,6 +395,7 @@ def test_a_row_without_the_shared_bound_key_scores_only_where_it_is_equivalent(
         "objective_tie_break",
         "restart_randomization",
         "luby_restart_unit",
+        "presolve",
         "lns",
         "lns_interval",
         "novelty_prob",
@@ -403,7 +405,7 @@ def test_a_row_without_the_shared_bound_key_scores_only_where_it_is_equivalent(
 )
 @pytest.mark.parametrize(
     ("on", "match"),
-    # Before the flag (#216, #217, #218, #239, #267) every CBLS row ran its off arm.
+    # Before the flag (#216, #217, #218, #239, #267, #325) every CBLS row ran its off arm.
     [(False, None), (True, "span 2 configurations")],
     ids=["old-row-is-the-off-arm", "on-arm-refused"],
 )

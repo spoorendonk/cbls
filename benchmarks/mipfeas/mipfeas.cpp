@@ -25,6 +25,7 @@
 #include <atomic>
 #include <benchmarks/common/runner_args.h>
 #include <benchmarks/common/search_config_flags.h>
+#include <benchmarks/mipfeas/original_check.h>
 #include <benchmarks/mipfeas/worker_accounting.h>
 #include <cbls/cbls.h>
 #include <cbls/io_mps.h>
@@ -119,6 +120,11 @@ struct Args {
     // Changes the derived box, so it is recorded per result like every other
     // setting that does.
     int max_propagation_passes = 10;
+    // Build the model from the presolved problem (#322, #325) and write the
+    // point postsolved. Off by default: off is the model every earlier row was
+    // built from. With it on, propagation runs inside presolve, under the two
+    // settings above.
+    bool presolve = false;
     // Portfolio workers. 1 is the single-threaded engine path this benchmark has
     // always measured; >1 runs `ParallelSearch`, the cooperative portfolio, on
     // that many threads. The baseline's `num_workers` is the number to match:
@@ -152,7 +158,7 @@ void print_usage() {
         "Usage: cbls_mipfeas --instance NAME --out-dir DIR [--inst-dir DIR]\n"
         "                    [--budget SECONDS] [--seed N] [--feas-tol T]\n"
         "                    [--inf-clamp B] [--no-propagate-bounds]\n"
-        "                    [--max-propagation-passes N]\n"
+        "                    [--max-propagation-passes N] [--presolve|--no-presolve]\n"
         "                    [--no-compound-moves] [--exact-int-jump]\n"
         "                    [--perturb-near-value] [--no-objective-tie-break]\n"
         "                    [--restart-randomization] [--luby-restart-unit N]\n"
@@ -260,6 +266,10 @@ Args parse_args(int argc, char** argv) {
             a.inf_clamp = parse_double("--inf-clamp", v);
         } else if (s == "--no-propagate-bounds") {
             a.propagate_bounds = false;
+        } else if (s == "--presolve") {
+            a.presolve = true;
+        } else if (s == "--no-presolve") {
+            a.presolve = false;
         } else if (c.value_flag("--max-propagation-passes", v)) {
             a.max_propagation_passes = parse_propagation_passes(v);
         } else if (parse_search_flag(c, a)) {
@@ -386,11 +396,14 @@ int count_unbounded_columns(const cbls::MpsProblem& prob) {
 /// clean. Returns false (having said why) when the file cannot be written, and
 /// the caller then publishes no objective -- an unverifiable row must not carry
 /// a number, which is the whole of issue #138.
+///
+/// `values` holds one value per MPS column: `MpsToModelResult::original_values`,
+/// which maps a presolved model's point back through postsolve.
 bool write_solution_to(const std::string& tmp_path, const Args& args, const cbls::MpsProblem& prob,
-                       const cbls::MpsToModelResult& built, double objective) {
-    if (built.var_handles.size() != prob.vars.size()) {
-        std::fprintf(stderr, "%s: %zu handles for %zu columns; no solution written\n",
-                     args.instance.c_str(), built.var_handles.size(), prob.vars.size());
+                       const std::vector<double>& values, double objective) {
+    if (values.size() != prob.vars.size()) {
+        std::fprintf(stderr, "%s: %zu values for %zu columns; no solution written\n",
+                     args.instance.c_str(), values.size(), prob.vars.size());
         return false;
     }
     {
@@ -405,7 +418,6 @@ bool write_solution_to(const std::string& tmp_path, const Args& args, const cbls
         out << std::setprecision(17);
         out << "# instance " << args.instance << "\n# engine cbls\n";
         out << "=obj= " << objective << '\n';
-        const auto& vars = built.model.variables();
         for (size_t i = 0; i < prob.vars.size(); ++i) {
             const std::string& name = prob.vars[i].name;
             // Only a name the format genuinely cannot carry is refused: the
@@ -421,13 +433,7 @@ bool write_solution_to(const std::string& tmp_path, const Args& args, const cbls
                              args.instance.c_str(), name.c_str());
                 return false;
             }
-            const int32_t var_id = cbls::handle_to_var_id(built.var_handles[i]);
-            if (var_id < 0 || var_id >= static_cast<int32_t>(vars.size())) {
-                std::fprintf(stderr, "%s: column %s has no variable\n", args.instance.c_str(),
-                             name.c_str());
-                return false;
-            }
-            out << name << ' ' << vars[static_cast<size_t>(var_id)].value << '\n';
+            out << name << ' ' << values[i] << '\n';
         }
         if (!out.good()) {
             std::fprintf(stderr, "Failed while writing %s\n", tmp_path.c_str());
@@ -442,11 +448,11 @@ bool write_solution_to(const std::string& tmp_path, const Args& args, const cbls
 /// driver reads this file only after the result appears, and a truncated
 /// solution would verify as an infeasible one.
 bool write_solution(const Args& args, const cbls::MpsProblem& prob,
-                    const cbls::MpsToModelResult& built, double objective) {
+                    const std::vector<double>& values, double objective) {
     const std::string path = args.solution_dir + "/" + args.instance + ".sol";
     const std::string tmp_path = path + ".tmp";
     std::error_code ec;
-    if (!write_solution_to(tmp_path, args, prob, built, objective)) {
+    if (!write_solution_to(tmp_path, args, prob, values, objective)) {
         std::filesystem::remove(tmp_path, ec);
         return false;
     }
@@ -477,6 +483,7 @@ void write_result(const Args& args, const nlohmann::json& extra) {
     j["inf_clamp"] = args.inf_clamp;
     j["propagate_bounds"] = args.propagate_bounds;
     j["max_propagation_passes"] = args.max_propagation_passes;
+    j["presolve"] = args.presolve;
     j["threads"] = args.threads;
     j["share_objective_bound"] = args.share_objective_bound;
     j["lns"] = args.search.lns;
@@ -622,6 +629,65 @@ Verdict assess_result(const cbls::MpsToModelResult& built, const cbls::SearchRes
     return v;
 }
 
+/// The point as the MPS columns see it (postsolved under --presolve), checked
+/// against the parsed file before anything is written (#325): assess_result
+/// judged the model the search ran on, which with presolve is not the file. A
+/// point that fails is withdrawn as `original_mismatch`. `original` receives the
+/// point; it stays empty when there was none to check.
+cbls::mipfeas::OriginalCheck check_against_file(const Args& args, const cbls::MpsProblem& prob,
+                                                const cbls::MpsToModelResult& built,
+                                                const cbls::SearchResult& result, Verdict& verdict,
+                                                std::vector<double>& original) {
+    cbls::mipfeas::OriginalCheck check;
+    if (!verdict.have_solution) {
+        return check;
+    }
+    try {
+        original = built.original_values(built.model);
+        check =
+            cbls::mipfeas::check_original_point(prob, original, result.objective, args.feas_tol);
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "%s: postsolve failed: %s\n", args.instance.c_str(), e.what());
+        check.size_mismatch = true;
+    }
+    if (!check.passes(result.objective)) {
+        verdict.have_solution = false;
+        verdict.status = "original_mismatch";
+    }
+    return check;
+}
+
+/// Presolve's verdict and counts, as `presolve_*` result keys. Under --presolve
+/// propagation runs inside it, so the `n_bounds_*` keys stay zero and
+/// `presolve_bounds_tightened` is its count. On `infeasible` the model was built
+/// without presolve and the counts are zero bar `presolve_rounds`.
+/// `presolve_n_vars`/`presolve_n_cons` are the built model's columns and rows.
+void add_presolve_stats(const cbls::MpsToModelResult& built, nlohmann::json& j) {
+    const cbls::PresolveStats& ps = built.presolve_stats;
+    const char* status = "unchanged";
+    if (ps.status == cbls::PresolveStatus::Reduced) {
+        status = "reduced";
+    } else if (ps.status == cbls::PresolveStatus::Infeasible) {
+        status = "infeasible";
+    }
+    j["presolve_status"] = status;
+    j["presolve_seconds"] = ps.seconds;
+    j["presolve_rounds"] = ps.rounds;
+    j["presolve_cols_fixed"] = ps.cols_fixed;
+    j["presolve_cols_empty"] = ps.cols_empty;
+    j["presolve_rows_empty"] = ps.rows_empty;
+    j["presolve_rows_free"] = ps.rows_free;
+    j["presolve_rows_singleton"] = ps.rows_singleton;
+    j["presolve_rows_redundant"] = ps.rows_redundant;
+    j["presolve_row_sides_dropped"] = ps.row_sides_dropped;
+    j["presolve_duplicates_merged"] = ps.duplicates_merged;
+    j["presolve_bounds_tightened"] = ps.bounds_tightened;
+    j["presolve_n_vars"] = built.var_handles.size();
+    j["presolve_n_cons"] =
+        std::count_if(built.constraint_node_ids.begin(), built.constraint_node_ids.end(),
+                      [](int32_t id) { return id >= 0; });
+}
+
 /// The portfolio arm of the solve: N workers over one shared structure, and the
 /// reconciliation the single-threaded path gets for free.
 ///
@@ -747,6 +813,7 @@ int run_benchmark(int argc, char** argv) {
     mps_opts.inf_clamp = args.inf_clamp;
     mps_opts.propagate_bounds = args.propagate_bounds;
     mps_opts.max_propagation_passes = args.max_propagation_passes;
+    mps_opts.presolve.enabled = args.presolve;
     const auto t_build = std::chrono::steady_clock::now();
     cbls::MpsToModelResult built;
     try {
@@ -874,13 +941,16 @@ int run_benchmark(int argc, char** argv) {
     const double wall = seconds_since(t0);
 
     Verdict verdict = assess_result(built, result, args.feas_tol);
+    std::vector<double> original;
+    const cbls::mipfeas::OriginalCheck original_check =
+        check_against_file(args, prob, built, result, verdict, original);
     // The solution goes out before the result does. The driver resumes on the
     // result file's existence and verifies what it finds next to it, so a
     // result that appeared first would leave a window in which the row looks
     // complete and unverifiable at once.
     bool solution_write_failed = false;
     if (verdict.have_solution && !args.solution_dir.empty() &&
-        !write_solution(args, prob, built, result.objective)) {
+        !write_solution(args, prob, original, result.objective)) {
         // No solution file means no independent verdict, and a row with no
         // verdict must not publish a number (#138).
         verdict.have_solution = false;
@@ -976,7 +1046,16 @@ int run_benchmark(int argc, char** argv) {
         // infeasibility reads exactly like "propagation found nothing".
         {"bound_propagation_infeasible", built.bound_stats.infeasible},
         {"bound_propagation_hit_pass_limit", built.bound_stats.hit_pass_limit},
+        // The point's check against the file (#325), as ratios to the
+        // tolerance: above 1 fails. All zero when there was no point to check.
+        {"original_max_row_ratio", original_check.max_row_ratio},
+        {"original_max_bound_ratio", original_check.max_bound_ratio},
+        {"original_max_integrality", original_check.max_integrality},
+        {"original_objective_drift", original_check.objective_drift},
     };
+    if (args.presolve) {
+        add_presolve_stats(built, j);
+    }
     j["objective"] =
         verdict.have_solution ? nlohmann::json(result.objective) : nlohmann::json(nullptr);
     // How many portfolio workers ran to the end (#170); see worker_accounting.h.

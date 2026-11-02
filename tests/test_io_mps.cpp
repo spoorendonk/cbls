@@ -530,3 +530,159 @@ TEST_CASE("a ranged E row creates its upper bound before the geq node", "[mps][a
     REQUIRE(m.node(leq_id - 2).op == cbls::NodeOp::Const);
     REQUIRE_THAT(m.node(leq_id - 2).const_value, WithinAbs(5.0, 1e-12));
 }
+
+// ---------------------------------------------------------------------------
+// Presolve in the adapter (#325).
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// One reduction of each kind presolve applies here:
+//   min  x + 2 y + 3 z
+//   s.t. C1: x + y + z >= 3
+//        S1: y <= 4            (singleton: becomes y's bound)
+//        R1: x + y <= 30       (redundant: x, y <= 10)
+//        x, y integer in [0, 10];  z fixed at 1 (FX)
+// Optimum: x = 2, y = 0, z = 1 -> obj 5.
+const std::string kPresolvable =
+    "NAME          PRE\n"
+    "ROWS\n"
+    " N  COST\n"
+    " G  C1\n"
+    " L  S1\n"
+    " L  R1\n"
+    "COLUMNS\n"
+    "    MARKER1     'MARKER'                 'INTORG'\n"
+    "    X    COST    1.0   C1    1.0\n"
+    "    X    R1      1.0\n"
+    "    Y    COST    2.0   C1    1.0\n"
+    "    Y    S1      1.0   R1    1.0\n"
+    "    MARKER2     'MARKER'                 'INTEND'\n"
+    "    Z    COST    3.0   C1    1.0\n"
+    "RHS\n"
+    "    RHS  C1      3.0   S1    4.0\n"
+    "    RHS  R1     30.0\n"
+    "BOUNDS\n"
+    " UP BND  X      10.0\n"
+    " UP BND  Y      10.0\n"
+    " FX BND  Z       1.0\n"
+    "ENDATA\n";
+
+cbls::MpsToModelOptions presolve_on() {
+    cbls::MpsToModelOptions opts;
+    opts.presolve.enabled = true;
+    return opts;
+}
+
+}  // namespace
+
+TEST_CASE("mps_to_model without presolve builds the model it always has", "[mps][adapter]") {
+    auto prob = cbls::read_mps(write_file("off_identical.mps", kSmallLp).string());
+    auto built = cbls::mps_to_model(prob);
+    // obj: Const+Prod for 2y, Sum (3); C1: Sum, Const, Geq (3); C2: Neg, Sum,
+    // Const, Leq (4).
+    REQUIRE(built.model.num_nodes() == 10);
+    REQUIRE(built.var_handles == std::vector<int32_t>{-1, -2});
+    REQUIRE(built.presolve_stats.status == cbls::PresolveStatus::Unchanged);
+    REQUIRE(built.postsolve.n_original() == 0);
+    REQUIRE(built.reduced_to_original.empty());
+
+    built.model.var_mut(vid(built.var_handles[0])).value = 3.0;
+    built.model.var_mut(vid(built.var_handles[1])).value = 0.5;
+    REQUIRE(built.original_values(built.model) == std::vector<double>{3.0, 0.5});
+}
+
+TEST_CASE("a presolved model is smaller and its postsolved point verifies", "[mps][adapter]") {
+    auto prob = cbls::read_mps(write_file("presolvable.mps", kPresolvable).string());
+    const auto plain_nodes = cbls::mps_to_model(prob).model.num_nodes();
+    auto built = cbls::mps_to_model(prob, presolve_on());
+
+    const cbls::PresolveStats& s = built.presolve_stats;
+    REQUIRE(s.status == cbls::PresolveStatus::Reduced);
+    REQUIRE(s.cols_fixed == 1);
+    REQUIRE(s.rows_singleton == 1);
+    REQUIRE(s.rows_redundant == 1);
+    REQUIRE(built.model.num_vars() == 2);
+    REQUIRE(built.var_handles.size() == 2);
+    REQUIRE(built.reduced_to_original == std::vector<int32_t>{0, 1});
+    REQUIRE(built.constraint_node_ids.size() == 3);
+    REQUIRE(built.constraint_node_ids[0] >= 0);
+    REQUIRE(built.constraint_node_ids[1] == -1);
+    REQUIRE(built.constraint_node_ids[2] == -1);
+    REQUIRE(built.model.num_nodes() < plain_nodes);
+    REQUIRE(built.objective_node_id >= 0);
+
+    cbls::FloatIntensifyHook hook;
+    cbls::LNS lns(0.3);
+    auto result = solve_deterministic(built.model, 200000, 42, &hook, &lns);
+    REQUIRE(result.feasible);
+
+    const std::vector<double> x = built.original_values(built.model);
+    REQUIRE(x.size() == 3);
+    REQUIRE(x[2] == 1.0);
+    REQUIRE(x[1] <= 4.0);
+
+    // The postsolved point, checked on the model built without presolve.
+    auto plain = cbls::mps_to_model(prob);
+    for (std::size_t j = 0; j < x.size(); ++j) {
+        plain.model.var_mut(vid(plain.var_handles[j])).value = x[j];
+    }
+    cbls::full_evaluate(plain.model);
+    const cbls::VerifyResult v = cbls::verify_model(plain.model);
+    REQUIRE(v.ok);
+    REQUIRE_THAT(plain.model.node_value(plain.objective_node_id),
+                 WithinAbs(result.objective, 1e-9));
+    REQUIRE(result.objective >= 5.0 - 1e-9);
+}
+
+TEST_CASE("a presolve-infeasible MPS falls back to the plain model", "[mps][adapter]") {
+    // x + y >= 30 with x, y <= 10: propagation proves the box empty.
+    const std::string infeasible =
+        "NAME          INF\n"
+        "ROWS\n"
+        " N  COST\n"
+        " G  C1\n"
+        "COLUMNS\n"
+        "    X    COST    1.0   C1    1.0\n"
+        "    Y    COST    1.0   C1    1.0\n"
+        "RHS\n"
+        "    RHS  C1     30.0\n"
+        "BOUNDS\n"
+        " UP BND  X      10.0\n"
+        " UP BND  Y      10.0\n"
+        "ENDATA\n";
+    auto prob = cbls::read_mps(write_file("presolve_inf.mps", infeasible).string());
+    auto built = cbls::mps_to_model(prob, presolve_on());
+    REQUIRE(built.presolve_stats.status == cbls::PresolveStatus::Infeasible);
+    REQUIRE(built.postsolve.n_original() == 0);
+    REQUIRE(built.var_handles.size() == 2);
+    REQUIRE(built.constraint_node_ids.size() == 1);
+    REQUIRE(built.constraint_node_ids[0] >= 0);
+    REQUIRE(built.bound_stats.infeasible);
+    REQUIRE(built.model.num_nodes() == cbls::mps_to_model(prob).model.num_nodes());
+}
+
+TEST_CASE("presolve can leave no column and a constant objective", "[mps][adapter]") {
+    // x fixed at 2: C1 empties and goes, and the objective is the constant 2.
+    const std::string all_fixed =
+        "NAME          FIX\n"
+        "ROWS\n"
+        " N  COST\n"
+        " G  C1\n"
+        "COLUMNS\n"
+        "    X    COST    1.0   C1    1.0\n"
+        "RHS\n"
+        "    RHS  C1      1.0\n"
+        "BOUNDS\n"
+        " FX BND  X       2.0\n"
+        "ENDATA\n";
+    auto prob = cbls::read_mps(write_file("presolve_fix.mps", all_fixed).string());
+    auto built = cbls::mps_to_model(prob, presolve_on());
+    REQUIRE(built.model.is_closed());
+    REQUIRE(built.model.num_vars() == 0);
+    REQUIRE(built.constraint_node_ids == std::vector<int32_t>{-1});
+    REQUIRE(built.objective_node_id >= 0);
+    cbls::full_evaluate(built.model);
+    REQUIRE_THAT(built.model.node_value(built.objective_node_id), WithinAbs(2.0, 1e-12));
+    REQUIRE(built.original_values(built.model) == std::vector<double>{2.0});
+}

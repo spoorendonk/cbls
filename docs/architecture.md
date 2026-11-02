@@ -2634,8 +2634,8 @@ it an empty box.
 
 `presolve(LinearProblem, PresolveOptions)` reduces a linear problem and returns
 the reduced one with a `Postsolve` that maps a reduced solution back to one value
-per original column. **Default off** (`PresolveOptions::enabled`); no adapter
-calls it yet (MPS #325, `.nl` #326).
+per original column. **Default off** (`PresolveOptions::enabled`). The MPS
+adapter calls it under `MpsToModelOptions::presolve` (#325; `.nl` is #326).
 
 - **Problem form.** `LinearProblem` is a neutral CSR: column bounds, integrality,
   a minimisation objective with offset, and rows `lo <= a·x <= hi`. `1e20` and
@@ -2685,6 +2685,25 @@ tests over 1000 random problems built around a known feasible point: the point
 survives into the reduced problem and postsolves back to itself, and every
 integer point of a small reduced box postsolves to an original-feasible point
 with the same objective.
+
+**MPS adapter (#325).** With `MpsToModelOptions::presolve.enabled`,
+`mps_to_model` moves its row matrix into a `LinearProblem` (objective
+coefficients summed per column, the offset carried), presolves it with
+propagation set by the adapter's own `propagate_bounds` and
+`max_propagation_passes` (so it runs once, inside presolve, and `bound_stats`
+stays zero), and builds the model from the reduced problem: one variable per
+reduced column, named and typed from its MPS column; per kept row `eq_expr` when
+`lo == hi`, else one comparison per finite side; the objective whenever the file
+had one, a constant if presolve emptied it. `var_handles` is then per reduced
+column, `constraint_node_ids` per MPS row with -1 for a removed one, and
+`original_values(model)` maps the model's point back through the postsolve (the
+identity without presolve). On `Infeasible` the plain model is built and only
+`presolve_stats` records the verdict. Off, the model is node for node the one
+built before #325. `cbls_mipfeas --presolve` writes `original_values` and, with
+or without presolve, first checks that point against the parsed `MpsProblem`
+(`benchmarks/mipfeas/original_check.h`: compensated row sums, declared bounds,
+integrality, `c·x + offset` against the reported objective); a point that fails
+is reported `original_mismatch` and carries no objective.
 
 ### JSONL Model Format
 

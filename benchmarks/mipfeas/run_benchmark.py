@@ -319,6 +319,7 @@ def build_run_record(
             "perturb_near_value": args.perturb_near_value,
             "objective_tie_break": args.objective_tie_break,
             "propagate_bounds": args.propagate_bounds,
+            "presolve": args.presolve,
             "large_bytes": args.large_bytes,
             "jobs_planned": planned,
             "jobs_to_run": to_run,
@@ -439,6 +440,7 @@ def build_command(job: Job, args: argparse.Namespace, results_dir: Path) -> list
             "--threads",
             str(args.cbls_threads),
             *([] if args.propagate_bounds else ["--no-propagate-bounds"]),
+            *(["--presolve"] if args.presolve else []),
             *solution_flags,
             "--commit",
             args.commit,
@@ -1318,6 +1320,13 @@ def main() -> int:
         "narrowing finite bounds, and that half is unconditional. Not a "
         "configuration to publish, since the clamp it restores is not implied by "
         "the constraints",
+    )
+    parser.add_argument(
+        "--presolve",
+        action="store_true",
+        help="build the CBLS model from the presolved problem (#322) and write "
+        "postsolved solutions; off by default. A CBLS-side reduction CP-SAT does on "
+        "its own, recorded per result as presolve",
     )
     parser.add_argument(
         "--no-compound-moves",

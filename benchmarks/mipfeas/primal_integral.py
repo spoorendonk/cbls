@@ -134,6 +134,7 @@ CONFIG_KEYS = (
     "inf_clamp",
     "propagate_bounds",
     "max_propagation_passes",
+    "presolve",
     "lns",
     "lns_interval",
     "novelty_prob",
@@ -186,7 +187,13 @@ def config_string(result: dict[str, object]) -> str:
     # #226, so a new default row carries `objective_tie_break=True` and does
     # not match a table scored before it -- which is the point: that table was
     # measured on the old default and must be regenerated, not averaged in.
-    for opt_in in ("perturb_near_value", "objective_tie_break", "restart_randomization"):
+    # Presolve (#325) likewise: off is the model every earlier row was built from.
+    for opt_in in (
+        "perturb_near_value",
+        "objective_tie_break",
+        "restart_randomization",
+        "presolve",
+    ):
         if cells.get(opt_in) is False:
             del cells[opt_in]
     # #239's Luby schedule, whose off arm is a unit of 0 rather than False.
