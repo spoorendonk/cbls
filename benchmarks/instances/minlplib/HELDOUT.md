@@ -536,6 +536,18 @@ on it, so it says nothing about instances presolve leaves untouched (there the
 defaults to this sample and to `heldout/`, refuses the published roster, and
 takes `--instances` for a subset (the laptop smoke).
 
+**How the report reads.** After the shared per-arm scoring, the report adds
+#331's section (`benchmarks/minlplib/presolve_report.py`): each arm's
+GM(gap+1) against the control's, per seed and pooled over seeds, with feasible
+counts. A ratio is taken over the instances feasible, with a finite gap, in
+both the arm and the control at that seed, so an instance only one of them
+solves moves the feasible count, not the ratio; below 1 is the arm ahead. The
+noise floor is the control's GM per seed over one instance set (feasible in
+every arm at every seed), max over min; a pooled ratio inside
+[1/floor, floor] is not a difference. The section opens with `INCOMPLETE`,
+naming the missing (instance, arm, seed) runs, when the rows fall short of the
+stamped seeds and roster size: #331's decision is read off a complete run only.
+
 ## Reproducing and checking
 
     .venv/bin/pytest tests/python/test_minlplib_heldout.py -q

@@ -1734,11 +1734,14 @@ def render_report(
     *,
     heading: str = ABLATION_HEADING,
     transfer: TransferPlan | None = None,
+    section: Callable[[list[RunRow]], list[str]] | None = None,
 ) -> str:
     """The whole campaign report, as text.
 
     `transfer` -- the plan of #145's campaign -- switches on #145's section;
-    the ablation passes None and gets no such section.
+    the ablation passes None and gets no such section. `section` appends a
+    campaign's own section over the same rows, after the budget check
+    (#331's, from `presolve_report`).
 
     A file that mixes budgets is refused outright: every comparison in it
     would be a comparison of budgets as well as of arms.
@@ -1820,6 +1823,9 @@ def render_report(
     if transfer is not None:
         lines.append("")
         lines += transfer_lines(summaries, cells, instances, transfer, budgets, commits)
+    if section is not None:
+        lines.append("")
+        lines += section(rows)
     lines.append("")
     lines.append("--- instances excluded from every claim ---")
     lines += _excluded_lines(cells, [CONTROL_ARM, *arms])

@@ -128,6 +128,7 @@ from benchmarks.minlplib.ablation_report import (  # noqa: E402
     render_report,
     roster_meta,
 )
+from benchmarks.minlplib.presolve_report import PresolvePlan, presolve_lines  # noqa: E402
 from benchmarks.minlplib.run_benchmark import (  # noqa: E402
     DEFAULT_BUILD_DIR,
     DEFAULT_INST_DIR,
@@ -593,6 +594,23 @@ def recorded_seeds(out_dir: Path) -> list[int] | None:
         return [int(seed) for seed in text.split(",")]
     except ValueError:
         return None
+
+
+def recorded_roster_size(out_dir: Path) -> int | None:
+    """The instance count an out-dir's stamp records (`roster=N:hash`), or None.
+
+    None also for `roster=0:all`, the whole-roster stamp, whose size it does
+    not record.
+    """
+    text = stamp_field(out_dir, "roster")
+    if not text:
+        return None
+    count, _, _ = text.partition(":")
+    try:
+        size = int(count)
+    except ValueError:
+        return None
+    return size or None
 
 
 def stamp_conflict(out_dir: Path, stamp: str, *, resume: bool) -> str | None:
@@ -1305,10 +1323,24 @@ def report_for(args: argparse.Namespace, results: Path, gate: dict[str, object] 
     `bounds.csv` the run took its roster from, so the bands are the held-out
     roster's own and nothing is imported from the published one.
 
-    The presolve campaign gets the shared per-arm scoring under its own heading.
+    The presolve campaign gets the shared per-arm scoring under its own heading,
+    then #331's GM(gap+1) section. Its plan takes the seeds and the roster size
+    from the stamp where there is one (a `--report-only` call repeats neither),
+    so a partial campaign is named as one.
     """
     if args.campaign == PRESOLVE_CAMPAIGN:
-        return render_report(results, gate=gate, heading=PRESOLVE_HEADING)
+        presolve = PresolvePlan(
+            arms=tuple(arm.name for arm in PRESOLVE_ARMS),
+            seeds=tuple(recorded_seeds(args.out_dir) or args.seeds),
+            instances=tuple(args.instances),
+            roster_size=recorded_roster_size(args.out_dir),
+        )
+        return render_report(
+            results,
+            gate=gate,
+            heading=PRESOLVE_HEADING,
+            section=lambda rows: presolve_lines(rows, presolve),
+        )
     if args.campaign != TRANSFER_CAMPAIGN:
         return render_report(results, gate=gate)
     meta = roster_meta(args.inst_dir / "bounds.csv")
