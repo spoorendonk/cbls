@@ -2135,25 +2135,10 @@ insert. **Restart selection:** `get_restart_point()` samples
 uniformly from the better half of the pool rather than the single best. That
 reduces the pull toward one basin without preventing it: `submit` applies no
 diversity criterion and no per-worker quota, so on an objective model the pool
-tends to fill with one worker's successive refinements of a single point, and
-the better half of that is close to the best. Three structural alternatives
-were measured against it in #161: a per-worker reserved slot, a per-worker tabu
-set of start points, and a draw weighted by distance from the asking worker.
-They ran at 4 threads and 60s, 8 seeds, on five MIPfeas instances admitted by a
-pre-registered control-only pilot as stalling on that engine. The engine
-was `ea89d15` plus the switch in `8b7b37b` (`CBLS_ISSUE161_ARM`). None could be
-separated from this rule: each arm's mean paired primal-gap difference had a 95%
-CI spanning zero, and the narrowest half-width (0.013) was about four times the
-largest mean (0.0033). The engagement counters explain part of that:
-- the slot changed the candidate set on a third of draws but was picked on only
-  6% of draws;
-- despite slot and tabu each changing the candidate set in every run, 13 of 40
-  runs of each ended on control's objective bit for bit;
-- the distance weights were close to uniform, because the asker sits at about
-  the same distance from every entry of a pool of near-identical refinements.
-
-The rule stands. The numbers, the protocol and the earlier, superseded campaign
-are in the comment on `SolutionPool::get_restart_point`.
+tends to fill with one worker's successive refinements of a single point. Three
+structural alternatives (a per-worker reserved slot, a per-worker tabu set, a
+distance-weighted draw) could not be separated from this rule (#161); the
+numbers and protocol are in the comment on `SolutionPool::get_restart_point`.
 
 ### Parallel Search
 
@@ -2174,84 +2159,39 @@ const-handle split described below.
   `obj <= bound` row with its own assignment untouched — which is why `src/cli.cpp`
   and `benchmarks/mipfeas/` restore the winner into it before reporting.
 - **`solve(std::function<Model()>, ...)`** — the factory overloads. These share
-  whatever the returned model shares: the master overload above is implemented as
-  exactly a factory returning a copy of a frozen master, so a factory that returns
-  a copy of a **frozen** model shares the structure too. `benchmarks/mipfeas/` does
-  that on purpose, to keep the per-worker copies in its own setup phase instead of
-  inside the search's deadline. A factory that returns a copy of an **open** model,
-  or builds a fresh one per call, deep-copies the DAG per worker. `freeze()` is the
-  operative call, not the choice of overload. A Python caller reaches the shared
-  structure the same way: freeze a master and return it from every call, and
+  whatever the returned model shares, so a factory returning a copy of a
+  **frozen** model shares the structure too (the master overload is exactly that
+  factory); `benchmarks/mipfeas/` does so to keep the per-worker copies out of
+  the search's deadline. A copy of an **open** model, or a fresh one per call,
+  deep-copies the DAG per worker: `freeze()` is the operative call, not the
+  overload. From Python, freeze a master and return it from every call;
   nanobind's by-value cast copies it into the sharing copy constructor. Python
-binds the master overload as `ParallelSearch.solve_master` and the factory one
-as `solve_parallel`.
+  binds the master overload as `ParallelSearch.solve_master` and the factory one
+  as `solve_parallel`.
 
 Callers: `src/cli.cpp` and the `cvrp`, `uc-chped` and `minlplib` runners at
 `--threads > 1` use the master overload (#262), as does
 `cbls_minlplib_portfolio` at every thread count; `benchmarks/mipfeas/` uses the
 factory over pre-built copies of its frozen master.
 
-**Measured** on `neos-5114902-kasavu` (710k columns, 961k rows, 4.92M nonzeros,
-4.30M DAG nodes): `cbls_mipfeas --instance neos-5114902-kasavu --budget 30
---seed 42`, Release, idle 12-core box, the two arms run serially and interleaved
-per thread count, `peak_rss_kib` and `iterations` from the runner's own record.
-**Before at `0dc826b`, after at `06eb3e5`.**
-
-| workers | RSS before | RSS after | iterations before | iterations after |
-|---|---|---|---|---|
-| 1 | 0.78 GiB | 0.78 GiB | 257 | 257 |
-| 4 | 3.35 GiB | 1.93 GiB | 507 | 513 |
-| 8 | 6.04 GiB | 3.15 GiB | 419 | 437 |
-
-The marginal cost of a worker falls from **~0.75-0.86 GiB** to **~0.34-0.39 GiB**.
-The iteration column is the throughput answer for the *large*-model regime, where
-splitting `ExprNode` from its values could plausibly have cost locality (138 MB of
-nodes plus 34 MB of values, far past any L3): at one thread it is identical, 257
-against 257, and the portfolio arms are within noise of each other on a
-nondeterministic run.
-
-The **small**-model regime was measured separately, because the two regimes stress
-different things and neither covers the other: `cbls_minlplib --no-time-limit
---max-iterations 20000 --seed 7` on four instances, idle box, serial, interleaved,
-median of 5, same two commits. chain50 2.306 -> 2.241s, ex8_6_1 3.045 -> 3.024,
-maxmin 2.671 -> 2.733, nvs05 7.687 -> 7.424; total 15.710 -> 15.423s (0.982x),
-objectives identical in all ten runs. That is fixed work against wall clock, where
-the kasavu column above is fixed wall clock against work — together they say the
-representation change cost nothing at either end.
-
-What remains per worker is genuinely per-worker: the variables whole (104 B x 710k
-= 74 MB), the node values (8 B x 4.3M = 34 MB), at least three `Model::State`
-snapshots (~23 MB each — a `vector<vector<int32_t>>` sized `num_vars` is 17 MB of
-empty headers alone), FJ's per-variable and per-constraint tables,
-`ViolationManager`'s two per-constraint vectors, FJ's `LinearJumpScorer` (4 B
-per row, 12 B per row it has built, and a slope table of 8 B per `G_v`
-incidence, `calloc`'d on the first build -- above glibc's mmap threshold (at
-most 32 MiB, so on kasavu) only the pages the built rows' columns land on are
-resident, below it the block may be zero-filled whole -- the slopes are structure, but each worker builds
-its own), and `dag_ops.cpp`'s
-`thread_local` adjoint scratch (~44 MB here), which that scorer's slope build
-allocates on a pure MIP too, not only once the Newton paths run. The scorer and
-the scratch together moved kasavu's peak RSS (30s, Release, 12-core box) from
-820 MB to 923 MB at one worker and from 3.16 to 3.93 GiB at eight -- about
-+95 MB per worker, nearly all of it the scratch and the built slopes -- measured
-at `53e0587` against `cf9da09`; the table above predates them. #176 replaced
-the scorer's per-row pool (12 B per built nonzero, searched by binary search) with
-the `G_v`-parallel table and left the footprint where it was: kasavu at 20s,
-one worker, 923,620 -> 924,376 KiB (`896b683` -> `38a8543`, the records'
-`commit_sha`), eight workers 3,888,820 -> 3,866,060 KiB (`peak_rss_kib`; kasavu
-ran no LNS repair here), one run each, serial under a machine-wide lock on a
-12-core box (load 4.3-4.4 throughout, another job's tail). The shared pool's
-`max(10, 2N)` `Solution`s grow with N too. So the criterion to hold this to is
+Sharing roughly halves a worker's marginal memory on a large model, at no
+throughput cost (#157, #176). What remains per worker is genuinely per-worker: the variables, the node
+values, at least three `Model::State` snapshots, FJ's per-variable and
+per-constraint tables, `ViolationManager`'s two per-constraint vectors, FJ's
+`LinearJumpScorer` (its slope table is structure, but each worker builds its
+own) and `dag_ops.cpp`'s `thread_local` adjoint scratch, which that scorer's
+slope build allocates on a pure MIP too. The shared pool's `max(10, 2N)`
+`Solution`s grow with N too. So the criterion to hold this to is
 "1-worker + N x a measured per-worker constant", not "1-worker + a small
 constant" — and treat that constant as a **floor**: its largest term scales with
-the column count, and this roster's `supportcase19` has 2x kasavu's.
+the column count.
 
 Four things make it cooperative rather than N independent runs, and all four
 are reached through one parameter -- `cbls::solve()`'s trailing
 `SearchCoordination*`, which is null at every call site outside this class
 (`setcover` always, the other runners at `--threads 1`; the portfolio A/B
-harness `cbls_minlplib_portfolio` never takes this path), leaving the single-threaded trajectory
-bit-identical to what it was before the parameter existed:
+harness `cbls_minlplib_portfolio` never takes this path), where null leaves
+the search unchanged:
 
 1. **Submit when found.** `record_best()` shares each new incumbent into the
    pool the moment it records one, not once at the end of the run. One
@@ -2261,132 +2201,73 @@ bit-identical to what it was before the parameter existed:
 2. **Restart from the pool.** On the full-stagnation route
    (`stagnation >= perturbation_period`) a worker draws `get_restart_point()`
    and restarts from it instead of perturbing its own assignment, and that
-   adoption *is* the diversification kick. Three qualifications, each
-   load-bearing:
-   - every `lns_interval`-th kick stands adoption down entirely, so the LNS
-     destroy-repair cadence keeps running. Without that, `diversify()` -- the
-     only caller of `LNS::destroy_repair`, and the only route that may draw LNS
-     once a feasible solution exists -- would never run again in a portfolio
-     worker, and `cbls --lns 0.3` would build an LNS per worker and never repair
-     with it;
-   - adoption **disarms** the Float escape probe that `maybe_diversify` armed
-     immediately before, on the ground that the stationary-point diagnosis was
-     about the assignment just left. So of #117's two arming routes, portfolio
-     workers with a non-empty pool keep only the time-based one. #117's measured
-     roster was single-threaded and therefore describes a path the default CLI
-     no longer takes;
-   - adoption can be **refused** -- an empty pool, a state of the wrong shape, or
-     a draw equal to the assignment the worker already holds -- and the kick
-     then falls through to the ordinary `diversify()`. The re-grounding is
-   `restore_state` -> `full_evaluate` -> re-derive the objective bound from the
-   adopted point -> `vm.invalidate_cache()` -> `fj.reset_weights()`; a state
-   whose shape does not match the local model is refused rather than restored
-   element-wise into the wrong variables. Deliberately *not* wired to #102's
-   unproductive-batch route, which fires on an iteration count and can recur
-   every batch -- an adoption is a full re-grounding and belongs on the slow
-   route.
+   adoption *is* the diversification kick. It re-grounds: `restore_state` ->
+   `full_evaluate` -> re-derive the objective bound from the adopted point ->
+   `vm.invalidate_cache()` -> `fj.reset_weights()`. It is deliberately *not*
+   wired to #102's unproductive-batch route, which can recur every batch.
+   Three qualifications, each load-bearing:
+   - every `lns_interval`-th kick stands adoption down, so the LNS cadence
+     keeps running: `diversify()` is the only caller of `LNS::destroy_repair`
+     and the only route that may draw LNS once a feasible solution exists;
+   - adoption **disarms** the Float escape probe `maybe_diversify` just armed,
+     since that diagnosis was about the assignment just left; so of #117's two
+     arming routes, workers with a non-empty pool keep only the time-based one;
+   - adoption is **refused** on an empty pool, a state whose shape does not
+     match the local model, or a draw equal to the worker's assignment, and
+     the kick falls through to the ordinary `diversify()`.
 3. **Share the objective bound** (#179). The pool keeps its best feasible,
    finite objective `G` in an atomic, written under the mutex by `submit` and
    read without it. At each **batch boundary** a worker whose bound is looser
-   than `G - eps(G)` -- the same `eps` rule `record_best` uses
-   -- tightens to it, then `fj.resync()`. Without it
-   a worker behind a peer kept searching for points the portfolio had already
-   beaten until it stagnated long enough to adopt. The rules:
-   - **never loosen past the shared cap.** The batch-boundary test is strict,
-     and every other writer of the bound during a solve -- `record_best`, the
-     adoption re-grounding and the stall re-grounding (#241); the witness
-     sentinel writes only over `+inf` -- takes the min with the shared cap at
-     the current step. That matters for `record_best`: a worker behind the
-     global best still records its own improvements (below), and `obj - eps`
-     from one of them would otherwise raise a bound the pool had tightened. The
-     one deliberate loosening is the stall re-grounding on a continuous
-     objective, which re-derives the cap at the shrunk step: it gives up the
-     part of a tightening that was the step, never a peer's improvement.
-     (`solve()` itself opens at `+inf`, so a portfolio restart re-tightens at
-     its first boundary.)
+   than `G - eps(G)` -- the same `eps` rule `record_best` uses -- tightens to
+   it, then `fj.resync()`, so a worker behind a peer stops searching for points
+   the portfolio has already beaten. The rules, each argued at
+   `sync_shared_bound` in `src/search.cpp`:
+   - **never loosen past the shared cap.** The boundary test is strict, and
+     every other writer of the bound during a solve (`record_best`, the
+     adoption and stall re-groundings, #241) takes the min with the shared cap
+     at the current step; the witness sentinel writes only over `+inf`. The one
+     deliberate loosening is the stall re-grounding on a continuous objective,
+     which gives up the part of a tightening that was the step, never a peer's
+     improvement. (`solve()` opens at `+inf`, so a portfolio restart
+     re-tightens at its first boundary.)
    - **only a peer moving tightens.** Each writer records the `G` its cap came
      from; the boundary tightens (and counts in `shared_bound_tightenings`)
-     only for a `G` below it, and never for a `G` that is the worker's own
-     best; `record_best` leaves the bound alone for an own best behind an
-     unchanged `G`, which so moves nothing and is no improvement (below). On a continuous objective the step grows after
-     each recorded incumbent (#241), so `G - eps(G)` at the grown step sits
-     under a bound derived from the same `G`: that gap is the step, not a
-     peer.
-   - **the bound moves, nothing else does.** Not the assignment -- the worker
-     is now violating a tighter row, ViolationLS's normal state after any new
-     best. Not `best_feasible_obj` or `best_state`, since the worker did not
-     find the peer's point and `finish()` must return one it did; so
-     `record_best`'s strict-improvement test stays against the worker's OWN
-     best, and a point between `G` and it is still recorded, shared and
-     returned. But with sharing on it is not an *improvement* to the loop unless
-     the bound moved: no weight reset and no stagnation reset, which would
-     otherwise postpone the adoption that moves a lagging worker onto the
-     better region. Not the GLS weights either: `resync`, not `reset_weights` --
-     the one bound tightening that keeps them, since an own new best and an
-     adoption both reset -- because only one row changed;
-   - **it reaches workers that are not feasible yet.** Their bound is `+inf`
-     (or #100's sentinel) until their own first feasible point, so the first
-     peer to go feasible puts every other worker's objective row in play, where
-     single-threaded ViolationLS keeps it vacuous until then. Deliberate. Its
-     cost cannot show as lost *portfolio* feasibility -- `G` exists only once
-     some worker is feasible, and that worker's point is the portfolio's -- so a
-     feasibility count cannot falsify it; only the Primal Integral and the gap
-     can, through the workers it diverts;
-   - **only feasible, finite objectives count** toward `G`. The pool also holds
-     closest-approach states (usually *better* objectives, infeasible) and #100's
-     `+inf` witness. `G` is the submitter's objective, not re-evaluated on the
-     reader's model -- the workers' models are one model by construction; a
-     factory that returns different ones misdirects the row's pressure but cannot
-     corrupt an incumbent;
-   - **the row's weight is never masked.** FJ's two-phase linear-first mode
-     would zero it, but `solve()` runs FJ single-phase, and the bound is only
-     written when the model has an objective row.
+     only for a `G` below it, never for the worker's own best, and
+     `record_best` leaves the bound alone for an own best behind an unchanged
+     `G`.
+   - **the bound moves, nothing else does.** Not the assignment, not
+     `best_feasible_obj` or `best_state` (`finish()` must return a point this
+     worker found, so `record_best` still tests against its OWN best, and a
+     point between `G` and it is still recorded, shared and returned), and not
+     the GLS weights (`resync`, not `reset_weights`). With sharing on, such a
+     point is no *improvement* to the loop unless the bound moved: no weight
+     or stagnation reset, which would postpone the adoption that moves a
+     lagging worker.
+   - **it reaches workers that are not feasible yet.** The first peer to go
+     feasible puts every worker's objective row in play, where single-threaded
+     ViolationLS keeps it vacuous until the worker's own first feasible point.
+     Deliberate; its cost can show only in the Primal Integral and gap, not in
+     portfolio feasibility.
+   - **only feasible, finite objectives count** toward `G`, never the pool's
+     closest-approach states or #100's `+inf` witness. `G` is not re-evaluated
+     on the reader's model; a factory returning different models misdirects
+     the row's pressure but cannot corrupt an incumbent.
+   - **the row's weight is never masked**: `solve()` runs FJ single-phase, and
+     the bound is only written when the model has an objective row.
 
    `ParallelConfig::share_objective_bound` (default on; `cbls_mipfeas
-   --no-share-bound`) switches it off, which is the A/B control and otherwise
-   the pre-#179 portfolio. `SearchCounters` reports its engagement in both arms:
-   `shared_bound_tightenings` (the global best set the bound),
-   `own_best_behind_global` (an own best recorded while a peer held a better
-   one), and `bound_behind_global_batches` / `_seconds` (batches run with a
-   bound looser than the global best's -- the control arm's measure of the
-   opportunity; 0 by construction with sharing on, which does not measure a
-   peer improving mid-batch). The `_seconds` cost two `steady_clock::now()` per
-   behind batch, only in the control arm and only on a run with a wall clock,
-   and nothing reads them back. A lone worker's single solve never fires any of
-   it; a portfolio restart does, because the pool then holds the worker's own
-   earlier solve, and the counters count that as the global best. `--threads 1`
-   passes no coordination at all.
+   --no-share-bound`) switches it off, which is the A/B control.
+   `SearchCounters` reports its engagement in both arms
+   (`shared_bound_tightenings`, `own_best_behind_global`,
+   `bound_behind_global_batches` / `_seconds`; each documented in
+   `include/cbls/counters.h`). A lone worker's single solve never fires any
+   of it; a portfolio restart does, because the pool then holds the worker's
+   own earlier solve, which the counters count as the global best.
+   `--threads 1` passes no coordination at all.
 
-   **Measured** (#179, 4 threads, serial paired runs. The binary was built at a
-   pre-rebase commit whose on-main equivalent is `321d896`; production code on
-   main differs from it in two places. #176's slope lookup gives bit-identical
-   scores. The shared-bound sync no longer calls `vm_.invalidate_cache()`
-   (`bfd578d`), which is value-correct but not bit-neutral: `recompute_cache`
-   also reset the incremental-update counter and its float drift, so later
-   totals can differ in the last bits. Each
-   roster is 10 instances admitted by a pre-registered control-only pilot as
-   ones where the control arm runs behind the portfolio's best bound, so this is
-   the mechanism where it has something to act on, not a roster average). The
-   instance level is the one to read: seeds are nested in instances, so a paired
-   t over all runs overstates precision.
-   - **MIPfeas** (30 s, 6 seeds): primal-integral instance mean -0.016, t_9 95%
-     CI [-0.045, +0.013], 6 instances better and 4 worse. **Not separable** at
-     the instance level. The 60-pair interval only just excludes zero.
-   - **MINLPLib** (20 s, 4 seeds, through
-     `benchmarks/minlplib/portfolio_ab.py`): -0.083, CI [-0.156, -0.010], 10 of
-     10 better (sign test p = 0.002).
-
-   One pathology to know about, found writing the tests: on `min sum x^2` s.t.
-   `sum x >= k` over integers, where a step from 0 to 1 changes both rows by
-   exactly 1, a large jump in the bound left both rows violated on a tie that
-   bumping both weights did not break in the runs that found it, and FJ stopped
-   moving; kicks returned it to the same plateau. That is a property of the tie,
-   not of sharing -- any sufficiently large bound step would do it -- but sharing
-   is what makes large steps routine. The tests use a linear covering model,
-   where it does not arise. **How often it happens on real instances is
-   unmeasured**: no test reproduces it through the portfolio and no counter
-   reports it (a stalled worker shows only as batches with no new best, which
-   stagnation already counts for every other reason).
+   #179 holds the A/B (MINLPLib better, MIPfeas not separable) and one
+   unmeasured risk: a large bound step can leave FJ stalled on a tie that
+   weight bumps do not break, and sharing makes large steps routine.
 4. **No idle workers.** Each worker is a restart loop over the *shared*
    deadline, not a single `solve()`: a run that returns with budget left (an
    exhausted `SearchConfig::max_iterations`) is restarted on the time its
@@ -2394,12 +2275,10 @@ bit-identical to what it was before the parameter existed:
    converged to. Seeds come from `portfolio_worker_seed(base, worker, restart)`
    -- a splitmix64 finalizer over the triple, not a sum -- so a restart is never
    a replay of the run that just stalled AND adjacent `--seed` values give
-   genuinely different portfolios. (The old additive scheme was injective within
-   a run, which is all it claimed, but at 12 workers `--seed 42` and `--seed 43`
-   shared 11 of their 12 base streams.) A worker whose `solve()` throws is
-   retried a bounded number of times rather than abandoned, since leaving it
-   dead would idle its core for the rest of the run; a factory that throws is
-   not retried, because it will not succeed on the second ask either. The one case where
+   genuinely different portfolios. A worker whose `solve()` throws is retried
+   a bounded number of times rather than left to idle its core; a factory that
+   throws is not retried, since it will not succeed on a second ask. The one
+   case where
    finishing early is correct -- a pure-feasibility model, whose first feasible
    solution *is* the answer -- raises `SearchCoordination::stop`, which every
    other worker observes at its next batch boundary and reports as
@@ -2411,51 +2290,30 @@ is `std::terminate`), but not discarded: if *every* worker throws, `solve()`
 rethrows the lowest-indexed one rather than returning a default,
 infeasible-looking result. A partial failure is absorbed -- the survivors'
 best is returned -- but not silently (#170): the result carries
-`workers_launched`, `workers_completed` and one `WorkerFailure` (index, whether
-it had produced a result, the exception's message) per worker that did not
-complete. A worker *completes* unless an exception ended it or the shared
-deadline was gone before its first solve. One that never started because a peer
-had already answered, or the host cancelled, completes; one that searched and
-then died on a restart is lost even though its earlier work is in the
-aggregate; and one starved by the deadline is lost too -- which is what a
-sequential executor does to every worker after the first, and what a budget
-spent during launch does to all of them. A single `solve()` reports 1 of 1.
-The MIPfeas runner publishes the count per row and its scorer refuses a row
-with fewer completed workers than `threads`.
+`workers_launched`, `workers_completed` and one `WorkerFailure` per worker that
+did not complete, because an exception ended it or the shared deadline starved
+it before its first solve (`SearchResult` in `include/cbls/search.h` defines
+each case). The MIPfeas runner publishes the count per row and its scorer
+refuses a row with fewer completed workers than `threads`.
 
 `ParallelSearch::solve()` takes hook and LNS *factories* (these objects are
 stateful and per-model); each worker gets its own instance, built on that
-worker's own thread, **once per worker and not once per restart**.
+worker's own thread, **once per worker and not once per restart**. Return a
+fresh object per call: the search never locks the hook or the LNS, so one
+object shared by workers is a silent data race. Both return a
+`std::shared_ptr` rather than a `unique_ptr` because nanobind cannot
+relinquish ownership of a Python-constructed instance, so this one factory
+type serves C++ and Python callers (#129; the reasoning is in
+`include/cbls/pool.h`).
 
 What a *Python* factory can usefully return is narrower than it looks. Neither
-`InnerSolverHook` nor `LNS` is registered with a nanobind trampoline, so C++
-dispatches through the base vtable: a Python subclass is constructed and
-released correctly, but an override of `solve` or `destroy_repair` is never
-called. The two fail differently, and the second is the trap -- `solve` is not
-bound at all, so a Python `solve` is merely an attribute nothing reads, while
-`LNS.destroy_repair` *is* bound, so an override shadows it when called from
-Python and silently does not when the search calls it from C++. The same
-narrowing applies to the `hook` and `lns` arguments of the single-threaded
-`solve()`. In practice these arguments buy a separately configured
-`FloatIntensifyHook` or `LNS` per worker, not a Python implementation of
-either. Tracked as #132.
-
-Both return a `std::shared_ptr`, and that is load-bearing rather than loose. A
-`unique_ptr<T>` would describe the C++ lifetime exactly -- one owner, one worker
--- but a Python factory cannot satisfy one carrying the *default* deleter:
-`nb_type_relinquish_ownership` refuses an instance nanobind allocated in place,
-which is what every Python-constructed object is. (`unique_ptr<T,
-nb::deleter<T>>` would work, and is what nanobind's own error message suggests;
-it costs a nanobind type in a core public header.) Sharing ownership instead
-lets nanobind's caster hold a reference to the Python object and drop it under
-the GIL, at the end of the worker that built it -- so one factory type serves
-C++ and Python callers (#129).
-
-The cost of that choice is that nothing now stops a factory from returning the
-*same* object every call. Under the old raw-pointer signature that was an
-immediate double free; it is now a silent data race, because each worker
-searches its own model on its own thread and the search never locks the hook or
-the LNS. Return a fresh object per call.
+`InnerSolverHook` nor `LNS` has a nanobind trampoline, so C++ dispatches
+through the base vtable and a Python override of `solve` or `destroy_repair`
+is never called by the search. `LNS.destroy_repair` is the trap: it *is*
+bound, so an override works when called from Python and silently does not
+when the search calls it from C++. The same holds for the `hook` and `lns`
+arguments of the single-threaded `solve()`: they buy a separately configured
+`FloatIntensifyHook` or `LNS`, not a Python implementation (#132).
 
 ---
 
@@ -2463,15 +2321,12 @@ the LNS. Return a fresh object per call.
 
 ### Why ViolationLS instead of Simulated Annealing
 
-The engine was ported from a simulated-annealing core (Metropolis acceptance,
-geometric cooling + reheat, adaptive `lambda`, adaptive move probabilities) to
-ViolationLS. ViolationLS replaces all of SA's tuning knobs (temperature,
-cooling rate, reheat interval, penalty multiplier) with a single, self-adapting
-mechanism: per-constraint GLS weights driving a greedy best-of-N jump. In the
-paper it is competitive with CP-SAT's other workers on CBLS-amenable problems;
-here it gives a parameter-light core that adapts feasibility pressure
-per-constraint rather than globally, and folds optimization into a sequence of
-feasibility problems (objective-as-constraint) so the same engine handles both.
+The engine was ported from a simulated-annealing core to ViolationLS, which
+replaces SA's tuning knobs (temperature, cooling, reheat, penalty multiplier)
+with one self-adapting mechanism: per-constraint GLS weights driving a greedy
+best-of-N jump. That gives a parameter-light core that adapts feasibility
+pressure per constraint, and folds optimization into a sequence of feasibility
+problems (objective-as-constraint) so the same engine handles both.
 
 ### Search core: Generalised FJ vs SA / tabu / WalkSAT
 
@@ -2490,7 +2345,8 @@ escape mechanism.
 
 **Chosen:** Novelty Jump (bounded-backtracking compound moves with novelty
 weights) to escape FJ local optima where only a sequence of moves improves.
-On by default since 2026-10-07, once #209 bounded a Novelty batch's cost (see the Status note under Novelty Jump); the UC-CHPED runner turns it off.
+On by default (see the Status note under Novelty Jump); the UC-CHPED runner
+turns it off.
 
 **Alternative:** rely solely on perturbation/LNS diversification. Simpler, but
 cannot find the chained-invariant fixes Novelty Jump targets.
@@ -2521,14 +2377,12 @@ by default; LNS (destroy + GFJ repair, lexicographic accept) every
 `lns_interval`-th kick.
 
 **Alternative:** population-based search (GA, scatter search) or systematic
-restart schedules (Luby). The solution pool is used for warm restarts *across*
-the workers of a `ParallelSearch` -- a stalled worker resumes from a peer's
-incumbent. A single-threaded `solve()` has no pool, but since #158 it is not
-without a warm restart: every diversification kick restores its own incumbent
-first, which is the single-threaded form of the same idea (see
-[Diversification](#diversification)). Luby is available as the opt-in
-`SearchConfig::luby_restart_unit`, but the smoke A/B (#239) found it no better
-than #102's stall trigger and slower to a first feasible point, so it stays off.
+restart schedules (Luby). The pool gives warm restarts *across* the workers of
+a `ParallelSearch`; a single-threaded `solve()` gets its form of the same idea
+from each kick restoring its own incumbent first ([Diversification](#diversification)).
+Luby is available as the opt-in `SearchConfig::luby_restart_unit`, but the
+smoke A/B (#239) found it no better than #102's stall trigger and slower to a
+first feasible point, so it stays off.
 
 ---
 

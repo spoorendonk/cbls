@@ -203,7 +203,7 @@ public:
     // deadline. A factory returning a copy of an OPEN model, or building a fresh
     // one per call, deep-copies the DAG per worker; that is what cost ~0.75-0.86
     // GiB per worker on the largest MIPfeas instance, against ~0.34-0.39 GiB
-    // shared (`docs/architecture.md` carries the table and its commit).
+    // shared (#157 carries the table and its commit).
     // `freeze()` is the operative call.
     //
     // `master` is `freeze()`d here, BEFORE any thread exists: `Model::freeze`
