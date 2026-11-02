@@ -13,7 +13,12 @@ THE MEASURE:
   both the arm and the control at that seed. The arm's GM and the control's GM
   are taken over that pool, so the ratio compares like with like; below 1 is
   the arm ahead. Pooled over seeds, the pool is every such (instance, seed).
-* The feasible count is over every recorded row of that arm and seed.
+* The feasible count is over the MEASURED runs of that arm and seed: a row
+  with no completed search (`RunRow.no_search`: a crash, a held-out check) is
+  not a lost feasibility, so it is out of the count, as it is out of the
+  shared scoring above, and named under completeness instead.
+* `runner.CLAIM_EXCLUDED` instances are out of every count and aggregate here
+  too (`gm_ratio`'s rule).
 * NOISE FLOOR: the control's GM per seed over ONE instance set -- the
   instances feasible with a finite gap in every arm at every seed -- and the
   floor is max / min of those per-seed GMs. One common set, because a per-seed
@@ -22,8 +27,10 @@ THE MEASURE:
   not a difference.
 * COMPLETENESS: the rows alone cannot say what is missing, so the plan (arms,
   stamped seeds, stamped roster size) is handed in, and every missing
-  (instance, arm, seed) is named. A report over a partial campaign says so
-  first: #331's decision must not be read off one.
+  (instance, arm, seed) is named, as is every one recorded without a
+  completed search (the driver records a crash, so a resume does not retry
+  it). A report over a partial campaign says so first: #331's decision must
+  not be read off one.
 """
 
 from __future__ import annotations
@@ -34,6 +41,7 @@ from typing import TYPE_CHECKING
 
 from benchmarks.minlplib.ablation_report import CONTROL_ARM, RunRow
 from benchmarks.minlplib.gm_ratio import gm_gap_plus_one
+from benchmarks.minlplib.runner import CLAIM_EXCLUDED
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -74,44 +82,79 @@ def _ratio(arm: float, control: float) -> float:
     return math.nan
 
 
-def missing_triples(rows: Sequence[RunRow], plan: PresolvePlan) -> list[tuple[str, str, int]]:
-    """Every planned (instance, arm, seed) with no recorded row."""
-    recorded = {(r.instance, r.arm, r.seed) for r in rows}
-    instances = list(dict.fromkeys([*plan.instances, *(r.instance for r in rows)]))
+Triple = tuple[str, str, int]
+
+
+def _all_names(rows: Sequence[RunRow], plan: PresolvePlan) -> list[str]:
+    """Every instance planned or recorded, in plan order, claim-excluded included."""
+    return list(dict.fromkeys([*plan.instances, *(r.instance for r in rows)]))
+
+
+def _instances(rows: Sequence[RunRow], plan: PresolvePlan) -> list[str]:
+    """The instances the section scores: `_all_names` less `CLAIM_EXCLUDED`."""
+    return [name for name in _all_names(rows, plan) if name not in CLAIM_EXCLUDED]
+
+
+def _planned(rows: Sequence[RunRow], plan: PresolvePlan) -> list[Triple]:
     return [
         (instance, arm, seed)
-        for instance in instances
+        for instance in _instances(rows, plan)
         for seed in plan.seeds
         for arm in plan.arms
-        if (instance, arm, seed) not in recorded
     ]
 
 
+def _by_key(rows: Sequence[RunRow]) -> dict[Triple, RunRow]:
+    return {(r.instance, r.arm, r.seed): r for r in rows}
+
+
+def missing_triples(rows: Sequence[RunRow], plan: PresolvePlan) -> list[Triple]:
+    """Every planned (instance, arm, seed) with no recorded row."""
+    recorded = _by_key(rows)
+    return [t for t in _planned(rows, plan) if t not in recorded]
+
+
+def unmeasured_triples(rows: Sequence[RunRow], plan: PresolvePlan) -> list[Triple]:
+    """Every planned (instance, arm, seed) whose row records no completed search."""
+    recorded = _by_key(rows)
+    return [t for t in _planned(rows, plan) if t in recorded and recorded[t].no_search]
+
+
+def _named(triples: Sequence[Triple]) -> str:
+    named = ", ".join(f"{i}/{a}/seed{s}" for i, a, s in triples[:MISSING_NAMED])
+    more = f" and {len(triples) - MISSING_NAMED} more" if len(triples) > MISSING_NAMED else ""
+    return f"{named}{more}"
+
+
 def _completeness_lines(rows: Sequence[RunRow], plan: PresolvePlan) -> list[str]:
-    instances = {r.instance for r in rows} | set(plan.instances)
+    # The stamp's count includes any claim-excluded instance, so it is checked
+    # against every name, not the scored ones.
+    present = len(_all_names(rows, plan))
     missing = missing_triples(rows, plan)
-    short = plan.roster_size is not None and len(instances) < plan.roster_size
-    if not missing and not short:
+    unmeasured = unmeasured_triples(rows, plan)
+    short = plan.roster_size is not None and present < plan.roster_size
+    if not missing and not unmeasured and not short:
         return [
-            f"complete: {len(instances)} instance(s) x {len(plan.arms)} arm(s) x "
-            f"{len(plan.seeds)} seed(s), every run recorded"
+            f"complete: {len(_instances(rows, plan))} instance(s) x {len(plan.arms)} arm(s) x "
+            f"{len(plan.seeds)} seed(s), every run recorded with a completed search"
         ]
     lines = ["INCOMPLETE -- do not read #331's decision off this report:"]
     if short:
-        lines.append(
-            f"  the stamp records {plan.roster_size} instance(s); the rows name {len(instances)}"
-        )
+        lines.append(f"  the stamp records {plan.roster_size} instance(s); the rows name {present}")
     if missing:
-        named = ", ".join(f"{i}/{a}/seed{s}" for i, a, s in missing[:MISSING_NAMED])
-        more = f" and {len(missing) - MISSING_NAMED} more" if len(missing) > MISSING_NAMED else ""
-        lines.append(f"  {len(missing)} run(s) missing: {named}{more}")
+        lines.append(f"  {len(missing)} run(s) missing: {_named(missing)}")
+    if unmeasured:
+        lines.append(
+            f"  {len(unmeasured)} run(s) recorded without a completed search (crashed or "
+            f"held out; a resume does not retry them): {_named(unmeasured)}"
+        )
     return lines
 
 
 def presolve_lines(rows: Sequence[RunRow], plan: PresolvePlan) -> list[str]:
     """The #331 section, as report lines."""
-    by_key = {(r.instance, r.arm, r.seed): r for r in rows}
-    instances = list(dict.fromkeys([*plan.instances, *(r.instance for r in rows)]))
+    by_key = _by_key(rows)
+    instances = _instances(rows, plan)
     arms = [a for a in plan.arms if a != CONTROL_ARM]
 
     def gap(instance: str, arm: str, seed: int) -> float | None:
@@ -140,7 +183,8 @@ def presolve_lines(rows: Sequence[RunRow], plan: PresolvePlan) -> list[str]:
         PRESOLVE_SECTION,
         "gap+1 = max(gap_to_bks%, 0) + 1; GM over the instances feasible (finite gap) in BOTH the",
         "arm and the control at that seed; ratio = arm / control, BELOW 1 IS THE ARM AHEAD.",
-        "Feasible counts are over every recorded row of that arm and seed.",
+        "Feasible counts are feasible / measured: a run with no completed search is out of",
+        "both, and named under completeness. Claim-excluded instances are out of everything.",
         *_completeness_lines(rows, plan),
         f"noise floor: control GM over the {len(floor_set)} instance(s) feasible in every arm at "
         f"every seed, max / min over seeds = {_fmt(floor)}"
@@ -154,9 +198,15 @@ def presolve_lines(rows: Sequence[RunRow], plan: PresolvePlan) -> list[str]:
         f"{'GM arm':>10}{'GM ctl':>10}{'ratio':>9}",
     ]
 
-    def feasible(arm: str, seed: int) -> str:
-        recorded = [r for i in instances if (r := by_key.get((i, arm, seed))) is not None]
-        return f"{sum(1 for r in recorded if r.feasible)}/{len(recorded)}"
+    def feasible(arm: str, *seeds: int) -> str:
+        """Feasible / measured over the planned runs of `arm` at `seeds`."""
+        measured = [
+            r
+            for s in seeds
+            for i in instances
+            if (r := by_key.get((i, arm, s))) is not None and not r.no_search
+        ]
+        return f"{sum(1 for r in measured if r.feasible)}/{len(measured)}"
 
     for arm in arms:
         for seed in plan.seeds:
@@ -184,16 +234,12 @@ def presolve_lines(rows: Sequence[RunRow], plan: PresolvePlan) -> list[str]:
         per_seed = [r for r in per_seed if math.isfinite(r)]
         spread = f"{min(per_seed):.4f}-{max(per_seed):.4f}" if per_seed else "n/a"
         lines.append(
-            f"{arm:<22}{_count(rows, arm):>10}{_count(rows, CONTROL_ARM):>10}{len(pairs):>6}"
+            f"{arm:<22}{feasible(arm, *plan.seeds):>10}"
+            f"{feasible(CONTROL_ARM, *plan.seeds):>10}{len(pairs):>6}"
             f"{_fmt(gm_arm):>10}{_fmt(gm_ctl):>10}{_fmt(ratio):>9}{spread:>17}  "
             f"{_reading(ratio, floor)}"
         )
     return lines
-
-
-def _count(rows: Sequence[RunRow], arm: str) -> str:
-    recorded = [r for r in rows if r.arm == arm]
-    return f"{sum(1 for r in recorded if r.feasible)}/{len(recorded)}"
 
 
 def _reading(ratio: float, floor: float) -> str:

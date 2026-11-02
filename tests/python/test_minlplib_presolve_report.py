@@ -9,6 +9,7 @@ the banner a partial campaign carries.
 from __future__ import annotations
 
 import csv
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 import pytest
@@ -31,6 +32,7 @@ from benchmarks.minlplib.run_ablation import (
     main,
     recorded_roster_size,
 )
+from benchmarks.minlplib.runner import RUNNER_FAILED_NOTE
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -166,6 +168,34 @@ def test_a_planned_instance_with_no_row_is_named_missing() -> None:
     lines = presolve_lines(grid(["a"], lambda *_: 1.0), plan(["a", "z"]))
     assert any("12 run(s) missing: z/control/seed1" in line for line in lines)
     assert any(" and 2 more" in line for line in lines)
+
+
+def test_a_crashed_run_is_neither_a_lost_feasibility_nor_a_recorded_run() -> None:
+    """The driver records a crash, so a resume skips it; it is no measurement."""
+    rows = grid(["a", "b"], lambda *_: 1.0)
+    crashed = [
+        replace(r, feasible=False, note=f"{RUNNER_FAILED_NOTE}: segfault")
+        if (r.instance, r.arm, r.seed) == ("b", CONTROL_ARM, 2)
+        else r
+        for r in rows
+    ]
+    lines = presolve_lines(crashed, plan(["a", "b"]))
+    assert table_row(lines, "presolve", 2)[2:5] == ["2/2", "1/1", "1"]
+    assert "6/6" in pooled_row(lines, "presolve")
+    assert "5/5" in pooled_row(lines, "presolve")
+    assert any(line.startswith("INCOMPLETE") for line in lines)
+    assert any("1 run(s) recorded without a completed search" in line for line in lines)
+    assert any(line.endswith(": b/control/seed2") for line in lines)
+
+
+def test_a_claim_excluded_instance_enters_no_count_or_ratio() -> None:
+    # elec25 is far worse under the control; pooled in, it would put the arm ahead.
+    def gap(instance: str, arm: str, _seed: int) -> float | None:
+        return 99.0 if (instance == "elec25" and arm == CONTROL_ARM) else 0.0
+
+    lines = presolve_lines(grid(["a", "elec25"], gap), plan(["a", "elec25"], roster_size=2))
+    assert table_row(lines, "presolve", 1)[2:] == ["1/1", "1/1", "1", "1.0000", "1.0000", "1.0000"]
+    assert any(line.startswith("complete: 1 instance(s)") for line in lines)
 
 
 def _results_csv(path: Path, rows: Sequence[RunRow]) -> None:

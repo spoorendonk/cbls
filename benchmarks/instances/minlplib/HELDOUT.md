@@ -545,8 +545,9 @@ solves moves the feasible count, not the ratio; below 1 is the arm ahead. The
 noise floor is the control's GM per seed over one instance set (feasible in
 every arm at every seed), max over min; a pooled ratio inside
 [1/floor, floor] is not a difference. The section opens with `INCOMPLETE`,
-naming the missing (instance, arm, seed) runs, when the rows fall short of the
-stamped seeds and roster size: #331's decision is read off a complete run only.
+naming the missing (instance, arm, seed) runs and those recorded without a
+completed search (a crash), when the rows fall short of the stamped seeds and
+roster size: #331's decision is read off a complete run only.
 
 ## Reproducing and checking
 
