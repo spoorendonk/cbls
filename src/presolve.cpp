@@ -281,18 +281,19 @@ void reduce_singleton(Work& w, std::size_t r) {
     const double hi_side = a > 0.0 ? w.row_hi[r] : w.row_lo[r];
     double lo = lo_side / a;
     double hi = hi_side / a;
+    if (std::isfinite(lo)) {
+        lo -= quotient_error(w, r, lo_side, a, lo);
+    }
+    if (std::isfinite(hi)) {
+        hi += quotient_error(w, r, hi_side, a, hi);
+    }
+    // Checked after the relaxation, which can itself carry a bound past it.
     const double infinity = w.opts.propagation.infinity;
     const auto unusable = [infinity](double side, double q) {
         return std::isfinite(side) && (!std::isfinite(q) || std::abs(q) >= infinity);
     };
     if (unusable(lo_side, lo) || unusable(hi_side, hi)) {
         return;
-    }
-    if (std::isfinite(lo)) {
-        lo -= quotient_error(w, r, lo_side, a, lo);
-    }
-    if (std::isfinite(hi)) {
-        hi += quotient_error(w, r, hi_side, a, hi);
     }
     const double tol = w.opts.feasibility_tolerance;
     const double slack = std::min(tol, tol / std::abs(a));

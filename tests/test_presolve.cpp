@@ -316,6 +316,15 @@ TEST_CASE("presolve turns singleton rows into bounds", "[presolve]") {
     REQUIRE(ro.stats.rows_singleton == 0);
     REQUIRE(ro.reduced.n_rows() == 1);
 
+    // A quotient just under the threshold that its relaxation carries past it
+    // keeps the row too; the bound never comes out as "no bound".
+    Builder edge;
+    const int32_t ev = edge.col(0, kInf);
+    edge.row({{ev, 0.3}}, -kInf, std::nextafter(1e20, 0.0) * 0.3);
+    const PresolveResult re = presolve(edge.p, keep_empty);
+    REQUIRE(re.reduced.n_cols() == 1);
+    REQUIRE((re.reduced.n_rows() == 1 || re.reduced.col_ub[0] < 1e20));
+
     // A singleton left by folds keeps their roundoff: x = 3 satisfies the
     // exact row though the folded bound is below 3.
     const FoldCut f = find_fold_cut();
