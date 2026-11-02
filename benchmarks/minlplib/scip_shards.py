@@ -30,8 +30,9 @@ retry (hub, 2026-11-01): run it again once with the memory cap raised (the
 campaign ran under a 110G cgroup cap), and a failure that remains counts as
 "SCIP: no solution", named with its exit. A final score refuses a marker with
 fewer than two attempts. The shard directory's `stamp.txt` records the budget
-and seed; a run under another one deletes every `.failed` marker first, since
-an attempt under another configuration is no retry of this one.
+and seed. A run under another one is refused; with `--restart` it deletes every
+`.failed` marker first, since an attempt under another configuration is no
+retry of this one.
 
 Usage, from any directory, under the machine lock (one lock for the whole run;
 `--jobs` single-thread solves share the machine):
@@ -54,7 +55,7 @@ from typing import TYPE_CHECKING
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from benchmarks.common.records import append_attempt, shell_exit  # noqa: E402
+from benchmarks.common.records import append_attempt, atomic_write, shell_exit  # noqa: E402
 from benchmarks.minlplib.gm_ratio import (  # noqa: E402
     SCIP_FAILED_SUFFIX,
     SCIP_MERGED_SUFFIX,
@@ -118,21 +119,35 @@ def shard_stamp(time_limit: float, seed: int) -> str:
     return f"time-limit={time_limit:g}\nseed={seed}\n"
 
 
-def reset_on_new_stamp(shards: Path, stamp: str) -> list[str]:
-    """Delete every `.failed` marker when `shards` was stamped otherwise; the names cleared.
+class StampMismatchError(ValueError):
+    """The shard directory was stamped with another budget or seed, and no `--restart`."""
 
-    Cleared before the stamp is written, so a kill in between clears them
-    again on the next run, and never counts an old attempt under the new stamp.
-    A directory without a stamp predates #312: its markers hold no attempt
-    lines, so there is nothing to keep apart.
+
+def reset_on_new_stamp(shards: Path, stamp: str, *, restart: bool) -> list[str]:
+    """Stamp `shards`; on another stamp, refuse unless `restart`, then delete every `.failed`.
+
+    Returns the names cleared. Refused by default, as the cbls driver refuses a
+    staging stamp: a quick check at another budget must not wipe a campaign's
+    attempt records, nor count its own failures as the campaign's. Cleared
+    before the stamp is written, so a kill in between clears them again on the
+    next run, and never counts an old attempt under the new stamp. The stamp is
+    written whole or not at all. A directory without a stamp predates #312:
+    its markers hold no attempt lines, so there is nothing to keep apart.
     """
     path = shards / SHARD_STAMP_NAME
     cleared: list[str] = []
-    if path.exists() and path.read_text() != stamp:
+    if path.exists() and (recorded := path.read_text()) != stamp:
+        if not restart:
+            raise StampMismatchError(
+                f"{path} was written for another budget or seed:\n--- recorded ---\n"
+                f"{recorded}--- now ---\n{stamp}Use another --shards directory, or pass "
+                "--restart to delete every .failed marker here and start the attempts over "
+                "(rows solved under the old budget stay, and the scorer refuses mixed budgets)."
+            )
         for marker in sorted(shards.glob(f"*{SCIP_FAILED_SUFFIX}")):
             marker.unlink()
             cleared.append(marker.name.removesuffix(SCIP_FAILED_SUFFIX))
-    path.write_text(stamp)
+    atomic_write(path, stamp)
     return cleared
 
 
@@ -221,6 +236,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--cap", type=float, default=900.0, help="per-instance wrapper cap, seconds"
     )
     parser.add_argument("--instances", nargs="+", default=[], help="subset; default roster")
+    parser.add_argument(
+        "--restart",
+        action="store_true",
+        help="another budget or seed was stamped here: delete every .failed marker first",
+    )
     args = parser.parse_args(argv)
     if args.jobs < 1:
         parser.error("--jobs must be at least 1")
@@ -245,7 +265,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
     names = [n for n in roster if n in wanted] if wanted else roster
     args.shards.mkdir(parents=True, exist_ok=True)
-    cleared = reset_on_new_stamp(args.shards, shard_stamp(args.time_limit, args.seed))
+    try:
+        cleared = reset_on_new_stamp(
+            args.shards, shard_stamp(args.time_limit, args.seed), restart=args.restart
+        )
+    except StampMismatchError as exc:
+        print(exc, file=sys.stderr)
+        return 2
     if cleared:
         print(
             f"another budget or seed was stamped here: cleared the attempts of "

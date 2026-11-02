@@ -119,7 +119,8 @@ Both halves read that `bounds.csv`, and neither writes under
   is the 15-min wrapper cap). A re-run retries only the missing and failed ones.
   The #256 rule: one retry with the memory cap raised, then a remaining failure
   counts as SCIP no-solution, named with its exit. The directory's `stamp.txt`
-  records the budget and seed; a run under others deletes the `.failed` markers.
+  records the budget and seed; a run under others is refused, and `--restart`
+  deletes the `.failed` markers first.
 - cbls: `../../minlplib/run_benchmark.py`, one instance per call, at the
   campaign's thread count. A call whose runner exits nonzero sets the row aside
   as `<instance>.csv.rejected`, appends `exit <rc> <utc>` to

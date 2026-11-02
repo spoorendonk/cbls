@@ -20,6 +20,7 @@ from benchmarks.common.records import append_attempt, recorded_attempts
 from benchmarks.minlplib.gm_ratio import load_scip_shards
 from benchmarks.minlplib.reference_solve import load_bounds
 from benchmarks.minlplib.scip_shards import (
+    StampMismatchError,
     capped,
     main,
     reference_command,
@@ -112,14 +113,33 @@ def test_another_budget_or_seed_clears_the_attempts_and_the_same_one_keeps_them(
     """#312: a smoke run's failure into the campaign's directory is no retry of it."""
     shards = tmp_path / "shards"
     shards.mkdir()
-    assert reset_on_new_stamp(shards, shard_stamp(5, 0)) == []
+    assert reset_on_new_stamp(shards, shard_stamp(5, 0), restart=False) == []
     append_attempt(shards / "a.failed", 124)
-    assert reset_on_new_stamp(shards, shard_stamp(5, 0)) == []
+    assert reset_on_new_stamp(shards, shard_stamp(5, 0), restart=False) == []
     assert recorded_attempts(shards / "a.failed") == ["exit 124"], "same stamp: a real retry"
-    assert reset_on_new_stamp(shards, shard_stamp(60, 0)) == ["a"]
+    with pytest.raises(StampMismatchError, match="--restart"):
+        reset_on_new_stamp(shards, shard_stamp(60, 0), restart=False)
+    assert recorded_attempts(shards / "a.failed") == ["exit 124"], "a refusal changes nothing"
+    assert (shards / "stamp.txt").read_text() == shard_stamp(5, 0)
+    assert reset_on_new_stamp(shards, shard_stamp(60, 0), restart=True) == ["a"]
     assert not (shards / "a.failed").exists()
     append_attempt(shards / "a.failed", 134)
-    assert reset_on_new_stamp(shards, shard_stamp(60, 1)) == ["a"]
+    assert reset_on_new_stamp(shards, shard_stamp(60, 1), restart=True) == ["a"]
+
+
+def test_main_refuses_another_budget_without_restart(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    nl = tmp_path / "nl"
+    nl.mkdir()
+    write_bounds(nl / "bounds.csv", ["a"])
+    shards = tmp_path / "shards"
+    shards.mkdir()
+    (shards / "stamp.txt").write_text(shard_stamp(5, 0))
+    append_attempt(shards / "a.failed", 124)
+    assert main(["--nl-dir", str(nl), "--shards", str(shards), "--instances", "a"]) == 2
+    assert "--restart" in capsys.readouterr().err
+    assert recorded_attempts(shards / "a.failed") == ["exit 124"]
 
 
 def test_a_torn_attempt_line_is_dropped_not_glued_onto_the_next(tmp_path: Path) -> None:

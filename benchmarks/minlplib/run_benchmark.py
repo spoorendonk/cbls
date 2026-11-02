@@ -1194,8 +1194,9 @@ def run_roster(args: argparse.Namespace, sha: str, roster: Sequence[str], stage:
                 f"The runner threw on this instance; its row, set aside as {name}.csv"
                 f"{REJECTED_SUFFIX}, carries read-error/build-error/solve-error: no search "
                 "ran, so publishing the table would put a row in it that measures nothing. A "
-                "re-run hits the same throw rather than resuming past it -- fix the "
-                "instance or drop it from the roster."
+                "re-run solves it again rather than resuming past it: one more failed "
+                "attempt, resuming at this commit, makes it a final cbls no-solution (#312), "
+                "or fix the instance."
                 if completed.returncode == RUNNER_EXIT_ERRORED
                 else "Re-running resumes from here."
             )
