@@ -780,8 +780,9 @@ def unchecked_refusal(unchecked: Sequence[str]) -> str:
         "whole row, whatever commit staged it, and solves nothing. It leaves header-only, "
         "torn and unstageable rows unmarked: re-solve such a row with run_benchmark.py at "
         "the commit stamp.txt names (--instances NAME), or rename NAME.csv to "
-        "NAME.csv.rejected to score it as no-solution. Or pass --partial for an interim "
-        "score"
+        "NAME.csv.rejected to score it as no-solution (first move an existing "
+        "NAME.csv.rejected, an earlier attempt, to another name). Or pass --partial for "
+        "an interim score"
     )
 
 

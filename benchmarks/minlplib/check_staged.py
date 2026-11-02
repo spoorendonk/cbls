@@ -78,7 +78,8 @@ EXIT_CHECK_ERRORS = 1
 #: What clears a row this tool leaves unmarked; see the module docstring.
 REMEDY = (
     "re-solve it with run_benchmark.py at the commit stamp.txt names (--instances NAME), "
-    "or rename NAME.csv to NAME.csv.rejected to score it as no-solution"
+    "or rename NAME.csv to NAME.csv.rejected to score it as no-solution (first move an "
+    "existing NAME.csv.rejected, an earlier attempt, to another name)"
 )
 
 
