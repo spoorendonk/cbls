@@ -142,8 +142,9 @@ peak_rss_kb, search_config`. `cpu_seconds` is process CPU time around the
 search: the search's own at `--threads 1`, summed over workers above it.
 `peak_rss_kb` is the process's peak as the search returns, so it is per
 instance only with one `--instance` per call. The table is unchanged; the
-sidecar never takes the table's or the trace's path, nor any path in the
-instance directory (where `bounds.csv` and the published files live). A solve
+sidecar never takes the table's or the trace's path, nor any path under the
+instance directory (where `bounds.csv` and the published files live) or
+`--solution-dir`, symlinks resolved. A solve
 that throws, postsolve included, writes no counters row.
 
 ### Full-library campaign (#256)

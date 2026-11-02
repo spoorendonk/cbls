@@ -267,25 +267,48 @@ void resolve_out_csv(Args& a) {
     std::exit(2);
 }
 
+/// Whether `file`, symlinks resolved, lies anywhere under directory `dir`.
+bool lies_under(const std::string& file, const std::string& dir) {
+    std::error_code ec;
+    const std::filesystem::path f = std::filesystem::weakly_canonical(file, ec);
+    if (ec) {
+        return false;
+    }
+    const std::filesystem::path d = std::filesystem::weakly_canonical(dir, ec);
+    if (ec) {
+        return false;
+    }
+    auto fi = f.begin();
+    for (auto di = d.begin(); di != d.end(); ++di, ++fi) {
+        if (di->empty()) {  // a trailing separator's empty element
+            continue;
+        }
+        if (fi == f.end() || *fi != *di) {
+            return false;
+        }
+    }
+    return fi != f.end();
+}
+
 /// `--counters` names a file of its own: never the table, the trace, the
-/// table's temp file, nor anything in the instance directory (the published
-/// table and trace, `bounds.csv`, the SCIP baseline, the notes), each of which
-/// it would truncate on open (the hole `resolve_out_csv` closes for `--trace`).
-/// The directory is refused whole: the files the runner reads there cannot be
-/// listed here without drifting from the loaders, and a run that reads one
-/// before truncating it still loses it on disk.
+/// table's temp file, nor anything under the instance directory (the published
+/// table and trace, `bounds.csv`, the SCIP baseline, the notes, `heldout/`) or
+/// the solution directory, each of which it would truncate on open or have
+/// renamed over (the hole `resolve_out_csv` closes for `--trace`). The
+/// instance directory is refused whole: the files the runner and its siblings
+/// read there cannot be listed here without drifting from the loaders, and a
+/// run that reads one before truncating it still loses it on disk. Symlinks
+/// are resolved; a hardlink into the tree under another name is not caught.
 void check_counters_path(const Args& a) {
     if (a.counters_csv.empty()) {
         return;
     }
-    std::filesystem::path parent = std::filesystem::path(a.counters_csv).parent_path();
-    if (parent.empty()) {
-        parent = ".";
-    }
-    if (cbls::bench::same_file(parent.string(), a.inst_dir)) {
-        std::fprintf(stderr, "--counters names %s, inside the instance directory %s\n",
-                     a.counters_csv.c_str(), a.inst_dir.c_str());
-        std::exit(2);
+    for (const std::string& dir : {a.inst_dir, a.solution_dir}) {
+        if (!dir.empty() && lies_under(a.counters_csv, dir)) {
+            std::fprintf(stderr, "--counters names %s, under %s, which the run owns\n",
+                         a.counters_csv.c_str(), dir.c_str());
+            std::exit(2);
+        }
     }
     const std::vector<std::string> taken = {a.out_csv, a.out_csv + ".tmp"};
     for (const std::string& other : taken) {

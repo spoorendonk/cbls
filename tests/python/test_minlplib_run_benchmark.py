@@ -1626,20 +1626,36 @@ def test_the_counters_sidecar_holds_one_row_per_search_and_leaves_the_table_alon
     trace = tmp_path / "trace.csv"
     trace.write_text("kept\n")
     inst_dir = tmp_path / "instances"
+    nested = inst_dir / "heldout" / "bounds.csv"
+    nested.parent.mkdir()
+    nested.write_text("kept\n")
+    # A symlink outside the tree onto a file in it is the file in it.
+    link = tmp_path / "link.csv"
+    link.symlink_to(inst_dir / "bounds.csv")
+    sols = tmp_path / "sols"
+    sols.mkdir()
+    (sols / "ok.sol").write_text("kept\n")
+    escaped: list[str] = []
     for taken in (
         tmp_path / "out.csv",
         trace,
         inst_dir / "comparison.csv",
         inst_dir / "anytime_trace.csv",
         inst_dir / "bounds.csv",
+        nested,
+        link,
+        sols / "ok.sol",
     ):
         before = taken.read_text() if taken.exists() else None
         clash = run_the_runner(
-            tmp_path, {"ok": SOLVABLE_NL}, ["--trace", str(trace), "--counters", str(taken)]
+            tmp_path,
+            {"ok": SOLVABLE_NL},
+            ["--trace", str(trace), "--solution-dir", str(sols), "--counters", str(taken)],
         )
-        assert clash.returncode == 2 and "--counters" in clash.stderr, taken
-        if before is not None:
-            assert taken.read_text() == before, taken
+        refused = clash.returncode == 2 and "--counters" in clash.stderr
+        if not refused or (before is not None and taken.read_text() != before):
+            escaped.append(taken.name)
+    assert escaped == []
 
 
 def test_an_unreadable_instance_makes_the_runner_exit_nonzero(tmp_path: Path) -> None:
