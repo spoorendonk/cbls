@@ -1996,6 +1996,8 @@ SearchResult ViolationLSLoop::finish() {
     result.counters.novelty_moves = fj_.novelty_moves();
     result.counters.novelty_commits = fj_.novelty_commits();
     result.counters.novelty_weight_bumps = fj_.novelty_weight_bumps();
+    result.counters.novelty_propagation_tightenings = fj_.novelty_propagation_tightenings();
+    result.counters.novelty_propagation_conflicts = fj_.novelty_propagation_conflicts();
     // The structural sweep keeps its own per-generator tallies, since it is the
     // only thing that knows which generator scored which candidate. Copied out
     // here rather than accumulated per batch: the batch outlives no solve, and

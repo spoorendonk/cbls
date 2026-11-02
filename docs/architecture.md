@@ -1105,8 +1105,8 @@ changes no bound, so it gains nothing from propagation; plain jumps already
 get the load-time implied domains (and presolve). The one place where
 variables are held fixed for a while is the Novelty compound-move stack
 (`nj_apply`/`nj_undo`, `move_stack_`, the backtracking in
-`novelty_jump_search`), which is where propagation with a trail fits (#330).
-Until then the classes are used only by tests. Propagating the objective
+`novelty_jump_search`), which is where propagation with a trail fits (#330): see
+[Propagated legs](#propagated-legs-compound_propagation-339). Propagating the objective
 cutoff on a new incumbent would make the soft objective row hard, so the
 objective row is not stored.
 
@@ -1210,6 +1210,42 @@ record its work apart from FJ's. The MIPfeas measurements (cost per move,
 profile, smoke roster) and the pre-registered A/B that settled when Algorithm
 6's `A` is redrawn — every batch, a deviation from §5 that `pick_batch_kind`
 documents — are in #209.
+
+### Propagated legs (`compound_propagation`, #339)
+
+`GFJConfig::compound_propagation` (default off; off is the Novelty path bit
+for bit) runs each leg through a `DomainPropagator` over the model's linear
+rows ([above](#domain-propagation-over-linear-rows-329)), built on the first
+Novelty run: variable bounds never change after construction, so once.
+
+- `nj_apply` takes a `checkpoint()` and `fix(v, jump)`; `nj_undo` backtracks
+  to it; a commit (`clear_novelty_stack`) backtracks to the first leg's
+  checkpoint, so between Novelty calls every domain is the declared box.
+- While the stack is non-empty, `select_novelty_var` scores each sampled var
+  over its implied domain: `compute_var_jump`'s `box`, handed to every
+  candidate path as a narrowed copy of the `Variable` (the clamp, lb/ub and
+  midpoint candidates, the Int window and grid, Newton, breakpoints, the
+  escape steps, `exact_int_jump`'s `int_argmin` window). A box with fewer
+  than two values offers that value, which matters because the var's current
+  value may lie outside it. `Variable::lb/ub` are never written: box checks,
+  FJ batches, perturbation, LNS and `LinearJumpScorer`'s max-variation filter
+  keep the declared box (the last is conservative on a narrower one).
+- A var whose domain a leg narrowed, or a backtrack widened, is re-queued
+  into `Q'` under the usual admission test (`nj_requeue_narrowed`). At depth
+  1 these are the leg's row-neighbours, which the leg already re-queues; with
+  `cascade` they need not be. Novelty caches no jump, so nothing else is
+  stale; FJ's jump table is rebuilt at batch end as before.
+- **Conflict** (`fix` empties a domain): the commit test stays first, so an
+  improving compound move is taken whatever its domains say; otherwise the
+  leg is not extended and is reverted as a failed sibling (budget − 1). This
+  is a deliberate departure from Algorithm 5, which would recurse.
+- Cost per leg: the propagator's `fix` (O(rows of v) plus scanned rows, see
+  its header), O(narrowed vars) for the re-queue, and per sampled var two
+  bound reads; a backtrack is O(trail undone). Off, one null test per sampled
+  var and per leg.
+
+`SearchCounters::novelty_propagation_tightenings` (bounds derived) and
+`novelty_propagation_conflicts` (legs in conflict) record it.
 
 `apply_novelty_jump()` is one stand-alone ApplyNoveltyJump from a fresh `W'` and
 `Q'`, capped at `kNoveltyWorkBudget = 256` applied moves; the caller must

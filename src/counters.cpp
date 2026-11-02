@@ -26,6 +26,8 @@ void SearchCounters::merge(const SearchCounters& other) {
     novelty_moves += other.novelty_moves;
     novelty_commits += other.novelty_commits;
     novelty_weight_bumps += other.novelty_weight_bumps;
+    novelty_propagation_tightenings += other.novelty_propagation_tightenings;
+    novelty_propagation_conflicts += other.novelty_propagation_conflicts;
     structural_batches += other.structural_batches;
     structural_moves_tried += other.structural_moves_tried;
     structural_moves_accepted += other.structural_moves_accepted;

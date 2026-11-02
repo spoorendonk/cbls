@@ -89,6 +89,11 @@ struct SearchCounters {
     int64_t novelty_moves = 0;
     int64_t novelty_commits = 0;
     int64_t novelty_weight_bumps = 0;
+    /// Under compound propagation (GFJConfig::compound_propagation, #339):
+    /// bounds the Novelty legs' propagation derived, and legs whose fix
+    /// emptied a domain (each then reverted unextended). 0 with it off.
+    int64_t novelty_propagation_tightenings = 0;
+    int64_t novelty_propagation_conflicts = 0;
     int64_t structural_batches = 0;
 
     /// Totals over `by_generator` below, kept as their own fields so a caller

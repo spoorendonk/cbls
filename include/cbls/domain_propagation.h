@@ -5,7 +5,7 @@
 // Implied domains depend on bounds, not on current values: a plain FJ jump
 // changes no bound and gains nothing from this. The place where variables are
 // held fixed for a while is the Novelty compound-move stack, which is what
-// this is built for (B2, #330). Until then it is used only by tests.
+// this is built for: GFJConfig::compound_propagation (B2, #330/#339).
 
 #include "cbls/bound_propagation.h"
 
