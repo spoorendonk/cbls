@@ -174,7 +174,15 @@ bool substitution_ok(const Work& w, std::size_t r, const Candidate& cand, int& f
         const double delta = -e * cand.k;
         const double shift = e * cand.d;
         const double cur = coef_in_row(w, s, cand.x);
+        // The scale `substitute` adds must stay finite, or row s's roundoff
+        // margin turns inf/NaN and its tolerance checks never fire: a tiny b
+        // against a huge e overflows e/b even when delta and shift are finite.
+        const double ratio = e / cand.b;
+        const double carried =
+            std::abs(ratio) * static_cast<double>(w.row_folds[r] + 1) * w.row_scale[r];
+        const double scale = w.row_scale[s] + (2.0 * std::abs(shift)) + carried;
         if (!std::isfinite(delta) || !std::isfinite(cur + delta) || !std::isfinite(shift) ||
+            !std::isfinite(ratio) || !std::isfinite(scale) ||
             !side_ok(w.row_lo[s], shift, infinity) || !side_ok(w.row_hi[s], shift, infinity)) {
             return false;
         }

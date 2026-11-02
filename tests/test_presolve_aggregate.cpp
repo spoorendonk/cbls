@@ -153,6 +153,20 @@ TEST_CASE("a two-step aggregation chain postsolves in reverse order", "[presolve
     CHECK(r.postsolve.apply({1.0}) == std::vector<double>{1.0, 3.0, 2.0});
 }
 
+TEST_CASE("aggregation refuses a substitution whose roundoff scale overflows", "[presolve]") {
+    Builder b;
+    const int32_t x = b.col(-1, 1);
+    const int32_t y = b.col(-1, 1);
+    const int32_t z = b.col(-1, 1);
+    // k = 1 and d = 0 either way, so delta = -1e160 and shift = 0 are finite,
+    // but the carried-error ratio e/b = 1e160 / 1e-160 overflows.
+    b.row({{x, 1e-160}, {y, 1e-160}}, 0, 0);
+    b.row({{y, 1e160}, {z, -1.0}}, -kInf, 0);
+    b.row({{x, 1e160}, {z, 1.0}}, -kInf, 0);
+    const PresolveResult r = run(b.p);
+    CHECK(r.stats.cols_aggregated == 0);
+}
+
 TEST_CASE("aggregation respects max_fill", "[presolve]") {
     Builder b;
     const int32_t x = b.col(0, 1, true);
