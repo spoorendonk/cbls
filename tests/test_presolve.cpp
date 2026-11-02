@@ -98,6 +98,42 @@ double objective(const LinearProblem& p, const std::vector<double>& x) {
     return v;
 }
 
+/// Values for `x + a*z1 - a*z2 <= c` (a = 0.1, z1 = v1, z2 = v2 fixed) where
+/// the exact bound left on x, `c - a*v1 + a*v2`, is at least 3, but folding
+/// z1 then z2 in floating point leaves less than 3 - 1e-8: the products
+/// round to the same double while their exact values differ by 0.1 ulp(v).
+struct FoldCut {
+    double a = 0.1;
+    double v1 = 0.0;
+    double v2 = 0.0;
+    double c = 0.0;
+};
+
+FoldCut find_fold_cut() {
+    FoldCut f;
+    f.c = 3.0 - 1.1e-8;
+    for (int k = 0; k < 1000; ++k) {
+        const double v = 1e9 + static_cast<double>(k);
+        const double v2 = std::nextafter(v, kInf);
+        const double s1 = f.a * v;
+        const double s2 = f.a * v2;
+        if (s1 != s2) {
+            continue;
+        }
+        const double e1 = std::fma(f.a, v, -s1);  // exact product errors
+        const double e2 = std::fma(f.a, v2, -s2);
+        const double exact_gap = (f.c - 3.0) + (e2 - e1);  // exact bound - 3
+        const double folded = (f.c - s1) + s2;             // presolve's fold order
+        if (exact_gap >= 0.0 && folded < 3.0 - 1e-8) {
+            f.v1 = v;
+            f.v2 = v2;
+            return f;
+        }
+    }
+    FAIL("no fold-cut instance in the search range");
+    return f;
+}
+
 std::vector<double> restrict_to(const PresolveResult& r, const std::vector<double>& x) {
     std::vector<double> out;
     out.reserve(r.reduced_to_col.size());
@@ -124,6 +160,14 @@ TEST_CASE("presolve disabled returns the merged problem with an identity postsol
     REQUIRE(r.reduced.coefs == std::vector<double>{3.0, 1.0});
     REQUIRE(r.postsolve.num_steps() == 0);
     REQUIRE(r.postsolve.apply({0.5, 5.0}) == std::vector<double>{0.5, 5.0});
+
+    // Repeats are summed compensated, whatever their order: 1e16 + 1 - 1e16
+    // is 1, not 0 (which would drop x from the row).
+    Builder c;
+    const int32_t u = c.col(0, 100);
+    c.row({{u, 1e16}, {u, 1.0}, {u, -1e16}}, -kInf, 5.0);
+    const PresolveResult rc = presolve(c.p);
+    REQUIRE(rc.reduced.coefs == std::vector<double>{1.0});
 }
 
 TEST_CASE("presolve folds a fixed column into its rows and the objective", "[presolve]") {
@@ -143,6 +187,18 @@ TEST_CASE("presolve folds a fixed column into its rows and the objective", "[pre
     REQUIRE(r.reduced.row_hi[0] == 3.0);
     REQUIRE(r.reduced.obj_offset == 6.0);
     REQUIRE(r.postsolve.apply({1.0, 2.0}) == std::vector<double>{2.0, 1.0, 2.0});
+
+    // A fold that would move a row bound past the infinity threshold (here
+    // 100 * -1e19 leaves y <= 1e21, read as no bound) keeps the column.
+    Builder big;
+    const int32_t bx = big.col(-1e19, -1e19);
+    const int32_t by = big.col(0, kInf);
+    const int32_t bz = big.col(0, kInf);
+    big.row({{bx, 100.0}, {by, 1.0}, {bz, 1.0}}, -kInf, 0.0);
+    const PresolveResult rb = presolve(big.p, o);
+    REQUIRE(rb.stats.cols_fixed == 0);
+    REQUIRE(rb.reduced.n_cols() == 3);
+    REQUIRE(rb.reduced.row_hi[0] == 0.0);
 }
 
 TEST_CASE("presolve keeps a frozen column even when it is fixed", "[presolve]") {
@@ -251,6 +307,26 @@ TEST_CASE("presolve turns singleton rows into bounds", "[presolve]") {
     REQUIRE(rh.stats.rows_singleton == 0);
     REQUIRE(rh.reduced.n_rows() == 1);
     REQUIRE(std::isinf(rh.reduced.col_ub[0]));
+
+    // So is a quotient that overflowed: -1e19 / 1e-300 is -inf.
+    Builder over;
+    const int32_t ov = over.col(-kInf, kInf);
+    over.row({{ov, 1e-300}}, -kInf, -1e19);
+    const PresolveResult ro = presolve(over.p, only(false));
+    REQUIRE(ro.stats.rows_singleton == 0);
+    REQUIRE(ro.reduced.n_rows() == 1);
+
+    // A singleton left by folds keeps their roundoff: x = 3 satisfies the
+    // exact row though the folded bound is below 3.
+    const FoldCut f = find_fold_cut();
+    Builder fold;
+    const int32_t fx = fold.col(0, 10, /*integral=*/true);
+    const int32_t z1 = fold.col(f.v1, f.v1);
+    const int32_t z2 = fold.col(f.v2, f.v2);
+    fold.row({{fx, 1.0}, {z1, f.a}, {z2, -f.a}}, -kInf, f.c);
+    const PresolveResult rf = presolve(fold.p, keep_empty);
+    REQUIRE(rf.stats.rows_singleton == 1);
+    REQUIRE(rf.reduced.col_ub[static_cast<std::size_t>(rf.col_to_reduced[0])] == 3.0);
 }
 
 TEST_CASE("presolve reports a singleton row outside the column box as infeasible", "[presolve]") {
@@ -268,8 +344,8 @@ TEST_CASE("presolve reports a singleton row outside the column box as infeasible
     r = presolve(c.p, only(false));
     REQUIRE(r.stats.status == PresolveStatus::Infeasible);
 
-    // Crossing by one ulp of a computed quotient is rounding: the column
-    // collapses to the point and the row goes.
+    // A computed quotient one ulp above the column's ub is within its own
+    // rounding error: the row goes and the column keeps a nonempty box.
     const double q = 1.0 / 3.0;
     Builder d;
     const int32_t z = d.col(0, std::nextafter(q, 0.0));
@@ -354,6 +430,19 @@ TEST_CASE("presolve with propagation fixes and removes a forced column", "[preso
     REQUIRE(r.reduced.n_rows() == 0);
     REQUIRE(r.reduced.obj_offset == 2.0);
     REQUIRE(r.postsolve.apply({}) == std::vector<double>{1.0, 1.0});
+
+    // Propagation over a folded row keeps the folds' roundoff: x = 3, w = 0
+    // satisfies the exact row though the folded bound is below 3.
+    const FoldCut f = find_fold_cut();
+    Builder fold;
+    const int32_t fx = fold.col(0, 10, /*integral=*/true);
+    const int32_t fw = fold.col(0, 10, /*integral=*/true);
+    const int32_t z1 = fold.col(f.v1, f.v1);
+    const int32_t z2 = fold.col(f.v2, f.v2);
+    fold.row({{fx, 1.0}, {fw, 1.0}, {z1, f.a}, {z2, -f.a}}, -kInf, f.c);
+    const PresolveResult rf = presolve(fold.p, only(true));
+    REQUIRE(rf.stats.status != PresolveStatus::Infeasible);
+    REQUIRE(rf.reduced.col_ub[static_cast<std::size_t>(rf.col_to_reduced[0])] == 3.0);
 }
 
 TEST_CASE("presolve rejects a malformed problem", "[presolve]") {

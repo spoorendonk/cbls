@@ -66,8 +66,14 @@ struct Work {
     /// larger than `row_scale`, so `(row_folds + 1) * DBL_EPSILON * row_scale`.
     [[nodiscard]] double row_roundoff(std::size_t r) const;
 
+    /// Whether column j can be folded at `value`: every product `a * value`
+    /// and `obj * value` is finite and no finite row bound moves to or past
+    /// `infinity`, where it would read as "no bound". O(column length).
+    [[nodiscard]] bool can_fix(int32_t j, double value) const;
+
     /// Remove column j at `value`: fold it into its rows' bounds and the
-    /// objective offset, and push the postsolve step. j must not be frozen.
+    /// objective offset, and push the postsolve step. j must not be frozen,
+    /// and `can_fix(j, value)` must hold.
     void fix_column(int32_t j, double value);
 
     /// Remove row r, releasing its live entries from their columns.

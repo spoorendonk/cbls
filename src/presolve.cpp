@@ -110,23 +110,31 @@ void validate(const LinearProblem& p, double infinity) {
 
 /// Copy row i of `p` into `w`, merging repeated columns and dropping zeros.
 /// Sorting the row costs O(len log len); it runs once per row, at load.
+///
+/// Repeats are summed with Neumaier's compensation, in a fixed (column,
+/// coefficient) order: a plain sum of `1e16, 1, -1e16` gives 0 or 1 depending
+/// on the order, and a 0 would drop the column from the row altogether.
 void load_row(const LinearProblem& p, std::size_t i, std::vector<std::pair<int32_t, double>>& tmp,
               Work& w) {
     tmp.clear();
     for (std::size_t k = p.row_start[i]; k < p.row_start[i + 1]; ++k) {
         tmp.emplace_back(p.cols[k], p.coefs[k]);
     }
-    std::sort(tmp.begin(), tmp.end(),
-              [](const auto& a, const auto& b) { return a.first < b.first; });
+    std::sort(tmp.begin(), tmp.end());
     std::size_t k = 0;
     while (k < tmp.size()) {
         const int32_t col = tmp[k].first;
         double sum = tmp[k].second;
+        double compensation = 0.0;
         std::size_t next = k + 1;
         for (; next < tmp.size() && tmp[next].first == col; ++next) {
-            sum += tmp[next].second;
+            const double x = tmp[next].second;
+            const double t = sum + x;
+            compensation += std::abs(sum) >= std::abs(x) ? (sum - t) + x : (x - t) + sum;
+            sum = t;
             ++w.stats.duplicates_merged;
         }
+        sum += compensation;
         if (sum != 0.0) {
             w.cols.push_back(col);
             w.coefs.push_back(sum);
@@ -205,7 +213,9 @@ void load(const LinearProblem& p, Work& w) {
 
 /// Round integral columns' bounds inward and settle crossed bounds: within
 /// `feasibility_tolerance` they collapse to a point, beyond it the problem is
-/// infeasible. The input bounds carry no computed error, so no roundoff term.
+/// infeasible. Column bounds are input, with no computed error, so no
+/// roundoff term; row bounds get the `row_roundoff` term used everywhere else
+/// (here only `DBL_EPSILON * |bound|`, since nothing is folded yet).
 void prepare(Work& w) {
     const double tol = w.opts.feasibility_tolerance;
     for (std::size_t j = 0; j < w.n_cols(); ++j) {
@@ -236,19 +246,30 @@ void prepare(Work& w) {
     }
 }
 
+/// Error bound on the quotient `q = side / a` of row r: none when nothing was
+/// folded into the side (it is input, exact) and the division was exact;
+/// otherwise the side's roundoff over |a| plus one rounding of the division.
+double quotient_error(const Work& w, std::size_t r, double side, double a, double q) {
+    if (w.row_folds[r] == 0 && std::fma(q, a, -side) == 0.0) {
+        return 0.0;
+    }
+    return (w.row_roundoff(r) / std::abs(a)) +
+           (std::numeric_limits<double>::epsilon() * std::abs(q));
+}
+
 /// Singleton row r: its one live entry `a x` in [lo, hi] becomes bounds on x,
-/// and the row goes. The bounds are the computed quotients, not relaxed.
+/// and the row goes.
 ///
-/// `slack` is how far a point may then sit outside the exact quotient: the
-/// quotient's own error (the row bound's roundoff over |a|, plus one rounding
-/// of the division) and `feasibility_tolerance` in both spaces, as
-/// `min(tol, tol / |a|)`, so that a point within it violates neither the row
-/// (by more than `tol` plus roundoff) nor a column bound (by more than `tol`).
-/// An integral column's bounds are rounded inward past `slack`, and a crossing
-/// within it collapses to a point.
+/// Each quotient is relaxed outward by its error bound (`quotient_error`), so
+/// it never cuts off a point the exact row admits. On top of that, `slack =
+/// min(tol, tol / |a|)` is the most a point may sit outside the relaxed bound:
+/// within it a point violates neither the row nor the column bound it widens
+/// by more than `tol`. An integral column's bounds are rounded inward past
+/// `slack`, and a crossing within it collapses to a point.
 ///
-/// A quotient at or beyond `infinity` would read as "no bound" downstream, so
-/// the row is then kept as it is (as `propagate_bounds` skips such a value).
+/// A quotient at or beyond `infinity`, or one that overflowed, would read as
+/// "no bound" downstream, so the row is then kept as it is (as
+/// `propagate_bounds` skips such a value).
 void reduce_singleton(Work& w, std::size_t r) {
     std::size_t p = w.row_start[r];
     while (w.coefs[p] == 0.0) {
@@ -256,19 +277,25 @@ void reduce_singleton(Work& w, std::size_t r) {
     }
     const double a = w.coefs[p];
     const auto j = static_cast<std::size_t>(w.cols[p]);
-    double lo = a > 0.0 ? w.row_lo[r] / a : w.row_hi[r] / a;
-    double hi = a > 0.0 ? w.row_hi[r] / a : w.row_lo[r] / a;
+    const double lo_side = a > 0.0 ? w.row_lo[r] : w.row_hi[r];  // gives x's lower bound
+    const double hi_side = a > 0.0 ? w.row_hi[r] : w.row_lo[r];
+    double lo = lo_side / a;
+    double hi = hi_side / a;
     const double infinity = w.opts.propagation.infinity;
-    if ((std::isfinite(lo) && std::abs(lo) >= infinity) ||
-        (std::isfinite(hi) && std::abs(hi) >= infinity)) {
+    const auto unusable = [infinity](double side, double q) {
+        return std::isfinite(side) && (!std::isfinite(q) || std::abs(q) >= infinity);
+    };
+    if (unusable(lo_side, lo) || unusable(hi_side, hi)) {
         return;
     }
+    if (std::isfinite(lo)) {
+        lo -= quotient_error(w, r, lo_side, a, lo);
+    }
+    if (std::isfinite(hi)) {
+        hi += quotient_error(w, r, hi_side, a, hi);
+    }
     const double tol = w.opts.feasibility_tolerance;
-    const double abs_a = std::abs(a);
-    const double magnitude =
-        std::max(std::isfinite(lo) ? std::abs(lo) : 0.0, std::isfinite(hi) ? std::abs(hi) : 0.0);
-    const double slack = std::min(tol, tol / abs_a) + (w.row_roundoff(r) / abs_a) +
-                         (std::numeric_limits<double>::epsilon() * magnitude);
+    const double slack = std::min(tol, tol / std::abs(a));
     if (w.integral[j] != 0) {
         if (std::isfinite(lo)) {
             lo = std::ceil(lo - slack);
@@ -416,6 +443,28 @@ double Work::row_roundoff(std::size_t r) const {
            row_scale[r];
 }
 
+bool Work::can_fix(int32_t j, double value) const {
+    const auto jj = static_cast<std::size_t>(j);
+    const double infinity = opts.propagation.infinity;
+    if (!std::isfinite(value) || !std::isfinite(obj[jj] * value)) {
+        return false;
+    }
+    const auto in_range = [infinity](double bound, double shift) {
+        return !std::isfinite(bound) || std::abs(bound - shift) < infinity;
+    };
+    for (std::size_t q = col_start[jj]; q < col_start[jj + 1]; ++q) {
+        const auto r = static_cast<std::size_t>(col_rows[q]);
+        if (row_removed[r] != 0) {
+            continue;
+        }
+        const double shift = coefs[row_start[r] + static_cast<std::size_t>(col_offs[q])] * value;
+        if (!std::isfinite(shift) || !in_range(row_lo[r], shift) || !in_range(row_hi[r], shift)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 void Work::fix_column(int32_t j, double value) {
     const auto jj = static_cast<std::size_t>(j);
     for (std::size_t q = col_start[jj]; q < col_start[jj + 1]; ++q) {
@@ -492,8 +541,11 @@ void reduce_propagate(Work& w) {
             len > static_cast<std::size_t>(std::numeric_limits<int32_t>::max())) {
             continue;
         }
+        // `propagate_bounds` covers the activity's roundoff, not the error
+        // already in a folded side, so the sides are widened by it first.
+        const double err = w.row_folds[r] > 0 ? w.row_roundoff(r) : 0.0;
         views.push_back(LinearRow{w.cols.data() + w.row_start[r], w.coefs.data() + w.row_start[r],
-                                  static_cast<int32_t>(len), w.row_lo[r], w.row_hi[r]});
+                                  static_cast<int32_t>(len), w.row_lo[r] - err, w.row_hi[r] + err});
     }
     const BoundPropagationStats s =
         propagate_bounds(views, w.integral, w.lb, w.ub, w.opts.propagation);
@@ -510,6 +562,9 @@ void reduce_fixed_columns(Work& w) {
             continue;
         }
         const double value = w.integral[j] != 0 ? std::round(w.lb[j]) : w.lb[j];
+        if (!w.can_fix(static_cast<int32_t>(j), value)) {
+            continue;  // kept, fixed by its bounds
+        }
         w.fix_column(static_cast<int32_t>(j), value);
         ++w.stats.cols_fixed;
     }
@@ -556,6 +611,9 @@ void reduce_empty_columns(Work& w) {
             value = w.ub[j];
         } else {
             continue;  // Unbounded in the improving direction: left to the search.
+        }
+        if (!w.can_fix(static_cast<int32_t>(j), value)) {
+            continue;
         }
         w.fix_column(static_cast<int32_t>(j), value);
         ++w.stats.cols_empty;

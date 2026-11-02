@@ -2648,21 +2648,26 @@ calls it yet (MPS #325, `.nl` #326).
   activity bound tightening (the `propagate_bounds` pass above, over the live
   rows as views); fixed columns folded into row bounds and the objective offset;
   empty rows (checked against the feasibility tolerance) and free rows removed;
-  singleton rows turned into column bounds (the exact quotient, rounded inward on
-  an integral column); a row side the activity range already implies dropped —
+  singleton rows turned into column bounds (the quotient relaxed outward by its
+  error bound, then rounded inward on an integral column); a row side the activity range already implies dropped —
   only when the activity clears it by its `(nnz + 3)·DBL_EPSILON` rounding bound,
   the #211 scaling — and the row removed once it has no side; empty columns fixed
   at their best bound. The last is the one **dual** reduction: it keeps the
   optimum's value, not every feasible point. Everything else is primal.
-- **Tolerances** are absolute (`feasibility_tolerance`, 1e-9) plus a bound on
-  the checked value's floating-point error: a row bound carries
-  `(folds + 1)·DBL_EPSILON·row_scale` from the fixed columns folded into it, and
-  a singleton quotient that over `|a|` plus one rounding. Integral bounds are
-  rounded inward past it (at load and after a singleton row); a box that rounds
-  empty, bounds crossing beyond it, or an empty row violated beyond it, is
-  `Infeasible`. A point presolve admits so violates the original problem by
-  about 1e-9 plus roundoff at most, far inside `verify_model`'s 1e-6, whatever
-  the magnitudes. A singleton quotient at or beyond `1e20` leaves the row alone.
+- **Floating point.** A row bound carries `(folds + 1)·DBL_EPSILON·row_scale`
+  of error from the fixed columns folded into it. Every bound derived from it
+  is relaxed outward by that error first, so roundoff never cuts off a feasible
+  point: the sides handed to `propagate_bounds`, and a singleton quotient (that
+  over `|a|` plus one rounding, none when unfolded and exact). On top,
+  `feasibility_tolerance` (1e-9, absolute; `min(tol, tol/|a|)` for a singleton,
+  so that it holds in both column and row space) is the slack for rounding
+  integral bounds inward, collapsing crossed bounds to a point, and accepting
+  an empty row; beyond it the result is `Infeasible`. A point presolve admits
+  so violates the original problem by about 1e-9 plus roundoff at most, far
+  inside `verify_model`'s 1e-6, whatever the magnitudes. A singleton quotient
+  at or beyond `1e20` (or overflowed), or a fold that would push a row bound
+  there, leaves the row or column alone. Repeated entries are merged with a
+  compensated sum.
 - **Infeasible** returns the original problem with an identity postsolve, as the
   adapters already do for propagation: the search reports infeasibility.
 - **Postsolve** is a LIFO stack of steps (`FixedColumn` today; aggregation adds
