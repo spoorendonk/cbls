@@ -686,3 +686,43 @@ TEST_CASE("presolve can leave no column and a constant objective", "[mps][adapte
     REQUIRE_THAT(built.model.node_value(built.objective_node_id), WithinAbs(2.0, 1e-12));
     REQUIRE(built.original_values(built.model) == std::vector<double>{2.0});
 }
+
+TEST_CASE("presolve keeps a ranged G row's >= side primary and the objective's repeats",
+          "[mps][adapter]") {
+    // C1: 3 <= X + Y <= 7 (G, range 4), kept by presolve. X is listed in COST
+    // three times, 1e16 + 1 - 1e16: a plain sum in file order gives 0 and drops
+    // X from the objective; the plain build's Sum keeps the 1.
+    const std::string ranged =
+        "NAME          RNG\n"
+        "ROWS\n"
+        " N  COST\n"
+        " G  C1\n"
+        "COLUMNS\n"
+        "    X    COST    1e16   COST    1.0\n"
+        "    X    COST   -1e16   C1      1.0\n"
+        "    Y    COST    1.0    C1      1.0\n"
+        "RHS\n"
+        "    RHS  C1      3.0\n"
+        "RANGES\n"
+        "    RNG  C1      4.0\n"
+        "BOUNDS\n"
+        " UP BND  X      10.0\n"
+        " UP BND  Y      10.0\n"
+        "ENDATA\n";
+    auto prob = cbls::read_mps(write_file("presolve_range.mps", ranged).string());
+    auto plain = cbls::mps_to_model(prob);
+    auto built = cbls::mps_to_model(prob, presolve_on());
+    REQUIRE(built.presolve_stats.status != cbls::PresolveStatus::Infeasible);
+    REQUIRE(built.var_handles.size() == 2);
+    REQUIRE(built.constraint_node_ids.size() == 1);
+    REQUIRE(built.constraint_node_ids[0] >= 0);
+    REQUIRE(plain.model.node(plain.constraint_node_ids[0]).op == cbls::NodeOp::Geq);
+    REQUIRE(built.model.node(built.constraint_node_ids[0]).op == cbls::NodeOp::Geq);
+
+    for (std::size_t i = 0; i < built.var_handles.size(); ++i) {
+        const double v = built.reduced_to_original[i] == 0 ? 2.0 : 1.0;  // X = 2, Y = 1
+        built.model.var_mut(vid(built.var_handles[i])).value = v;
+    }
+    cbls::full_evaluate(built.model);
+    REQUIRE_THAT(built.model.node_value(built.objective_node_id), WithinAbs(3.0, 1e-9));
+}

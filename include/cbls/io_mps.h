@@ -129,7 +129,9 @@ struct MpsToModelResult {
     std::vector<int32_t> var_handles;
     /// `constraint_node_ids[i]` is the constraint expression node id for MPS
     /// row `i`; -1 for a row presolve removed. A range row, and an `E` row with
-    /// a RANGES entry, adds a second constraint not listed here.
+    /// a RANGES entry, adds a second constraint not listed here. The listed one
+    /// is the same side with or without presolve: `>=` for a `G` row, `<=` for
+    /// `L` and ranged `E` (unless presolve dropped that side as redundant).
     std::vector<int32_t> constraint_node_ids;
     int32_t objective_node_id = -1;  ///< -1 if the MPS had no 'N' row.
     /// Outcome of the propagation pass without presolve; all-zero when it was

@@ -449,10 +449,22 @@ LinearProblem to_linear_problem(const MpsProblem& prob, RowMatrix mat) {
         lp.integral[j] = prob.vars[j].kind == MpsVarKind::Continuous ? 0 : 1;
     }
     // A column listed twice in the objective row: its coefficients add up, as
-    // the two terms do in the plain build's Sum.
+    // the two terms do in the plain build's Sum. Summed with Neumaier's
+    // compensation, as presolve's `load_row` merges a row's repeats: a plain
+    // `1e16 + 1 - 1e16` gives 0, which would drop the column from the objective.
+    // One extra double per column, O(n) beside the O(nnz) matrix.
+    std::vector<double> compensation(n_cols, 0.0);
     for (const int k : mat.obj_nz) {
         const MpsNonzero& nz = prob.nonzeros[static_cast<std::size_t>(k)];
-        lp.obj[static_cast<std::size_t>(nz.col_idx)] += nz.value;
+        const auto j = static_cast<std::size_t>(nz.col_idx);
+        const double sum = lp.obj[j];
+        const double t = sum + nz.value;
+        compensation[j] +=
+            std::abs(sum) >= std::abs(nz.value) ? (sum - t) + nz.value : (nz.value - t) + sum;
+        lp.obj[j] = t;
+    }
+    for (std::size_t j = 0; j < n_cols; ++j) {
+        lp.obj[j] += compensation[j];
     }
     lp.obj_offset = prob.objective_offset;
     lp.row_start.assign(mat.row_start.begin(), mat.row_start.end());
@@ -470,8 +482,10 @@ LinearProblem to_linear_problem(const MpsProblem& prob, RowMatrix mat) {
 
 /// The one or two constraints `lo <= lhs <= hi` stands for, and the primary
 /// node: `eq_expr` when the sides meet, one comparison per finite side
-/// otherwise, the `<=` one primary for a range. -1 when neither side is finite.
-int32_t add_bounded_row(Model& m, double lo, double hi, int32_t lhs) {
+/// otherwise. For a range the primary is the side the plain build makes primary
+/// (`add_row_constraints`): `>=` for a G row, `<=` for L and E. -1 when neither
+/// side is finite.
+int32_t add_bounded_row(Model& m, double lo, double hi, int32_t lhs, MpsRowSense sense) {
     const bool has_lo = !is_unbounded_below(lo);
     const bool has_hi = !is_unbounded_above(hi);
     if (has_lo && has_hi && lo == hi) {
@@ -479,16 +493,20 @@ int32_t add_bounded_row(Model& m, double lo, double hi, int32_t lhs) {
         m.add_constraint(cn);
         return cn;
     }
-    int32_t cn = -1;
+    int32_t lo_cn = -1;
+    int32_t hi_cn = -1;
     if (has_lo) {
-        cn = m.geq(lhs, m.constant(lo));
-        m.add_constraint(cn);
+        lo_cn = m.geq(lhs, m.constant(lo));
+        m.add_constraint(lo_cn);
     }
     if (has_hi) {
-        cn = m.leq(lhs, m.constant(hi));
-        m.add_constraint(cn);
+        hi_cn = m.leq(lhs, m.constant(hi));
+        m.add_constraint(hi_cn);
     }
-    return cn;
+    if (lo_cn < 0 || (hi_cn >= 0 && sense != MpsRowSense::G)) {
+        return hi_cn;
+    }
+    return lo_cn;
 }
 
 /// The objective of the reduced problem: its linear terms plus the offset,
@@ -571,7 +589,8 @@ bool build_presolved(const MpsProblem& prob, RowMatrix mat, const MpsToModelOpti
         const int32_t lhs =
             build_lin_expr(m, result.var_handles, red.cols.data() + begin, red.coefs.data() + begin,
                            static_cast<int32_t>(red.row_start[row + 1] - begin));
-        result.constraint_node_ids[r] = add_bounded_row(m, red.row_lo[row], red.row_hi[row], lhs);
+        result.constraint_node_ids[r] =
+            add_bounded_row(m, red.row_lo[row], red.row_hi[row], lhs, prob.rows[r].sense);
     }
 
     result.objective_node_id = add_reduced_objective(m, prob, obj_only, red, result.var_handles);

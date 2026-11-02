@@ -355,6 +355,21 @@ TEST_CASE("the runner's file check refuses a point the file does not accept", "[
     REQUIRE_FALSE(check_original_point(prob, {3.0, 2.0}, 5.0, tol).passes(5.0));
     prob.rows[0] = {"c", cbls::MpsRowSense::E, 2.0, -2.0};
     REQUIRE(check_original_point(prob, {0.0, 0.0}, 0.0, tol).passes(0.0));
+
+    // A row whose activity is inf - inf: NaN fails no `<` or `>`, so it has to
+    // be refused as non-finite rather than read as no violation.
+    cbls::MpsProblem huge = prob;
+    huge.rows[0] = {"c", cbls::MpsRowSense::G, 2.0};
+    huge.nonzeros = {{-1, 0, 1.0}, {-1, 1, 1.0}, {0, 0, 1e308}, {0, 1, -1e308}};
+    REQUIRE_FALSE(check_original_point(huge, {3.0, 3.0}, 6.0, tol).passes(6.0));
+
+    // Objective terms of 1e10 that cancel to 0: the engine's plain sum may sit
+    // a few 1e-6 off the compensated one, which the drift gate alone refuses.
+    cbls::MpsProblem cancel = prob;
+    cancel.rows[0] = {"c", cbls::MpsRowSense::G, 2.0};
+    cancel.nonzeros = {{-1, 0, 1e10}, {-1, 1, -1e10}, {0, 0, 1.0}, {0, 1, 1.0}};
+    REQUIRE(check_original_point(cancel, {1.0, 1.0}, 5e-6, tol).passes(5e-6));
+    REQUIRE_FALSE(check_original_point(cancel, {1.0, 1.0}, 100.0, tol).passes(100.0));
 }
 
 // ---------------------------------------------------------------------------

@@ -481,6 +481,7 @@ def arm_keys(engine: str, args: argparse.Namespace) -> dict[str, object]:
         "exact_int_jump": args.exact_int_jump,
         "perturb_near_value": args.perturb_near_value,
         "objective_tie_break": args.objective_tie_break,
+        "presolve": args.presolve,
     }
 
 
@@ -978,10 +979,11 @@ def check_resume_configuration(
 
     Returns the exit code to fail with, or None to proceed.
     """
-    # What a row without a key ran: `exact_int_jump`, `perturb_near_value` and
-    # `objective_tie_break` are back-read as off, since every row from before a
-    # flag ran its off arm; any other missing key is unknown and left alone.
-    back_read_off = {"exact_int_jump", "perturb_near_value", "objective_tie_break"}
+    # What a row without a key ran: `exact_int_jump`, `perturb_near_value`,
+    # `objective_tie_break` and `presolve` are back-read as off, since every row
+    # from before a flag ran its off arm; any other missing key is unknown and
+    # left alone.
+    back_read_off = {"exact_int_jump", "perturb_near_value", "objective_tie_break", "presolve"}
     for job in jobs:
         result = read_json_object(job.result_path(results_dir))
         if result is None:

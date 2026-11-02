@@ -567,6 +567,15 @@ def test_resuming_under_a_different_search_arm_is_refused(tmp_path: Path) -> Non
     result.write_text(json.dumps({"instance": "a", "threads": 1, "compound_moves": True, **tie}))
     assert check() is None
     assert check(compound_moves=False) == 2
+    # And presolve (#325): it changes the model, so a --presolve re-run over an
+    # off directory would score a uniform off table as the presolve arm. A row
+    # from before the flag built the plain model, so it is read as off.
+    result.write_text(json.dumps({"instance": "a", "threads": 1, "presolve": False, **tie}))
+    assert check() is None
+    assert check(presolve=True) == 2
+    result.write_text(json.dumps({"instance": "a", "threads": 1, **tie}))
+    assert check() is None
+    assert check(presolve=True) == 2
 
 
 def test_a_default_run_resumes_over_a_job_it_killed(tmp_path: Path) -> None:

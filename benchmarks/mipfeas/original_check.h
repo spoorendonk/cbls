@@ -14,7 +14,10 @@
 // absolute term: rows `feas_tol + 1e-9 * scale` (scale: the larger of the finite
 // sides and the sum of |a_ij x_j|), bounds `feas_tol + 1e-9 * |bound|`,
 // integrality 1e-9 (assess_result's gate), the objective the runner's drift gate
-// `1e-6 * (|objective| + 1)`.
+// `1e-6 * (|objective| + 1)` plus `1e-9 * (sum |c_j x_j| + |offset|)`. The
+// reported objective is the engine's plain sum, so terms that cancel to a small
+// optimum can leave it further from the compensated sum here than the drift
+// gate alone allows; the scale term, as for rows, absorbs that roundoff.
 
 #include <algorithm>
 #include <cbls/bound_propagation.h>
@@ -31,13 +34,15 @@ struct OriginalCheck {
     double max_integrality = 0.0;  ///< Worst |x - round(x)| over integer columns.
     double objective = 0.0;        ///< c·x + offset at the point.
     double objective_drift = 0.0;  ///< |objective - reported|.
+    double objective_scale = 0.0;  ///< sum |c_j x_j| + |offset|.
     bool size_mismatch = false;    ///< The point does not have one value per column.
     bool non_finite = false;       ///< Some value, or the objective, is not finite.
 
     [[nodiscard]] bool passes(double reported_objective) const {
         return !size_mismatch && !non_finite && max_row_ratio <= 1.0 && max_bound_ratio <= 1.0 &&
                max_integrality <= 1e-9 &&
-               objective_drift <= 1e-6 * (std::abs(reported_objective) + 1.0);
+               objective_drift <=
+                   (1e-6 * (std::abs(reported_objective) + 1.0)) + (1e-9 * objective_scale);
     }
 };
 
@@ -130,10 +135,12 @@ inline OriginalCheck check_original_point(const MpsProblem& prob, const std::vec
     std::vector<double> abs_terms(n_rows, 0.0);
     CompensatedSum obj;
     obj.add(prob.objective_offset);
+    out.objective_scale = std::abs(prob.objective_offset);
     for (const MpsNonzero& nz : prob.nonzeros) {
         const double term = nz.value * x[static_cast<std::size_t>(nz.col_idx)];
         if (nz.row_idx < 0) {
             obj.add(term);
+            out.objective_scale += std::abs(term);
         } else if (static_cast<std::size_t>(nz.row_idx) < n_rows) {
             const auto r = static_cast<std::size_t>(nz.row_idx);
             activity[r].add(term);
@@ -141,8 +148,13 @@ inline OriginalCheck check_original_point(const MpsProblem& prob, const std::vec
         }
     }
     for (std::size_t r = 0; r < n_rows; ++r) {
+        const double act = activity[r].value();
+        if (!std::isfinite(act)) {  // inf - inf is NaN, which no `<` or `>` flags
+            out.non_finite = true;
+            return out;
+        }
         const Sides s = mps_row_sides(prob.rows[r]);
-        const SideViolation sv = side_violation(activity[r].value(), s);
+        const SideViolation sv = side_violation(act, s);
         double scale = abs_terms[r];
         if (!is_unbounded_below(s.lo)) {
             scale = std::max(scale, std::abs(s.lo));
