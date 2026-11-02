@@ -271,3 +271,23 @@ def test_the_presolve_census_reports_aggregation(
     fields = out.rstrip("\n").split("\t")
     assert fields[1] == "modelled", out
     assert f" aggregated={aggregated} " in fields[2], out
+
+
+@pytest.mark.parametrize(
+    "flags",
+    [["--no-presolve-aggregation"], ["--presolve", "AGG", "--no-presolve-aggregation"]],
+    ids=["without-presolve", "after-a-file"],
+)
+def test_the_census_refuses_a_misplaced_flag(tmp_path: Path, flags: list[str]) -> None:
+    """A flag out of place is refused, never read as a file name (#347)."""
+    if not CHECKER.is_file():
+        pytest.skip("cbls_minlplib_nl_check not built")
+    nl = tmp_path / "agg.nl"
+    nl.write_text(AGGREGABLE_NL)
+    argv = [str(nl) if f == "AGG" else f for f in flags]
+    if "AGG" not in flags:
+        argv.append(str(nl))
+    result = subprocess.run([str(CHECKER), *argv], capture_output=True, text=True, timeout=60)
+    assert result.returncode == 2, result.stdout
+    assert "misplaced or unknown option: --no-presolve-aggregation" in result.stderr
+    assert result.stdout == ""
