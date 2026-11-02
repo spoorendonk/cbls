@@ -138,9 +138,12 @@ TEST_CASE("coefficient tightening leaves rows it does not cover untouched", "[pr
 }
 
 TEST_CASE("coefficient tightening skips a step that rounds to nothing", "[presolve]") {
-    // 1e13 x + y <= 2e13 + 0.062, x binary, y in [0, 2e13]: d ~ 0.06 is far
-    // above the tolerance but below ulp(1e13) / 2, so fl(1e13 - d) == 1e13.
-    // Counting it would report a change and spin every round.
+    // 1e13 x + y <= 2e13 + 0.062, x binary, y in [0, 2e13]: the exact d is
+    // 0.0625, and the rounding margins (gap error ~0.056, side roundoff ~0.004,
+    // eps |a| ~0.002) cut it to ~3.4e-4: above the tolerance but below
+    // ulp(1e13) / 2 ~ 9.8e-4, so fl(1e13 - d) == 1e13. Counting it would report
+    // a change and spin every round. If the margins shrink by more than ~6e-4,
+    // d no longer rounds away and this test needs a new instance.
     Builder b;
     b.col(0, 1, true);
     b.col(0, 2e13, false);
