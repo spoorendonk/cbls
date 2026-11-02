@@ -1490,11 +1490,10 @@ void ViolationLSLoop::diversify(bool allow_lns) {
     // first feasible point best_state_ is still the initial assignment, which
     // is not a point to return to; that regime keeps the trajectory it had.
     //
-    // What it costs is recorded rather than argued: see #158's comments
-    // for the MINLPLib arm, where the instances that
-    // use post-feasible kicks to move between feasible integer combinations
-    // pay for the elitism. If that cost ever outweighs the gain, the more
-    // faithful thing to attack is the kick RATE, not this restore.
+    // What it costs is recorded rather than argued, on #158: MINLPLib stays
+    // inside the noise, and LNS acceptance falls from 27.3% to 7.5%. If that
+    // cost ever outweighs the gain, the more faithful thing to attack is the
+    // kick RATE, not this restore.
     //
     // WHICH point, in a portfolio, is `kick_origin()`: our own incumbent
     // normally, and the state adoption installed when the search is standing on

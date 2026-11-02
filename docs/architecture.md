@@ -1837,10 +1837,11 @@ an origin first makes the outer loop elitist ILS with a strict-improvement
 acceptance criterion instead. Since `perturb()` ends in `reset_weights()`,
 neither the assignment nor the GLS landscape carries across a kick. The case for
 it: #102's unproductive route kicks about 50x as often as Algorithm 6, so the
-in-place walk is that much longer, and measured on the mipfeas smoke instances
-the search typically leaves the feasible region after a kick and does not come
-back. The measurements, and the LNS-acceptance price (repairs now score against
-the origin, so far fewer are accepted), are on #158.
+in-place walk is that much longer; measured before the restore, the search
+typically left the feasible region after a kick and did not come back. Those
+measurements, the held-out arm that admitted the change, and its LNS-acceptance
+price (repairs now score against the origin, so far fewer are accepted) are on
+#158.
 
 **The restore is not gated on there being no pool**, so a portfolio worker kicks
 from a restored point too. `adopt_from_pool` draws from the better half rather
@@ -1882,8 +1883,8 @@ forces one uniformly chosen variable to a *different* value, drawn from its
 domain with the current value removed; a variable pinned by `lb == ub` cannot be
 chosen. Without the fallback a kick on a small model is usually a no-op
 (probability `(1-p)^n`: 81% on two variables at `p = 0.1`). As a fallback rather
-than a forced variable, it never runs on a model large enough for `p` to do its
-job, so the kick keeps its exact draw sequence there.
+than a forced variable, it almost never runs on a model large enough for `p` to
+do its job, so the kick keeps the draw sequence it had without one.
 
 **The structural kick (#111).** List and Set variables get their own pass in the
 same kick; without it a kick on a structure-only model, such as `setcover`'s
@@ -1902,8 +1903,9 @@ partition's inter-list moves anchored on this variable
   filtered out before the draw, and a variable counts as moved only if its
   elements *net* changed.
 - **Size.** `k` scales how much of each structure moves, since a structure has
-  no "randomise the whole variable" analogue that is not a restart. It is
-  clamped to `[1, |elements|]`, so every structure moves on every kick, `p = 0`
+  no "randomise the whole variable" analogue that is not a restart. It is at
+  least 1 (even on an empty structure) and at most `|elements|` otherwise, so
+  short of a deadline cut every structure moves on every kick, `p = 0`
   included, and `p > 1` cannot make a kick unbounded. `|elements|` is the
   current membership: a 3-of-1000 Set is kicked on the 3 and cannot grow far in
   one kick; LNS, which resamples the cardinality, does that.
@@ -1912,8 +1914,8 @@ partition's inter-list moves anchored on this variable
   the kick is local for a List the DAG reads pairwise (`pair_lambda_sum`) and
   much coarser than `p` suggests for one read positionally (`at`). Measurements
   are on #111.
-- **Deadline-bounded.** Cost is `O(k * (|elements| + universe))` element copies
-  per structure, superlinear in one structure's size, so the pass checks the
+- **Deadline-bounded.** Cost is `O(k * (|elements| + universe))` (a membership
+  scan per candidate) per structure, superlinear in one structure's size, so the pass checks the
   deadline between *moves*, on a capped stride, and never before it has moved
   something; see [Bound 5](#bound-5-why-the-kick-is-checked-between-moves-115).
 - **No draw on scalar-only models.** The pass tests the variable type before
@@ -2022,7 +2024,8 @@ else fully rolled back.
 Sweeps repeat up to `max_sweeps` times, stopping early when a sweep makes no
 improvement, or when the search's `stop` is raised (#191: the deadline, a peer
 worker's stop or a host cancel), polled every `vars_per_poll` variables
-(`src/inner_solver.cpp`, sized by model size). The poll changes only whether the
+(`src/inner_solver.cpp`, sized by model size) and before each Mechanism 3 step.
+The poll changes only whether the
 descent continues, so a pass that finishes within budget is unaffected by it.
 
 ### Parameters
