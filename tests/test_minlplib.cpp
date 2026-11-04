@@ -1113,6 +1113,11 @@ TEST_CASE("MINLPLib ex4_1_8 solves within a loose gap of its published bound",
 // over seeds 1-30 at 15 000 the pass rate is 20/30 with the tie-break on and
 // 20/30 with it off, but seed 13 is no longer among them. Seeds 11 and 26 solve
 // at 8 000 with it on (9/30 do), so 15 000 still carries ~1.9x.
+//
+// Re-picked at #344, when propagation began reading this file's n0 rows and one
+// column's box tightened: over seeds 1-30 the pass rate is 22/30 at 15 000 and
+// 19/30 at 8 000. Seed 26 solves at 15 000 but no longer at 8 000; seeds 11 and
+// 12 solve at both, so 15 000 still carries ~1.9x.
 TEST_CASE("MINLPLib st_e40 reaches feasibility on a small iteration budget", "[minlplib][solve]") {
     skip_unless_libstdcxx_rng();
     // bounds.csv: st_e40,other,4,8,min,30.41421356,30.4142136,0
@@ -1122,7 +1127,7 @@ TEST_CASE("MINLPLib st_e40 reaches feasibility on a small iteration budget", "[m
     REQUIRE(prob.n_vars == 4);
     REQUIRE(prob.n_cons == 8);
 
-    for (uint64_t seed : {11ULL, 26ULL}) {
+    for (uint64_t seed : {11ULL, 12ULL}) {
         INFO("seed " << seed);
         NlToModelResult built = nl_to_model(prob);
         REQUIRE(built.supported);
