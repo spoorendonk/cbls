@@ -20,69 +20,13 @@
 > ViolationLS port change anything?) and is not reproducible from the current
 > tree. The vendored instances back it up.
 
-Trusted external yardstick for the CBLS engine. The instance list below is a
-**self-selected subset of MIPLIB 2017** that mirrors the spirit (not the
-exact roster — see "Caveats") of the Luteberget & Sartor 2023 *Feasibility
-Jump* (FJ) primal-heuristic benchmark.
-
-This benchmark exists because our application benchmarks deviated from their
-published formulations in non-trivial ways, so their "BKS gap" columns were not
-apples-to-apples. (Of the two that motivated this, pharma-glsp has since been
-retired for that reason, #28. uc-chped's remain: they are catalogued equation by
-equation in its `FIDELITY.md`, and its `comparison.csv` accordingly still claims
-a reference comparison rather than a certified BKS gap.) The MIPLIB
-instances here have unambiguous formulations and independently verified optima
-from `miplib2017-v22.solu`, so any gap-to-opt percentage on this benchmark is a
-real apples-to-apples gap.
-
-## Selection rationale
-
-Luteberget & Sartor 2023 (*Feasibility Jump: an LP-free Lagrangian MIP
-heuristic*, MPC 15(2)) report on the MIPLIB 2017 Benchmark Set with a
-2-hour time limit. The exact roster and per-instance numbers from Table 1
-of that paper are not available in this environment.
-
-To keep the issue moving (the issue body explicitly says "If you can't
-confidently identify the exact set, document the subset you chose and the
-reasoning... pick a plausible mix..."), this initial subset targets
-instances that:
-
-1. Are listed in `miplib2017-v22.solu` with `=opt=` (so we have a verified
-   reference value, not just a best-known heuristic value).
-2. Are small enough (`< ~5k vars`, `< ~5k rows`) that a CBLS run completes
-   in seconds-to-minutes, suitable for a regression baseline.
-3. Span structural categories common in MIP heuristic studies:
-   set covering / partitioning, fixed-charge network, capacitated
-   facility location, MIPs with continuous relaxations, pure-binary cases,
-   and at least one with general integers.
-
-## Subset (initial)
-
-| Instance         | Structure (rough)                          | Source tag  |
-|------------------|--------------------------------------------|-------------|
-| `enlight_hard`   | combinatorial puzzle (binary, 200 vars)    | =opt= 37    |
-| `gen-ip054`      | small general integer, ~30 rows            | =opt= 6840  |
-| `gen-ip002`      | small general integer                      | =opt= ~     |
-| `markshare1`     | market split (binary, 50 vars)             | =opt= 1     |
-| `markshare2`     | market split (binary, 74 vars)             | =opt= 1     |
-| `flugpl`         | small flight-planning IP, ~20 vars         | =opt= 1201500 |
-| `pk1`            | small set covering, 86 vars                | =opt= 11    |
-| `mas76`          | knapsack / multidim, 151 vars              | =opt= 40005 |
-| `neos5`          | small MILP, 63 rows                        | =opt= 15    |
-| `mad`            | small MILP                                 | =opt= ~     |
-| `binkar10_1`     | mixed binary, ~2300 vars                   | =opt= 6742  |
-
-The download script (`download.py`) tries to fetch each from
-`https://miplib.zib.de/WebData/instances/<name>.mps.gz` and the matching
-`.solu`, and skips an instance that fails to download. All 11 are vendored, so a
-fresh clone needs no download.
-
-## Caveats
-
-- This is **not** the verbatim Luteberget & Sartor 2023 Table 1 roster.
-- Some instances may not have `=opt=` entries in the current `.solu` —
-  in that case `comparison.csv` reports `NaN` for `gap_to_opt%` (the row
-  is still useful for solver-vs-solver regression).
+The 11 instances are a self-selected MIPLIB 2017 subset in the spirit of
+Luteberget & Sartor 2023 (*Feasibility Jump*), not its roster: `enlight_hard`,
+`gen-ip054`, `gen-ip002`, `markshare1`, `markshare2`, `flugpl`, `pk1`, `mas76`,
+`neos5`, `mad` and `binkar10_1`, with reference values from
+`miplib2017-v22.solu`. All are vendored, so a fresh clone needs no download.
+The original description is in git history (`benchmarks/instances/miplib-fj/README.md`
+before #360).
 
 ## Layout
 

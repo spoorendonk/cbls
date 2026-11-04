@@ -173,39 +173,21 @@ instance (`alkylation`); the held-out set has two (`pointpack06`,
 
 ## Why not the "next fifty"
 
-The obvious construction is to keep walking the published order and take the
-next fifty survivors. It was **rejected**. Within each class, that order is
-smallest first, so the next fifty are by construction the next-largest
-instances in every class. Measured on this pool, they form a narrow band just
-above the published roster: "other" sizes 4-6, "transcendental" 4-9,
-mixed-integer 36-96.
-
-This is an explicit trade-off against #144's own objection, so it is stated as
-one. With the published roster fixed, **every** set disjoint from it is larger
-than it (see the precondition check), and the seeded draw is further from it in
-size than the next fifty would be: whole-set median 60.5, against 7.0 for the
-next fifty and 6.5 for the published roster. Taken at face value, the
-"systematically harder" objection applies to the chosen set even more strongly.
-
-It does not decide the matter, because #145 is not a comparison between this
-set and the published roster. It is an A/B of arms *within* the held-out set:
-the shipped threshold against its neighbours, on the same instances, seeds and
-budget. That comparison needs no size-matching to the tuning roster. What it
-does need, to tell a size effect from a failure to transfer, is variation in
-size inside the set:
-
-- **The next fifty has no size spread to diagnose with.** The band is so
-  narrow that a size effect would show up as a shift of the whole set, and
-  that shift looks exactly like non-transfer. Nothing inside the set could tell
-  them apart.
-- **The seeded draw spans the remainder's size range.** Sizes run from 4 to 220
-  overall (spread 216, against 92 for the next fifty), and within each class
-  (mixed-integer 36-196, other 6-220, transcendental 4-130). #145 can therefore
-  report the arm effect per size band, and that is the only way to separate a
-  size effect from non-transfer. If the shipped value holds in the small band
-  and loses in the large one, the finding is a size dependence: the value was
-  fitted to the small end of the pool. If it loses across bands, that is
-  non-transfer.
+Taking the next fifty survivors in the published order was **rejected**:
+within each class that order is smallest first, so they form a narrow size band
+just above the published roster ("other" 4-6, "transcendental" 4-9,
+mixed-integer 36-96). #145 compares arms *within* the held-out set, which needs
+no size-matching to the tuning roster but does need size spread inside the set,
+to tell a size effect from a failure to transfer. The seeded draw has it: sizes
+4-220 overall (mixed-integer 36-196, other 6-220, transcendental 4-130). The
+price is that every set disjoint from the published roster is larger than it
+(whole-set median 60.5, against 6.5), so #144's "comparable size and
+structure-class composition" is **not met and cannot be met** while the
+published roster stays fixed; the class mix is as close as the remaining
+classes allow, and size is deliberately not matched. A randomised split of the
+whole pool would match both but change the published roster, invalidating every
+published table. The full rationale is in
+[#144](https://github.com/spoorendonk/cbls/issues/144#issuecomment-6633092805).
 
 **Pre-registered size bands for #145.** These are fixed now, at the held-out
 set's size tertiles, before anything is run:
@@ -216,32 +198,13 @@ set's size tertiles, before anything is run:
 | medium | 33-99 | 18 | 11 / 7 / 0 |
 | large | >= 100 | 16 | 10 / 4 / 2 |
 
-#145 reports the arm effect per band **and** per class, not only pooled. Size
-and class are confounded, as the table shows: the small band has no
-mixed-integer instance and the medium band no transcendental one. So no single
-band-or-class reading isolates size, and a trend in one view should be checked
-against the other. With 0 to 11 instances per class-band cell (two cells empty), a null trend
-makes a size explanation less likely but does not rule it out.
-
-So #144's acceptance criterion, "both halves have comparable size and
-structure-class composition", is **not met and cannot be met** while the
-published roster stays fixed. This document records that as the precondition
-finding, rather than presenting the draw as comparable. The class mix is as
-close as the remaining classes allow; the size profile is deliberately not
-matched.
+#145 reports the arm effect per band **and** per class, not only pooled: size
+and class are confounded (the small band has no mixed-integer instance, the
+medium band no transcendental one), so a trend in one view should be checked
+against the other.
 
 `test_heldout_is_not_the_size_ordered_next_fifty` pins that the committed set is
 not that construction.
-
-### Why not a randomised split of the whole pool
-
-#144's first suggestion was to shuffle the whole pool and split it into halves.
-That would produce two halves with matched class and size profiles, but it
-would **change the published roster**. Every published table (comparison,
-anytime trace, SCIP baseline, the ablation campaign) would then describe a
-roster that no longer exists. The acceptance criterion that those tables stay
-valid rules this out. The draw above is the closest thing to it that keeps the
-published roster fixed.
 
 ## What this licenses #145 to claim
 
@@ -308,227 +271,38 @@ see the next section.
 
 ## #145: does the shipped unproductive-exit threshold transfer?
 
-### Result (smoke scale, 10 s)
+**Outcome (10 s only; the published 60 s budget is unanswered).** The grid the
+shipped value came from, `--unproductive-iters` {100, 300 (control), 1000}, ran
+on all 50 held-out instances at seeds 1-3 and `--time-limit 10`, engine commit
+`1de6a7a`. **300 is not beaten**, and the default stays 300:
 
-**Measured at 10 s only, this leaves #145's question at the published 60 s
-budget unanswered.** At 10 s the answer splits by neighbour. **300 is not
-beaten.** Against 1000 the shipped value transfers: 1000 is worse. Against 100
-it is not resolvable at 10 s. That is closest to #145's third outcome but not
-its strict form: 100 moved instances outside their own floor, so the difference
-is not inside the noise floor either.
-100 shows no consistent direction, and the data shows only that 100 is not
-detectably better. The original grid's only reason to reject 100 (lost
-feasibility on `kall_ellipsoids_tc02b`) has no counterpart here: that instance
-is not in this set, and the three `kall_*` instances that are all held. No
-better value is
-identified, and the shipped default is unchanged.
+- **1000 is worse**: 9 instances worse outside their own floor and 0 better
+  (family-level sign test 8/0, p = 0.0078), in every size band and class.
+- **100 is not resolvable at 10 s**: 2 worse, 1 better (float residue), and
+  feasibility changes netting to zero. No consistent direction, but not inside
+  the noise floor either, so the report's READING is "NOT STATED
+  MECHANICALLY".
 
-**Run.** Engine commit `1de6a7a`, `--time-limit 10`, seeds 1, 2 and 3, all 50
-held-out instances x {300 (control), 100, 1000}. That is 450 solves, all of
-which completed a search (mean wall 10.0 s per run, max 10.38 s). The run was
-serial, with arms interleaved per instance. It ran under the machine-wide
-wall-clock lock, with a one-minute load of at most 0.4 at start (the driver
-refuses to start above that). Machine: `simon-Legion-5-Pro-16ACH6H`, AMD Ryzen
-5 5600H (6 cores, 12 threads). The numbers live in scratch, not in this repository, as every
-held-out result does. To regenerate them, run the command under "Protocol:
-smoke scale" below from `1de6a7a`, then rescore with `--report-only --no-build`
-on the same `--campaign` and `--out-dir`. That rescore reproduces the report
-quoted here exactly.
+#145 was closed on this result by decision. Answering it at 60 s needs the same
+command at `--time-limit 60` (about 7.5 h), under its own issue. The full
+write-up (noise floor, per-neighbour table, movers, what it does not establish,
+and how the report states an outcome) is in
+[#145](https://github.com/spoorendonk/cbls/issues/145#issuecomment-6633092217).
 
-**Noise floor, measured on the held-out roster.** It is each instance's own
-control spread across the three seeds, as a two-sided 95% Student band.
-Median control s = 0.59 gap points; typical per-instance floor +/-2.07 points;
-31 instances measured. Of those, 5 were raised to the runner's tie band. The
-other comparable instances (17 for the 100 arm, 16 for 1000) have no measurable
-floor and are held to the tie band instead. In `tloss`, and for the 100 arm
-also in `tln6`, the control was feasible on only one seed. (For the 1000 arm
-`tln6` is control-only-feasible, so it is not comparable.) The rest returned
-the same control gap on every seed, and most of those are solved exactly: 7 of the 12
-`graphpart_*`, plus `st_bpv1`, `st_z`, both `ex14_*` and `ex2_1_2`. With three
-seeds the Student factor is 4.30, so this floor is wide. A small real effect
-can hide inside it.
-
-| Neighbour | Worse | Better | Held | Unscored, beyond tie band | Feasibility (control-only / arm-only) | Feasible runs / BKS-matching runs (control: 141 / 72) | Sign test |
-|---|---:|---:|---:|---|---|---|---:|
-| 100 | 2 | 1 | 28 of 31 | `tloss`, `tln6` (mixed direction) | 1 / 0 (`ex8_5_6`) | 141 / 75 | p = 1.000 |
-| 1000 | 9 | 0 | 22 of 31 | `ex14_2_1`, `ex14_2_6`, `tloss` (all worse) | 2 / 0 (`ex8_5_6`, `tln6`) | 139 / 61 | p = 0.004 (families 8/0, p = 0.0078) |
-
-**1000 against 300: worse.** The nine scored movers are `kriging_peaks-full030`,
-`hybriddynamic_fixedcc`, `ex8_5_4`, `wastewater02m1`, `st_fp7b`,
-`kall_circles_c6a`, `hydro`, `tltr` and `tln4`. The median delta over them is
-+14.47 points, against a median own floor of +/-1.49. The direction is
-consistent but the magnitude is not. Three of the nine are moves of under 0.4
-points over tiny floors: `hybriddynamic_fixedcc` +0.010, `kall_circles_c6a`
-+0.0009 and `hydro` +0.38.
-
-- **Families.** Treat each family as one vote (see "Families cluster" above).
-  The nine still come from eight distinct families, with only `tln4` and `tltr`
-  sharing one. All eight point the same way. A family-level sign test gives
-  8 worse / 0 better, p = 0.0078 (0.016 after Bonferroni over the two
-  neighbours). This is the count to quote under this document's clustering
-  rule; the instance-level p = 0.004 overstates the sample. The three unscored
-  movers add `ex14_*` worse and another `tl*` worse. No `graphpart_*` instance moved
-  outside its floor, so the result is not driven by the family that dominates
-  the mixed-integer class.
-- **Size and class.** Worse in every pre-registered band (small 2, medium 4,
-  large 3) and every class (mixed-integer 2, other 5, transcendental 2), with
-  no "better" anywhere. That is consistent with no size dependence. With 2-4
-  movers per band it cannot rule one out.
-- **Multiplicity.** Bonferroni over the two neighbours tested against one
-  control leaves the instance-level p at 0.008 and the family-level p at
-  0.016.
-- **Echo of the original grid.** The original grid recorded that 1000 stopped
-  solving `st_e40`, which is not in this set. Here there is a similar
-  regression. 1000 loses BKS matches on instances the control solves on every
-  seed: `hybriddynamic_fixedcc` (3/3 -> 1/3), and `kall_circles_c6a`,
-  `ex14_2_1` and `ex14_2_6` (each 3/3 -> 2/3). Several of these are at
-  sub-0.1-point gaps. It also has one seed on `ex14_2_1` at objective 2.5e-5
-  against a BKS of 3.8e-11 and a dual bound of 0: that prints as a 6.6e7% gap
-  only because the BKS is numerically zero (the main README's `|BKS| >= 1e-4`
-  caveat), so read its direction, not its size. And it
-  loses `tln6`'s only feasible seed. Over the roster, 1000 matches BKS on 61
-  runs against the control's 72.
-
-**100 against 300: not resolvable at 10 s.** It is **not** inside the noise
-floor. Three scored instances moved outside their own floor, two unscored
-instances moved beyond the tie band, and two instances changed feasibility.
-For that reason the report's READING declined to state the third outcome. What it shows
-is no consistent direction: 2 worse, 1 better (and that 1 is float residue),
-sign test p = 1.0. The three scored movers:
-
-- `ex9_2_3` is better by 1.2e-6, just beyond the 1e-6 tie band. That is float
-  residue.
-- `hybriddynamic_fixedcc` is worse by 6e-4, from one seed at 0.0018.
-- `wastewater02m1` is worse by +94 points, from two of three seeds at 118 and
-  171 against a control of about 2-4. It is the one sizeable move. It is a
-  single instance, and the 1000 arm moved it the same way.
-
-Feasibility nets out to zero. `ex8_5_6` lost the control's single feasible
-seed, `tloss` gained a seed, and `tln6` was feasible on one seed in each arm,
-on different seeds. Per band: small 0 worse / 1 better, medium 1 / 0, large
-1 / 0. Per class: only "other" has movers (2 worse / 1 better). No family or
-class signal. Some instances favour 100 on BKS counts, notably `tln4` (3/3
-against 1/3). Its delta (-1.61) sits inside its floor (+/-4.89), so it is not
-read as a win. The original grid's 100-side finding (lost feasibility on
-`kall_ellipsoids_tc02b`) is **not echoed**. That instance is not in this set,
-and the three `kall_*` instances here all held. The engagement counters show
-that the arm did change the search. LNS repairs went from 1157 attempted / 282
-accepted under the control to 2131 / 383 under 100, and to 464 / 121 under
-1000. So "held" here means the outcome did not move, not that the exit never
-fired.
-
-**What this does not establish.**
-
-- Nothing about 60 s. At 10 s the exit gets fewer chances to fire. A 100-vs-300
-  difference that builds up over a longer search could not show here, and
-  1000's deficit could shrink or grow.
-- That 300 is better than 100, or that 300 is an optimum. The grid has three
-  points, and the lower neighbour is not resolvable against it.
-- Anything off MINLPLib. The held-out set was then unseen MINLPLib instances, not a
-  different library. The scale-invariance objection recorded on
-  `GFJConfig::unproductive_iterations` is untouched.
-
-The report's own READING line is "NOT STATED MECHANICALLY (budget 10s)",
-because neighbours moved instances. The outcome above is the judgement that
-section hands to this write-up. It is not a rule's output. The default stays
-300. A change to it would need its own justification and regression evidence,
-and nothing here suggests one.
-
-### What is run
-
-The grid the shipped value came from, exactly: `--unproductive-iters` 100, 300
-and 1000 (the provenance comment on `GFJConfig::unproductive_iterations`). 300
-is the shipped default and is the **control**. The other two are scored against
-it. The driver is `run_ablation.py` with `--campaign transfer-145`. It is the
-same experiment shape as the #143 ablation (arms against a control from the same
-sitting, interleaved per instance, three seeds, scored against a measured noise
-floor), so it reuses that driver's locks, resume rule and refusals rather than
-adding a second driver. The stamp records the campaign and each arm's flags, so
-an ablation out-dir and a transfer out-dir cannot resume into each other.
-
-Every row records the engine commit, seed, budget (`time_limit`) and the arm's
-value. The value appears twice: in `arm_flags`, which the control also carries
-as an explicit `--unproductive-iters 300` so a crashed run's row still has it,
-and in the runner's own `search_config` cell. The driver stops the campaign if
-`search_config` disagrees with the arm it ran.
-
-### Protocol: smoke scale
+The campaign, at smoke scale (450 solves, about 1.25 h, serial on an idle
+machine under the machine-wide lock):
 
     .venv/bin/python3 -m benchmarks.minlplib.run_ablation --campaign transfer-145 \
         --out-dir "$HOME/.cache/cbls-145/smoke" --time-limit 10
 
-`--inst-dir` defaults to `heldout/` for this campaign, and the published roster
-is refused for it. Seeds default to 1, 2 and 3. That is 50 instances x 3 arms x 3
-seeds = 450 solves, about 1.25 h of solving. The run is serial on an otherwise
-idle machine, under the same machine-wide lock as every timed MINLPLib driver.
-Add `--dry-run` to print the plan without solving. Add `--report-only` to
-re-score the out-dir.
-
-**This is a smoke-scale check, not the run #145 describes.** #145 asks for the
-published 60 s budget. This runs at 10 s, by decision, at about a sixth of the
-cost. What that limits:
-
-- The answer is about **10 s**. The threshold is an iteration count. A shorter
-  budget runs fewer batches, so it gives the exit fewer chances to fire and the
-  arms fewer chances to diverge. A difference that only builds up over a 60 s
-  search cannot show here. "Inside the noise at 10 s" does not mean "inside the
-  noise at 60 s".
-- The noise floor is measured at 10 s too. It is the held-out control's own
-  across-seed spread from this sitting, and it applies only to this budget.
-- The original grid ran at 2 s, contended, on one seed. 10 s on three seeds is
-  a better measurement than that, but it is not the published configuration.
-  It cannot be cited as evidence about the 60 s headline result.
-- So **#145's own question, at the published 60 s budget, is not answered**
-  by this run, and nothing tracks it: #145 was closed on this 10 s result by
-  decision. Answering it needs the same command at `--time-limit 60`, about
-  7.5 h, under its own issue.
-
-### How the report states the outcome
-
-The report closes with a #145 section. For each neighbour it lists the
-instances that moved worse or better than their own floor, the instances that
-held, and the feasibility buckets. Each of these is broken down by the
-pre-registered size bands above and by structure class, with the movers named
-so a family such as `graphpart_*` can be read as one cluster. The floor comes
-from this run's control only. Nothing is carried over from the published
-roster.
-
-The report header names the budget and the engine commit. A results file that
-mixes budgets is refused outright.
-
-Only the third outcome is stated by rule, and only in its strict form. The
-report prints "INSIDE THE MEASURED NOISE FLOOR" only when every one of these
-holds:
-
-- **The planned campaign is all there.** Every roster instance in
-  `heldout/bounds.csv` has, for the control and both neighbours, a completed
-  search at exactly each planned seed: the seeds the out-dir's stamp records,
-  else `--seeds`. No cell may hold a crashed or unscored row (for example
-  `solve-error`). There are no rows for instances outside the roster or for arms
-  outside the grid, and the roster metadata was found. One exemption follows
-  the pre-registered rule for unloadable instances above. If the runner could
-  not load an instance under any arm at any seed, and every one of those rows
-  carries the same `unsupported` or `not-found` note, that instance is listed
-  as "REPORTED, NOT MEASURED" and does not block the reading. If it fails to
-  load under only some arms, it still blocks.
-- **One budget and one commit** across the rows.
-- **No neighbour moved anything.** No instance is outside its own floor. No
-  instance whose control spread could not be measured differs by more than the
-  runner's own tie band. That is the smallest difference the runner itself
-  calls a difference; any nonzero delta would count float residue on exactly
-  solved instances. Where the control returned the same gap on every seed,
-  every single arm seed is held to that band, not only the arm's mean.
-- **No feasibility change on any instance**, judged per instance, so a loss on
-  one instance and a gain on another do not cancel.
-
-In every other case it prints "NOT STATED MECHANICALLY" with the reasons
-listed, and the outcome is decided in the write-up above. Each arm's own
-`VERDICT` line above the section looks at gaps only and ignores all of these
-checks, so in this report it is labelled "gap only". Quote the READING, not the
-VERDICT. Naming a winner
-by rule would mean choosing a threshold across two neighbours tested against
-one control, with no multiplicity correction, over clustered instances and a
-three-seed floor. Such a rule would sometimes pick winners from noise.
+`--inst-dir` defaults to `heldout/` for this campaign and the published roster
+is refused for it. `--dry-run` prints the plan; `--report-only --no-build` on
+the same `--campaign` and `--out-dir` re-scores it, and reproduces the report
+exactly. The report prints "INSIDE THE MEASURED NOISE FLOOR" only when the
+campaign is complete at one budget and one commit, no instance moved outside
+its floor or the tie band, and no instance changed feasibility; otherwise
+"NOT STATED MECHANICALLY" with its reasons. Quote the READING, not the per-arm
+`VERDICT` (gap only).
 
 ## #331: the presolve-322 sample
 

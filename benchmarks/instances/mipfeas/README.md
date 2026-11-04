@@ -60,7 +60,7 @@ the correctness sweep is for and keeps the anytime score as a co-equal section:
    instances both engines can be compared on, the agreement count, and **both
    asymmetric difference sets named instance by instance**;
 3. **job failures** — the driver's kill message and the verifier's refusal
-   reason, which used to live only in a results directory nobody publishes;
+   reason;
 4. **the model-shape cross-check** — see below;
 5. **trace health** — how many anytime profiles are genuine, over a stated
    denominator (rows the engine reported feasible);
@@ -86,9 +86,8 @@ for a verdict reached before the verifier recorded the figure.
 ### The model-shape cross-check
 
 "Both engines solved the same program" is this benchmark's entire admission
-ground, and each side used to merely *disclose* its own shape. Now they are
-compared, against each other and against the count SCIP recorded while verifying
-the row. The rule:
+ground, so each side's model shape is compared against the other's and against
+the count SCIP recorded while verifying the row. The rule:
 
 * **Variable counts must agree exactly.** Every reader enumerates the same MPS
   `COLUMNS` section, so a difference is a reader defect and never benign.
@@ -109,11 +108,11 @@ instance has two `N` rows.
 
 ### Where the time went
 
-The wall-clock column has only ever bracketed the solve call, and two different
-effects hide behind that:
+The wall-clock column brackets the solve call only, and two different effects
+hide behind that:
 
 * **setup** (`setup_seconds`) — instance read, model build and bound propagation,
-  all of which happen before the bracket. Both runners now measure it: CBLS as
+  all of which happen before the bracket. Both runners measure it: CBLS as
   `read_seconds` + `build_seconds`, CP-SAT as the `import_from_mps_file` call
   that does both at once. It is not charged against the search, but it is charged
   against the wall clock a run must be scheduled for.
@@ -141,12 +140,9 @@ result written before the field existed. `threads_used` alone is also blank on
 a row the driver wrote for a killed job (its arm is nested under `driver_arm`)
 and on a CP-SAT row whose log printed no worker count.
 
-No *aggregate* setup magnitude is quoted for the roster, because no per-row
-figure from a real run is committed: the published smoke table predates the
-measurement and was not regenerated. One part is measured elsewhere in this
-file: propagation, one of setup's three parts, costs ~1.1s worst case and ~7s
-summed over the roster (**Implied bounds shrink that restriction**). That bounds
-one part only and is no substitute for the per-row `setup_seconds` column.
+No aggregate setup magnitude is quoted for the roster: no per-row figure from a
+real run is committed. Propagation alone costs ~1.1s worst case and ~7s summed
+over the roster (**Implied bounds shrink that restriction**).
 
 ## Metric: Primal Integral
 
@@ -210,8 +206,8 @@ that failure mode is what emptied a published table in #103.
 
 ## Preconditions: the pins are checked, not merely written
 
-The pins used to be computed and never read back. Three things are now verified
-before a run rather than discovered at scoring time (issue #137).
+Three things are verified before a run rather than discovered at scoring time
+(#137).
 
 ### The bytes are what the pins say
 
@@ -297,10 +293,8 @@ harness debugging, and a run made with it is not publishable.
 `engine_commit` claims the checkout's HEAD for `build/cbls_mipfeas` and for
 nothing else. Point `--cbls-bin` somewhere else — as an A/B between two builds
 must — and the rows are attributed to that binary's own content hash (`bin:<12
-hex>`) instead, because HEAD is not evidence about a binary it did not build.
-This was a real defect until #158: both arms of such a comparison came out
-stamped with the working tree's commit, so the control arm claimed to be the
-treatment, at exactly the moment the recorded commit is load-bearing. Pass
+hex>`) instead, because HEAD is not evidence about a binary it did not build
+(#158). Pass
 `--engine-commit <sha>` when you do know which commit built it.
 
 ## Verification: every reported solution is checked against the instance file
@@ -519,156 +513,113 @@ tightening and aggregation on), `compound-propagation`
 
 ### Running the portfolio (`--cbls-threads`)
 
-At `--cbls-threads 1` CBLS takes the single-threaded engine path, which is what
-every published figure here was measured on. Above 1 it runs `ParallelSearch`,
-the cooperative portfolio: N workers, each on its own replica of the model —
-sharing the model's immutable DAG by reference since #157 and duplicating only
-what a search writes — sharing incumbents through the solution pool and
-restarting from it when they stall.
-
-Three things follow. Two of them the harness checks; the third is sizing that
-stays the operator's, and is called out below rather than implied away:
+At `--cbls-threads 1` CBLS takes the single-threaded engine path, which every
+published figure here was measured on. Above 1 it runs `ParallelSearch`, the
+cooperative portfolio: N workers, each on a replica that shares the model's
+immutable DAG by reference (#157) and duplicates only what a search writes,
+sharing incumbents through the solution pool and restarting from it when they
+stall. Three things follow; the harness checks two, and the third is sizing
+that stays the operator's:
 
 * **In the fj+ls mode, the baseline gets the same number.** CP-SAT at
-  `num_workers: N` runs N `fj` and N `ls` subsolvers, so an N-thread CBLS against
-  a 1-worker CP-SAT is an N-fold CPU advantage that the table would report as an
-  implementation gap. The driver refuses `--cbls-threads != --cpsat-workers`
+  `num_workers: N` runs N `fj` and N `ls` subsolvers, so an N-thread CBLS
+  against a 1-worker CP-SAT is an N-fold CPU advantage the table would report as
+  an implementation gap. The driver refuses `--cbls-threads != --cpsat-workers`
   unless `--allow-asymmetric-cpu` says the asymmetry is the measurement. At
   CP-SAT's defaults (`--cpsat-workers 0`) it picks its own count and nothing is
   matched: the table records the threads each side used (#255, #285).
-* **Memory still grows with the thread count, and nothing checks it.** Since
-  #157 a worker's replica shares the built model's immutable DAG by reference, so
-  N threads cost one structure plus N copies of what a search writes, not N whole
-  models. The `peak_rss_kib` figures below — measured single-threaded — are the
-  1-worker term, not a total: size a run as **1-worker + N x a per-worker
-  constant**, and treat that constant as a floor rather than a bound, because its
-  largest term is the variable array at 104 B per column. On
+* **Memory still grows with the thread count, and nothing checks it.** Size a
+  run as **1-worker + N x a per-worker constant**: the `peak_rss_kib` figures
+  below are the single-threaded term, and the constant is a floor rather than a
+  bound, its largest term being the variable array at 104 B per column. On
   `neos-5114902-kasavu` (710k columns, 4.30M DAG nodes) it measures **0.34-0.39
-  GiB** at `06eb3e5`, against 0.75-0.86 GiB at `0dc826b` when the DAG was copied
-  too; `supportcase19` has 2x the columns and will therefore want more. `--mem-limit-gb` is a per-JOB
-  `ulimit -v` and knows nothing about `--cbls-threads`, so `--jobs` x
-  `--cbls-threads` against that cap is arithmetic to do before starting, not a
-  guard that will stop you.
-  A replication that runs out of memory is at least reported rather than silent:
-  all N replicas are built before the solve bracket opens, and the row is written
-  with `status: replicate_error`. That is why they are built there and not on the
-  worker threads, where `ParallelSearch` parks the `bad_alloc` and returns the
-  survivors' result.
-  The rest of a worker's footprint — its FJ tables, violation vectors and state
-  snapshots — is still allocated on its own thread, so a cap can fit every
-  replica and still starve a worker once it searches. That is reported too
-  (#170): every row that reached the end of the solve carries
-  `workers_launched`, `workers_completed` and `worker_failures` (worker index,
-  whether it had produced a result, the reason), a row with
-  `workers_completed < threads` makes the runner exit 1, and the scorer
-  **refuses** it, as it refuses a row from another budget. A worker is
-  *completed* unless an exception ended it or the deadline was gone before its
-  first solve, so one that searched and then died on a restart counts as lost;
-  a worker that never started because a peer had already solved a
-  pure-feasibility model does not. A multi-threaded row written before the
-  column existed is refused as well, since it cannot show it lost nothing.
-  A resume re-runs a refused row up to twice (`MAX_WORKER_LOSS_ATTEMPTS`, the
-  attempt number stamped on the row as `worker_loss_attempts`), and the driver
-  exits 1 with a `LOST WORKERS` line while any remains. A loss that survives
-  both attempts is the cap, not bad luck: raise `--mem-limit-gb` or lower
-  `--cbls-threads`, then re-run with `--force`.
+  GiB** at `06eb3e5`; `supportcase19` has 2x the columns. `--mem-limit-gb` is a
+  per-JOB `ulimit -v` and knows nothing about `--cbls-threads`, so `--jobs` x
+  `--cbls-threads` against that cap is arithmetic to do before starting.
+  A run out of memory is reported, not silent. All N replicas are built before
+  the solve bracket opens, so a failed replication writes the row with
+  `status: replicate_error` (on the worker threads `ParallelSearch` would park
+  the `bad_alloc` and return the survivors' result). The rest of a worker's
+  footprint (FJ tables, violation vectors, snapshots) is allocated on its own
+  thread, so a cap can fit every replica and still starve a worker once it
+  searches (#170): every row that reached the end of the solve carries
+  `workers_launched`, `workers_completed` and `worker_failures` (index, whether
+  it had produced a result, the reason); a row with `workers_completed <
+  threads` makes the runner exit 1, and the scorer **refuses** it, as it refuses
+  a multi-threaded row without the column. A worker is *completed* unless an
+  exception ended it or the deadline was gone before its first solve; one that
+  never started because a peer had already solved a pure-feasibility model
+  counts as completed. A resume re-runs a refused row up to twice
+  (`MAX_WORKER_LOSS_ATTEMPTS`, stamped as `worker_loss_attempts`), and the
+  driver exits 1 with a `LOST WORKERS` line while any remains. A loss that
+  survives both is the cap: raise `--mem-limit-gb` or lower `--cbls-threads`,
+  then re-run with `--force`.
 * **The two arms are separate results directories.** `threads` is a scorer
-  config key, so a directory mixing thread counts is refused rather than
-  averaged — and the driver refuses to *resume* a directory recorded at another
-  thread count, which is the case the scorer cannot see (resume skips jobs that
-  already have a result, so the mixture never forms).
+  config key, so a directory mixing thread counts is refused, and the driver
+  refuses to *resume* a directory recorded at another thread count (resume
+  skips jobs that already have a result, so the scorer would never see the
+  mixture).
 
 "N threads each" is a flag until it is measured (#240). `--cpuset 0,2,4,6` pins
 every solve to those CPUs with `taskset`; the driver refuses a set whose size is
-not the thread count, two CPUs that are SMT siblings of one core (read from
+not the thread count, two SMT siblings of one core (read from
 `/sys/devices/system/cpu/cpu*/topology/thread_siblings_list`), a CPU outside its
-own affinity, and `--jobs` above 1, since concurrent solves would share the set.
-The set is recorded in `run_record.json`. Pinned or not, every solve's result
-then carries a nested `driver_measured` key, read by the driver with `wait4`:
-`wall_seconds` (the driver's clock, so model read and build are in it),
-`cpu_seconds` (user plus system, the solver and every process it reaped),
-`cpu_wall_ratio` (the cores the solve actually used) and `peak_rss_kib`. A
-solver that uses fewer than N threads shows it in the ratio. The key is nested,
-like `driver_arm`, so the scorer never reads it as configuration: it copies
-three of its numbers into `comparison.csv` (**Where the time went**) and
+own affinity, and `--jobs` above 1. The set is recorded in `run_record.json`.
+Pinned or not, every result carries a nested `driver_measured` key, read by the
+driver with `wait4`: `wall_seconds` (the driver's clock, model read and build
+included), `cpu_seconds` (user plus system, every process it reaped),
+`cpu_wall_ratio` (the cores the solve actually used) and `peak_rss_kib`. It is
+nested, like `driver_arm`, so the scorer never reads it as configuration: it
+copies three of its numbers into `comparison.csv` (**Where the time went**) and
 compares none of them across rows.
 
-The replication itself is charged to setup, not to the search: the runner freezes
-the built model and copies it once per worker before the solve bracket opens, and
-reports `replicate_seconds` beside `read_seconds` and `build_seconds`. Since #157
-each copy shares the frozen master's immutable DAG, so the figure grows with
-`--cbls-threads` far more slowly than it used to — but it still grows, and it is
-still outside `wall_seconds`. The freeze (the objective row and the cone cache,
-#271) happens there at every thread count, so a 1-thread row's
-`replicate_seconds` is the freeze alone and its search time carries no setup an
-N-thread row's does not.
+Replication is charged to setup, not search: the runner freezes the built model
+(the objective row and the cone cache, #271, at every thread count) and copies
+it once per worker before the solve bracket opens, reporting
+`replicate_seconds` beside `read_seconds` and `build_seconds`. It grows slowly
+with `--cbls-threads` and stays outside `wall_seconds`; a 1-thread row's figure
+is the freeze alone.
 
-The anytime trace stays the portfolio's own. Every worker reports through one
-serialized stream whose `time_seconds` is on the portfolio clock and whose
-objective is the global incumbent, so the profile the Primal Integral integrates
-is monotone and ends at the objective the run returns — not at whatever worker 0
-happened to hold.
+The anytime trace is the portfolio's own: every worker reports through one
+serialized stream on the portfolio clock, with the global incumbent as its
+objective, so the profile the Primal Integral integrates is monotone and ends
+at the objective the run returns.
 
 At CP-SAT's defaults `--jobs` is 1 (it takes every core, so the driver refuses
 more). In the fj+ls mode, or a CBLS-only run, sizing `--jobs` is a memory
 question rather than a core-count one. Every result
 records its `peak_rss_kib` — of the **solve only**; verification runs afterwards
-in the same job slot (see above). From the wiring check, `neos-5114902-kasavu` (710k
-columns, 961k rows, 4.9M nonzeros) peaked at **1.2 GB under CBLS and 3.2 GB
-under CP-SAT**, and CP-SAT carries a ~100 MB floor on even the smallest models.
+in the same job slot (see above). `neos-5114902-kasavu` (710k columns, 961k
+rows, 4.9M nonzeros) measures **0.78 GiB single-threaded under CBLS at
+`06eb3e5`** (the wiring check's 1.2 GB predates #156's flat arrays) and peaked
+at **3.2 GB under CP-SAT**, which carries a ~100 MB floor on even the smallest
+models. Re-derive either number before multiplying it.
 
-The CBLS half of that pair is a **dated record, not a current figure**: it predates
-#156, which replaced the per-node child vectors and the per-variable G_v with flat
-arrays and CSR. The same instance measures **0.78 GiB single-threaded at
-`06eb3e5`** (#157's branch). The gap is that shrink, not a regression — and it is
-also why the #157 issue body's 1.16 GB / 4.99 GB baseline no longer reproduces.
-Re-derive rather than trusting either number if it is going to be multiplied.
-
-It is not the roster's largest model, though: `square47` carries 27.4M nonzeros
-(5.6x kasavu) and `supportcase19` 1.43M columns (2x). `square47` also spent
-~100-150s on model build and un-deadlined search initialisation before its first
-iteration in the 2026-08-07 wiring runs (not today's figure: read `setup_seconds`
-in a recent run), so budget wall-clock accordingly — the driver allows 900s of slack on
-top of the budget for exactly this. Note also that
-`--mem-limit-gb` caps *address space* (`ulimit -v`), not resident set. CBLS runs
-about 1.4x its RSS; CP-SAT adds a roughly constant ~0.7 GB of reservations on top
-of its own, so the ratio is ~1.4x on a large model like `neos-5114902-kasavu` but
-~4.4x on a small one like `atlanta-ip`. Confirm the cap on the target machine
-rather than reading 6 GB off the RSS figures above.
+It is not the roster's largest model: `square47` carries 27.4M nonzeros (5.6x
+kasavu) and `supportcase19` 1.43M columns (2x). Model build and search
+initialisation are not deadlined (read `setup_seconds` in a recent run), so the
+driver allows 900s of slack on top of the budget. `--mem-limit-gb` caps
+*address space* (`ulimit -v`), not resident set: CBLS runs about 1.4x its RSS;
+CP-SAT adds a roughly constant ~0.7 GB of reservations, so its ratio is ~1.4x on
+a large model like `neos-5114902-kasavu` but ~4.4x on a small one like
+`atlanta-ip`. Confirm the cap on the target machine rather than reading it off
+the RSS figures above.
 
 ## What the wiring check found
 
 `smoke_comparison.csv` is 11 instances at 60s, with CP-SAT in the fj+ls mode —
-enough to prove the harness end
-to end, and **not** a result. Both engines honoured the budget, the largest
-instance in the subset ran without OOM, and the driver resumed correctly after
-being interrupted.
+enough to prove the harness end to end, and **not** a result. It predates the
+verification columns and cannot be regenerated (its results directory was never
+committed and its rows carry no independent verdict); a fresh wiring check is
+the only way to a current table. What *is* pinned is the report itself:
+`benchmarks/mipfeas/testdata/` holds a frozen results directory with the two
+artifacts scored from it, and `tests/python/test_mipfeas_parity.py` regenerates
+both and compares them byte for byte. Two of its thirteen instances are a real
+run, the rest constructed (that directory's README says which); no aggregate in
+it is a measurement.
 
-That table predates the verification columns — the `n_unbounded_columns` /
-`n_bounds_tightened` ones before them, and the parity report and timing split
-after them — and was not regenerated for any of them. It **cannot** be: the
-results directory it was scored from was never committed, and its rows carry no
-independent verdict, so even re-scoring what survives would need
-`--allow-unverified` and would publish nothing. A fresh wiring check is the only
-way to get a current table, and is the better move anyway.
-
-What *is* pinned is the report itself: `benchmarks/mipfeas/testdata/` holds a
-frozen results directory with the two artifacts scored from it, and
-`tests/python/test_mipfeas_parity.py` regenerates both and compares them byte for
-byte. Two of its thirteen instances are a real run; the rest are constructed, one
-per branch of the report. That directory's README says which is which. No
-aggregate in it is a measurement, and the two real rows record no engine commit,
-so they are not quotable either.
-
-The first run of it found two defects in the harness rather than in either
-solver, which is what a wiring check is for. The MPS reader was binarising
-general-integer columns carrying an `LI` bound — under that restriction
-`gen-ip054` and `enlight_hard` have no feasible point at all, and `gen-ip002`'s
-optimum moves, so all three read as CBLS failing. And CP-SAT, in the fj+ls mode,
-was being given two workers on a mistaken belief that one would not run its `ls` worker.
-
-It also settled the two configuration choices above by measurement rather than
-argument. Each was run over the whole smoke roster, CBLS only:
+The check settled the two configuration choices above by measurement. Each was
+run over the whole smoke roster, CBLS only:
 
 | Novelty Jump | clamp | shifted geomean | mean | feasible |
 |---|---|---|---|---|
@@ -677,44 +628,15 @@ argument. Each was run over the whole smoke roster, CBLS only:
 | off | 1e7 | 0.638 | 1.089 | 7/11 |
 | **on** | **1e7** | **0.561** | **0.937** | **8/11** |
 
-Novelty Jump turns `mas76` from no-solution into feasible and improves
-`binkar10_1` (PI 0.80 → 0.60), `pk1` and `neos5`, at a small cost on `gen-ip054`
-and `gen-ip002`. The two changes compose, and together they move `binkar10_1`'s
-objective from 1,010,195 to 9,865 against an optimum of 6,741.
-
-**Both rows of the clamp column predate #120** and no longer describe the
-engine. Implied bounds now clear the clamp entirely on 5 of these 11 instances —
-`binkar10_1` among them, which is where the 1e9-vs-1e7 difference was largest —
-so on those the setting no longer reaches anything. It still binds on `mad`,
-`pk1`, `gen-ip002` and `gen-ip054`; the remaining two, `mas76` and `neos5`, had
-no clamped column to begin with. The numbers below were measured before that
-change and have not been re-run; treat them as the pre-propagation baseline they
-are.
-
-At that configuration, with CP-SAT in the fj+ls mode, on this subset at 60s: both
-engines reach feasibility on
-8 of 11, and CP-SAT leads on the shifted geometric mean (0.258 vs 0.566) — it
-gets to good solutions much earlier, which is what the metric is built to
-reward. CBLS ends ahead on `pk1` (74 vs 473), `mad` (1.79 vs 2.00) and `neos5`
-(15.5 vs 16.0), and is close on `gen-ip054` (2.0% gap). It remains far behind on
-`markshare2` and `binkar10_1`. Dropping CP-SAT from two workers to one moved its
-aggregate by 0.0004, so that asymmetry was never what the gap was made of.
-
-Two caveats on reading any of these numbers. The A/B rows other than the chosen
-one were measured before the harness reached its current state and are not
-reproducible from what is committed here — only the bottom row is. And a
-time-limited `solve()` is not bit-reproducible even at a fixed seed (the engine
-is deterministic only when bounded by iterations, `time_limit = 0`), so re-running
-this roster moves the aggregate in the third decimal. Recording the commit SHA and
-seed pins the code and the configuration, not the exact objective.
-
-Whether any of this holds over the roster is what the full run is for (#255,
-at 60s and at CP-SAT's defaults; its table waits on #253). One thing to expect
-when the whole roster runs: `neos-5114902-kasavu` (961k rows) took 87s against a
-60s budget in this check, because model build and search initialisation are not
-bounded by the deadline. The Primal Integral is unaffected — it integrates over
-[0, budget] whatever the wall clock does — but the run takes longer than the
-budget times the job count implies.
+Only the bottom row is reproducible from what is committed, and a time-limited
+`solve()` is not bit-reproducible even at a fixed seed (the engine is
+deterministic only when bounded by iterations, `time_limit = 0`), so a re-run
+moves the aggregate in the third decimal. **Both clamp rows predate #120**:
+implied bounds now clear the clamp entirely on 5 of these 11 instances
+(`binkar10_1`, where the 1e9-vs-1e7 difference was largest, among them); it
+still binds on `mad`, `pk1`, `gen-ip002` and `gen-ip054`, and `mas76` and
+`neos5` had no clamped column. Whether any of it holds over the roster is what
+the full run is for (#255; its table waits on #253).
 
 ## Choices tuned on the smoke roster (#233)
 
@@ -761,13 +683,11 @@ the run:
 | Recorded per result | commit SHA, seed, tolerance, clamp + columns it still narrows, columns declared unbounded, columns tightened, propagation verdict and pass cap, compound-move, exact-Int-jump (#216, off by default), near-value-perturbation (#217, off by default), objective tie-break (#218, on by default since #226), propagation and presolve flags (`presolve`, `presolve_coef_tightening`, `presolve_aggregation`; with `--presolve`, its verdict, seconds and per-reduction counts as `presolve_*`), the point's own check against the instance file (`original_*` ratios), peak RSS, read/build/setup seconds, trace point count and trace source | OR-Tools version, seed, full parameter string, workers started (at its defaults), solver verdict, peak RSS, read/setup seconds, free-row count, trace source |
 | Solution verified against the instance file | yes, by SCIP | yes, by SCIP |
 
-Two of those are deliberate choices against the engine's defaults as they stood
-(the first is now the default too), both made to keep the two sides comparable
+Two of those are deliberate choices, made to keep the two sides comparable
 rather than to flatter either:
 
-* **Novelty Jump is on.** It was a departure from the engine default when this
-  was written; the engine turned it on by default on 2026-10-07, and the runner
-  still states it explicitly. Roughly half of
+* **Novelty Jump is on**, stated explicitly by the runner (it is also the
+  engine default). Roughly half of
   CP-SAT's incumbents here come from its own compound-move subsolvers
   (`ls_restart_*compound*`: 45–67% of improving solutions on binkar10_1 and pk1),
   so running without it would compare our Feasibility Jump against their
@@ -788,11 +708,9 @@ rather than to flatter either:
 
 ### Implied bounds shrink that restriction (#120)
 
-Before #120 the fallback *was* the whole story: every unbounded column got `1e7`
-substituted, and so did every column declared wider than it. Activity-based
-propagation over the linear rows now derives bounds that the constraints
-actually imply, and the fallback is consulted only on what is left. Two rules
-changed together:
+Activity-based propagation over the linear rows derives bounds that the
+constraints actually imply, and the fallback is consulted only on what is left.
+Two rules hold together:
 
 * An implied bound is used wherever one exists. Unlike the substitute, it cannot
   put a feasible point outside the box.
@@ -801,9 +719,9 @@ changed together:
   the 233 instances it reached 110 columns on 6 of them, so stopping gives up
   nothing measurable.
 
-Measured over all 233 roster instances, model build only (no search). First taken
-at `aec705b` and re-derived after the review fixes that followed it; every count
-below is identical across the two runs:
+Measured over all 233 roster instances at `aec705b`, model build only (no
+search); "before" counts columns with no bound at all (the `1e20`
+MPS/CPLEX/SCIP sentinel):
 
 | | before propagation | after |
 |---|---:|---:|
@@ -823,21 +741,15 @@ nonzeros in 3 passes. `supportcase12` is the only instance that reaches the
 10-pass cap, at 0.31s. Roughly 7s summed over the whole roster, against a
 per-instance budget of 60s in #255.
 
-Two caveats a reader should have:
+**Soundness is argued and tested, not verified against known optima.** The
+`.solu` file carries objective values, not solution vectors, so "the optimum is
+still inside the box" cannot be checked per instance — an excluded optimum
+would read as search weakness, not as infeasibility. What is checked: a unit
+test where a fixed clamp excludes the only solution and propagation keeps it,
+and 233/233 instances propagating without a single false infeasibility.
 
-* **"116 of 233" is not the "120 of 233" this README used to state.** The old
-  count was relative to the `1e7` clamp and so included columns merely *wider*
-  than it; this one counts columns with no bound at all, at the `1e20`
-  MPS/CPLEX/SCIP sentinel. The definition changed, not the roster.
-* **Soundness is argued and tested, not verified against known optima.** The
-  `.solu` file carries objective values, not solution vectors, so "the optimum
-  is still inside the box" cannot be checked per instance — an excluded optimum
-  would read as search weakness, not as infeasibility. What is checked: a unit
-  test where a fixed clamp excludes the only solution and propagation keeps it,
-  and 233/233 instances propagating without a single false infeasibility.
-
-`--no-propagate-bounds` turns off propagation only — the second rule change,
-honouring a finite bound however wide, is unconditional — so it is an A/B on
+`--no-propagate-bounds` turns off propagation only — the second rule, honouring
+a finite bound however wide, is unconditional — so it is an A/B on
 propagation rather than a return to the pre-#120 engine. It exists for A/B work;
 it is not a configuration to publish, because the bounds it restores are not
 implied by the constraints.

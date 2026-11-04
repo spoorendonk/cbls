@@ -84,10 +84,7 @@ validated on a published formulation. The evidence position is:
 
 - **`Set`** — measured and **negative**. The `Set` encoding lands at
   3.4-5.1x the proven optimum where the same data in Bools is within 4-9%
-  (engine `35ec07c`, after #201, which took `Set` from 4.0-6.2x at `1304c43`).
-  The first published table, at `adc8ee4`, had 8.6-11.0x against 9-20%; the
-  engine moved between `adc8ee4` and `1304c43`, so that difference is not #201's.
-  `35ec07c` predates two defaults that act on the Bool encoding, compound moves
+  (engine `35ec07c`; history in the setcover README). `35ec07c` predates two defaults that act on the Bool encoding, compound moves
   (on since 2026-10-07) and the FJ objective tie-break (on since #226, and
   setcover's Bool objective is affine); the Bool figure was measured without
   either.
@@ -123,57 +120,23 @@ or not (#202). Both change how a `List` is searched; neither is evidence, and
 the claim rule above stands until #204. (A `Set`, or a `List` outside any
 partition, given a neighbour list is sampled as under `ViolationGuided`.)
 
-**Cost-aware structural move selection was the stated prerequisite** for any
-renewed structured-variable claim. #165 built it — registrable `MoveGenerator`s,
-granular neighbour lists, and `BestOfSample` / `ViolationGuided` selection
-policies — and `setcover` was its ready-made A/B harness.
+**Cost-aware structural move selection** (#165: registrable `MoveGenerator`s,
+granular neighbour lists, `BestOfSample` / `ViolationGuided`), the stated
+prerequisite for any renewed structured-variable claim, is **implemented,
+measured, and not demonstrably better**: on `setcover`, under #164's
+position-based move representation, `ViolationGuided` against
+`FirstImprovingSample` has a 95% CI spanning zero at 20 seeds per arm (table,
+caveats and why a five-seed run misled in `benchmarks/instances/setcover/README.md`).
+Do not read a five-seed structural A/B on that roster as a result in either
+direction. For `Set` the guidance stands: **don't build another `Set`
+benchmark.** (`List`'s example is CVRP; see **Benchmark priority**.) #164's
+generalised `List` is **new capability, not new evidence**: until CVRP
+publishes (#204) nothing in the tree may claim a measured `List` result.
 
-**It has now been measured twice, and it is still not established.** The
-confounder is gone: #164 landed the position-based move representation, so a
-structured candidate carries positional `ElementEdit`s and scoring one costs an
-allocation-free `assign` per variable its predecessor changed, where it used to
-cost at least two heap allocations and three O(|elements|) copies. (Not "no
-allocation at all": an `EditKind::Replace` allocates by construction, and the
-per-call membership scans still do.)
-
-Measured under that representation, at engine commit `8dc906b`, which predates
-#201 (`35ec07c`) and so describes the engine at that commit, **20 seeds per
-arm** at a 10s budget, paired per seed: on the weighted instances
-`ViolationGuided` is **−76.2** against `FirstImprovingSample` on a base of ~2900
-(−2.6%), 95% CI **[−161.4, +9.0]** — 1.75 SE from zero, crossing it, 60/100
-paired wins. Unicost is −0.18 on ~6.7 (2.07 SE, 34/100 with 45 ties). Table and
-caveats in `benchmarks/instances/setcover/README.md`.
-
-**The methodological point is worth more than the number.** A five-seed run of
-the same comparison put the weighted difference at −131.9 (−4.5%); quadrupling
-the data moved it to −76.2 with the interval still spanning zero. Regression
-toward the mean, on a roster where per-seed spread (±8-11%) exceeds the effect
-being looked for. So: do not read a five-seed structural A/B on this roster as a
-result in either direction, and do not pick the one-sided framing because it
-clears 0.05 when the two-sided one does not.
-
-So the prerequisite is **implemented, measured, and not demonstrably better**,
-and for `Set` the guidance stands: **don't build another `Set` benchmark.**
-(`List`'s example is CVRP; see **Benchmark priority**.) What would settle the
-`Set` reading, in order: a longer per-run budget (attacks the noise at source),
-then more seeds (~740 paired runs for a 3-SE reading), then a harder roster. None of that is worth doing without a reason to care about
-`Set`-encoded set covering specifically.
-
-Note also that #164 generalised `List` itself — a variable-length ordered subset
-of a universe, with an optional partition across several Lists whose cover the
-moves maintain. That is **new capability, not new evidence**: until CVRP
-publishes (#204) there is no measured `List` result, the evidence position above
-stands, and nothing in the tree may claim otherwise.
-
-**Epic #182 (compact route-network models) is closed as not planned**
-(2026-10-30): the route-network direction is not on the plan, and its CVRP
-benchmark moved to #87 as #204. Its first sub-issues — the CVRP benchmark #183,
-guided List search #184, expensive-invariant screening #185, repeated List
-elements #187 and O(edits) lambda deltas #189 — were closed as not planned in
-the 2026-09-30 triage, because each was speculative with no benchmark to measure
-it against. That rule still holds: List engine work is filed against measured
-CVRP data, not ahead of it. #201-#203 cite smoke runs and qualify. Don't reopen
-the closed ones.
+**Epic #182 (compact route-network models) is closed as not planned**, and its
+CVRP benchmark moved to #87 as #204. List engine work is filed against measured
+CVRP data, not ahead of it; #201-#203 cite smoke runs and qualify. Don't reopen
+#183-#185, #187 or #189.
 
 ## Benchmark workflow
 
