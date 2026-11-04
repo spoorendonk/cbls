@@ -14,8 +14,8 @@ arises; the verdict below is a gap against Pedroso's bounds.
 | Source-vs-implementation severity | **Quantitative** (objective form matches verbatim, startup costs match the source — every startup on these instances is cold in both (§7.4), and only the SCIP reference diverges, pricing `t_cold = 0` startups hot; the ramp-rate question is closed — the source is ramp-free too, §1.7) |
 | Instance data vs source (§7, #148, #193) | **`ucp13` and `ucp40` identical.** Checked field by field against the authors' `ucp_data.py`. #148 found `ucp40` capping units 19-20 at 500 MW where the source has 550 (exact 1-period optimum 55704.72 against their 55644.79); #193 corrected it, and the exact solve now reproduces 55644.79. `ucp13` reproduces both proven optima exactly. |
 | SCIP reference vs source | **Quantitative** (§7.4: the PWL chord error at the valve-point cusps is up to 1.8 % of a 1-period `ucp13` at 50 segments, not the ≈ 0.1 % first claimed; a `t_cold = 0` startup is priced hot where the source prices it cold; demand is `>=` where the source has `=`. Same ramp-free problem otherwise) |
-| Solver-internal-feasibility vs verifier | **Qualitative when this audit was written** (#32 + #33 meant the SA reported "feasible" while the verifier counted 44 / 134 / 166 violations). #33, #34 and #32 have all since been closed — #32 as not planned, on a structural argument corroborated by a probe (see §2); its hook-level coupling gap is real and untouched, only the claimed consequence was refuted. Any current claim must still come from a `--verify` run rather than from this row. |
-| `comparison.csv` may claim | **A gap against the Pedroso Table 2 bounds for `ucp13` and `ucp40`.** #77 settled that those bounds describe the same ramp-free problem (§1.7), #148 that `ucp13` is the same instance, and #193 that `ucp40` is, once its data was corrected (§7.5). A `ucp40` result measured before #193 solved a different instance and carries no valid gap. Each measured row must carry the feasibility tolerance it was produced at and should be `--verify`-checked — not because #32 is open (it is closed), but because the verifier is the independent check and the engine's own `feasible` flag is not. |
+| Solver-internal-feasibility vs verifier | **Resolved** (§2.8): the SA-era mismatch (#32, #33) is closed; #32's hook-level coupling gap is real and untouched, but the coupling is a scored constraint, and a probe found no verifier rejection. Any current claim must still come from a `--verify` run rather than from this row. |
+| `comparison.csv` may claim | **A gap against the Pedroso Table 2 bounds for `ucp13` and `ucp40`.** #77 settled that those bounds describe the same ramp-free problem (§1.7), #148 that `ucp13` is the same instance, and #193 that `ucp40` is, once its data was corrected (§7.5). A `ucp40` result measured before #193 solved a different instance and carries no valid gap. Each measured row must carry the feasibility tolerance it was produced at and should be `--verify`-checked, because the verifier is the independent check and the engine's own `feasible` flag is not. |
 
 The remainder of this document records the equation-by-equation evidence.
 
@@ -23,10 +23,8 @@ The remainder of this document records the equation-by-equation evidence.
 
 Primary reference: J. P. Pedroso, M. Kubo, A. Viana,
 *Unit commitment with valve-point loading effect*, DCC-2014-05 /
-arXiv:1404.4944, 2014 (Pedroso 2014). This document previously gave the title
-as *Pricing and unit commitment in combined energy and reserve markets using
-valve-point effects*; the report at the URL it cites carries the title above
-(§7.1). The cost coefficients trace back to:
+arXiv:1404.4944, 2014 (Pedroso 2014; sources in §7.1). The cost coefficients
+trace back to:
 
 - 13-unit: Sinha, Chakrabarti, Chattopadhyay,
   *Evolutionary programming techniques for economic load dispatch*,
@@ -74,12 +72,10 @@ S_i(t) = a_hot_i  if unit was on within the last t_cold_i periods
 ```
 
 charged whenever `y[i,t]=1 ∧ y[i,t−1]=0` (and analogously vs the
-pre-horizon initial state). Some sources (and our SCIP reference) treat
-`t_cold = 0` specially: with no lookback window the unit can never be
-"recently on" so the published convention varies — see §2.3 below.
-**The source does pin it down** (corrected by #148, §7.4): the paper's
-text leaves it open, but the authors' `ucp_valve.py` forbids a hot start
-whenever `t_cold < min_off` or `t_cold = 0`. Every Kazarlis unit has
+pre-horizon initial state). With `t_cold = 0` there is no lookback window,
+and conventions vary (§2.3). The paper's text leaves it open, but the
+authors' `ucp_valve.py` forbids a hot start whenever `t_cold < min_off` or
+`t_cold = 0` (§7.4). Every Kazarlis unit has
 `t_cold < min_off`, so every startup on these instances is cold — as in our
 model and verifier. Only the SCIP reference prices `t_cold = 0` startups
 hot (`a_hot = a_cold/2`, so 30 instead of 60 per startup on the smallest
@@ -93,10 +89,9 @@ units).
 ```
 
 Demand is an **equality** in the source (paper §2; `ucp_valve.py`'s
-`demand(t)` row). This section previously wrote it as `≥`, which is what our
-model, verifier and SCIP reference use: a relaxation, since a non-monotone
-valve-point cost can make overproduction cheaper. It leaves the 1- and
-3-period proven optima unchanged (§7.4).
+`demand(t)` row). Our model, verifier and SCIP reference use `≥`: a
+relaxation, since a non-monotone valve-point cost can make overproduction
+cheaper. It leaves the 1- and 3-period proven optima unchanged (§7.4).
 
 The reserve constraint is *committed-capacity-based*, not
 dispatch-based: it counts every committed unit's full capacity, not its
@@ -135,15 +130,9 @@ minimum up/down times only
 GPL instance-generation code behind the shipped data
 (`http://www.dcc.fc.up.pt/~jpp/code/valve/ucp_data.py`, mirrored into
 `benchmarks/instances/uc-chped/data.py`) carries **no ramp-rate
-fields**. The two agree, and both agree with our model.
-
-When this audit was first written the paper text had not been read
-directly, so the possibility that the Table 2 bounds assumed ramps was
-left open as follow-up #77. Reading it settled the question and #77 was
-closed as *not planned*: there is nothing to add. Our model is
-ramp-free, the SCIP reference is ramp-free, and the source is ramp-free,
-so the bounds we quote and the results we measure describe the same
-problem. See §2.7.
+fields**. Our model and the SCIP reference are ramp-free too, so the bounds
+we quote and the results we measure describe the same problem (#77, closed
+as not planned; §2.7).
 
 ## 2. Our model — equation by equation
 
@@ -209,7 +198,7 @@ on our shipped instances**. Documenting it for completeness.
 demand[t] − Σ_u p[u][t] ≤ 0
 ```
 
-`≥`, rewritten as `≤`. The source has `=` (§1.4, corrected by #148). This is a
+`≥`, rewritten as `≤`. The source has `=` (§1.4). This is a
 relaxation, and it leaves the proven 1- and 3-period optima unchanged (§7.3).
 
 ### 2.5 Spinning reserve (`uc_model.h:131–141`)
@@ -235,88 +224,36 @@ There is no ramp-rate constraint anywhere in `uc_model.h`. Neither the
 source formulation (§1.7) nor the instance data (`data.py`, traceable to
 Pedroso's GPL ucp_data.py) has one, so this is **not a deviation**: our
 problem is not a relaxation of Pedroso's, and "% gap to Pedroso LB / UB"
-compares like with like.
-
-**Severity: none.** This was the largest single open question of the
-audit. It was resolved by reading Pedroso 2014 directly, and follow-up
-#77 was closed as *not planned* — the model already matches.
+compares like with like. **Severity: none.**
 
 ### 2.8 Cross-cutting solver-quality issues
 
-These are not formulation deviations. They were recorded as corrupting the
-meaning of the "feasible" annotation in `comparison.csv`; all five are now
-closed, and for #32 the claimed corruption did not survive measurement — see
-its bullet:
+Not formulation deviations: five issues filed when the engine was the SA solver,
+as corrupting the meaning of `comparison.csv`'s "feasible". All are closed.
 
-- **#32 (closed, not planned)** — `FloatIntensifyHook` does not enforce
-  indicator/float coupling: when `y[u][t]` flips 1→0 the dispatch `p[u][t]`
-  is not zeroed. **The hook-level gap is real and still present; the
-  consequence claimed here is not.** As written this bullet cited 44 / 134 /
-  166 verifier errors on ucp13-3p / ucp13-12p / ucp13-24p — measurements of
-  the SA solver that #64 replaced with the ViolationLS port, from a source
-  document no longer in the tree.
-
-  **The structural argument is what closes it.** `P − P_max · y ≤ 0` is a
-  *scored* constraint (`uc_model.h`), and the engine calls an assignment
-  feasible only when every constraint node is within `feas_tol` — so
-  `p ≤ 1e-6` wherever `y = 0`, two orders of magnitude inside the verifier's
-  `1e-4`. The old "violation accumulates across moves" mechanism was a property
-  of the SA's looser flag. Note the residual the runner publishes is not an
-  incremental one: `solve()` restores the best state and re-runs
-  `full_evaluate` before returning, so `max_violation` is a fresh recomputation.
-  Across the 55 feasible probe rows it is **≤ 2.91e-11** (46 rows exactly 0,
-  6 at 7.276e-12, 3 at 2.91e-11) — direct evidence the `feasible` flag was not
-  set on stale values. (An earlier revision of this paragraph said drift would
-  surface as a `DagConsistency` error. That is wrong: because the DAG is
-  re-evaluated before return, it is consistent by construction on this path and
-  that check cannot fire. A stale-value false positive would appear as
-  `verify_model()`'s `ConstraintViolation` on the `p − P_max·y` node, and as
-  the UC check's own `dispatch above Pmax*y`.)
-
-  **The probe corroborates it.** Run twice: first at engine commit `5f33c59`,
-  then re-run at `6f9d419` with `--commit` recorded per row after the first
-  pass was found to have written `commit_sha` empty. The two agree exactly, and
-  the engine source is identical between them (`6f9d419` and `5f33c59` differ
-  only in documentation). ucp40 / ucp100 / ucp200 at horizons 1/3/6/12/24
-  across seeds 42/1/2/3/7: 75 solves,
-  **55 feasible rows, 55 verified, 0 rejections**, zero `dispatch above
-  Pmax*y`, zero `dispatch below Pmin*y`. Those three instances are exactly the
-  ones that had never been `--verify`-checked. Two limits, stated so the
-  corroboration is not read as more than it is: `--verify` runs only on rows the
-  engine already called feasible, so the 20 infeasible rows — every 12p/24p
-  horizon on ucp40 and ucp200, which on that (pre-#193) data had no feasible
-  assignment at all (#152) — contribute nothing; and `ucp13`, the instance
-  this issue was originally filed on, is not in the probe at all. The probe
-  therefore covers the configurations where the search converged easily.
-
-- **#33 (fixed)** — the default `is_feasible` tolerance was `1e-9` when
-  this audit was written. The complaint was that it is an *absolute*
-  residual on constraint bodies of dispatch-times-Pmax magnitude (an
-  effective `1e-9 · P_max` ≈ `4.55e-7` MW on Kazarlis unit 1), so
-  combined with #32 the cumulative violation routinely exceeded the
-  verifier's `1e-4`. The default is now `1e-6`
-  (`cbls::kDefaultFeasibilityTolerance`, `include/cbls/violation.h`),
-  matching SCIP's `numerics/feastol` and the verifier's own scale. The
-  runner also states the tolerance explicitly per run and records it on
-  every measured `comparison.csv` row (#103), so a published row can no longer
-  become uninterpretable when that default moves again.
-
-- **#34 (fixed)** — min up / down constraints had only the global
-  adaptive lambda. Per-constraint weight bumping (a la GLS /
-  ViolationLS) was expected to remove the chronic late-stage violations
-  that drove `comparison.csv` rows to "INFEASIBLE"; the ViolationLS port
-  supplies exactly that, and #34 is closed.
-
-- **#35, #36 (closed as not planned)** — LNS destroy/repair was
-  destroying feasibility on 24-period instances when this audit was
-  written, and structure-aware destroy was proposed as the fix. Both were
-  closed unimplemented: the observation was made on the SA search that
-  the ViolationLS port (#64) replaced. Re-file against a current
-  measurement, not against this bullet.
-
-The fidelity audit does not propose changes to these — they are tracked
-under #25 already, and the ViolationLS port (#64) has since landed. All
-five are now closed.
+- **#32 (closed, not planned)** — `FloatIntensifyHook` does not zero `p[u][t]`
+  when `y[u][t]` flips 1→0. **The hook-level gap is real and still present; the
+  consequence claimed (verifier errors on feasible rows) is not.**
+  `P − P_max · y ≤ 0` is a *scored* constraint (`uc_model.h`), and the engine
+  calls an assignment feasible only when every constraint node is within
+  `feas_tol`, so `p ≤ 1e-6` wherever `y = 0`, inside the verifier's `1e-4`.
+  `solve()` re-runs `full_evaluate` on the best state before returning, so the
+  published `max_violation` is a fresh recomputation, not an incremental one; a
+  stale-value false positive would show as `verify_model()`'s
+  `ConstraintViolation` on the `p − P_max·y` node and as the UC check's
+  `dispatch above Pmax*y`. A probe at `6f9d419` (ucp40/100/200, horizons 1-24,
+  five seeds, pre-#193 data) found **55 feasible rows, 55 verified, 0
+  rejections**, residuals ≤ 2.91e-11. It covers only rows the engine called
+  feasible and leaves out `ucp13`.
+- **#33 (fixed)** — the default tolerance was an absolute `1e-9`; it is now
+  `1e-6` (`cbls::kDefaultFeasibilityTolerance`, `include/cbls/violation.h`),
+  SCIP's `numerics/feastol` and the verifier's scale, and the runner records it
+  on every measured row (#103).
+- **#34 (fixed)** — min up/down had only a global adaptive lambda; the
+  ViolationLS port's per-constraint weights supply what it asked for.
+- **#35, #36 (closed as not planned)** — LNS destroying feasibility on
+  24-period instances, and structure-aware destroy as the fix: observed on the
+  SA search only. Re-file against a current measurement.
 
 ## 3. Verifier — what it checks
 
@@ -362,29 +299,12 @@ Source: `benchmarks/chped/reference_solve.py:138–348` (`solve_uc_scip`).
 
 ### 4.2 Worst-case bound on the SCIP "optimum"
 
-Let `Δ_seg = (P_max − P_min) / n_pwl_segments`. The PWL envelope can
-deviate from the true cost on each segment by at most a quadratic
-remainder term in the curvature. The valve-point sinusoid
-`|d · sin(e · (P_min − P))|` has period `2π/e` and `e ≈ 0.04` for
-Sinha-13/Taipower-40 units, so one cosine cycle spans `≈ 157 MW`. With
-`Δ_seg ≈ (P_max − P_min)/50` — about `(455 − 150)/50 = 6.1 MW` for a
-Kazarlis 455 MW unit — the PWL has ~25 segments per cycle. Per-segment
-maximum-curvature error is bounded by `(1/8) · d · (e · Δ_seg)^2`, i.e.
-`(1/8) · d · (0.04 · 6.1)^2 ≈ d · 0.0074` ≈ `5.2` currency units for
-Kazarlis-large `d = 700`. Across a 24-period horizon with ~13 committed
-units this accumulates to a few hundred currency units, i.e. **~0.1 %**
-of a 466 k objective. The quadratic-base term `c · P^2` is also PWL'd
-but its curvature is much smaller, so it contributes far less.
-
-This is a worst-case envelope. The expected error is smaller because
-the PWL is *exact* at every breakpoint and the cosine peaks/troughs do
-not all align with mid-segment.
-
-**Corrected by #148 (§7.4): this bound is wrong.** The curvature argument
-misses the cusp `|sin|` has at every valve point. Uniform breakpoints straddle
-the cusps, the chord over one overestimates by up to about `d·e·Δ/2`, and
-optimal dispatch sits at cusps. Measured as each unit's worst chord error,
-summed: 213 for one period of `ucp13` at 50 segments (1.8 %), 47 at 200.
+A curvature bound (`(1/8)·d·(e·Δ_seg)^2` per segment, ~0.1 % of a 24-period
+objective) is wrong here: `|sin|` has a cusp at every valve point, uniform
+breakpoints straddle the cusps, the chord over one overestimates by up to
+about `d·e·Δ/2`, and optimal dispatch sits at cusps (#148, §7.4). Measured as
+each unit's worst chord error, summed: 213 for one period of `ucp13` at 50
+segments (1.8 %), 47 at 200.
 
 The Pedroso 2014 bounds `LB / UB` are **not** conditioned on a surrogate:
 `ucp_valve.py` refines its breakpoints until the linearised lower bound
@@ -429,63 +349,35 @@ by #193; 0.44 % below the old instance's 55704.72 before it). For an exact value
 
 ### 5.2 Decision for `comparison.csv`
 
-The ramp question this section was originally written around is closed
-(§1.7, §2.7): the Pedroso "1hr MIP" rows and our solver attack the same
-ramp-free problem, so "gap vs Pedroso LB / UB" is a like-for-like
-comparison — **for `ucp13` and `ucp40`**, the instances §7 found identical
-to the source (`ucp40` once #193 corrected its data). The SCIP reference is not a bound (§4.3, corrected).
+The Pedroso "1hr MIP" rows and our solver attack the same ramp-free problem
+(§1.7, §2.7), so "gap vs Pedroso LB / UB" is a like-for-like comparison —
+**for `ucp13` and `ucp40`**, the instances §7 found identical to the source
+(`ucp40` since #193). The SCIP reference is not a bound (§4.3). What remains
+is a reporting question.
 
-What remains is a reporting question rather than a formulation one. The
-"INFEASIBLE" rows of the original table were partly real and partly an
-artefact of #32 + #33; #33 and #34 are fixed, and #32 is closed as not planned.
-
-**Decision (as revised):**
+**Decision:**
 
 1. Every measured row records the feasibility tolerance it was produced
    at, plus the seed, the time budget and the engine commit. That is what
-   `benchmarks/uc-chped/uc_chped.cpp` now writes (#103). The previous
-   rows carried none of it and had to be deleted when the engine default
-   moved from `1e-9` to `1e-6`.
+   `benchmarks/uc-chped/uc_chped.cpp` writes (#103), so a row cannot become
+   uninterpretable when an engine default moves.
 2. `feasible` and `verified` are separate columns because they are
    separate tolerances: the engine's recorded `feas_tol`, against the
    verifier's own `1e-4` on its UC-semantic checks plus the `1e-6` of the
-   `cbls::verify_model()` pass it runs first. Independently of #32 (now
-   closed), `verified` is the column to trust, and a row that fails it
-   publishes no objective and no gap.
+   `cbls::verify_model()` pass it runs first. `verified` is the column to
+   trust, and a row that fails it publishes no objective and no gap.
 3. The Pedroso numbers stay in the file as cited reference rows. The
    generator re-emits them from each instance's `known_bounds` map, and
    refuses to write at all unless every rostered instance loaded, so a
    regeneration cannot silently drop them.
 
-This audit does **not** delete the Pedroso rows — that would lose
-information. It annotates them.
-
 ## 6. Follow-up issues filed
 
-- **#77** — UC-CHPED: add ramp-rate constraints to match Pedroso 2014.
-  **Closed as not planned.** Reading the paper showed it has no ramp
-  constraints, so §2.7 is not a deviation and there is nothing to add.
-- **#103** — give the runner a `comparison.csv` writer and an explicit
-  feasibility tolerance, so §2.8's failure mode — a published row that
-  becomes uninterpretable when an engine default moves — cannot recur.
-  The measurement pass it unblocks was **#131**, closed after a smoke
-  run; the full run is **#257**.
-- All other deviations either are already tracked (**#32**, closed as not
-  planned; **#33** and **#34**, fixed; **#35** and **#36**, closed as not
-  planned) or are cosmetic / vacuous on shipped instances (no issue
-  filed).
-- **#148** — instance identity against the authors' published code. Done
-  in §7: `ucp13` confirmed, `ucp40` relabelled (a relabel #193 removed).
-- **#193** — set `P_max` of units 19-20 to 550 in the CHPED 40-unit data,
-  regenerate the `ucp*` instances, re-run §7's check and drop the relabel.
-  Done (§7.5): `ucp40` confirmed, relabel removed, and `ucp40` and `ucp200`
-  at 12/24 periods satisfiable (#152).
-- **#194** — `extend_horizon()` built 48h/168h instances whose demand plus
-  reserve exceeded total capacity in some periods. Done: each extended day is
-  now the base day scaled by a factor below 1 (the old weekly sinusoid
-  shifted down by its 3% amplitude), so no period asks for more than the base
-  profile's, and a test checks capacity in every period of
-  every committed instance.
+All closed: #77 (ramps; not planned, §1.7), #103 (the `comparison.csv` writer;
+its measurement run is #257), #32-#36 (§2.8), #148 and #193 (instance
+identity, §7), #194 (extended horizons within capacity; README, **Extended
+Horizons**). The other deviations are cosmetic or vacuous on the shipped
+instances.
 
 ## 7. Instance data — do we solve the published instances? (#148)
 
@@ -538,23 +430,20 @@ authors' `ucp13(24)` and `ucp40(24)` with ours, exactly:
 | `y_prev`, `n_init`, `t_cold`, `min_on`, `min_off`, `a_hot`, `a_cold` | identical | identical |
 | `demand`, `reserve` (24 periods) | identical | identical |
 
-So the issue's three doubts resolve as follows. The **unit-parameter mapping**
-is the authors' own: `ucp_data.py` annotates each `ucp13`/`ucp40` unit with its
-"corresp. in kazarlis" unit, and our `_UCP13_MAP` and `i % 10` reproduce those
-annotations. The **demand and reserve profiles** are the authors' tables
-verbatim. **Sourced, not reconstructed** — for every field but one.
+The **unit-parameter mapping** is the authors' own: `ucp_data.py` annotates
+each `ucp13`/`ucp40` unit with its "corresp. in kazarlis" unit, and our
+`_UCP13_MAP` and `i % 10` reproduce those annotations. The **demand and
+reserve profiles** are the authors' tables verbatim.
 
-The one was ours. `ucp40` takes its costs and limits from `CHPED_40UNIT` in
+`ucp40` takes its costs and limits from `CHPED_40UNIT` in
 `benchmarks/chped/data.py` (and its C++ twin `benchmarks/chped/data.h`), which
-had `P_max = 500` for units 19-20 until #193. The authors' `ucp40` and `eld40` both have
-550, as does the standard Taipower 40-unit dispatch data: the authors' own
-`eld40` optimum at 10500 MW (their Table 1, 121412.53 — the value `chped`
-carries as `known_optimum`) dispatches units 19 and 20 at 511.28 MW each
-(`RESULTS/eld40-10500.txt`), above the old cap. `ucp100`/`ucp200` inherit the
-same two values through their `i % 40` cycle; they carry no bounds, so nothing
-was mislabelled there. #193 set both to 550 in both files; `CHPED_40UNIT` is
-now field-identical to the authors' `eld40()` as well. `extend_horizon()` and the 100/200-unit systems are this
-repository's construction outright.
+had `P_max = 500` for units 19-20 until #193 set them to the source's 550. The
+authors' `eld40` optimum at 10500 MW (their Table 1, 121412.53, `chped`'s
+`known_optimum`) dispatches those units at 511.28 MW each
+(`RESULTS/eld40-10500.txt`). `CHPED_40UNIT` is now field-identical to the
+authors' `eld40()` as well. `ucp100`/`ucp200` inherit the same values through
+their `i % 40` cycle; they and `extend_horizon()` are this repository's
+construction.
 
 ### 7.3 The check
 
@@ -568,7 +457,7 @@ Three independent ways, on the three proven-optimum rows:
    `|d·sin(e·(P_min − P))|` term (SCIP handles `sin` by spatial
    branch-and-bound, so the bound is global), `limits/gap 0`, one thread, a
    600 s cap. The authors' demand row is an **equality** (paper §2 and
-   `ucp_valve.py`); ours is `>=` (§1.4, corrected), so both were
+   `ucp_valve.py`); ours is `>=` (§1.4), so both were
    solved. Off units are kept out of the fuel term without a bilinear product:
    `p = 0` when off, and the valve auxiliary `v >= ±d·sin(…) − d·(1 − y)` can
    reach 0 because `|d·sin(…)| <= d`.
@@ -603,18 +492,14 @@ the `>=` relaxation closed, and its optimum is a lower bound on the `=` one,
 so 55644.79 is certified for both. Every objective matches the authors'-data
 control row.
 
-**Tolerance.** The issue proposed ~0.1 %, from §4.2's PWL envelope. That band
-is right for a PWL comparison and wrong for this one: the MINLP has no
-linearisation, so the only slack is SCIP's (feasibility `1e-6`, the gap
-above) and Table 2's two-decimal rounding — about `1e-6` relative. A match is
-therefore `|Δ| < 0.01` on the objective, and that is what the authors' data
-gives on all three rows (differences of 0.000, +0.001 and +0.003). Our
-`ucp40` landed, before #193, **+59.93 (+0.108 %)** above, about 6000 times that
-tolerance. It also sits only just outside the issue's ~0.1 % band, which
-is why that band could not have decided it: a data difference can move an
-optimum by less than a linearisation error does. The field diff (7.2) and the
-reserve infeasibility of the authors' schedule (check 1) are the decisive
-evidence; the exact solve confirms the consequence.
+**Tolerance.** The MINLP has no linearisation, so the only slack is SCIP's
+(feasibility `1e-6`, the gap above) and Table 2's two-decimal rounding. A
+match is `|Δ| < 0.01` on the objective, and that is what the authors' data
+gives on all three rows (0.000, +0.001, +0.003). A ~0.1 % band, right for a
+PWL comparison, could not have caught the pre-#193 `ucp40` (+59.93, +0.108 %):
+a data difference can move an optimum by less than a linearisation error
+does. The field diff (7.2) and the reserve infeasibility of the authors'
+schedule (check 1) were the decisive evidence.
 
 ### 7.4 Formulation differences the check surfaced
 
@@ -625,15 +510,13 @@ optimum.
   reference). With a non-monotone valve-point cost, overproducing can be
   cheaper, so `>=` is a relaxation that *could* lower the optimum. On all five
   MINLP rows it does not (the two columns' incumbents agree), so the 1- and 3-period
-  bounds are unaffected; longer horizons are unmeasured. §1.4's statement of
-  the source as `>=` was wrong.
+  bounds are unaffected; longer horizons are unmeasured.
 - **Startups.** `ucp_valve.py` forbids a hot start whenever `t_cold < min_off`
   or `t_cold = 0`, and every Kazarlis unit has `t_cold < min_off`. Since a unit
   must then stay off at least `min_off > t_cold` periods, every startup is
   cold in the source, and also in our model and verifier (hot needs a run
   inside the last `t_cold` periods, which `min_off` rules out; `t_cold = 0` is
-  cold there by §2.3). §1.3's "the source does not pin it down" is answered:
-  it does, and we match. The **SCIP reference does not**: it prices a
+  cold there by §2.3), so we match. The **SCIP reference does not**: it prices a
   `t_cold = 0` startup hot (30, not 60). The authors' `ucp13`-3p optimum starts
   three such units and their `ucp40`-1p optimum eight, so the reference
   undercuts those optima by 90 and 240 — which, with the chord error below, is
@@ -649,9 +532,9 @@ optimum.
   `ucp40`-1p, each measured from the proven optimum less the startup-pricing
   difference (38849.84 − 90 and 55644.79 − 240). Between cusps the chord can sit *below* the
   cost, and together with the startup convention that makes the reference's
-  value a number near the optimum, not a bound on it (§4.3 corrected).
-- **Table 2 is not conditioned on a PWL surrogate** (§4.2's closing sentence
-  corrected): `ucp_valve.py` refines breakpoints until the lower bound of its
+  value a number near the optimum, not a bound on it (§4.3).
+- **Table 2 is not conditioned on a PWL surrogate** (§4.2):
+  `ucp_valve.py` refines breakpoints until the lower bound of its
   linearised model meets the upper bound priced at the *true* cost, so the
   bounds are bounds on the true valve-point objective.
 
@@ -662,35 +545,19 @@ optimum.
 | `ucp13` | **Confirmed.** Field-identical, both proven optima reproduced to `< 0.01` by an exact solve. | Stand: bounds for this instance. |
 | `ucp40` | **Confirmed since #193.** #148 found `P_max` of units 19-20 at 500 against the source's 550 (the authors' optimum infeasible here, the exact optimum 55704.72 against their 55644.79). #193 corrected it: field-identical, and the exact solve reproduces 55644.79. | Stand: bounds for this instance. #148's relabel is removed. |
 
-A second consequence of the same 100 MW (#152): **`ucp40` at 12 and 24
-periods was infeasible as built before #193.** Period 12 asks for 11480 MW of
-demand plus 1148 MW of reserve, 12628 MW in all. All 40 units together offered
-12622 MW of P_max, so the reserve row's violation was at least 6 under any
-assignment — the residual the search ended at. With the source's 550 MW limits
-there are 12722 MW and 94 MW of slack. `ucp200` was short in the same period by
-30 MW and is fixed the same way. The extended 48h/168h instances stayed short
-for an unrelated reason, `extend_horizon()`'s demand variation, until #194
-capped each extended day at the base profile.
+A second consequence of the same 100 MW (#152): `ucp40` at 12 and 24 periods
+was infeasible before #193 (period 12's demand plus reserve, 12628 MW, against
+12622 MW of total `P_max`), and so was `ucp200`; with the source's limits
+`ucp40` has 94 MW of slack there. The extended 48h/168h instances were short
+for an unrelated reason until #194.
 
-What #148 did, and #193 undid:
-
-- #148 relabelled `comparison.csv`'s five `ucp40` cited rows `Pedroso MIP
-  (1hr) [related system]`, and the runner (`bounds_describe_a_related_system`
-  in `uc_chped.cpp`) emitted them that way and scored no gap for a measured
-  `ucp40` row.
-- #193 set `P_max` of units 19-20 to 550 in `CHPED_40UNIT`
-  (`benchmarks/chped/data.py`) and its C++ twin `data.h`, citing the source at
-  the site, regenerated every `ucp*.jsonl` built from the 40-unit data
-  (`ucp40`, `ucp100*`, `ucp200*`; only `P_max` changed, 2 values per 40-unit
-  copy), re-ran this check (the last row of the §7.3 table), and removed the
-  relabel from the runner, `comparison.csv`, the instance-data comments and the
-  README. `tests/python/test_uc_chped_instance_identity.py` now pins the
-  corrected state: every 40-unit copy in the committed instances carries 550 at
-  units 19-20 with no capacity-short period in the base 24-period profile
-  (since #194 checked by a per-instance test over every committed jsonl), and
-  the runner scores `ucp40` against its own bounds as it does `ucp13`.
-- `ucp40` results measured before #193 solved the old instance; the README
-  keeps their gaps struck.
+#193 regenerated every `ucp*.jsonl` built from the 40-unit data (only `P_max`
+changed) and removed #148's interim relabelling of the `ucp40` rows as bounds
+for a related system. `tests/python/test_uc_chped_instance_identity.py` pins
+the corrected state: 550 at units 19-20 in every 40-unit copy, and no
+capacity-short period in any committed instance. The runner scores `ucp40`
+against its own bounds as it does `ucp13`; a `ucp40` result measured before
+#193 solved the old instance and has no gap against them.
 
 The same data is the `chped` 40-unit dispatch instance. Its `known_optimum`
 (121412, rounded down from the authors' 121412.53, whose `eld40` log closes
@@ -700,10 +567,6 @@ attainable; it is the proven optimum of the authors' `=` instance, while our
 model's demand row is `>=`, a relaxation not certified to share it (§7.4). The `chped` 40-unit test's iteration-bounded run does not attain
 it (121635.52, +0.18 %); the test asserts only `objective >= known_optimum`
 and `< 140000`.
-
-A 10 s smoke run after #193 (engine `ca67584`, not a measurement) found
-`ucp40` and `ucp200` feasible and verified at every 1-24 period horizon, including 12 and
-24; the README's budget-defence section carries the numbers and their caveats.
 
 Reproduce (from the repository root; fetch the upstream files first):
 

@@ -128,9 +128,9 @@ construction; the authors publish nothing for them.
 
 ### Extended Horizons
 
-Instances can be extended to 48h and 168h (1 week) via `extend_horizon()`, which repeats the 24h demand and reserve profile, scaling day `d` (0-indexed) by the weekly factor `1 + 0.03·(sin(2πd/7) − 1)` and rounding to the nearest MW. That is the original ±3% weekly sinusoid shifted down by its amplitude. Its seven values (0.970, 0.993, 0.999, 0.983, 0.957, 0.941, 0.947) are distinct, so no two days of a week are exact copies, which a search could exploit. (A cosine would make day 0 the base day exactly, but it is symmetric about mid-week and repeats days 1-3 as days 6-4.)
+Instances can be extended to 48h and 168h (1 week) via `extend_horizon()`, which repeats the 24h demand and reserve profile, scaling day `d` (0-indexed) by the weekly factor `1 + 0.03·(sin(2πd/7) − 1)` and rounding to the nearest MW. Its seven values (0.970, 0.993, 0.999, 0.983, 0.957, 0.941, 0.947) are distinct, so no two days of a week are exact copies, which a search could exploit. (A cosine would make day 0 the base day exactly, but it is symmetric about mid-week and repeats days 1-3 as days 6-4.)
 
-**The construction rule (#194): no extended day's demand or reserve exceeds the base profile's in the same hour.** So an extended instance has at least its base instance's capacity slack, `sum(P_max) − demand[t] − reserve[t]`, in every period. The base slack is 699 MW for `ucp100` and 470 MW for `ucp200`, both at hour 12; the extended instances' minimum slack is 906/723 MW (`ucp100` 48/168 periods) and 884/517 MW (`ucp200`). Rounding cannot break the rule, because the base profile is integral and the factor is below 1. Until #194 the factor was `1 + 0.03·sin(2πd/7)`, which exceeds 1 on days 1-3 (up to 1.029 on day 2). With only 0.74% of slack at `ucp200`'s base peak, that put period 36 of every extended instance, period 60 of both 168-period ones and period 84 of `ucp200-168p` past total capacity (counting with #193's `P_max`), infeasible under any assignment. `tests/python/test_uc_chped_instance_identity.py` checks `demand + reserve <= sum(P_max)` in every period of every committed instance, and checks the rule itself on `extend_horizon()`.
+**The construction rule (#194): no extended day's demand or reserve exceeds the base profile's in the same hour.** So an extended instance has at least its base instance's capacity slack, `sum(P_max) − demand[t] − reserve[t]`, in every period. The base slack is 699 MW for `ucp100` and 470 MW for `ucp200`, both at hour 12; the extended instances' minimum slack is 906/723 MW (`ucp100` 48/168 periods) and 884/517 MW (`ucp200`). Rounding cannot break the rule, because the base profile is integral and the factor is below 1. (The factor before #194, `1 + 0.03·sin(2πd/7)`, exceeded 1 and made every extended instance infeasible.) `tests/python/test_uc_chped_instance_identity.py` checks `demand + reserve <= sum(P_max)` in every period of every committed instance, and checks the rule itself on `extend_horizon()`.
 
 ## Instance Summary
 
@@ -154,14 +154,12 @@ exact solve (11701.28 and 38849.84, §7 of `FIDELITY.md`).
 
 **The 40-unit rows describe this repository's `ucp40` since #193.** #148
 found that ours capped units 19-20 at 500 MW where the authors' instance has
-550, which made their 1-period optimal schedule infeasible here, and relabelled
-these rows as bounds for a related system. #193 corrected the two values (in
-`benchmarks/chped/data.py`, which `ucp40`, `ucp100` and `ucp200` all draw
-from, and its C++ twin `data.h`) and removed the relabel: `ucp40` is now the authors' instance field
-for field, and an exact solve reproduces its proven 1-period optimum
-(55644.79). Every `ucp40` result measured **before** #193 — the budget-defence
-traces and the archived table below — was run on the old instance, so its gap
-against these bounds stays struck.
+550; #193 corrected the two values (in `benchmarks/chped/data.py`, which
+`ucp40`, `ucp100` and `ucp200` all draw from, and its C++ twin `data.h`).
+`ucp40` is now the authors' instance field for field, and an exact solve
+reproduces its proven 1-period optimum (55644.79). A `ucp40` result measured
+before #193, such as the budget-defence traces, ran the old instance and has
+no gap against these bounds.
 
 ### 13-Unit System
 
@@ -202,50 +200,15 @@ See [`benchmarks/uc-chped/uc_model.h`](../../../benchmarks/uc-chped/uc_model.h) 
 ### Closed-form jump scoring does not reach the search (#190)
 
 Every row here is a bare affine body (`add_constraint(sum(...))`, read as
-`expr <= 0`). Since #190 (`9292371`) such a row is eligible for FJ's closed-form
-`LinearJumpScorer`, but a column takes the closed form only when *every*
+`expr <= 0`), so since #190 it is eligible for FJ's closed-form
+`LinearJumpScorer`. But a column takes the closed form only when *every*
 weighted row it reads is eligible, and every `y` and `p` column also reads the
 objective row `obj <= bound`, whose fuel-cost body is nonlinear and always
 weighted in `solve()`. So the batch API scores every uc-chped candidate with the
-DAG probe exactly as before; only the `run()` path — the runner's 200-iteration
-warm start and the LNS repair — takes the closed form, on a small share of its
-prepares (`docs/benchmarks/linear-jump-pingpong.md`, #190 addendum).
-
-Measured, `723799c` (before) against `9292371` (after), Release, serial under an
-exclusive lock on an AMD Ryzen 5 5600H (12 threads), 1-minute load 1.00-1.42 at
-each run's start, 2026-10-01. The later nested-comparison exclusion (`5650dc6`)
-does not reach uc-chped, whose rows nest no comparison; the 24-pair
-fixed-iteration hashes were re-checked identical after it.
-
-- **Fixed iterations, no clock:** the final assignment, iteration count and
-  objective are bit-identical on all 24 (file, horizon) pairs at 20,000
-  iterations, seed 1. That is not because the closed form went unused: these
-  runs were not instrumented, but in the counted 10 s runs below the `run()`
-  path did take closed-form prepares at 12 periods and up (e.g. `ucp40` at 12
-  periods, 8,000 per solve). Every row coefficient and right-hand side here is
-  an integer (checked in all 8 files), but the dispatch values are fractional,
-  so the identity is observed rather than guaranteed.
-- **Iterations at `--time-limit 10` per horizon, seeds 1-3:** after/before ratio
-  0.96-1.12, median 1.02 over 72 rows; the 1-period rows gain most (1.06-1.12).
-  This is not the closed form: in the counted runs (the #178 counters, below)
-  every 1-period solve took 0 closed-form prepares of any type. At a fixed
-  iteration count the after build used 1-5% less CPU time on 1-period rows
-  (ucp13 6.11 → 5.99 s, ucp40 7.98 → 7.72 s, ucp200 8.79 → 8.39 s, means of 3;
-  ucp13 at 24 periods 8.67 → 8.66 s) with the same trajectory. That CPU A/B was
-  not instrumented, so reading it as code shape rests on the counted 10 s runs'
-  zero at 1 period.
-- **Feasibility and gap at 10 s:** feasibility identical in every run; the gap
-  identical on every feasible row with a bound, except `ucp13` 3-period seeds 1
-  and 2 (1.13 → 1.03%, 2.72 → 2.62%).
-- **Per-horizon budgets (10-600 s), seed 42, 10:47-13:06, load 1.00-1.41:**
-  feasibility and the printed gap are identical on all 24 rows (16 feasible, 8
-  infeasible in both builds); iterations after/before 0.98-1.10.
-
-All of this section predates #193 and #194: it ran the old instance files, and
-the 8 infeasible rows are exactly the 8 that were capacity-short as built
-(`ucp40` and `ucp200` at 12/24 periods, and the four extended horizons), not
-search failures. Both fixes changed the files since, so these numbers describe
-the old instances.
+DAG probe; only the `run()` path — the runner's 200-iteration warm start and the
+LNS repair — takes the closed form, on a small share of its prepares
+(`docs/benchmarks/linear-jump-pingpong.md`, #190 addendum). The before/after
+measurement, on the pre-#193 instances, is on #190.
 
 ## Reference Solver
 
@@ -264,36 +227,30 @@ See [`benchmarks/chped/reference_solve.py`](../../../benchmarks/chped/reference_
 
 ## Results
 
-**These are archived pre-#103 numbers, not the current contents of
-`comparison.csv`.** The CBLS SA rows below were produced under the engine's
-old `1e-9` feasibility tolerance and under the simulated-annealing search that
-preceded the ViolationLS port; they were removed from `comparison.csv` because
-the file recorded no tolerance, which left them uninterpretable once the
-default moved to `1e-6`. They are kept here as the historical record and remain
-in git history. `comparison.csv` currently carries the 10 cited Pedroso
-reference rows only. #131 closed after a smoke run without regenerating them;
-the full campaign, #257, will.
+`comparison.csv` carries the 10 cited Pedroso reference rows only; no measured
+CBLS row is published yet. The full campaign, #257, writes them. (The
+simulated-annealing rows the file once held recorded no feasibility tolerance
+and were deleted when the default moved from `1e-9` to `1e-6`; they are in git
+history.)
 
-The table now has a generator — `benchmarks/uc-chped/uc_chped.cpp` writes it,
-stating the feasibility tolerance explicitly and recording it, the seed, the
-time budget, the search configuration and the engine commit on every measured
-row. The search configuration is the engine's defaults with compound moves
-(Novelty Jump) **off** (`published_search_flags()` in the runner): the engine
-turned them on by default on 2026-10-07, but a single-seed smoke at `b8f52f4`
-found them worse on 16 of the 19 rows that differed here, so `--compound-moves`
-is an ablation arm the runner refuses to write onto the published table.
+`benchmarks/uc-chped/uc_chped.cpp` writes the table, stating the feasibility
+tolerance explicitly and recording it, the seed, the time budget, the search
+configuration and the engine commit on every measured row. The search
+configuration is the engine's defaults with compound moves (Novelty Jump)
+**off** (`published_search_flags()` in the runner): a single-seed smoke at
+`b8f52f4` found them worse on 16 of the 19 rows that differed here, so
+`--compound-moves` is an ablation arm the runner refuses to write onto the
+published table.
 
 That choice was measured on the same instances the table publishes, so on
-them it is in-sample (#233). The `xk tune` study (#266) later kept the same
+them it is in-sample (#233). The `xk tune` study (#266) kept the same
 protocol, tuned on the constructed instances only, and declared Pedroso's ten
-report-only: never tuned or confirmed on. That does not make the published
-rows out-of-sample: the protocol they run was still chosen on them. The
-objective tie-break, on by default since `9e1cce9` (#220), needs an affine
-objective and does nothing here, because the valve-point term is not affine.
-The `search_config` cell records it only when off, so a default row reads the
-same before and after `9e1cce9` either way. When #257 regenerates the measured
-rows, the text quoting them names the engine commit (also on every row as
-`commit_sha`) and says the tie-break is inert on this objective.
+report-only; the published rows are still not out-of-sample, since their
+protocol was chosen on them. The objective tie-break (#220) needs an affine
+objective and does nothing here, because the valve-point term is not affine;
+the `search_config` cell records it only when off. When #257 regenerates the
+measured rows, the text quoting them names the engine commit (also on every row
+as `commit_sha`) and says the tie-break is inert on this objective.
 
 The command that writes it:
 
@@ -436,222 +393,51 @@ arm should take.
 
 ### Budget defence: what the traces establish (issue #147)
 
-Every gap percentage this benchmark publishes is a measurement **at** a
-per-horizon budget (`horizon_budget()` in the runner). Those budgets were
-asserted, never derived, and until #147 nothing in the repository recorded what
-the incumbent was doing when the clock stopped — which made a bad gap
-uninterpretable in both directions at once.
-
-The traces below settle that, per horizon, for the two families carrying
-published Pedroso bounds. They are committed at
+Every gap this benchmark publishes is a measurement **at** a per-horizon budget
+(`horizon_budget()` in the runner). #147 traced ucp13 and ucp40, the two
+families with published bounds, to test whether those budgets bind. The traces
+are committed at
 [`benchmarks/instances/uc-chped/traces/`](../../../benchmarks/instances/uc-chped/traces/),
-every row carries `commit_sha`, and every number in this section is
-reproducible from them.
+every row carries `commit_sha`, and every number here is reproducible from
+them: engine commit `4a320c5`, seed 42, `feas-tol 1e-6`, `--verify`, map
+budgets, serial on an idle machine. `4a320c5` predates later changes that act
+on this model (the float-hook sweep fix #207, the perf work #270/#271), so this
+is a record of that commit, not of today's engine; #257 re-measures. The ucp40
+runs predate #193 too, so they solved the old instance: their budget verdicts
+hold for it, and their gaps are not gaps against Table 2.
 
-**Measurement**: engine commit `4a320c5`, seed 42, `feas-tol 1e-6`, `--verify`
-on, per-horizon map budgets, serial on an otherwise idle machine. ucp13
-verified 5/5; ucp40 verified 3/5 (two horizons found nothing to verify).
-`4a320c5` is a ViolationLS engine, but it predates later changes that act on
-this model, such as the float-hook sweep fix (#207) and the generic perf work
-(#270, #271), so these are a record of that commit, not of today's engine;
-#257 re-measures.
+- **No budget binds, and none was changed.** Every horizon that reached
+  feasibility was within 1% of its own final objective in under 13 s, including
+  the 120 s and 300 s ones; seven of the eight had idle tails (budget after the
+  last change in the `objective` column) of 51-99%.
+- **ucp13/12p is the one marginal case, in time rather than value.** Its last
+  gain lands at 105.9 s of 120 s, but is worth 0.166% of the lower bound against
+  a 2.99% gap. It is the horizon to re-check first if the map is revisited.
+- **The headroom is deliberate.** A budget cut to today's convergence time
+  becomes binding after a trajectory change, silently, and turns an engine
+  regression into what looks like a budget artifact.
+- **So the gaps measure search quality, not the clock.** ucp13/24p (4.97%)
+  stopped moving at 14.8 s of 300 s. Work on closing gaps targets
+  diversification, LNS and structural moves.
+- **ucp40/12p and 24p never found a feasible point because none existed before
+  #193 (#152):** period 12 needs 12628 MW of demand plus reserve against 12622 MW
+  of total `P_max`, a shortfall of exactly the residual of 6 both horizons ended
+  at, also after 600 s
+  ([`traces/ucp40-600s-trace.csv`](../../../benchmarks/instances/uc-chped/traces/ucp40-600s-trace.csv)).
+  ucp200 at 12/24 periods was short too, and the four extended horizons for a
+  different reason, until #194. Every committed instance now has capacity slack
+  in every period, and a test pins it.
+- **The repaired instances have only smoke runs** (10 s, uniform budget, seed
+  42, `--verify`, shared machines): after #193, `ucp40` and `ucp200` were
+  feasible and verified at every 1-24 period horizon; after #194, all four
+  extended instances were. Those settle satisfiability and the end-to-end flow,
+  not results.
+- **The 48h/168h budgets have never been defended.** Defending them, and
+  re-establishing ucp40's on the corrected instance, needs traces at the map
+  budget (#257).
 
-*Idle tail* is the budget minus the time of the last change in the incumbent,
-as a fraction of the budget. Read off the `objective` column rather than
-`new_best`, per the warning above — on this data the two agree exactly at every
-horizon, no horizon having a tail of same-valued `new_best` rows, but that is a
-property of this run and not something to assume next time.
-
-| Family | T | Budget | First feasible | Last gain | Idle tail | Gap | Verdict |
-|---|---:|---:|---:|---:|---:|---:|---|
-| ucp13 |   1 |  10s | <0.01s |   2.17s | 78% | 0.03% | **defended**, generous |
-| ucp13 |   3 |  30s | <0.01s |   9.66s | 68% | 2.11% | **defended**, generous |
-| ucp13 |   6 |  60s | <0.01s |   6.67s | 89% | 3.20% | **defended**, generous |
-| ucp13 |  12 | 120s | <0.01s | 105.86s | 12% | 2.99% | **defended**, the one marginal case |
-| ucp13 |  24 | 300s | <0.01s |  14.78s | 95% | 4.97% | **defended**, generous |
-| ucp40 |   1 |  10s | <0.01s |   4.90s | 51% | ~~4.17%~~ | **defended**, generous |
-| ucp40 |   3 |  30s | <0.01s |   0.35s | 99% | ~~3.68%~~ | **defended**, generous |
-| ucp40 |   6 |  60s | <0.01s |   2.74s | 95% | ~~3.15%~~ | **defended**, generous |
-| ucp40 |  12 | 120s | never | — | — | — | **unchanged**; infeasible as built then (#152), re-measure after #193 |
-| ucp40 |  24 | 300s | never | — | — | — | **unchanged**; infeasible as built then (#152), re-measure after #193 |
-
-The ucp40 *Gap* cells are measured against Table 2's ucp40 lower bounds, but
-these runs predate #193: they solved the old ucp40, whose units 19-20 carried
-P_max 500 where the source (and the bounds) have 550
-([`FIDELITY.md`](../../../benchmarks/uc-chped/FIDELITY.md) §7). So the ucp40
-gaps are struck, as in the archived table below: each compares a run on the
-old instance with a bound for the corrected one.
-The ucp13 gaps are unaffected, because ucp13 is proven identical to the source.
-The budget verdicts do not depend on the bounds, but ucp40's were measured on the pre-#193 instance and are not re-established for the corrected one (#257).
-
-**No budget was changed.** Seven horizons are flat with idle tails of 51–99%;
-at ucp40/3p the incumbent stops moving after 0.35s of a 30s budget. The
-sharpest single statement is the convergence time: **every horizon that reaches
-feasibility is within 1% of its own final objective in under 13 seconds**, including
-the two carrying 120s and 300s budgets. The map is not tight anywhere it works.
-
-The headroom is kept deliberately rather than trimmed to the observed
-convergence times. A budget cut to where the search converges *today* becomes
-binding after any trajectory change, and would do so silently — turning a
-future engine regression into what looks like a budget artifact, which is the
-exact confusion this issue exists to remove. Generous budgets cost machine time;
-tight ones cost interpretability.
-
-**ucp13/12p is the one genuinely marginal case, and it is marginal in time
-rather than in value.** Its last improvement lands at 105.9s of 120s — an idle
-tail of only 12% — so on the clock alone it reads as "still improving". But that
-improvement is worth 384.6 absolute: **1.97% of the run's total gain and 0.166%
-of the lower bound**, against a published gap of 2.99%. The run was already
-within 1% of its final objective at 9.99s. A longer budget here buys tenths of a
-percentage point, not the gap. The budget stands; this is the horizon to re-check
-first if the map is ever revisited.
-
-**What the traces establish about the gap numbers.** This is the reading nobody
-could make before #147. A 4.97% gap at ucp13/24p is **a statement about the
-search stagnating, not about the budget**: the incumbent stopped moving at 14.8s
-of 300s and the remaining 95% of the budget bought nothing. The same holds at
-ucp13/6p and across ucp40's three feasible horizons (old instance, pre-#193). So these gaps are evidence
-about *search quality* — diversification, LNS, structural moves — and any work
-aimed at closing them should target the search, not the clock. Conversely,
-nobody may now explain these gaps away as "it needed more time"; the traces
-refuse that explanation.
-
-**ucp40/12p and 24p never reached a feasible incumbent, because none existed
-on the instance as built before #193 (#152).** Period 12 of the demand profile asks for
-11480 MW of demand plus 1148 MW of spinning reserve, 12628 MW in all. With every
-one of the 40 units committed, the sum of P_max was 12622 MW. The reserve row of
-period 12 therefore could not be satisfied by any assignment. Its minimum possible
-violation was **exactly 6**, which is precisely the maximum real violation both
-horizons ended at in every run. No other period was short; the next
-tightest was period 11, with 412 MW of slack. Every horizon that contained
-period 12 was infeasible, and the 1-, 3- and 6-period sub-instances do not
-contain it. The cause was the #148 data error: units 19-20 carried P_max 500
-here, 550 in the source. #193 restored the source's limits: capacity is now
-12722 MW and period 12 has 94 MW of slack.
-
-ucp40 was not the only case. The same check showed **ucp200** at 12 and 24
-periods short in period 12, by 30 MW (fixed by #193 too). All four extended
-horizons were also short, for a different reason. `extend_horizon()`'s demand
-variation pushed some periods past total capacity: period 36 in all four, plus
-60 in ucp100-168p and 60 and 84 in ucp200-168p, by up to 1377 MW after #193. So
-8 of the 24 measured rows could never be feasible as built before #193, and 4
-(the extended horizons) could not until #194 changed the construction (see
-**Extended Horizons** above); their "INFEASIBLE" said nothing about the search.
-Every committed instance now has capacity slack in every period, and a test
-pins it.
-
-The 600s probe confirms the arithmetic rather than being needed for it. Engine
-commit `e9b28a6`, seed 42, `--verify`, uniform `--time-limit 600` over the ucp40
-family, serial. The trace is
-[`traces/ucp40-600s-trace.csv`](../../../benchmarks/instances/uc-chped/traces/ucp40-600s-trace.csv).
-ucp40/12p completed **14576** ViolationLS batches and 24p completed **6499**.
-That is 127 and 37 times the batches of the #147 run's 115 and 178 at
-`4a320c5`. The budgets and engine commits both differ, so this is not a
-throughput comparison. Both still ended at a maximum
-real violation of **6** (the run's `max_violation` column; the scratch table
-is not committed, and the value is the capacity shortfall above), with no
-finite-objective incumbent. The 1-minute load
-average stayed at or below 1.26 throughout the 12p and 24p windows. The 1p, 3p
-and 6p windows overlapped another session's work (load peaks of 5-8), so the
-objectives this run reports for those horizons are not clean timings and are
-not cited anywhere.
-
-**So the two horizons were neither budget-limited nor search-limited. They
-were infeasible instances, and the budget map stands unchanged.** The two signals
-#147 recorded were right that the clock does not bind: a residual that does not
-move across budgets, and more batches than the siblings that converge. What
-they could not show is why. "It just needed more time" is retired. So is "the
-search cannot find it" for the old instance.
-
-**After #193: a smoke test, not a measurement.** With units 19-20 at 550 MW,
-the runner was run once over `ucp40` and `ucp200` at every 1-24 period horizon with a
-uniform `--time-limit 10`, seed 42, `--verify`, at engine commit `ca67584` (the
-runner at `a95c0cb`), on a shared machine at a 1-minute load average near 14.
-Every row was feasible and verified, including the four horizons #152 had shown
-infeasible: ucp40/12p 1,173,270 and ucp40/24p 2,415,513, ucp200/12p 5,938,070
-and ucp200/24p 12,297,047. That settles only that those instances are now
-satisfiable and the flow works end to end. The objectives are 10s runs under
-contention, below the map budgets, and are not results; the horizons
-need measuring at the map budgets (#257).
-
-**After #194: a smoke test, not a measurement.** With the extended days capped
-at the base profile, the runner was run once over the four extended instances
-(`ucp100-48p`, `ucp100-168p`, `ucp200-48p`, `ucp200-168p`) with a uniform
-`--time-limit 10`, seed 42, `--verify`, on the instances as regenerated at
-`0aef444`, with the engine and runner of #193's tip `3e7c3ea` (#194 changes no
-code), on a shared machine at a 1-minute load average of 5.2. All four were
-feasible and verified: 12,050,605.2, 41,536,813.2, 23,699,696.9 and
-81,122,064.4 respectively. As with #193's smoke, that settles only
-satisfiability and the end-to-end flow; the objectives are 10s runs, far below
-the 600s map budget, and are not results.
-
-**The 48h/168h budgets have never been defended.** The traces above cover
-ucp13 and ucp40 only, and every extended-horizon row measured before #194 ran
-an instance that no assignment could satisfy, so no measurement of those
-horizons says anything about their 600s budget. Defending it needs traces of
-the regenerated instances at the map budget (#257).
-
-Archived results:
-
-### 13-Unit System
-
-| Instance | Periods | Method            | Objective  | LB      | Gap (%) | Time (s) |
-|----------|--------:|-------------------|------------|--------:|--------:|---------:|
-| ucp13    |       1 | Pedroso MIP (1hr) | 11,701     |  11,701 |    0.00 |        — |
-| ucp13    |       3 | Pedroso MIP (1hr) | 38,850     |  38,850 |    0.00 |        — |
-| ucp13    |       6 | Pedroso MIP (1hr) | 91,784     |  91,406 |    0.41 |        — |
-| ucp13    |      12 | Pedroso MIP (1hr) | 232,537    | 231,587 |    0.41 |        — |
-| ucp13    |      24 | Pedroso MIP (1hr) | 466,187    | 464,053 |    0.46 |        — |
-| ucp13    |       1 | CBLS SA (10s)     | 13,864.8   |  11,701 |   18.49 |     10.0 |
-| ucp13    |       3 | CBLS SA (30s)     | 48,531.9   |  38,850 |   24.92 |     30.0 |
-| ucp13    |       6 | CBLS SA (60s)     | INFEASIBLE |  91,406 |       — |     60.0 |
-| ucp13    |      12 | CBLS SA (120s)    | INFEASIBLE | 231,587 |       — |    123.5 |
-| ucp13    |      24 | CBLS SA (300s)    | INFEASIBLE | 464,053 |       — |    308.9 |
-
-### 40-Unit System — runs predate the #193 data fix
-
-The `LB` column below is Table 2's bound for the authors' 40-unit system, which
-is this repository's `ucp40` since #193. The CBLS SA runs below are older: they
-solved the pre-#193 instance, whose units 19-20 carried `P_max` 500 (see Known
-Bounds). The archived gap is struck: it compares a run on the old instance with
-a bound for the corrected one. The exact 1-period optimum of the old instance
-was 55,704.72 (`FIDELITY.md` §7.3); against that, the archived 1-period SA run
-was 39.96% above.
-
-| Instance | Periods | Method            | Objective  |       LB | Gap (%) | Time (s) |
-|----------|--------:|-------------------|------------|----------:|--------:|---------:|
-| ucp40    |       1 | Pedroso MIP (1hr) | 55,645     |    55,645 |    0.00 |        — |
-| ucp40    |       3 | Pedroso MIP (1hr) | 178,547    |   178,396 |    0.08 |        — |
-| ucp40    |       6 | Pedroso MIP (1hr) | 416,606    |   416,108 |    0.12 |        — |
-| ucp40    |      12 | Pedroso MIP (1hr) | 1,113,801  | 1,112,371 |    0.13 |        — |
-| ucp40    |      24 | Pedroso MIP (1hr) | 2,238,504  | 2,235,971 |    0.11 |        — |
-| ucp40    |       1 | CBLS SA (10s)     | 77,964.4   |    55,645 | ~~40.11~~ |     10.0 |
-| ucp40    |       3 | CBLS SA (30s)     | INFEASIBLE |   178,396 |       — |     30.9 |
-| ucp40    |       6 | CBLS SA (60s)     | INFEASIBLE |   416,108 |       — |     63.2 |
-| ucp40    |      12 | CBLS SA (120s)    | INFEASIBLE | 1,112,371 |       — |    130.7 |
-| ucp40    |      24 | CBLS SA (300s)    | INFEASIBLE | 2,235,971 |       — |    391.3 |
-
-### Scaled Systems — runs predate the #193 data fix
-
-Both systems cycle the 40-unit data, so these runs solved the pre-#193 `P_max` too.
-
-| Instance | Periods | Method        | Result     | Time (s) |
-|----------|--------:|---------------|------------|:--------:|
-| ucp100   |       1 | CBLS SA (10s) | INFEASIBLE |     10.5 |
-| ucp200   |       1 | CBLS SA (10s) | INFEASIBLE |     10.0 |
-
-### Discussion
-
-This discussion is about the archived runs above. The simulated-annealing
-solver that produced them was replaced by the ViolationLS port (#64); it says
-nothing about the current engine, whose numbers #257 will publish.
-
-The SA-based solver struggled with feasibility on multi-period UC instances. The core challenge was the tight coupling between commitment decisions across time — min uptime/downtime constraints create long-range dependencies that were difficult for its local search moves (single-variable flips) to satisfy simultaneously with demand and reserve constraints. The 1-period instances were feasible but showed significant gaps — 18% on `ucp13` against its MIP bound, and 40% on `ucp40` against the exact optimum of the instance it then solved (those runs predate #193's `P_max` fix, so the published `ucp40` bound is not their yardstick) — which was put down to the valve-point non-convexity making it hard for float perturbation to find good dispatch points.
-
-The areas for improvement it named then:
-- **Commitment-aware moves:** Multi-variable moves that flip a unit's commitment across a block of consecutive periods, respecting min up/down constraints by construction
-- **Feasibility-first strategies:** Relaxed initial states or greedy commitment initialization
-- **Dispatch sub-optimization:** Once commitment is fixed, dispatch is a separable non-convex NLP per period that could be solved more aggressively
+The per-horizon table, the 600 s probe and the smoke objectives are on
+[#147](https://github.com/spoorendonk/cbls/issues/147#issuecomment-6632898096).
 
 ## Code Locations
 
