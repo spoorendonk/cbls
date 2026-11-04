@@ -118,7 +118,8 @@ struct Args {
     // measured row, so a results file states the configuration it was produced
     // under instead of leaving the reader to remember which binary produced it.
     cbls::bench::SearchFlags search = published_search_flags();
-    std::string search_config;  // search_config_string(search); filled in by parse_args
+    // search_config_string(search), plus threads=N off 1; filled in by parse_args
+    std::string search_config;
 };
 
 // The parse rule itself lives in include/cbls/arg_parse.h and the runners'
@@ -849,7 +850,8 @@ void run_one(std::ostream& csv, std::ofstream& trace, const Args& args,
     cbls::uc_chped::TraceRecorder recorder(trace, instance_name, horizon, tlim, args.commit_sha);
     const cbls::SearchResult result =
         solve_instance(args, inst, ucm, tlim, trace.is_open() ? &recorder : nullptr);
-    if (cbls::mipfeas::lost_workers(result, args.threads)) {
+    const bool lost_workers = cbls::mipfeas::lost_workers(result, args.threads);
+    if (lost_workers) {
         std::fputs(cbls::mipfeas::lost_workers_message(inst.name, args.threads, result).c_str(),
                    stderr);
         ++tally.lost_workers;
@@ -880,7 +882,11 @@ void run_one(std::ostream& csv, std::ofstream& trace, const Args& args,
         row.gap_pct = scored.gap;
     }
     if (row.note.empty()) {
-        if (!result.feasible) {
+        // The exit code says the job failed; the note says which row, for a
+        // scorer that only sees the table (#363).
+        if (lost_workers) {
+            row.note = "lost-workers";
+        } else if (!result.feasible) {
             row.note = "infeasible at feas_tol";
         } else if (!scored.have_objective) {
             row.note = "feasible; no finite objective";

@@ -24,14 +24,20 @@ THE MEASURE, one line per (instance, horizon):
 * A seed whose row is infeasible, or feasible with no finite objective, has no gap.
   The `solved` column counts it and the seed is named with the row's note. It is a
   result, so it does not refuse.
+* A verified objective below Pedroso's LB is a negative gap, and its row is named
+  under the table. It is not refused: that LB comes from a piecewise-linear MIP and
+  is printed rounded, so a slip below it need not be an error, but it is never a gap
+  to read past.
 
 REFUSALS (exit 2, naming what is wrong; nothing is written):
 
 * a roster pair missing from any table, a pair outside the roster, a row twice;
 * a measured row that failed verification, or a feasible row never verified;
 * a row the runner skipped (`skipped: T > n_periods`), which measured nothing;
-* more than one engine commit, search configuration or feasibility tolerance, or an
-  empty commit;
+* a row that lost portfolio workers, which measured fewer threads than it claims;
+* a cell that should be a number and is not, or a measured row with no budget;
+* more than one engine commit, search configuration or feasibility tolerance, or a
+  commit the runner was not told (empty or `unknown`);
 * one horizon at two budgets. The default map gives horizons different budgets, so
   the check is per horizon, across instances and seeds;
 * two tables at one seed, or one table at two;
@@ -98,6 +104,9 @@ ROSTER: dict[str, tuple[int, ...]] = {
 MEASURED_METHOD = "CBLS ViolationLS"
 CITED_METHOD = "Pedroso MIP (1hr)"
 SKIPPED_NOTE = "skipped:"
+LOST_WORKERS_NOTE = "lost-workers"
+#: The runner's `--commit` default: no provenance, as an empty cell is none.
+NO_COMMIT = ("", "unknown")
 EXIT_REFUSED = 2
 
 Pair = tuple[str, int]
@@ -155,6 +164,23 @@ def read_rows(path: Path) -> list[dict[str, str]]:
     return rows
 
 
+def number_cell(name: str, row: dict[str, str], column: str) -> float:
+    """A cell's number, NaN when the runner left it empty or wrote NaN; garbage is refused,
+    since `csv_number` alone would read it as "no value" and print it as an unsolved seed."""
+    cell = row[column]
+    value = csv_number(cell)
+    if math.isnan(value) and cell.strip().lower() not in ("", "nan"):
+        raise RefusedError(f"{name}: {column} is {cell!r}, not a number")
+    return value
+
+
+def periods_cell(name: str, row: dict[str, str]) -> int:
+    try:
+        return int(row["periods"])
+    except ValueError as err:
+        raise RefusedError(f"{name}: periods is {row['periods']!r}") from err
+
+
 def parse_measured(path: Path, row: dict[str, str]) -> Measured:
     """One `CBLS ViolationLS` row, refused if it is not a verified measurement."""
     name = f"{path}: {row['instance']} T={row['periods']}"
@@ -162,19 +188,24 @@ def parse_measured(path: Path, row: dict[str, str]) -> Measured:
         raise RefusedError(f"{name} measured nothing: {row['note']}")
     if row["verified"] == "false" or row["note"].startswith("verify-fail"):
         raise RefusedError(f"{name} failed verification: {row['note']}")
+    if row["note"].startswith(LOST_WORKERS_NOTE):
+        raise RefusedError(f"{name} lost portfolio workers: re-run it (#170)")
     if row["feasible"] not in ("true", "false"):
         raise RefusedError(f"{name}: feasible is {row['feasible']!r}")
     feasible = row["feasible"] == "true"
     if feasible and row["verified"] != "true":
         raise RefusedError(f"{name} is feasible and was never verified: run with --verify")
+    budget = number_cell(name, row, "time_limit_s")
+    if not math.isfinite(budget):
+        raise RefusedError(f"{name}: no budget in time_limit_s; a campaign row has one")
     return Measured(
         instance=row["instance"],
-        periods=int(row["periods"]),
+        periods=periods_cell(name, row),
         seed=row["seed"],
-        objective=csv_number(row["objective"]),
-        lb=csv_number(row["lb"]),
-        ub=csv_number(row["ub"]),
-        budget=csv_number(row["time_limit_s"]),
+        objective=number_cell(name, row, "objective"),
+        lb=number_cell(name, row, "lb"),
+        ub=number_cell(name, row, "ub"),
+        budget=budget,
         feasible=feasible,
         note=row["note"],
     )
@@ -185,8 +216,13 @@ def same_number(a: float, b: float) -> bool:
 
 
 def add_cited(path: Path, row: dict[str, str], cited: dict[Pair, Cited]) -> None:
-    pair = (row["instance"], int(row["periods"]))
-    new = Cited(csv_number(row["lb"]), csv_number(row["ub"]), csv_number(row["gap_pct"]))
+    name = f"{path}: {row['instance']} T={row['periods']}"
+    pair = (row["instance"], periods_cell(name, row))
+    new = Cited(
+        number_cell(name, row, "lb"),
+        number_cell(name, row, "ub"),
+        number_cell(name, row, "gap_pct"),
+    )
     if cited.setdefault(pair, new) != new:
         raise RefusedError(f"{path}: Pedroso's numbers for {pair} differ from another table's")
 
@@ -197,21 +233,20 @@ def one_value(values: set[str], what: str) -> str:
     return next(iter(values))
 
 
-def table_seed(path: Path, rows: Sequence[Measured], seen: dict[str, Path]) -> str:
+def record_table_seed(path: Path, rows: Sequence[Measured], seen: dict[str, Path]) -> None:
     """The one seed a table holds; two tables at one seed would count it twice."""
     seed = one_value({row.seed for row in rows}, f"seeds in {path}")
-    if not seed:
-        raise RefusedError(f"{path}: the seed cell is empty")
+    if not seed.isdecimal():
+        raise RefusedError(f"{path}: the seed cell is {seed!r}")
     if seed in seen:
         raise RefusedError(f"seed {seed} is in both {seen[seed]} and {path}")
     seen[seed] = path
-    return seed
 
 
 def horizon_budgets(rows: Sequence[Measured]) -> dict[int, float]:
     budgets: dict[int, float] = {}
     for row in rows:
-        if not budgets.setdefault(row.periods, row.budget) == row.budget:
+        if budgets.setdefault(row.periods, row.budget) != row.budget:
             raise RefusedError(
                 f"horizon T={row.periods} at two budgets: {budgets[row.periods]:g} s "
                 f"and {row.budget:g} s ({row.instance}, seed {row.seed})"
@@ -277,17 +312,17 @@ def load_campaign(tables: Sequence[Path], roster: dict[str, tuple[int, ...]]) ->
             by_seed[parsed.seed] = parsed
         if not own:
             raise RefusedError(f"{path}: no {MEASURED_METHOD} rows")
-        table_seed(path, own, seen)
+        record_table_seed(path, own, seen)
         every += own
     seeds = sorted(seen, key=int)
     check_roster(measured, roster, seeds)
     check_bounds(every, cited)
     commit = one_value(commits, "engine commits")
-    if not commit:
-        raise RefusedError("the commit_sha cell is empty: run with --commit")
+    if commit in NO_COMMIT:
+        raise RefusedError(f"the commit_sha cell is {commit!r}: run with --commit")
     return Campaign(
         measured=measured,
-        cited={pair: c for pair, c in cited.items() if pair in measured},
+        cited=cited,
         seeds=seeds,
         commit=commit,
         search_config=one_value(configs, "search configurations"),
@@ -342,14 +377,19 @@ def render_markdown(
         " | gap to UB %: median [min, max] | Pedroso gap % |",
         "|---|---|---|---|---|---|---|---|",
     ]
-    lines += [
-        table_line((name, t), campaign) for name, horizons in roster.items() for t in horizons
-    ]
+    pairs = [(name, t) for name, horizons in roster.items() for t in horizons]
+    lines += [table_line(pair, campaign) for pair in pairs]
+    # Roster and seed order, so one campaign gives one table whatever order the tables came in.
+    rows = [campaign.measured[pair][seed] for pair in pairs for seed in campaign.seeds]
     unsolved = [
         f"{row.instance} T={row.periods} seed {row.seed}: {row.note or 'no note recorded'}"
-        for by_seed in campaign.measured.values()
-        for row in by_seed.values()
+        for row in rows
         if not row.solved
+    ]
+    below_lb = [
+        f"{row.instance} T={row.periods} seed {row.seed}: {row.objective:.6g} against {row.lb:g}"
+        for row in rows
+        if row.solved and row.objective < row.lb
     ]
     lines += [
         "",
@@ -364,6 +404,8 @@ def render_markdown(
         "not a measurement. `-`: no published bound, or no seed solved it.",
         f"- no solution: {len(unsolved)}",
         *[f"  - {line}" for line in unsolved],
+        f"- below Pedroso's LB, to check before reading the gap: {len(below_lb)}",
+        *[f"  - {line}" for line in below_lb],
     ]
     return "\n".join(lines) + "\n"
 
@@ -378,6 +420,8 @@ def parse_roster(items: Sequence[str]) -> dict[str, tuple[int, ...]]:
             roster[name] = tuple(int(t) for t in horizons.split(","))
         except ValueError as err:
             raise RefusedError(f"--roster wants NAME:T,T, got {item!r}") from err
+        if len(set(roster[name])) != len(roster[name]):
+            raise RefusedError(f"--roster repeats a horizon in {item!r}")
     return roster
 
 
@@ -396,13 +440,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         roster = parse_roster(args.roster) if args.roster else ROSTER
         campaign = load_campaign(args.tables, roster)
-    except (RefusedError, OSError) as err:
+    except (RefusedError, OSError, UnicodeDecodeError, csv.Error) as err:
         print(f"refused: {err}", file=sys.stderr)
         return EXIT_REFUSED
     text = render_markdown(campaign, roster, published_roster=not args.roster)
-    if args.out is not None:
-        atomic_write(args.out, text)
+    # Printed first: an --out that cannot be written must not lose the table.
     print(text, end="")
+    if args.out is not None:
+        try:
+            atomic_write(args.out, text)
+        except OSError as err:
+            print(f"cannot write {args.out}: {err}", file=sys.stderr)
+            return EXIT_REFUSED
     return 0
 
 

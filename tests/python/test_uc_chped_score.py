@@ -151,6 +151,7 @@ def test_the_real_smoke_scores_into_the_table() -> None:
         "- seeds: 1, 2 (seed column)",
         "- cbls threads: 4 (search_config column)",
         "- no solution: 0",
+        "- below Pedroso's LB, to check before reading the gap: 0",
     ):
         assert line in printed
 
@@ -234,6 +235,11 @@ def test_a_row_twice_is_refused(tmp_path: Path) -> None:
         ({"verified": "false", "note": "verify-fail (2 errors)", "objective": ""}, "verification"),
         ({"verified": ""}, "never verified"),
         ({"note": "skipped: T > n_periods", "feasible": "", "seed": ""}, "measured nothing"),
+        ({"note": "lost-workers"}, "lost portfolio workers"),
+        ({"objective": "garbled"}, "objective is 'garbled'"),
+        ({"lb": "garbled"}, "lb is 'garbled'"),
+        ({"time_limit_s": ""}, "no budget"),
+        ({"periods": "many"}, "periods is 'many'"),
     ],
 )
 def test_a_row_that_is_no_verified_measurement_is_refused(
@@ -271,8 +277,9 @@ def test_two_horizons_may_have_two_budgets(tmp_path: Path) -> None:
     assert "| ucp100-48p | 48 | 600 | 1/1 |" in result.stdout
 
 
-def test_an_empty_commit_is_refused(tmp_path: Path) -> None:
-    table = write_table(tmp_path / "1.csv", seed_rows(1, commit_sha=""))
+@pytest.mark.parametrize("commit", ["", "unknown"])
+def test_a_commit_the_runner_was_not_told_is_refused(tmp_path: Path, commit: str) -> None:
+    table = write_table(tmp_path / "1.csv", seed_rows(1, commit_sha=commit))
     assert "run with --commit" in refusal([table])
 
 
@@ -280,6 +287,64 @@ def test_two_tables_at_one_seed_are_refused(tmp_path: Path) -> None:
     tables = [write_table(tmp_path / f"{n}.csv", seed_rows(1)) for n in "ab"]
     # Their rows collide first, or the seed check names them: either refusal names the seed.
     assert "seed 1" in refusal(tables)
+
+
+def test_two_tables_at_one_seed_with_no_row_in_common_are_refused(tmp_path: Path) -> None:
+    rows = seed_rows(1)
+    tables = [
+        write_table(tmp_path / "a.csv", rows[:4]),
+        write_table(tmp_path / "b.csv", rows[4:]),
+    ]
+    assert "is in both" in refusal(tables)
+
+
+@pytest.mark.parametrize("seed", ["", "one"])
+def test_a_seed_that_is_no_number_is_refused(tmp_path: Path, seed: str) -> None:
+    rows = seed_rows(1)
+    for row in rows[2:]:
+        row["seed"] = seed
+    assert "the seed cell" in refusal([write_table(tmp_path / "1.csv", rows)])
+
+
+def test_an_objective_below_pedrosos_lb_is_named_under_the_table(tmp_path: Path) -> None:
+    rows = seed_rows(1)
+    rows[2]["objective"] = 90.0
+    result = run_score(write_table(tmp_path / "1.csv", rows), *ROSTER)
+    assert result.returncode == 0, result.stderr
+    assert "- below Pedroso's LB, to check before reading the gap: 1" in result.stdout
+    assert "  - ucp13 T=1 seed 1: 90 against 100" in result.stdout
+
+
+def test_the_table_does_not_depend_on_the_order_of_the_tables(tmp_path: Path) -> None:
+    tables = []
+    for seed in (1, 2, 10):
+        rows = seed_rows(seed)
+        rows[-1].update(objective="", feasible="false", verified="", note="infeasible at feas_tol")
+        tables.append(write_table(tmp_path / f"{seed}.csv", rows))
+    forward = run_score(*tables, *ROSTER)
+    backward = run_score(*reversed(tables), *ROSTER)
+    assert forward.returncode == 0, forward.stderr
+    assert forward.stdout == backward.stdout
+    assert forward.stdout.index("seed 2:") < forward.stdout.index("seed 10:")
+
+
+def test_a_repeated_horizon_is_refused(tmp_path: Path) -> None:
+    table = write_table(tmp_path / "1.csv", seed_rows(1))
+    assert "repeats a horizon" in refusal([table], "--roster", "ucp13:1,1")
+
+
+def test_an_undecodable_table_is_refused(tmp_path: Path) -> None:
+    table = tmp_path / "1.csv"
+    table.write_bytes(b"\xff\xfe\x00garbage")
+    assert "refused" in refusal([table])
+
+
+def test_an_unwritable_out_still_prints_the_table(tmp_path: Path) -> None:
+    out = tmp_path / "missing" / "dir" / "table.md"
+    result = run_score(*two_seeds(tmp_path), *ROSTER, "--out", out)
+    assert result.returncode == 2
+    assert "| ucp13 | 1 |" in result.stdout
+    assert "cannot write" in result.stderr
 
 
 def test_one_table_at_two_seeds_is_refused(tmp_path: Path) -> None:

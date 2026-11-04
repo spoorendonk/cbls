@@ -687,6 +687,28 @@ def test_uc_chped_refuses_a_horizon_no_selected_file_has(tmp_path: Path) -> None
     assert not out.exists()
 
 
+def test_uc_chped_marks_a_row_that_lost_portfolio_workers(tmp_path: Path) -> None:
+    """The exit code alone is gone once a scorer globs the tables (#363). A
+    1-microsecond budget starves every worker: no test seam, the deadline is real."""
+    if not UC_CHPED_BINARY.exists():
+        pytest.skip("cbls_uc_chped not built")
+    inst_dir = _uc_chped_scratch(tmp_path)
+    out = tmp_path / "o.csv"
+
+    result = subprocess.run(
+        [str(UC_CHPED_BINARY), str(inst_dir), "--instance", "ucp13", "--periods", "3"]
+        + ["--threads", "3", "--time-limit", "0.000001", "--verify", "--out", str(out)],
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    assert result.returncode == 1, result.stderr
+
+    lines = [ln for ln in out.read_text().splitlines() if not ln.startswith("#")]
+    measured = [r for r in csv.DictReader(lines) if r["method"] == "CBLS ViolationLS"]
+    assert [r["note"] for r in measured] == ["lost-workers"]
+
+
 def test_uc_chped_runs_one_horizon_on_the_portfolio(tmp_path: Path) -> None:
     """The tuning shape (#262): one (file, horizon) on `ParallelSearch` gives one
     verified measured row, the portfolio's stream reaches the trace, and the
