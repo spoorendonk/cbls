@@ -450,9 +450,10 @@ reproducible from them.
 **Measurement**: engine commit `4a320c5`, seed 42, `feas-tol 1e-6`, `--verify`
 on, per-horizon map budgets, serial on an otherwise idle machine. ucp13
 verified 5/5; ucp40 verified 3/5 (two horizons found nothing to verify).
-`4a320c5` is a ViolationLS engine, but it predates the later search changes
-(compound moves on by default, #201) and the perf work (#270-#274), so these
-are a record of that commit, not of today's engine; #257 re-measures.
+`4a320c5` is a ViolationLS engine, but it predates later changes that act on
+this model, such as the float-hook sweep fix (#207) and the perf work
+(#270-#274), so these are a record of that commit, not of today's engine;
+#257 re-measures.
 
 *Idle tail* is the budget minus the time of the last change in the incumbent,
 as a fraction of the budget. Read off the `objective` column rather than
