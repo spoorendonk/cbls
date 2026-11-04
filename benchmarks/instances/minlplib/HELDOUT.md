@@ -3,11 +3,20 @@
 A second set of fifty MINLPLib instances that **no default was fitted to and no
 table has been published against**. It was drawn so the parameter transfer check
 in #145 had unseen instances to run on. It is still un-fitted but no longer
-unseen: results recorded on it are #145's transfer check (below), #228's laptop
-smoke rows (posted on #228, no table) and the #265 `xk tune` study, which
-searched over all fifty (`benchmarks/tune/minlplib.study.toml`), confirmed no
-setting and changed no default. #331's presolve-322 sample is drawn from it too
-(below). #256 reads a held-out score with that history in mind. The shipped unproductive-batch exit
+unseen. Runs recorded on it, none publishing a table:
+
+- #145's transfer check (below);
+- #244's held-out smoke of the fitted defaults (10 s, seeds 1-2; every default
+  kept);
+- #228's laptop smoke rows (posted on #228);
+- #256's dev run, compound moves on vs off (60 s, seeds 1-3, posted on #256);
+- the #265 `xk tune` study (`benchmarks/tune/minlplib.study.toml`): it
+  searched on 35 of the fifty and re-checked its elites on the other 15,
+  confirmed no setting and changed no default.
+
+#331's presolve-322 sample is drawn from it too (below). No open issue plans a
+held-out score beside the published roster's; #256 runs the full library
+instead. The shipped unproductive-batch exit
 threshold was set by a grid over the published roster in `../bounds.csv`, and
 the headline result is published against that same roster. Without a held-out
 set, "the engine is good on non-convex MINLP" cannot be told apart from "the
@@ -42,6 +51,7 @@ in the #265 study's configuration and in #331's sample list.
 | `heldout/*.nl` | The fifty text-NL files, committed (1.2 MB, about the size of the published roster's 1.2 MB). |
 | `heldout/pool.csv` | Snapshot of the catalogue rows the filter admits (all 397), limited to the columns the filter reads. Both rosters are re-derivable from it offline. |
 | `heldout/unfetchable.csv` | The instances each fetch walk skipped because MINLPLib serves them as binary NL. A walk can only be replayed offline with this list. |
+| `heldout/presolve_322_sample.txt` | #331's presolve-322 sample: the 25 instances presolve reduces (see "#331: the presolve-322 sample"). |
 
 The `.nl` files are committed, not fetched on demand. #145 must run on exactly
 these bytes. MINLPLib revises instances, and a check that silently ran on a
@@ -408,7 +418,7 @@ fired.
   1000's deficit could shrink or grow.
 - That 300 is better than 100, or that 300 is an optimum. The grid has three
   points, and the lower neighbour is not resolvable against it.
-- Anything off MINLPLib. The held-out set is unseen MINLPLib instances, not a
+- Anything off MINLPLib. The held-out set was then unseen MINLPLib instances, not a
   different library. The scale-invariance objection recorded on
   `GFJConfig::unproductive_iterations` is untouched.
 

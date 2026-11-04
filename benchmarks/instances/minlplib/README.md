@@ -227,7 +227,8 @@ documents. No published Yuck numbers exist for these instances.
 - `status.py` — one status per catalogue instance over the full library, and
   the modelled set as a `bounds.csv` (see "Full-library status").
 - `heldout/` — the held-out roster: its `bounds.csv`, `.nl` files, pool
-  snapshot and the presolve-322 sample; see [HELDOUT.md](HELDOUT.md).
+  snapshot, unfetchable list and the presolve-322 sample; see
+  [HELDOUT.md](HELDOUT.md).
 - `bounds.csv` — fetched roster with published primal/dual bounds and the
   catalogue integer-variable count.
 - `comparison.csv` — the `cbls_minlplib` runner's rows, assembled by
@@ -746,8 +747,9 @@ Latest run: **60s per instance, seed 1, feasibility tolerance 1e-6**, engine com
 **These are not the current engine's numbers.** `4524460` (2026-10-02)
 predates compound moves on by default (`79a694a`), #201's structural-batch
 fallback, #226's defaults (among them the objective tie-break on, `9e1cce9`)
-and the #270-#274 performance changes. No table has been regenerated since; #256's full-library campaign is
-the open issue that will publish one.
+and the #270-#273 search performance changes. No open issue regenerates this
+table. #256's full-library campaign will give a newer cbls/SCIP score, over
+the full-library `bounds.csv`, and writes nothing under `benchmarks/instances/`.
 
 The tally below, the gap buckets and the
 anytime profile all come from that **one** run; its incumbent trace is committed
@@ -1763,12 +1765,12 @@ smoke roster (#226 Run A), not on this one. #211's changes to the FJ tolerance,
 to the reference algorithm's values, not fitted.
 
 The held-out roster in `heldout/` was drawn before any of these were measured on
-it and none was fitted to it (HELDOUT.md). It is no longer unseen: #228's laptop
-smoke ran it, and the #265 `xk tune` study searched over all fifty
-(`benchmarks/tune/minlplib.study.toml`). That study confirmed no setting and
-changed no default, so the roster is still un-fitted. #256 is the open issue that
-reports a held-out score beside this roster's, so an in-sample advantage shows
-as a gap between the two.
+it and none was fitted to it (HELDOUT.md). It is no longer unseen: smokes
+(#244, #228), #256's dev run and the #265 `xk tune` study ran on it (the list
+is in HELDOUT.md). That study confirmed no setting and changed no default, so
+the roster is still un-fitted. No open issue plans a held-out score beside this
+roster's, which is what would show an in-sample advantage as a gap between the
+two; #256 runs the full library instead.
 
 **The tie-break and the `search_config` cell.** The cell records
 `objective_tie_break` only when it is off (see "Ablation arms"), so a default
@@ -1801,10 +1803,11 @@ a table names its engine commit and the tie-break's state.
   the CBLS DAG's op set, and the NL reader rejects `S` and `F` segments (it
   inlines `V` and skips `d`, #281; see "Operator support"). The published
   table is therefore a comparison on CBLS's expressible domain, not on
-  MINLPLib. The full-library status (#283) narrows that domain's exclusions to
-  four operators, the reader's `S`/`F` refusals and a missing primal bound, and
-  #256's campaign runs both solvers on its modelled set; its score is not
-  published yet.
+  MINLPLib. The full-library status (#283) drops the size budget, the problem
+  type and convexity filters and the `opvcpower`/`opcvpower` exclusion; what
+  still excludes an instance is its non-`modelled` statuses (see "Full-library
+  status"). #256's campaign runs both solvers on that modelled set; its score
+  is not published yet.
 
 ## Portfolio A/B: the shared objective bound (#179)
 
