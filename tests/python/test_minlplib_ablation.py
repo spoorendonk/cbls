@@ -112,6 +112,7 @@ def make_args(tmp_path: Path, **overrides: object) -> argparse.Namespace:
         "lns_arm": "auto",
         "campaign": "ablation",
         "allow_busy": False,
+        "lock_command": "",
         "resume": True,
         "build": True,
         "dry_run": False,
@@ -272,6 +273,53 @@ def test_execute_runs_never_has_two_solves_in_flight(
     plan = campaign_plan(["a", "b"], [1], list(ARMS))
     execute_runs(make_args(tmp_path), "abc1234", plan, out_dir, "campaign")
     assert not inflight
+
+
+def test_the_lock_command_prefixes_each_solve_not_the_campaign(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#331 takes the machine lock per solve: a prefix on each runner call, split
+    as a shell would, so that nothing holds the lock between solves."""
+    calls: list[list[str]] = []
+
+    def run(cmd: Sequence[str], **kwargs: object) -> FakeCompleted:
+        calls.append(list(cmd))
+        return fake_runner()(cmd, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    out_dir = tmp_path / "scratch"
+    out_dir.mkdir()
+    plan = campaign_plan(["a", "b"], [1], list(ARMS))
+    args = make_args(tmp_path, lock_command="xk lock --")
+    execute_runs(args, "abc1234", plan, out_dir, "campaign")
+    assert len(calls) == len(plan)
+    assert all(cmd[:3] == ["xk", "lock", "--"] for cmd in calls)
+    assert all(Path(cmd[3]).name == "cbls_minlplib" for cmd in calls)
+
+
+def test_a_lock_command_that_is_not_on_path_refuses_before_any_solve(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Otherwise every run exits 127 and is recorded as a failed run."""
+    monkeypatch.setattr("os.getloadavg", lambda: (0.0, 0.0, 0.0))
+
+    def no_solve(*_a: object, **_k: object) -> FakeCompleted:
+        raise AssertionError("a process was started")
+
+    monkeypatch.setattr(run_ablation, "run_locked", no_solve)
+    argv = [
+        "--out-dir",
+        str(tmp_path / "scratch"),
+        "--campaign",
+        PRESOLVE_CAMPAIGN,
+        "--no-build",
+        "--lock-command",
+        "no-such-lock-program --",
+    ]
+    assert run_ablation.main(argv) == 2
+    assert "no-such-lock-program is not on PATH" in capsys.readouterr().err
 
 
 def test_a_busy_machine_is_refused_and_the_refusal_is_overridable(

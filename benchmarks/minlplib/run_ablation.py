@@ -92,6 +92,8 @@ import hashlib
 import json
 import math
 import os
+import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -1024,7 +1026,9 @@ def execute_runs(
             continue
         print(_progress(index, len(runs), run, started, elapsed_each), file=sys.stderr, flush=True)
         began = time.monotonic()
-        cmd = runner_command(args, sha, run, out_dir)
+        # Per solve, so the campaign's hours do not hold the machine lock against
+        # every other session's build; nothing holds it between solves (#331).
+        cmd = [*shlex.split(args.lock_command), *runner_command(args, sha, run, out_dir)]
         solution_dir(out_dir, run).mkdir(parents=True, exist_ok=True)
         completed = run_process(cmd, log=out_dir / "runs" / f"{run.slug}.log")
         if completed.returncode != 0:
@@ -1450,6 +1454,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--allow-busy", action="store_true", help="skip the load-average refusal")
     parser.add_argument(
+        "--lock-command",
+        default="",
+        help="prefix taking the machine lock for one solve, e.g. 'xk lock --' (default: none)",
+    )
+    parser.add_argument(
         "--no-resume",
         dest="resume",
         action="store_false",
@@ -1552,6 +1561,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     busy = load_refusal(args.allow_busy)
     if busy and not args.dry_run:
         problems = [*problems, busy]
+    # Refused here, not on the first solve: every run would otherwise fail with
+    # exit 127 and be recorded as a failed run, hours of them, with no solve.
+    lock_program = shlex.split(args.lock_command)[:1]
+    if lock_program and shutil.which(lock_program[0]) is None:
+        problems = [*problems, f"--lock-command: {lock_program[0]} is not on PATH"]
     if args.dry_run:
         return describe_plan(args, sha, roster, out_dir, problems)
     if problems:

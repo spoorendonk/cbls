@@ -534,7 +534,10 @@ on it, so it says nothing about instances presolve leaves untouched (there the
         --out-dir <scratch> [--dry-run]
 
 defaults to this sample and to `heldout/`, refuses the published roster, and
-takes `--instances` for a subset (the laptop smoke).
+takes `--instances` for a subset (the laptop smoke). `--lock-command 'xk lock --'`
+takes the machine lock per solve, as #331 asks, so the campaign's hours do not
+hold it against other sessions' builds; pair it with `--no-build`, since the
+driver's own build runs outside that prefix.
 
 **How the report reads.** After the shared per-arm scoring, the report adds
 #331's section (`benchmarks/minlplib/presolve_report.py`): each arm's
