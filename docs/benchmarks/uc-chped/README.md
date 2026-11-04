@@ -286,7 +286,8 @@ per-horizon budget map, `--seed N` the seed, `--instance NAME` restricts the
 roster and `--periods N` its horizons (one (file, horizon) per run is the shape a
 tuning study scores, #262; a horizon no selected file has is refused).
 `--threads N` runs the `ParallelSearch` portfolio instead of the single-threaded
-`solve()` the table measures. `--instance`, `--periods`, `--threads` and
+`solve()` the table measures, and the row records it in `search_config` as
+`threads=N` (at 1 the cell stays as published). `--instance`, `--periods`, `--threads` and
 `--time-limit` are refused outright when the resolved `--out` path *is*
 the published table above — a partial roster or a shortened budget cannot become
 the published result, whether the path was defaulted or spelled out. Writing
@@ -299,6 +300,21 @@ the engine's verdict at the row's `feas_tol` while `verified` is an independent
 re-check by `verify_uc_chped()` at its own tolerances — `1e-4` on its
 UC-semantic checks and `1e-6` on the generic `cbls::verify_model()` pass it runs
 first — so the two columns answer different questions.
+
+### Scoring a multi-seed campaign (#257)
+
+`benchmarks/uc-chped/score.py RESULTS/seed*/comparison.csv [--out table.md]`
+reads one scratch `comparison.csv` per seed, written by `cbls_uc_chped --out
+RESULTS/seed<N>/comparison.csv --seed N --commit SHA --verify`, and gives one line
+per (instance, horizon): the budget, the seeds that solved it, and the gap to
+Pedroso's lower bound and one-hour incumbent as median [min, max] over those
+seeds, beside Pedroso's own gap. Instances Pedroso did not publish show their
+objective and no gap. There is no SCIP column, because `reference_solve.py --uc`
+writes no table. The scorer refuses an incomplete roster, a row failing
+verification or never verified, mixed commits, search configurations (thread count
+included) or tolerances, and one horizon at two budgets; the module's docstring
+has the full list. `--roster NAME:T,T ...` scores a smoke's subset and says so on
+its first line.
 
 ### The anytime trace
 

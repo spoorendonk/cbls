@@ -714,6 +714,7 @@ def test_uc_chped_runs_one_horizon_on_the_portfolio(tmp_path: Path) -> None:
     measured = [r for r in rows if r["method"] == "CBLS ViolationLS"]
     assert [(r["instance"], r["periods"]) for r in measured] == [("ucp13", "3")]
     assert measured[0]["verified"] == "true", measured[0]
+    assert "threads=2" in measured[0]["search_config"].split(";"), measured[0]
     incumbents = list(csv.DictReader(trace.read_text().splitlines()))
     assert incumbents, "the portfolio's stream never reached the trace"
     assert float(measured[0]["objective"]) == pytest.approx(

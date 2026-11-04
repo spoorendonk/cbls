@@ -163,6 +163,13 @@ void check_numeric_flags(Args& a) {
         std::exit(2);
     }
     a.search_config = cbls::bench::search_config_string(a.search, kSearchFlagFamilies);
+    // The portfolio's size is part of the configuration the row describes, so a
+    // campaign's scorer can name it and refuse a mix (#363). Written only off the
+    // single-threaded default, so a `--threads 1` row's cell stays as published.
+    if (a.threads != 1) {
+        a.search_config += (a.search_config.empty() ? "" : ";");
+        a.search_config += "threads=" + std::to_string(a.threads);
+    }
     // A NaN from parse_double fails this guard, as does a literal 0 or a
     // negative: solve() with a non-positive budget returns having searched
     // nothing, which would publish a full-looking table of empty results.
