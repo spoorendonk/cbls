@@ -749,7 +749,8 @@ predates compound moves on by default (`79a694a`), #201's structural-batch
 fallback, #226's defaults (among them the objective tie-break on, `9e1cce9`)
 and the #270-#273 search performance changes. No open issue regenerates this
 table. #256's full-library campaign will give a newer cbls/SCIP score, over
-the full-library `bounds.csv`, and writes nothing under `benchmarks/instances/`.
+the full-library `bounds.csv`, and writes nothing under `benchmarks/instances/`;
+#306 scores it and #253 publishes it in the docs.
 
 The tally below, the gap buckets and the
 anytime profile all come from that **one** run; its incumbent trace is committed
@@ -1765,12 +1766,15 @@ smoke roster (#226 Run A), not on this one. #211's changes to the FJ tolerance,
 to the reference algorithm's values, not fitted.
 
 The held-out roster in `heldout/` was drawn before any of these were measured on
-it and none was fitted to it (HELDOUT.md). It is no longer unseen: smokes
-(#244, #228), #256's dev run and the #265 `xk tune` study ran on it (the list
-is in HELDOUT.md). That study confirmed no setting and changed no default, so
-the roster is still un-fitted. No open issue plans a held-out score beside this
-roster's, which is what would show an in-sample advantage as a gap between the
-two; #256 runs the full library instead.
+it and none was fitted to it (HELDOUT.md). It is no longer unseen: #145's
+transfer check, smokes (#244, #228, presolve), #256's dev run and the #265
+`xk tune` study ran on it (the list is in HELDOUT.md). That study confirmed no
+setting and changed no default, so the roster is still un-fitted, until #331
+sets presolve and compound-propagation defaults from 25 of its instances.
+#228's smoke compared the two rosters at `0c0a945`, 60 s, seeds 1-2 (cbls/SCIP GM(gap+1)
+1.81-1.84 held-out, 1.75-1.88 published: no in-sample gap at that scale); no
+open issue plans that comparison at full scale, and #256 runs the full library
+instead.
 
 **The tie-break and the `search_config` cell.** The cell records
 `objective_tie_break` only when it is off (see "Ablation arms"), so a default
@@ -1807,7 +1811,7 @@ a table names its engine commit and the tie-break's state.
   type and convexity filters and the `opvcpower`/`opcvpower` exclusion; what
   still excludes an instance is its non-`modelled` statuses (see "Full-library
   status"). #256's campaign runs both solvers on that modelled set; its score
-  is not published yet.
+  is not published yet (#306, #253).
 
 ## Portfolio A/B: the shared objective bound (#179)
 

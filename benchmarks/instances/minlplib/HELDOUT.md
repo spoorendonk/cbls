@@ -3,20 +3,26 @@
 A second set of fifty MINLPLib instances that **no default was fitted to and no
 table has been published against**. It was drawn so the parameter transfer check
 in #145 had unseen instances to run on. It is still un-fitted but no longer
-unseen. Runs recorded on it, none publishing a table:
+unseen. Runs recorded on it, none publishing a table, include:
 
 - #145's transfer check (below);
 - #244's held-out smoke of the fitted defaults (10 s, seeds 1-2; every default
   kept);
-- #228's laptop smoke rows (posted on #228);
+- #228's laptop smoke beside the published roster (engine `0c0a945`, 60 s,
+  seeds 1-2, `elec25`/`elec50` left out): a
+  cbls/SCIP GM(gap+1) ratio of 1.81-1.84 held-out against 1.75-1.88 published,
+  no overfit at that scale (posted on #228);
 - #256's dev run, compound moves on vs off (60 s, seeds 1-3, posted on #256);
 - the #265 `xk tune` study (`benchmarks/tune/minlplib.study.toml`): it
   searched on 35 of the fifty and re-checked its elites on the other 15,
-  confirmed no setting and changed no default.
+  confirmed no setting and changed no default;
+- presolve smokes (#343, #347, #354).
 
-#331's presolve-322 sample is drawn from it too (below). No open issue plans a
-held-out score beside the published roster's; #256 runs the full library
-instead. The shipped unproductive-batch exit
+**Un-fitted until #331.** #331 sets the presolve and compound-propagation
+defaults from its presolve-322 sample, 25 of these fifty (below), and #352 runs
+those arms; once that lands, those 25 are in-sample for them. No open issue
+plans a held-out score beside the published roster's at full scale; #256 runs
+the full library instead. The shipped unproductive-batch exit
 threshold was set by a grid over the published roster in `../bounds.csv`, and
 the headline result is published against that same roster. Without a held-out
 set, "the engine is good on non-convex MINLP" cannot be told apart from "the
@@ -261,8 +267,8 @@ published roster fixed.
   but its `.nl` is 925 KB, 78% of the held-out bytes. Treat it as an outlier
   in any size-covariate analysis.
 - **Pre-registered handling of unloadable instances.** These instances were
-  admitted on catalogue metadata alone and have never been through the NL
-  reader. An instance the runner reports as `skipped(unsupported)` **stays in
+  admitted on catalogue metadata alone and, when drawn, had never been through
+  the NL reader. An instance the runner reports as `skipped(unsupported)` **stays in
   the roster and is reported that way**. It is not replaced, because replacing
   it after seeing a result is exactly the revisiting the commitment forbids.
   The same applies to an instance no arm solves.
