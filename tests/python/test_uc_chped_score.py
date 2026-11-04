@@ -239,6 +239,7 @@ def test_a_row_twice_is_refused(tmp_path: Path) -> None:
         ({"objective": "garbled"}, "objective is 'garbled'"),
         ({"lb": "garbled"}, "lb is 'garbled'"),
         ({"time_limit_s": ""}, "no budget"),
+        ({"time_limit_s": 0}, "no budget"),
         ({"periods": "many"}, "periods is 'many'"),
     ],
 )
@@ -312,7 +313,16 @@ def test_an_objective_below_pedrosos_lb_is_named_under_the_table(tmp_path: Path)
     result = run_score(write_table(tmp_path / "1.csv", rows), *ROSTER)
     assert result.returncode == 0, result.stderr
     assert "- below Pedroso's LB, to check before reading the gap: 1" in result.stdout
-    assert "  - ucp13 T=1 seed 1: 90 against 100" in result.stdout
+    assert "  - ucp13 T=1 seed 1: 90.00 against 100.00" in result.stdout
+
+
+def test_a_slip_below_a_large_lb_stays_visible(tmp_path: Path) -> None:
+    rows = seed_rows(1)
+    rows[0] = cited("ucp13", 1, 1112371.0, 1112371.0)
+    rows[2].update(objective=1112370.5, lb=1112371.0, ub=1112371.0)
+    result = run_score(write_table(tmp_path / "1.csv", rows), *ROSTER)
+    assert result.returncode == 0, result.stderr
+    assert "  - ucp13 T=1 seed 1: 1112370.50 against 1112371.00" in result.stdout
 
 
 def test_the_table_does_not_depend_on_the_order_of_the_tables(tmp_path: Path) -> None:
@@ -337,6 +347,18 @@ def test_an_undecodable_table_is_refused(tmp_path: Path) -> None:
     table = tmp_path / "1.csv"
     table.write_bytes(b"\xff\xfe\x00garbage")
     assert "refused" in refusal([table])
+
+
+def test_an_out_over_an_input_table_is_refused_and_leaves_it(tmp_path: Path) -> None:
+    tables = two_seeds(tmp_path)
+    before = tables[0].read_text()
+    assert "would overwrite" in refusal(tables, *ROSTER, "--out", str(tables[0]))
+    assert tables[0].read_text() == before
+
+
+def test_an_out_over_the_published_table_is_refused(tmp_path: Path) -> None:
+    published = REPO / "benchmarks" / "instances" / "uc-chped" / "comparison.csv"
+    assert "would overwrite" in refusal(two_seeds(tmp_path), *ROSTER, "--out", str(published))
 
 
 def test_an_unwritable_out_still_prints_the_table(tmp_path: Path) -> None:

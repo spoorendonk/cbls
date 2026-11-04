@@ -42,7 +42,8 @@ REFUSALS (exit 2, naming what is wrong; nothing is written):
   the check is per horizon, across instances and seeds;
 * two tables at one seed, or one table at two;
 * Pedroso's cited numbers differing between tables, or from a measured row's bounds;
-* a table whose columns are not `COLUMNS`: an older published table, or a torn file.
+* a table whose columns are not `COLUMNS`: an older published table, or a torn file;
+* an `--out` that is one of the tables, or the runner's published `comparison.csv`.
 
 `--roster` replaces the published `ROSTER` for a smoke, and every output says so on
 its first line.
@@ -65,7 +66,11 @@ if TYPE_CHECKING:
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from benchmarks.common.provenance import REPO_ROOT  # noqa: E402
 from benchmarks.common.records import atomic_write, csv_number  # noqa: E402
+
+#: The runner's published table; `--out` never replaces it.
+PUBLISHED_COMPARISON = REPO_ROOT / "benchmarks" / "instances" / "uc-chped" / "comparison.csv"
 
 #: `kCsvHeader` in `uc_chped.cpp`; a test pins the two together.
 COLUMNS = [
@@ -196,7 +201,8 @@ def parse_measured(path: Path, row: dict[str, str]) -> Measured:
     if feasible and row["verified"] != "true":
         raise RefusedError(f"{name} is feasible and was never verified: run with --verify")
     budget = number_cell(name, row, "time_limit_s")
-    if not math.isfinite(budget):
+    # 0 is how the runner writes --no-time-limit.
+    if not (math.isfinite(budget) and budget > 0):
         raise RefusedError(f"{name}: no budget in time_limit_s; a campaign row has one")
     return Measured(
         instance=row["instance"],
@@ -387,7 +393,7 @@ def render_markdown(
         if not row.solved
     ]
     below_lb = [
-        f"{row.instance} T={row.periods} seed {row.seed}: {row.objective:.6g} against {row.lb:g}"
+        f"{row.instance} T={row.periods} seed {row.seed}: {row.objective:.2f} against {row.lb:.2f}"
         for row in rows
         if row.solved and row.objective < row.lb
     ]
@@ -435,9 +441,19 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def check_out(out: Path | None, tables: Sequence[Path]) -> None:
+    """Markdown over a results table would lose the measurements it was scored from."""
+    if out is None:
+        return
+    target = out.resolve()
+    if target == PUBLISHED_COMPARISON.resolve() or target in {t.resolve() for t in tables}:
+        raise RefusedError(f"--out {out} would overwrite a results table")
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     try:
+        check_out(args.out, args.tables)
         roster = parse_roster(args.roster) if args.roster else ROSTER
         campaign = load_campaign(args.tables, roster)
     except (RefusedError, OSError, UnicodeDecodeError, csv.Error) as err:
