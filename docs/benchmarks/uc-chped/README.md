@@ -271,7 +271,8 @@ preceded the ViolationLS port; they were removed from `comparison.csv` because
 the file recorded no tolerance, which left them uninterpretable once the
 default moved to `1e-6`. They are kept here as the historical record and remain
 in git history. `comparison.csv` currently carries the 10 cited Pedroso
-reference rows only; regenerating the measured rows is tracked in issue #131.
+reference rows only. #131 closed after a smoke run without regenerating them;
+the full campaign, #257, will.
 
 The table now has a generator — `benchmarks/uc-chped/uc_chped.cpp` writes it,
 stating the feasibility tolerance explicitly and recording it, the seed, the
@@ -283,11 +284,13 @@ found them worse on 16 of the 19 rows that differed here, so `--compound-moves`
 is an ablation arm the runner refuses to write onto the published table.
 
 That choice was measured on the same instances the table publishes, so on
-them it is in-sample (#233); there is no held-out UC-CHPED roster. The
+them it is in-sample (#233). The `xk tune` study (#266) later kept the same
+protocol, tuned on the constructed instances only, and declared Pedroso's ten
+report-only: never tuned or confirmed on. The
 objective tie-break, on by default since `9e1cce9` (#220), needs an affine
 objective and does nothing here, because the valve-point term is not affine.
 The `search_config` cell records it only when off, so a default row reads the
-same before and after `9e1cce9` either way. When #131 regenerates the measured
+same before and after `9e1cce9` either way. When #257 regenerates the measured
 rows, the text quoting them names the engine commit (also on every row as
 `commit_sha`) and says the tie-break is inert on this objective.
 
@@ -447,6 +450,9 @@ reproducible from them.
 **Measurement**: engine commit `4a320c5`, seed 42, `feas-tol 1e-6`, `--verify`
 on, per-horizon map budgets, serial on an otherwise idle machine. ucp13
 verified 5/5; ucp40 verified 3/5 (two horizons found nothing to verify).
+`4a320c5` is a ViolationLS engine, but it predates the later search changes
+(compound moves on by default, #201) and the perf work (#270-#274), so these
+are a record of that commit, not of today's engine; #257 re-measures.
 
 *Idle tail* is the budget minus the time of the last change in the incumbent,
 as a fraction of the budget. Read off the `objective` column rather than
@@ -474,7 +480,7 @@ P_max 500 where the source (and the bounds) have 550
 gaps are struck, as in the archived table below: each compares a run on the
 old instance with a bound for the corrected one.
 The ucp13 gaps are unaffected, because ucp13 is proven identical to the source.
-The budget verdicts do not depend on the bounds, but ucp40's were measured on the pre-#193 instance and are not re-established for the corrected one (#131).
+The budget verdicts do not depend on the bounds, but ucp40's were measured on the pre-#193 instance and are not re-established for the corrected one (#257).
 
 **No budget was changed.** Seven horizons are flat with idle tails of 51–99%;
 at ucp40/3p the incumbent stops moving after 0.35s of a 30s budget. The
@@ -564,7 +570,7 @@ infeasible: ucp40/12p 1,173,270 and ucp40/24p 2,415,513, ucp200/12p 5,938,070
 and ucp200/24p 12,297,047. That settles only that those instances are now
 satisfiable and the flow works end to end. The objectives are 10s runs under
 contention, below the map budgets, and are not results; the horizons
-need measuring at the map budgets (#131).
+need measuring at the map budgets (#257).
 
 **After #194: a smoke test, not a measurement.** With the extended days capped
 at the base profile, the runner was run once over the four extended instances
@@ -581,7 +587,7 @@ the 600s map budget, and are not results.
 ucp13 and ucp40 only, and every extended-horizon row measured before #194 ran
 an instance that no assignment could satisfy, so no measurement of those
 horizons says anything about their 600s budget. Defending it needs traces of
-the regenerated instances at the map budget (#131).
+the regenerated instances at the map budget (#257).
 
 Archived results:
 
@@ -634,9 +640,13 @@ Both systems cycle the 40-unit data, so these runs solved the pre-#193 `P_max` t
 
 ### Discussion
 
-The SA-based solver currently struggles with feasibility on multi-period UC instances. The core challenge is the tight coupling between commitment decisions across time — min uptime/downtime constraints create long-range dependencies that are difficult for local search moves (single-variable flips) to satisfy simultaneously with demand and reserve constraints. The 1-period instances are feasible but show significant gaps — 18% on `ucp13` against its MIP bound, and 40% on `ucp40` against the exact optimum of the instance it then solved (those runs predate #193's `P_max` fix, so the published `ucp40` bound is not their yardstick) — largely due to the valve-point non-convexity making it hard for float perturbation to find good dispatch points.
+This discussion is about the archived runs above. The simulated-annealing
+solver that produced them was replaced by the ViolationLS port (#64); it says
+nothing about the current engine, whose numbers #257 will publish.
 
-Key areas for improvement:
+The SA-based solver struggled with feasibility on multi-period UC instances. The core challenge was the tight coupling between commitment decisions across time — min uptime/downtime constraints create long-range dependencies that were difficult for its local search moves (single-variable flips) to satisfy simultaneously with demand and reserve constraints. The 1-period instances were feasible but showed significant gaps — 18% on `ucp13` against its MIP bound, and 40% on `ucp40` against the exact optimum of the instance it then solved (those runs predate #193's `P_max` fix, so the published `ucp40` bound is not their yardstick) — which was put down to the valve-point non-convexity making it hard for float perturbation to find good dispatch points.
+
+The areas for improvement it named then:
 - **Commitment-aware moves:** Multi-variable moves that flip a unit's commitment across a block of consecutive periods, respecting min up/down constraints by construction
 - **Feasibility-first strategies:** Relaxed initial states or greedy commitment initialization
 - **Dispatch sub-optimization:** Once commitment is fixed, dispatch is a separable non-convex NLP per period that could be solved more aggressively

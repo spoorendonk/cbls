@@ -2,8 +2,10 @@
 
 Filed against issue #73 (epic #25). Decides whether
 `benchmarks/instances/uc-chped/comparison.csv` may legitimately claim
-"gap vs published BKS" or only "CBLS-SA vs CBLS-ViolationLS"
-self-consistency.
+"gap vs published BKS" or only self-consistency. It was written while the
+engine was the SA solver, which the ViolationLS port (#64) has since
+replaced, so the old "CBLS-SA vs CBLS-ViolationLS" alternative no longer
+arises; the verdict below is a gap against Pedroso's bounds.
 
 ## Verdict (TL;DR)
 
@@ -466,13 +468,14 @@ information. It annotates them.
 - **#103** — give the runner a `comparison.csv` writer and an explicit
   feasibility tolerance, so §2.8's failure mode — a published row that
   becomes uninterpretable when an engine default moves — cannot recur.
-  The measurement pass it unblocks is tracked separately as **#131**.
+  The measurement pass it unblocks was **#131**, closed after a smoke
+  run; the full run is **#257**.
 - All other deviations either are already tracked (**#32**, closed as not
   planned; **#33** and **#34**, fixed; **#35** and **#36**, closed as not
   planned) or are cosmetic / vacuous on shipped instances (no issue
   filed).
 - **#148** — instance identity against the authors' published code. Done
-  in §7: `ucp13` confirmed, `ucp40` relabelled.
+  in §7: `ucp13` confirmed, `ucp40` relabelled (a relabel #193 removed).
 - **#193** — set `P_max` of units 19-20 to 550 in the CHPED 40-unit data,
   regenerate the `ucp*` instances, re-run §7's check and drop the relabel.
   Done (§7.5): `ucp40` confirmed, relabel removed, and `ucp40` and `ucp200`

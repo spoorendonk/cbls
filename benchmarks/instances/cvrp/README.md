@@ -92,6 +92,15 @@ neighbour list is granular best improvement, which beat `violation_guided`
 therefore `--neighbours 20` and #204 runs it, with `guided` as the comparison
 arm.
 
+**Tuned since, no change.** The `xk tune` pilot on `dev.csv` (#263, #278;
+`benchmarks/tune/cvrp.study.toml`) searched the neighbour count, the
+structural selection and its sample size, the perturbation period and LNS. It
+confirmed no setting, so the default arm above stays. Its second version
+(`8246efd`) dropped X-n670-k130 and X-n936-k151 from the tuning rows: at the
+defaults neither had a feasible solution at 10 s or 30 s, so their failed cost
+had set the first version's ranking (#277). The fleet rule `R` was not in the
+study and is still #204's to measure.
+
 ## Running and scoring
 
 `benchmarks/cvrp/run_benchmark.py` runs `cbls_cvrp` over a roster x arms x
