@@ -150,8 +150,9 @@ NlProblem parse_nl(const std::string& text, const std::string& name = "");
 /// appended to `skipped_reasons`. On an unsupported instance the returned model
 /// is left un-closed and should not be solved.
 struct NlToModelOptions {
-    /// Derive implied bounds from the purely linear rows before falling back on
-    /// the clamps below (see `bound_propagation.h`). An implied bound cannot cut
+    /// Derive implied bounds from the linear rows (those presolve reads, below:
+    /// AMPL's `n0` rows included) before falling back on the clamps below (see
+    /// `bound_propagation.h`). An implied bound cannot cut
     /// off a feasible point; a clamp can, so it is only ever consulted last.
     bool propagate_bounds = true;
     /// Fixed-point iteration cap for that pass; see `BoundPropagationOptions`.

@@ -2877,8 +2877,9 @@ vendored MINLPLib files and 1020 of the 1553 modelled ones (#343 has the
 census). `tests/test_minlplib.cpp` pins the reductions on inline fixtures (the
 `n0` rows and a constant shift among them) and checks, over every vendored
 file, that no frozen column is removed and the postsolved start gives the
-plain model the same objective. Propagation without presolve still reads only
-rows with no nonlinear part at all, so on a real file it reads none (#344).
+plain model the same objective. Propagation without presolve reads the same
+rows (`presolvable_row`, #344); before #344 it read only rows with no
+nonlinear part at all, so on a real file none.
 
 ### JSONL Model Format
 

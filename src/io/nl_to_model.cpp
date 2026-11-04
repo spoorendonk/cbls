@@ -501,15 +501,6 @@ std::optional<RowBounds> linear_part_bounds(const NlConstraint& c, std::size_t n
     return linear_row_bounds(c.bound);
 }
 
-/// The rows propagation without presolve reads: `linear_part_bounds` of a row
-/// with no nonlinear part at all (activity arithmetic does not apply to one).
-std::optional<RowBounds> linear_only_row(const NlConstraint& c, std::size_t n_cols) {
-    if (!c.nonlinear.empty()) {
-        return std::nullopt;
-    }
-    return linear_part_bounds(c, n_cols);
-}
-
 /// The constant an expression is: 0 when it is empty, the value of a lone
 /// constant root, nullopt for anything else. AMPL writes a `C<i>` segment for
 /// every row, `n0` for a linear one, and the reader keeps it as a Num node.
@@ -524,14 +515,12 @@ std::optional<double> constant_part(const NlExpr& e) {
     return std::nullopt;
 }
 
-/// The rows presolve reads: those `linear_only_row` takes, and also a row whose
-/// nonlinear part is a lone constant `k` (every linear row of an AMPL export,
-/// #342 review 2), read as `lo - k <= linear <= hi - k`. A kept row is rebuilt
-/// from those shifted sides, so the constant is accounted for once.
-///
-/// Propagation without presolve still reads `linear_only_row` alone: taking the
-/// constant rows there too changes the default build of every real .nl file,
-/// so it is its own issue.
+/// The linear rows, which presolve and propagation without presolve both read:
+/// `linear_part_bounds` of a row with no nonlinear part, or one whose nonlinear
+/// part is a lone constant `k` (every linear row of an AMPL export, #342 review
+/// 2, #344), read as `lo - k <= linear <= hi - k`. Activity arithmetic does not
+/// apply to any other row. A row presolve keeps is rebuilt from those shifted
+/// sides, so the constant is accounted for once; propagation only reads them.
 std::optional<RowBounds> presolvable_row(const NlConstraint& c, std::size_t n_cols) {
     const std::optional<double> k = constant_part(c.nonlinear);
     if (!k.has_value()) {
@@ -550,10 +539,10 @@ std::optional<RowBounds> presolvable_row(const NlConstraint& c, std::size_t n_co
     return rb;
 }
 
-/// Derive implied column bounds from the *purely linear* rows. A row with a
-/// nonlinear part is skipped: activity arithmetic does not apply to it, and
-/// omitting a row only costs tightening, never validity. Nonlinear presolve is
-/// deliberately out of scope here.
+/// Derive implied column bounds from the linear rows (`presolvable_row`). A row
+/// with a non-constant nonlinear part is skipped: activity arithmetic does not
+/// apply to it, and omitting a row only costs tightening, never validity.
+/// Nonlinear presolve is deliberately out of scope here.
 ///
 /// Terms are packed into two flat arrays the caller owns for the duration, and
 /// the rows are handed to propagation as views into them rather than as copies.
@@ -569,7 +558,7 @@ BoundPropagationStats tighten_column_bounds(const NlProblem& prob, const NlToMod
     std::vector<std::pair<std::size_t, int32_t>> spans;
     spans.reserve(prob.constraints.size());
     for (const NlConstraint& c : prob.constraints) {
-        const std::optional<RowBounds> rb = linear_only_row(c, lb.size());
+        const std::optional<RowBounds> rb = presolvable_row(c, lb.size());
         if (!rb.has_value()) {
             continue;
         }

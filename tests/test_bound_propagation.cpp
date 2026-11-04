@@ -548,6 +548,54 @@ TEST_CASE("nl adapter ignores rows with a nonlinear part when deriving bounds") 
     CHECK(result.n_clamped_columns == 2);
 }
 
+namespace {
+
+// A nonlinear part that is the lone constant `k`, as the reader keeps the
+// `C<i>` segment AMPL writes for every row (`n0` for a linear one).
+NlExpr constant_expr(double k) {
+    NlExpr e;
+    e.nodes.resize(1);
+    e.nodes[0].kind = NlNodeKind::Num;
+    e.nodes[0].num = k;
+    e.root = 0;
+    return e;
+}
+
+}  // namespace
+
+TEST_CASE("nl adapter derives bounds from a row whose nonlinear part is n0") {
+    // Every linear row of a real .nl file has this shape (#344): before, no row
+    // of an AMPL export reached propagation.
+    NlProblem p = free_columns_problem(/*discrete=*/false);
+    p.constraints[0].nonlinear = constant_expr(0.0);
+
+    NlToModelOptions opts;
+    opts.inf_clamp = 1.0e5;
+    auto result = nl_to_model(p, opts);
+
+    REQUIRE(result.supported);
+    CHECK_THAT(result.model.var(0).ub, WithinAbs(6.0, 1e-6));   // 2*x0 <= 12
+    CHECK_THAT(result.model.var(1).ub, WithinAbs(12.0, 1e-6));  // x1 <= 12
+    CHECK(result.n_clamped_columns == 0);
+    CHECK(result.bound_stats.n_finitized == 2);
+}
+
+TEST_CASE("nl adapter shifts a row's sides by its constant nonlinear part") {
+    // `2*x0 + x1 + 2 <= 12` is `2*x0 + x1 <= 10`: the side moves by -k, so x0
+    // <= 5 (not 6 unshifted, nor 7 shifted the wrong way).
+    NlProblem p = free_columns_problem(/*discrete=*/false);
+    p.constraints[0].nonlinear = constant_expr(2.0);
+
+    NlToModelOptions opts;
+    opts.inf_clamp = 1.0e5;
+    auto result = nl_to_model(p, opts);
+
+    REQUIRE(result.supported);
+    CHECK_THAT(result.model.var(0).ub, WithinAbs(5.0, 1e-6));
+    CHECK_THAT(result.model.var(1).ub, WithinAbs(10.0, 1e-6));
+    CHECK(result.n_clamped_columns == 0);
+}
+
 TEST_CASE("nl adapter skips a row naming a column that does not exist") {
     // `build_linear` drops an out-of-range term silently and io_nl.h promises to
     // skip a malformed file rather than throw, so propagation must not be the
