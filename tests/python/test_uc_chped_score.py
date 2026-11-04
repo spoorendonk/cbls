@@ -131,6 +131,30 @@ def test_published_roster_is_the_runners(tmp_path: Path) -> None:
     assert "NOT THE PUBLISHED ROSTER" not in result.stdout
 
 
+def test_the_real_smoke_scores_into_the_table() -> None:
+    """The runner's own output, two seeds at `--threads 4`, in the full run's layout."""
+    tables = [SMOKE / f"seed{s}" / "comparison.csv" for s in (1, 2)]
+    for table in tables:
+        lines = table.read_text().splitlines()
+        assert next(ln for ln in lines if not ln.startswith("#")) == COLUMNS
+
+    result = run_score(*tables, "--roster", "ucp13:1,3", "ucp100-48p:48")
+
+    assert result.returncode == 0, result.stderr
+    printed = result.stdout.splitlines()
+    assert printed[0].startswith("NOT THE PUBLISHED ROSTER")
+    for line in (
+        "| ucp13 | 1 | 3 | 2/2 | 11701.3 | 0.00 [0.00, 0.00] | 0.00 [0.00, 0.00] | 0.00 |",
+        "| ucp13 | 3 | 3 | 2/2 | 39104.4 | 0.65 [0.51, 0.79] | 0.65 [0.51, 0.79] | 0.00 |",
+        "| ucp100-48p | 48 | 3 | 2/2 | 11905181.3 | - | - | - |",
+        "- engine commit: 9a62529 (commit_sha column)",
+        "- seeds: 1, 2 (seed column)",
+        "- cbls threads: 4 (search_config column)",
+        "- no solution: 0",
+    ):
+        assert line in printed
+
+
 def test_table_gives_the_median_and_spread_of_the_gaps_over_seeds(tmp_path: Path) -> None:
     result = run_score(*two_seeds(tmp_path), *ROSTER)
     assert result.returncode == 0, result.stderr
