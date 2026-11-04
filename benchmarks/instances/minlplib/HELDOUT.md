@@ -536,8 +536,15 @@ on it, so it says nothing about instances presolve leaves untouched (there the
 defaults to this sample and to `heldout/`, refuses the published roster, and
 takes `--instances` for a subset (the laptop smoke). `--lock-command 'xk lock --'`
 takes the machine lock per solve, as #331 asks, so the campaign's hours do not
-hold it against other sessions' builds; pair it with `--no-build`, since the
-driver's own build runs outside that prefix.
+hold it against other sessions' builds. Pair it with `--no-build`, since the
+driver's own build runs outside that prefix: build at this commit first, under
+the lock, and do not rebuild that `--build-dir` until the campaign ends. The
+lock is free between solves and this driver has no binary check, so rows from a
+rebuilt binary would land under the same commit. If the prefix does not start a
+solve, the campaign stops with nothing recorded for it, and a resume goes on.
+The load check still refuses a start on a busy machine rather than queueing on
+the lock; `--allow-busy` passes it. Arms of one block stay adjacent in order, but
+another session's locked job can run between two of them.
 
 **How the report reads.** After the shared per-arm scoring, the report adds
 #331's section (`benchmarks/minlplib/presolve_report.py`): each arm's

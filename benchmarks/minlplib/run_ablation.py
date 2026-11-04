@@ -744,6 +744,26 @@ def runner_command(args: argparse.Namespace, sha: str, run: Run, out_dir: Path) 
     )
 
 
+def locked_command(args: argparse.Namespace, sha: str, run: Run, out_dir: Path) -> list[str]:
+    """The runner call as it is started: under `--lock-command`, if one is given."""
+    return [*shlex.split(args.lock_command), *runner_command(args, sha, run, out_dir)]
+
+
+#: The exit statuses a lock prefix can answer with instead of running its
+#: command (`xk help lock`: 1 machine not ready, 2 usage or config, 126 and 127
+#: cannot start). 124 and 128+N did run it, so those stay ordinary failed runs.
+LOCK_REFUSAL_EXITS = frozenset({1, 2, 126, 127})
+
+
+class LockCommandError(Exception):
+    """The lock prefix appears not to have started the solve: stop, record nothing.
+
+    A recorded failed row enters the resume set, so a lock that is down for a
+    while would burn through the rest of the plan in seconds and leave rows for
+    solves that never happened, which no resume would ever retry.
+    """
+
+
 def solution_dir(out_dir: Path, run: Run) -> Path:
     """Where the runner leaves this run's verified assignment, one directory per run.
 
@@ -1028,9 +1048,23 @@ def execute_runs(
         began = time.monotonic()
         # Per solve, so the campaign's hours do not hold the machine lock against
         # every other session's build; nothing holds it between solves (#331).
-        cmd = [*shlex.split(args.lock_command), *runner_command(args, sha, run, out_dir)]
+        cmd = locked_command(args, sha, run, out_dir)
         solution_dir(out_dir, run).mkdir(parents=True, exist_ok=True)
+        runner_csv = out_dir / "runs" / f"{run.slug}.csv"
+        if args.lock_command:
+            # A row left by an earlier attempt must not read as this solve having run.
+            runner_csv.unlink(missing_ok=True)
         completed = run_process(cmd, log=out_dir / "runs" / f"{run.slug}.log")
+        if (
+            args.lock_command
+            and completed.returncode in LOCK_REFUSAL_EXITS
+            and not runner_csv.exists()
+        ):
+            raise LockCommandError(
+                f"{run.slug}: exit {completed.returncode} with no runner row; the lock prefix "
+                f"{args.lock_command!r} probably did not start the solve. Nothing was recorded "
+                f"for it; fix the cause and resume. See {out_dir / 'runs' / f'{run.slug}.log'}"
+            )
         if completed.returncode != 0:
             # Recorded as a failed run rather than raised. An instance that
             # crashes only under one arm, at hour nine, otherwise makes the
@@ -1269,10 +1303,10 @@ def describe_plan(
     print(f"seeds: {', '.join(str(s) for s in args.seeds)}")
     print("order: instance-major, then seed, then arm (interleaved per instance)")
     if probe:
-        command = " ".join(runner_command(args, sha, probe[0], out_dir))
+        command = " ".join(locked_command(args, sha, probe[0], out_dir))
         print(f"gate probe: {len(probe)} run(s) -- {command}")
     print(
-        f"campaign: {len(main)} run(s) -- {' '.join(runner_command(args, sha, main[0], out_dir))}"
+        f"campaign: {len(main)} run(s) -- {' '.join(locked_command(args, sha, main[0], out_dir))}"
     )
     if heldout:
         print(f"estimated {estimate_hours(len(main), args.time_limit):.1f}h of solving")
@@ -1597,6 +1631,9 @@ def run_locked(args: argparse.Namespace, sha: str, roster: Sequence[str], out_di
             return execute(args, sha, roster, out_dir)
     except LockHeldError as exc:
         print(f"refusing to run: {exc}", file=sys.stderr)
+        return 2
+    except LockCommandError as exc:
+        print(f"campaign stopped: {exc}", file=sys.stderr)
         return 2
 
 

@@ -297,6 +297,42 @@ def test_the_lock_command_prefixes_each_solve_not_the_campaign(
     assert all(Path(cmd[3]).name == "cbls_minlplib" for cmd in calls)
 
 
+@pytest.mark.parametrize("returncode", [1, 2, 126, 127])
+def test_a_lock_that_does_not_start_the_solve_stops_with_nothing_recorded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, returncode: int
+) -> None:
+    """A recorded row would enter the resume set: a lock down for a minute would
+    burn the rest of the plan into rows for solves that never ran."""
+
+    def no_row(cmd: Sequence[str], **kwargs: object) -> FakeCompleted:
+        return FakeCompleted(returncode)
+
+    monkeypatch.setattr(subprocess, "run", no_row)
+    out_dir = tmp_path / "scratch"
+    out_dir.mkdir()
+    plan = campaign_plan(["a"], [1], list(ARMS))
+    # A row left by an earlier attempt must not read as this solve having run.
+    (out_dir / "runs").mkdir()
+    (out_dir / "runs" / f"{plan[0].slug}.csv").write_text("stale\n")
+    args = make_args(tmp_path, lock_command="xk lock --")
+    with pytest.raises(run_ablation.LockCommandError, match="did not start"):
+        execute_runs(args, "abc1234", plan, out_dir, "campaign")
+    assert _recorded(out_dir) == []
+
+
+def test_a_solve_that_dies_under_the_lock_is_still_a_failed_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A signal is the solve's own failure, recorded so the campaign can go on."""
+    monkeypatch.setattr(subprocess, "run", fake_runner(returncode=139, write_row=False))
+    out_dir = tmp_path / "scratch"
+    out_dir.mkdir()
+    plan = campaign_plan(["a"], [1], list(ARMS))
+    args = make_args(tmp_path, lock_command="xk lock --")
+    execute_runs(args, "abc1234", plan, out_dir, "campaign")
+    assert len(_recorded(out_dir)) == len(plan)
+
+
 def test_a_lock_command_that_is_not_on_path_refuses_before_any_solve(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
