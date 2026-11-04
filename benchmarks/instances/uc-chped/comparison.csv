@@ -32,8 +32,9 @@
 #                 --commit "$(.venv/bin/python benchmarks/uc-chped/preflight.py)" --verify
 #
 # The measurement pass itself has not been run: #131 closed after a smoke run
-# that left this file alone, and the full campaign is #257. Until it runs, the rows below are the 10 cited Pedroso
-# reference results only, in the pre-generator 9-column schema. The generator
+# that left this file alone, and the full campaign is #257. Until it runs, the
+# rows below are the 10 cited Pedroso reference results only, in the
+# pre-generator 9-column schema. The generator
 # emits a wider schema -- it appends ub, time_limit_s, seed, feasible, verified,
 # max_violation, feas_tol and commit_sha after `note`, and re-emits these cited
 # rows from each instance's known_bounds map (and refuses to write at all unless

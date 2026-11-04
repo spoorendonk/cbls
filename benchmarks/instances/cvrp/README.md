@@ -100,7 +100,7 @@ evidence the defaults are best at longer budgets: its fidelity stage failed
 (Spearman rho -1.0 between the 10 s and 30 s rankings). Its second version
 (`8246efd`) dropped X-n670-k130 and X-n936-k151 from the tuning rows: at the
 defaults neither had a feasible solution at 10 s or 30 s, so their failed cost
-had set the first version's ranking (#277). #263's cause probe put
+had set the first version's ranking (#277). A cause probe on #204 (from #278) put
 X-n670-k130's failure on the fleet and X-n936-k151's on neither the fleet nor
 the time. The fleet rule `R` was not in the study and is still #204's to
 measure.
