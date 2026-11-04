@@ -749,12 +749,6 @@ def locked_command(args: argparse.Namespace, sha: str, run: Run, out_dir: Path) 
     return [*shlex.split(args.lock_command), *runner_command(args, sha, run, out_dir)]
 
 
-#: The exit statuses a lock prefix can answer with instead of running its
-#: command (`xk help lock`: 1 machine not ready, 2 usage or config, 126 and 127
-#: cannot start). 124 and 128+N did run it, so those stay ordinary failed runs.
-LOCK_REFUSAL_EXITS = frozenset({1, 2, 126, 127})
-
-
 class LockCommandError(Exception):
     """The lock prefix appears not to have started the solve: stop, record nothing.
 
@@ -1055,11 +1049,11 @@ def execute_runs(
             # A row left by an earlier attempt must not read as this solve having run.
             runner_csv.unlink(missing_ok=True)
         completed = run_process(cmd, log=out_dir / "runs" / f"{run.slug}.log")
-        if (
-            args.lock_command
-            and completed.returncode in LOCK_REFUSAL_EXITS
-            and not runner_csv.exists()
-        ):
+        # The runner opens its CSV before any solve, so a solve that dies, by a
+        # signal too, leaves the file and stays a failed run. No file means the
+        # runner never got that far: the prefix refused or was killed while it
+        # queued, or a failure that would repeat on every run (a bad flag).
+        if args.lock_command and completed.returncode != 0 and not runner_csv.exists():
             raise LockCommandError(
                 f"{run.slug}: exit {completed.returncode} with no runner row; the lock prefix "
                 f"{args.lock_command!r} probably did not start the solve. Nothing was recorded "

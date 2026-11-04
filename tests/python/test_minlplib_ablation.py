@@ -297,7 +297,7 @@ def test_the_lock_command_prefixes_each_solve_not_the_campaign(
     assert all(Path(cmd[3]).name == "cbls_minlplib" for cmd in calls)
 
 
-@pytest.mark.parametrize("returncode", [1, 2, 126, 127])
+@pytest.mark.parametrize("returncode", [1, 2, 126, 127, 143, -15])
 def test_a_lock_that_does_not_start_the_solve_stops_with_nothing_recorded(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, returncode: int
 ) -> None:
@@ -320,11 +320,13 @@ def test_a_lock_that_does_not_start_the_solve_stops_with_nothing_recorded(
     assert _recorded(out_dir) == []
 
 
-def test_a_solve_that_dies_under_the_lock_is_still_a_failed_run(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("returncode", [1, 2, 124, 139])
+def test_a_solve_that_fails_under_the_lock_is_still_a_failed_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, returncode: int
 ) -> None:
-    """A signal is the solve's own failure, recorded so the campaign can go on."""
-    monkeypatch.setattr(subprocess, "run", fake_runner(returncode=139, write_row=False))
+    """The runner got as far as its CSV, so this is the solve's own failure,
+    even at a status the lock could also answer with: recorded, and it goes on."""
+    monkeypatch.setattr(subprocess, "run", fake_runner(returncode=returncode, write_row=False))
     out_dir = tmp_path / "scratch"
     out_dir.mkdir()
     plan = campaign_plan(["a"], [1], list(ARMS))
