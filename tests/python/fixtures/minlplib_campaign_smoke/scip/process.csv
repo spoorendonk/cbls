@@ -1,0 +1,2 @@
+instance,objective,primal_bks,dual_bound,gap_to_bks%,gap_to_dual%,wall_seconds,feasible,note,scip_dual_bound,scip_gap%,status,n_int_vars,read_seconds,solving_seconds,scip_version
+process,-1161.3366026828007,-1161.336602,-1161.336619,-5.879437925832255e-08,1.4050361394095241e-06,5.000138995994348,true,matches-bks,-1166.3546112282802,0.43208907166857324,timelimit,0,0.0002637899888213724,5.000098,SCIP 10.0.2 / PySCIPOpt 6.3.0 / 5s / seed 0

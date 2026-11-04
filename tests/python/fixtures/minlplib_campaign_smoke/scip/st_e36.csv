@@ -1,0 +1,2 @@
+instance,objective,primal_bks,dual_bound,gap_to_bks%,gap_to_dual%,wall_seconds,feasible,note,scip_dual_bound,scip_gap%,status,n_int_vars,read_seconds,solving_seconds,scip_version
+st_e36,NaN,-246.0,-246.0,NaN,NaN,5.000231117010117,false,no-solution(timelimit),-304.4998996478219,NaN,timelimit,1,0.00024227899848483503,5.000204,SCIP 10.0.2 / PySCIPOpt 6.3.0 / 5s / seed 0

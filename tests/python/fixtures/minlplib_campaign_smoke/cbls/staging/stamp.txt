@@ -1,0 +1,6 @@
+commit=a06d035
+time-limit=5
+seed=1
+threads=4
+host=simon-Legion-5-Pro-16ACH6H
+roster=d9b351ce1b7c8e56

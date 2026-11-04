@@ -1,0 +1,2 @@
+instance,objective,primal_bks,dual_bound,gap_to_bks%,gap_to_dual%,wall_seconds,feasible,note,commit_sha,max_violation,n_int_vars,lns_repairs,lns_repairs_accepted,first_feasible_objective,time_to_first_feasible,search_config
+nvs21,0,-5.68478,-5.68478,100,100,5.00017,true,feasible,a06d035,0,2,0,0,0,0.000106996,float_hook=on;lns=on;lns_interval=3;compound_moves=on;novelty_prob=0.5;unproductive_iters=300;perturbation_period=100;max_iterations=0;time_limit=on;threads=4

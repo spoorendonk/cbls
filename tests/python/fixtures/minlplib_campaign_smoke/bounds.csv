@@ -1,0 +1,7 @@
+instance,structure,nvars,ncons,objsense,primal_bks,dual_bound,n_disc_vars_bks
+process,bilinear,10,7,min,-1161.336602,-1161.336619,0
+st_e36,mixed-integer,2,2,min,-246.0,-246.0,1
+nvs21,mixed-integer,3,2,min,-5.6847825,-5.6847825,2
+mathopt5_3,transcendental,1,0,min,-1.616424928,-1.616425478,0
+ex8_4_5,bilinear,15,11,min,0.0003074859878,0.0003074846867,0
+elec25,polynomial,75,25,min,243.8127603,90.22758027,0

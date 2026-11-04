@@ -1,14 +1,16 @@
 """Tests for `benchmarks/minlplib/gm_ratio.py` (issue #300).
 
-Every fixture is SYNTHETIC and small: a roster, a cbls table or staging
+Almost every fixture is SYNTHETIC and small: a roster, a cbls table or staging
 directory, and a SCIP shard directory, all under `tmp_path`. The GM(gap+1)
-arithmetic is pinned against hand-computed numbers, not against the module.
+arithmetic is pinned against hand-computed numbers, not against the module. The
+exception is `fixtures/minlplib_campaign_smoke`, the campaign's real output (#362).
 """
 
 from __future__ import annotations
 
 import json
 import math
+import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -458,6 +460,67 @@ def test_main_on_a_complete_campaign_prints_no_banner(
     text = capsys.readouterr().out
     assert text.startswith("## MINLPLib GM(gap+1)")
     assert "PARTIAL" not in text
+
+
+# --------------------------------------------------------------------------
+# The table on real campaign output (#362): unlike every other fixture here,
+# these rows are what `scip_shards.py` and `run_benchmark.py` wrote on a six
+# instance, 5 s smoke at a06d035, cut to the files the scorer reads.
+# --------------------------------------------------------------------------
+
+CAMPAIGN_SMOKE = Path(__file__).parent / "fixtures" / "minlplib_campaign_smoke"
+
+
+def smoke_argv(root: Path) -> list[str]:
+    return [
+        "--bounds",
+        str(root / "bounds.csv"),
+        "--cbls-staging",
+        str(root / "cbls" / "staging"),
+        "--scip-shards",
+        str(root / "scip"),
+        "--budget",
+        "5",
+        "--memory-cap",
+        "none (smoke)",
+    ]
+
+
+def test_table_comes_out_of_real_campaign_output_without_partial(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert main(smoke_argv(CAMPAIGN_SMOKE)) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0] == "## MINLPLib GM(gap+1): cbls / SCIP"
+    for row in (
+        "| roster (bounds.csv) | 6 |",
+        "| counted (roster less claim-excluded) | 5 |",
+        "| cbls feasible | 5 |",
+        "| SCIP feasible | 4 |",
+        "| GM pool (both, finite BKS) | 4 |",
+        "| GM(gap+1) cbls | 3.1715 |",
+        "| GM(gap+1) SCIP | 1.0000 |",
+        "| ratio cbls/SCIP | 3.1715 |",
+        "| cbls wins (only-cbls) | 0 (1) |",
+        "| cbls losses (only-SCIP) | 1 (0) |",
+        "| ties (within 1%) | 3 |",
+        "- engine commit: a06d035 (commit_sha column)",
+        "- cbls threads: 4 (search_config)",
+        "- budget: 5s per instance (from SCIP scip_version, SCIP shard stamp, cbls staging stamp)",
+        "- claim-excluded (out of every count): 1 (elec25)",
+        "  - no-solution(timelimit): 1 (st_e36)",
+    ):
+        assert row in lines
+
+
+def test_real_campaign_output_missing_a_shard_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = tmp_path / "campaign"
+    shutil.copytree(CAMPAIGN_SMOKE, root)
+    (root / "scip" / "nvs21.csv").unlink()
+    assert main(smoke_argv(root)) == EXIT_REFUSED
+    assert "nvs21" in capsys.readouterr().err
 
 
 # --------------------------------------------------------------------------
