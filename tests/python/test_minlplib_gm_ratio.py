@@ -34,6 +34,7 @@ from benchmarks.minlplib.gm_ratio import (
     score,
     short_of_attempts,
 )
+from benchmarks.minlplib.reference_solve import SCIP_CSV_HEADER
 from benchmarks.minlplib.run_benchmark import STAMP_NAME, checked_marker, mark_checked
 from benchmarks.minlplib.runner import CLAIM_EXCLUDED, RUNNER_COLUMNS
 
@@ -497,6 +498,7 @@ def test_table_comes_out_of_real_campaign_output_without_partial(
         "| counted (roster less claim-excluded) | 5 |",
         "| cbls feasible | 5 |",
         "| SCIP feasible | 4 |",
+        "| both feasible | 4 |",
         "| GM pool (both, finite BKS) | 4 |",
         "| GM(gap+1) cbls | 3.1715 |",
         "| GM(gap+1) SCIP | 1.0000 |",
@@ -508,9 +510,20 @@ def test_table_comes_out_of_real_campaign_output_without_partial(
         "- cbls threads: 4 (search_config)",
         "- budget: 5s per instance (from SCIP scip_version, SCIP shard stamp, cbls staging stamp)",
         "- claim-excluded (out of every count): 1 (elec25)",
-        "  - no-solution(timelimit): 1 (st_e36)",
+        "- cbls no solution: 0",
     ):
         assert row in lines
+    # In order, so st_e36 is SCIP's no-solution and not cbls's.
+    scip_failed = lines.index("- SCIP no solution: 1")
+    assert lines[scip_failed + 1] == "  - no-solution(timelimit): 1 (st_e36)"
+
+
+def test_fixture_headers_are_what_the_drivers_write_today() -> None:
+    """The fixture is frozen: a driver's renamed column must fail here, not read as empty."""
+    for shard in (CAMPAIGN_SMOKE / "scip").glob("*.csv"):
+        assert shard.read_text().splitlines()[0].split(",") == SCIP_CSV_HEADER
+    for row in (CAMPAIGN_SMOKE / "cbls" / "staging").glob("*.csv"):
+        assert tuple(row.read_text().splitlines()[0].split(",")) == RUNNER_COLUMNS
 
 
 def test_real_campaign_output_missing_a_shard_is_refused(
@@ -520,7 +533,7 @@ def test_real_campaign_output_missing_a_shard_is_refused(
     shutil.copytree(CAMPAIGN_SMOKE, root)
     (root / "scip" / "nvs21.csv").unlink()
     assert main(smoke_argv(root)) == EXIT_REFUSED
-    assert "nvs21" in capsys.readouterr().err
+    assert "without a SCIP row or failure marker: nvs21" in capsys.readouterr().err
 
 
 # --------------------------------------------------------------------------
