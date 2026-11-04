@@ -443,9 +443,12 @@ reports** above. It exits non-zero when a solution was rejected.
 
 `--cpsat-ls-results-dir DIR` also writes `comparison_three_arm.md` (#321): cbls
 and CP-SAT at its defaults from `--results-dir`, CP-SAT `fj` + `ls` from `DIR`'s
-`cpsat/`. It refuses an incomplete arm, a row with no verdict, arms that are not
-in the modes they are labelled, fj + ls workers other than cbls's thread count,
-and two OR-Tools builds.
+`cpsat/`, whose rows also get their own `comparison_fj_ls.csv` and
+`comparison_fj_ls_report.md` against cbls. It refuses an incomplete arm, a row with
+no usable verdict, `--allow-unverified`, arms that are not in the modes they are
+labelled, fj + ls workers other than cbls's thread count, different seeds, and two
+OR-Tools builds. It exits non-zero when the fj + ls arm has a rejected solution, a
+shape disagreement with cbls, or an objective below a proven optimum.
 
 A roster short of the 233 is stamped a wiring check. A table that leaves out
 the instances settings were tuned on is not one: score the full `roster.csv`
