@@ -441,6 +441,12 @@ uv sync --extra dev --extra benchmarks
 Step 6 writes `comparison_report.md` beside the table; see **What the scorer
 reports** above. It exits non-zero when a solution was rejected.
 
+`--cpsat-ls-results-dir DIR` also writes `comparison_three_arm.md` (#321): cbls
+and CP-SAT at its defaults from `--results-dir`, CP-SAT `fj` + `ls` from `DIR`'s
+`cpsat/`. It refuses an incomplete arm, a row with no verdict, arms that are not
+in the modes they are labelled, fj + ls workers other than cbls's thread count,
+and two OR-Tools builds.
+
 A roster short of the 233 is stamped a wiring check. A table that leaves out
 the instances settings were tuned on is not one: score the full `roster.csv`
 with `--held-out benchmarks/instances/mipfeas/tuned.txt`, and the scorer drops

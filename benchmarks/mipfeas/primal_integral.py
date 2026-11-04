@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import itertools
 import json
 import math
 import statistics
@@ -2508,6 +2509,204 @@ def write_comparison(
     atomic_write(path, "\n".join(header) + "\n" + table)
 
 
+# ---------------------------------------------------------------------------
+# The three-arm table (#321): how much of the gap to CP-SAT at its defaults is its
+# presolve, LP and tree search, and how much its local search. A second CP-SAT
+# directory beside the usual two; the defaults arm stays the headline (#255).
+
+#: The fj + ls rows' engine name in this table. On disk they are `cpsat/` rows of
+#: their own results directory, which is what the driver writes.
+LS_ARM = "cpsat-fj-ls"
+THREE_ARMS = ("cbls", LS_ARM, "cpsat")
+THREE_ARM_LABELS = {"cbls": "cbls", LS_ARM: "CP-SAT fj+ls", "cpsat": "CP-SAT defaults"}
+
+
+def score_ls_arm(
+    roster: list[tuple[str, float, str]],
+    ls_dir: Path,
+    budget: float,
+    require_verification: bool,
+) -> list[Scored]:
+    """The fj + ls directory's `cpsat/` rows, named as their own arm."""
+    rows = [
+        score_instance(
+            name, "cpsat", value, kind, ls_dir, budget, require_verification=require_verification
+        )
+        for name, value, kind in roster
+    ]
+    check_uniform_configuration(rows)
+    return [row._replace(engine=LS_ARM) for row in rows]
+
+
+def _arm_builds(rows: list[Scored], arm: str) -> list[str]:
+    """The builds one arm's rows record; killed rows record none (`versions_line`)."""
+    return sorted(
+        {r.provenance for r in rows if r.engine == arm and r.provenance not in ("unknown", "n/a")}
+    )
+
+
+def three_arm_problems(rows: list[Scored]) -> list[str]:
+    """Why these rows may not become a three-arm table; empty when they may.
+
+    Stricter than the two-arm table, which warns and scores what it has: this one
+    exists to be quoted, and its three columns must be the same instances, the
+    two CP-SAT arms what they are labelled, and at one OR-Tools build, or the
+    difference between them is not the difference it claims to be.
+    """
+    problems = []
+    if _config_value(rows, "cpsat", "workers") != "0":
+        problems.append("--results-dir's cpsat rows are not CP-SAT at its defaults (workers=0)")
+    workers = _config_value(rows, LS_ARM, "workers")
+    if workers in (None, "0"):
+        problems.append("--cpsat-ls-results-dir's rows are not the fj + ls mode (workers >= 1)")
+    threads = _config_value(rows, "cbls", "threads")
+    if workers not in (None, "0") and workers != threads:
+        problems.append(
+            f"cbls ran {threads} threads and the fj + ls arm {workers} workers; #321's "
+            "symmetric rule wants N workers beside N threads"
+        )
+    if len(set(_arm_builds(rows, "cpsat")) | set(_arm_builds(rows, LS_ARM))) > 1:
+        problems.append(
+            f"the CP-SAT arms ran different builds: defaults {_arm_builds(rows, 'cpsat')}, "
+            f"fj + ls {_arm_builds(rows, LS_ARM)}"
+        )
+    for arm in THREE_ARMS:
+        missing = [r.instance for r in rows if r.engine == arm and r.status == "not_run"]
+        if missing:
+            problems.append(f"{arm}: {len(missing)} not run: {_names(missing)}")
+        unchecked = [
+            r.instance
+            for r in rows
+            if r.engine == arm and r.withheld and r.verification != VERIFICATION_FAIL
+        ]
+        if unchecked:
+            problems.append(f"{arm}: {len(unchecked)} with no verdict: {_names(unchecked)}")
+    return problems
+
+
+def render_three_arm(
+    rows: list[Scored],
+    budget: float,
+    roster_path: Path,
+    instances: int,
+    held_out: HeldOut | None,
+) -> str:
+    """The table #321 asks for: per-arm aggregates, then solved-by-only per pair."""
+    builds = "; ".join(
+        f"{THREE_ARM_LABELS[arm]} {', '.join(_arm_builds(rows, arm)) or 'not recorded'}"
+        for arm in ("cbls", "cpsat")
+    )
+    lines = [
+        "# MIPfeas: cbls, CP-SAT fj+ls, CP-SAT defaults",
+        "",
+        f"Roster {_roster_label(roster_path, rows, instances, held_out, quote='`')}, "
+        f"budget {budget:g} s. Builds: {builds}. The CP-SAT at defaults arm is the headline "
+        "(#255); fj+ls shows how much of the gap is its local search (#321).",
+        "",
+    ]
+    if not _is_held_out_table(rows, instances, held_out):
+        lines += ["**WIRING CHECK: not the held-out roster, so not a published result.**", ""]
+    per_arm = []
+    for arm in THREE_ARMS:
+        s = summarize(rows, arm)
+        per_arm.append(
+            [
+                THREE_ARM_LABELS[arm],
+                f"{_config_value(rows, arm, 'workers' if arm != 'cbls' else 'threads')}",
+                f"{s.feasible}/{s.scored}",
+                str(s.matched_reference),
+                str(s.verification_failed),
+                _num(s.shifted_geomean),
+                _num(s.arithmetic_mean),
+                _num(s.median),
+            ]
+        )
+    lines += _md_table(
+        [
+            "Arm",
+            "Threads/workers",
+            "Feasible",
+            "Matched reference",
+            "Rejected",
+            "PI SGM",
+            "PI mean",
+            "PI median",
+        ],
+        per_arm,
+    )
+    lines += [
+        "",
+        "Primal Integral: lower is better, 0 is optimal at once, 2 is never feasible. "
+        "Workers 0 is CP-SAT choosing its own count. A row the independent check rejected "
+        "publishes nothing and is left out of that arm's aggregates.",
+        "",
+        "## Solved by only one arm, per pair",
+        "",
+    ]
+    per_pair = []
+    for first, second in itertools.combinations(THREE_ARMS, 2):
+        parity = compare_feasibility(rows, (first, second))
+        per_pair.append(
+            [
+                f"{THREE_ARM_LABELS[first]} / {THREE_ARM_LABELS[second]}",
+                str(len(parity.considered)),
+                str(len(parity.both_feasible)),
+                str(len(parity.neither_feasible)),
+                str(len(parity.only[first])),
+                str(len(parity.only[second])),
+            ]
+        )
+    lines += _md_table(
+        ["Pair (A / B)", "Compared", "Both", "Neither", "A only", "B only"],
+        per_pair,
+    )
+    return "\n".join(lines) + "\n"
+
+
+def three_arm_rows_or_refuse(
+    args: argparse.Namespace,
+    parser: argparse.ArgumentParser,
+    rows: list[Scored],
+    roster: list[tuple[str, float, str]],
+) -> list[Scored] | None:
+    """The three arms' rows when asked for, before anything is written; None if not."""
+    if not args.cpsat_ls_results_dir:
+        return None
+    three_arm_rows = rows + score_ls_arm(
+        roster,
+        Path(args.cpsat_ls_results_dir),
+        args.budget,
+        require_verification=not args.allow_unverified,
+    )
+    problems = three_arm_problems(three_arm_rows)
+    if problems:
+        parser.error("three-arm table refused: " + "; ".join(problems))
+    return three_arm_rows
+
+
+def write_three_arm(
+    rows: list[Scored] | None,
+    budget: float,
+    roster_path: Path,
+    instances: int,
+    held_out: HeldOut | None,
+    out_path: Path,
+) -> int:
+    """Write the table beside the comparison; the number of rejected fj + ls rows."""
+    if rows is None:
+        return 0
+    path = out_path.with_name(f"{out_path.stem}_three_arm.md")
+    atomic_write(path, render_three_arm(rows, budget, roster_path, instances, held_out))
+    print(f"Three-arm table -> {path}")
+    rejected = summarize(rows, LS_ARM).verification_failed
+    if rejected:
+        print(
+            f"\nDEFECT: {LS_ARM}: {rejected} solution(s) rejected by the independent check.",
+            file=sys.stderr,
+        )
+    return rejected
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--results-dir", required=True, help="dir holding cbls/ and cpsat/")
@@ -2537,6 +2736,13 @@ def main() -> int:
         "are left out of --roster, which must then be the full 233-instance roster; the "
         "table scores the rest and is labelled a held-out roster instead of a wiring check",
     )
+    parser.add_argument(
+        "--cpsat-ls-results-dir",
+        default=None,
+        help="a results dir holding the CP-SAT fj + ls arm (cpsat/) beside --results-dir's "
+        "cbls and CP-SAT at defaults: also writes <out stem>_three_arm.md (#321). Refused "
+        "on an incomplete roster, an unchecked row, or arms that are not what they say",
+    )
     args = parser.parse_args()
 
     roster_path = Path(args.roster)
@@ -2565,6 +2771,8 @@ def main() -> int:
     ]
     summaries = [summarize(rows, engine) for engine in ENGINES]
     check_uniform_configuration(rows)
+
+    three_arm_rows = three_arm_rows_or_refuse(args, parser, rows, roster)
 
     out_path = Path(args.out)
     write_comparison(out_path, rows, summaries, args.budget, roster_path, held_out)
@@ -2667,11 +2875,14 @@ def main() -> int:
             "published MIPfeas score.",
             file=sys.stderr,
         )
+    ls_rejected = write_three_arm(
+        three_arm_rows, args.budget, roster_path, len(roster), held_out, out_path
+    )
     # Non-zero when a solution was rejected, or when the two engines demonstrably
     # read different programs: a correctness benchmark whose checker refused a
     # published point -- or whose admission ground is broken -- must not score at
     # exit 0.
-    return 1 if rejected or defects.shape_flagged else 0
+    return 1 if rejected or ls_rejected or defects.shape_flagged else 0
 
 
 if __name__ == "__main__":
