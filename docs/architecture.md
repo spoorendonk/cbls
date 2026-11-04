@@ -2702,8 +2702,8 @@ expression builder and propagation read.
 
 Deliberately **not** here: coefficient tightening, redundant-row removal,
 aggregation, probing, dual reductions, and anything nonlinear. The `.nl` adapter
-skips rows with a nonlinear part: omitting a row costs tightening, never
-validity. Where propagation proves the linear system empty, the adapters
+skips rows with a non-constant nonlinear part: omitting a row costs tightening,
+never validity. Where propagation proves the linear system empty, the adapters
 **discard** the derived bounds and build the model from the declared ones: an
 infeasible instance should be reported by the search, not by the reader handing
 it an empty box.

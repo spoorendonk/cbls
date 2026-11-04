@@ -970,7 +970,7 @@ bool build_presolved(const NlProblem& prob, const NlToModelOptions& opts, NlToMo
     return true;
 }
 
-/// The model without presolve, as every published table was measured on.
+/// The model without presolve.
 void build_plain(const NlProblem& prob, const NlToModelOptions& opts, NlToModelResult& result) {
     Model& m = result.model;
 

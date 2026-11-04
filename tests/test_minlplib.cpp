@@ -1327,16 +1327,28 @@ TEST_CASE("nl_to_model presolve shifts a row's sides by its constant nonlinear p
     REQUIRE(x == std::vector<double>{1.0, 1.5, 3.0});
 
     NlToModelResult plain = nl_to_model(p);
+    // Propagation without presolve reads the same rows, as the reader leaves
+    // them (#344): x2 fixed by the n0 row, x1 by the shifted one.
+    REQUIRE_THAT(plain.model.var(2).lb, WithinAbs(3.0, 1e-6));
+    REQUIRE_THAT(plain.model.var(2).ub, WithinAbs(3.0, 1e-6));
+    REQUIRE_THAT(plain.model.var(1).lb, WithinAbs(1.5, 1e-6));
     for (std::size_t j = 0; j < x.size(); ++j) {
         plain.model.var_mut(static_cast<int32_t>(j)).value = x[j];
     }
     full_evaluate(plain.model);
     REQUIRE(verify_model(plain.model).ok);
-    // Just below the shifted side, the plain build is violated: the shift is
-    // by -k, not +k.
-    plain.model.var_mut(1).value = 1.4;
-    full_evaluate(plain.model);
-    REQUIRE_FALSE(verify_model(plain.model).ok);
+
+    // Just below the shifted side the row itself is violated: the shift is by
+    // -k, not +k. Unpropagated, so that x1's box cannot be what rejects 1.4.
+    NlToModelOptions unpropagated;
+    unpropagated.propagate_bounds = false;
+    NlToModelResult row_only = nl_to_model(p, unpropagated);
+    REQUIRE(row_only.model.var(1).lb == 0.0);
+    row_only.model.var_mut(0).value = x[0];
+    row_only.model.var_mut(1).value = 1.4;
+    row_only.model.var_mut(2).value = x[2];
+    full_evaluate(row_only.model);
+    REQUIRE_FALSE(verify_model(row_only.model).ok);
 }
 
 TEST_CASE("nl_to_model presolve off builds the model it builds without the option",
