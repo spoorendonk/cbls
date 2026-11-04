@@ -215,9 +215,10 @@ above it and add `NOLINTNEXTLINE(readability-function-cognitive-complexity)`.
 Builds, ctest, clang-tidy and pushes run under the machine lock
 (`xk lock -- CMD`) with at most 4 jobs (group rules). The fences below are
 what pre-push runs; their `$(nproc)` counts the CPUs the push inherits, as the
-host sets them (`wcp build`'s CPU pinning, `taskset`). Nothing needs setting
-per clone; `git config hooks.localCiCpus 0-3` is an optional override that
-pins the hook's local CI itself. By hand, run them as
+host sets them (`wcp build`'s CPU pinning, `taskset`). A clone needs no setup
+where the host pins pushes to at most 4 CPUs; on one that does not, set the
+optional override `git config hooks.localCiCpus 0-3`, which pins the hook's
+local CI itself. By hand, run them as
 `xk lock -- taskset -c 0-3 sh -c '…'`.
 Why they look this way: `docs/development.md`.
 
