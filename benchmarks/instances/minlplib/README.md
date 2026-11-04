@@ -824,44 +824,13 @@ Five rows have a numerically zero BKS (`|BKS| < 1e-12`), for which the runner wr
 
 ### Across seeds, and what moved since the previous table (#123)
 
-**How the campaign ran.** Seeds 1, 2 and 3, all at engine commit `4524460`,
-60s per instance, one solve at a time with one thread, published by
-`run_benchmark.py` with `resumed: 0` in every record. A first attempt at
-`f0ee7b1` published seed 1 and then refused seed 2 on a dirty tree: seed 1's own
-publish had modified the tracked tables, so the documented seed loop could not
-work. `658f32b` and `4524460` fixed that — the dirty-tree guard now ignores only
-the files the driver itself publishes — and that attempt's output was discarded
-and every seed re-run at `4524460`. There, seed 1 ran 10:41-11:31 (local time,
-2026-10-02). No other tenant is known in that window — the other project's
-session described next reports starting around 11:30 — but the window was not
-load-sampled, so that rests on its start-of-run load and that session's own
-account rather than on a measurement. Seed 2's first run, 11:31-12:21, shared the
-machine with that session (unlocked commit-hook test runs at 11:42 and 11:44, a
-CMake configure around 12:00), so it was discarded and re-run with
-`--no-resume`, 13:20-14:11. Seed 3 ran 12:30-13:20; its first two attempts were
-refused by the machine-wide wall-clock lock. The holder was verified with
-`fuser` at the time: the other session's `flock <lock> git push origin main`,
-waiting since 11:44, followed by its pre-push `ctest` — the lock working as
-designed.
-
-**Machine and load.** One host for all three seeds, as `comparison.run.json`
-and every entry of `comparison_seeds.run.json` record it: AMD Ryzen 5 5600H, 12
-logical CPUs (12 usable), 13.0 GiB RAM. The 1-minute load average at the start of
-each seed's run was 0.73 (seed 1), 0.92 (seed 2) and 0.49 (seed 3); seed 3's
-5-minute figure was still 2.64 from the activity that preceded it. None of those
-is the "near zero" step 7 asks for. Only seed 2's falls under step 7's
-back-to-back case: its re-run started the moment seed 3 finished, so its 0.92 is
-seed 3's last solve decaying. Seed 1's 0.73 followed the preflight and the 4-job
-runner build, and seed 3's 0.49 (5-minute 2.64) followed the other session's
-pre-push `ctest`, which held the wall-clock lock until shortly before it started.
-Neither is a tenant during the run, but both are judgements from the timeline,
-not records.
-During seeds 3 and 2 the load was also sampled every 15s: the 1-minute figure was
-above 1.10 for about three minutes of seed 3's window (12:59:50-13:02:50, peak
-1.27; by roster order roughly `st_e01`, `chain50`, `st_e40` and `st_e09`, and
-no claim rests on seed 3 alone there: `chain50`'s other two seeds are already
-worse than the old table) and otherwise at most 1.10, and peaked at 1.36 in seed 2's (around 14:04),
-where about 1.0 is the solve itself. Seed 1's window was not sampled.
+Seeds 1, 2 and 3, all at engine commit `4524460`, 60s per instance, one solve at
+a time with one thread, published by `run_benchmark.py` with `resumed: 0` in
+every record, on one host (AMD Ryzen 5 5600H, 12 logical CPUs, 13.0 GiB, as
+`comparison.run.json` and `comparison_seeds.run.json` record). The start-of-run
+1-minute loads (0.73 / 0.92 / 0.49) were not the "near zero" step 7 asks for;
+the run diary (attempts, tenants, load samples) is on
+[#123](https://github.com/spoorendonk/cbls/issues/123).
 
 **Spread.** Feasible: **48 on every seed** (min 48, median 48, max 48).
 Matching BKS, over the 48 claim-set rows: **26 / 27 / 28** (min / median / max;
@@ -928,83 +897,24 @@ the LNS counters per seed, `lns_repairs` with `lns_repairs_accepted` in brackets
 | `ex6_2_8` | 7.62e-5 | 1.27e-4 | 1.27e-4 | 1.05e-4 – 1.81e-4 | 3/3 | 6 (0) / 6 (0) / 6 (0) |
 | `eg_all_s` | 10.5 | 88.3 | 3.43 | 3.43 – 88.3 | 3/3 | 0 (0) / 0 (0) / 0 (0) |
 
-**What moved since the previous table.** The previous table was one seed at
-`21086c2+107` — the engine at `21086c2` with #107 applied, committed in
-`0648067`. Against it:
+**What moved since the previous table** (one seed at `21086c2+107`, committed
+in `0648067`): feasible 46 → 48 (`nvs01` and `st_e40`); 18 rows better
+than every new seed (those two and three zero-BKS rows among them), 3 worse (`chain50`, `gear4`, `st_e08`, which no
+longer matches BKS), the rest inside the new range. This is the sum of 291
+engine commits' fixes, bound handling and throughput between `0648067` and
+`4524460`, with no per-change ablation, so no row is attributed to a single
+change except `st_e40` and `nvs01` (#102, measured beforehand), and it is not
+evidence that the search got better in the sense #87 asks about. The per-row
+comparison and the list of trajectory-changing issues are on
+[#123](https://github.com/spoorendonk/cbls/issues/123).
 
-One rule sorts the claim-set rows, applied to `gap_to_bks%` with an infeasible
-row counting as worse than any gap: a row is **better** when the old value is
-worse than every one of the three new seeds, **worse** when it is better than
-every one, and otherwise **inside the new range**, which says nothing either way.
-Rows labelled `matches-bks` in the old table and on all three seeds are left out
-as unchanged, whatever their sub-tie-band digits did.
-
-- **Feasible 46 → 48.** `nvs01` and `st_e40` are feasible on every seed. Both had
-  already been measured solving after #102 (`st_e40` at `b7f8a50`, `nvs01` at
-  `1559786` and `eb9e1a5`).
-- **Better:** `process` (10.3% → 0.012-0.016%), `st_e36` (40.2% → 0.87%),
-  `alkylation` (66.1% → at most 0.012%), `nvs14` (53.4% → BKS), `st_e38`
-  (1.05% → BKS), `windfac` (195% → BKS), `spring` (39.7% → at most 2.6e-4%),
-  `nvs02` (35.2% → BKS on two seeds, 1.57% on the third), `eq6_1`
-  (20.4% → 2.5-2.6%), `ex8_6_1` (49.1% → 23.9-38.7%), `nvs22` (355% → 122-311%),
-  `ex8_4_5` (1.20% → 0.05-0.23%), `maxmin` (0.068% → 5.9e-4-9.0e-3%), the two
-  newly feasible rows above, and the zero-BKS rows `mathopt1` and `prob09`
-  (absolute residuals 1 and 0.046 → at most 1e-9) and `least` (23349 → ~14086).
-  Some of these moved far further than the new seeds spread (`process`,
-  `alkylation`, `windfac`); others, such as `ex8_6_1` and `nvs22`, sit beyond the
-  new worst seed by less than the new seeds differ among themselves, so the old
-  single draw is the weaker side of that comparison.
-- **Worse:** `chain50` (14.4% → 19.5-35.7%), `gear4` (1.65e6% → 1.77e6-9.48e6%)
-  and `st_e08` (2.2e-4% → 1.0e-3-2.2e-3%, which no longer matches BKS).
-- **Inside the new range:** `eg_all_s` (10.5% → 3.43 / 3.43 / 88.3%; the
-  published seed is the outlier), `nvs05` (453% → 177-1483%),
-  `kall_ellipsoids_tc02b` (54.3% → 0.08-95%), `nvs08`, `shiporig`, `ex4_1_2`,
-  `ex4_1_9` and `prob06`. `ex8_1_6` and `nvs21` are identical on every seed and
-  to the old row.
-- **Wall time:** `eg_all_s` 61.1s → 60.0s, so the roster total is 3000s rather
-  than 3001s. Two changes in the range would each stop an instance that used to
-  overrun its budget — #113's bounded deadline stride and #191's stop of the
-  inner-solver hook at the deadline — and nothing here separates them.
-
-**Attribution: engine changes, not an algorithmic improvement.** 291 commits
-touched `src/` or `include/` between `0648067` and `4524460`
-(`git log 0648067..4524460 -- src include`). Those that change the search
-trajectory on this runner's single-threaded path:
-[#111](https://github.com/spoorendonk/cbls/issues/111) (the diversification kick
-gained a structural half), [#112](https://github.com/spoorendonk/cbls/issues/112)
-(one guarded randomisation helper),
-[#113](https://github.com/spoorendonk/cbls/issues/113) (the FJ deadline stride is
-bounded in time and iterations), [#114](https://github.com/spoorendonk/cbls/issues/114)
-(an unbounded Int gets FJ jump candidates instead of freezing),
-[#120](https://github.com/spoorendonk/cbls/issues/120) (implied variable bounds by
-propagation, replacing the fixed inf-clamp) — the five this issue named — plus
-#100/#116 (infinite bounds and a non-finite first feasible point), #105 (the
-STRUCTURAL batch is bounded by the wall clock), #108/#109 (one initialisation
-path; no no-op kicks), #117 (escape-probe arming on wall-clock stagnation), #102
-(the unproductive-batch exit), #158 (kick from the incumbent), #186 (breakpoint
-jump candidates through `Ceil`/`Floor`/`Round`/`Element` and differentiable ops),
-#188 (incremental Sums within a tracked drift bound), #190 (closed-form scoring
-of bare affine bodies) and #191 (the inner-solver hook stops at the deadline).
-Separately, throughput work — a sublinear `delta_evaluate`, closed-form scoring
-over linear rows (which agrees with the DAG probe to rounding, not to the bit),
-an incremental violated-row set, lazy GLS decay (#175) and cone-restricted
-reverse-mode AD — changes how many iterations 60s buys, which by itself moves
-every row of a wall-clock-limited table. No per-change ablation was run, so no
-row here is attributed to a single change except `st_e40` and `nvs01`, where
-#102 was measured beforehand. Read the table as the sum of fixes, bound handling
-and throughput between two commits, measured at one budget over three seeds —
-not as evidence that the search got better in the sense #87 asks about.
-
-**LNS repairs** (the counters #123 asked for; the `lns_repairs` and
-`lns_repairs_accepted` columns of `comparison.csv` and `comparison_seeds.csv`,
-per seed in the table above). Over the 150 runs, LNS ran 5716 destroy-repairs
-and its accept rule kept 382 (6.7%). Acceptance is concentrated: 292 of the 382
-are on three zero-BKS instances (`ex14_2_5` 174, `ex14_2_4` 78, `prob09` 40),
-25 instances kept at least one repair on some seed, and four — `ex8_6_1`,
-`nvs05`, `nvs22` and `eg_all_s` — ran no repair on any seed. A kept repair is
-one the lexicographic (violation, objective) key accepted, not one shown to have
-improved the final row: these counts say where LNS is engaged at 60s, not what it
-contributes, which is the ablation campaign's question (#143).
+**LNS repairs** (the `lns_repairs` and `lns_repairs_accepted` columns of
+`comparison.csv` and `comparison_seeds.csv`, per seed in the table above).
+Over the 150 runs LNS ran 5716 destroy-repairs and kept 382 (6.7%), 292 of them
+on three zero-BKS instances (`ex14_2_5` 174, `ex14_2_4` 78, `prob09` 40);
+`ex8_6_1`, `nvs05`, `nvs22` and `eg_all_s` ran none on any seed. A kept repair is
+one the lexicographic (violation, objective) key accepted: these counts say where
+LNS is engaged at 60s, not what it contributes (#143).
 
 <!-- campaign_report:begin two-band -->
 Nothing in this roster beats a published bound. Under the runner's earlier margin rule — which compared a *percentage* against 1e-6, i.e. 1e-8 relative — two rows of this run would have been flagged `better-than-bks`: `ex6_2_6` at 5.8e-5 percent and `prob06` at 6.5e-5 percent. Those are ties, not improvements.
