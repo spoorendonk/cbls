@@ -286,7 +286,8 @@ is an ablation arm the runner refuses to write onto the published table.
 That choice was measured on the same instances the table publishes, so on
 them it is in-sample (#233). The `xk tune` study (#266) later kept the same
 protocol, tuned on the constructed instances only, and declared Pedroso's ten
-report-only: never tuned or confirmed on. The
+report-only: never tuned or confirmed on. That does not make the published
+rows out-of-sample: the protocol they run was still chosen on them. The
 objective tie-break, on by default since `9e1cce9` (#220), needs an affine
 objective and does nothing here, because the valve-point term is not affine.
 The `search_config` cell records it only when off, so a default row reads the
@@ -451,8 +452,8 @@ reproducible from them.
 on, per-horizon map budgets, serial on an otherwise idle machine. ucp13
 verified 5/5; ucp40 verified 3/5 (two horizons found nothing to verify).
 `4a320c5` is a ViolationLS engine, but it predates later changes that act on
-this model, such as the float-hook sweep fix (#207) and the perf work
-(#270-#274), so these are a record of that commit, not of today's engine;
+this model, such as the float-hook sweep fix (#207) and the generic perf work
+(#270, #271), so these are a record of that commit, not of today's engine;
 #257 re-measures.
 
 *Idle tail* is the budget minus the time of the last change in the incumbent,

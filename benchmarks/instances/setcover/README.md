@@ -19,8 +19,8 @@ so the model is one `Set` variable and nothing else.
 |---|---|
 | Can a standard set-based problem be *expressed* with a `Set` variable? | **Yes** — one `Set` over the columns, one `lambda_sum` coverage row per row. No new DAG op was needed. |
 | Does the search produce genuine, verified solutions? | **Yes** — every run on the roster returns a real cover, re-checked against the instance file. |
-| Is the `Set` encoding *competitive*? | **No.** It never beats the plain Bool encoding of the same instance (it ties on three unicost instances), and on the weighted instances it costs 3.4-5.1x the optimum where Bool is within 4-9% (engine `35ec07c`, after #201 stopped scheduling empty FJ batches on it; 8.6-11.0x at `adc8ee4`). Those are 10s wall-clock runs from before the perf work (#270-#274), which changed how many moves a second buys, so today's engine may land elsewhere. See [Result](#result). |
-| Does #165's cost-aware selection fix it? | **Not demonstrably.** At 20 seeds per arm and a 10s budget (engine `8dc906b`, before #201 and #270-#274), `ViolationGuided` beats the default by 2.6% on the weighted instances with a 95% CI of [−5.6%, +0.3%] — it crosses zero, and the estimate shrank as seeds were added. See [Cost-aware structural selection](#cost-aware-structural-selection-165--measured-twice-still-not-established). |
+| Is the `Set` encoding *competitive*? | **No.** It never beats the plain Bool encoding of the same instance (it ties on three unicost instances), and on the weighted instances it costs 3.4-5.1x the optimum where Bool is within 4-9% (engine `35ec07c`, after #201 stopped scheduling empty FJ batches on it; 8.6-11.0x at `adc8ee4`). Those are 10s wall-clock runs from before the perf work (#270-#273; #274 is CVRP-only), which changed how many moves a second buys, so today's engine may land elsewhere. See [Result](#result). |
+| Does #165's cost-aware selection fix it? | **Not demonstrably.** At 20 seeds per arm and a 10s budget (engine `8dc906b`, before #201 and #270-#273), `ViolationGuided` beats the default by 2.6% on the weighted instances with a 95% CI of [−5.6%, +0.3%] — it crosses zero, and the estimate shrank as seeds were added. See [Cost-aware structural selection](#cost-aware-structural-selection-165--measured-twice-still-not-established). |
 
 So the honest scope of the structured-variable claim today is: **`Set`
 variables are validated for expressiveness only, and `List` variables are not
@@ -105,7 +105,7 @@ the two see the same machine state. The `bool` column also predates two
 defaults that act on it: compound moves (on since 2026-10-07) and the FJ
 objective tie-break (on since #226; the Bool objective is affine). A re-run at
 today's defaults may move it; the `set` column runs no FJ batch and takes
-neither. Every column also predates the perf work (#270-#274): the budget is
+neither. Every column also predates the perf work (#270-#273): the budget is
 wall clock, and that work changed how many moves it buys, so all three columns
 are a record of those commits, not of today's engine. Re-derive the per-seed form with the
 runner's `--csv` output. No summary table is committed; the table below is the
@@ -192,7 +192,7 @@ harness.
 feasible and verified. This run is *after* #164's position-based move
 representation, so the per-candidate element-vector copy that confounded the
 first attempt is gone. It is *before* #201 (`35ec07c`), which changed the
-batch mix on this `Set` model, and before the perf work (#270-#274), so it
+batch mix on this `Set` model, and before the perf work (#270-#273), so it
 measures the engine of 2026-09-26, not today's.
 
 Paired per seed, objective difference `violation_guided − first_improving`:

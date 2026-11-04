@@ -31,8 +31,8 @@
 #   cbls_uc_chped --out benchmarks/instances/uc-chped/comparison.csv \
 #                 --commit "$(.venv/bin/python benchmarks/uc-chped/preflight.py)" --verify
 #
-# The measurement pass itself is tracked in #103's follow-up, issue #131, and
-# has not been run. Until it is, the rows below are the 10 cited Pedroso
+# The measurement pass itself has not been run: #131 closed after a smoke run
+# that left this file alone, and the full campaign is #257. Until it runs, the rows below are the 10 cited Pedroso
 # reference results only, in the pre-generator 9-column schema. The generator
 # emits a wider schema -- it appends ub, time_limit_s, seed, feasible, verified,
 # max_violation, feas_tol and commit_sha after `note`, and re-emits these cited
