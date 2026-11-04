@@ -162,8 +162,9 @@ def allowed_cpus() -> set[int]:
     """The CPUs this process may run on: its affinity mask on Linux.
 
     Elsewhere (macOS) there is no affinity API, so it is every CPU the OS
-    reports. Checked by `sys.platform` rather than `hasattr` so mypy, whose
-    typeshed has `sched_getaffinity` only on Linux, passes on both (#355).
+    reports: an assumption, not a measurement (provenance records None for
+    it). `sched_getaffinity` is Linux-only in typeshed; the `sys.platform`
+    check is what mypy narrows on, on either platform (#355).
     """
     if sys.platform == "linux":
         return os.sched_getaffinity(0)

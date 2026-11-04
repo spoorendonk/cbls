@@ -70,6 +70,7 @@ double element_cost(int e) {
 }  // namespace
 
 TEST_CASE("structured trajectory witness: List with pair_lambda_sum", "[trajectory][structured]") {
+    skip_unless_libstdcxx_rng();
     Model m;
     auto lv = m.list_var(7, "route");
     int32_t length = m.pair_lambda_sum(lv, pair_cost);
