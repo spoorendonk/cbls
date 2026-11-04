@@ -170,6 +170,11 @@ skipped, not rewritten (#355):
 
 Skips change no roster count: a skipped test is still listed.
 
+The benchmark runners themselves stay Linux-only, as runs belong on Linux
+machines: a memory cap (`--mem-limit-gb`, `ulimit -v`) fails every job on
+macOS, a CPU pin needs `taskset`, `portfolio_ab.py run` reads `/proc/loadavg`,
+and off Linux `allowed_cpus()` is every CPU, not a measured affinity.
+
 ## LSP
 
 ### C++

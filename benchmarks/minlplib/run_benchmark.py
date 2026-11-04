@@ -460,7 +460,7 @@ def preflight(
 
 
 def available_cpus() -> int:
-    """How many CPUs this process may run on (its affinity mask, not the machine's)."""
+    """How many CPUs this process may run on: its affinity mask on Linux, every CPU elsewhere."""
     return len(allowed_cpus())
 
 

@@ -418,7 +418,6 @@ TEST_CASE("a fixed-length ordered subset can still change its membership", "[lis
 }
 
 TEST_CASE("a permutation List still offers no insert or remove", "[list][partition]") {
-    skip_unless_libstdcxx_rng();
     Model m;
     const int32_t h = m.list_var(5, "perm");
     m.close();
@@ -430,7 +429,9 @@ TEST_CASE("a permutation List still offers no insert or remove", "[list][partiti
         REQUIRE(mv.move_type != "list_exchange");
     }
     // ... and the draws it takes are unchanged: a second generator on a fresh
-    // RNG of the same seed lands on the same state.
+    // RNG of the same seed lands on the same state. Draw counts of
+    // integers(0, n) are libstdc++'s; the move types above hold anywhere.
+    skip_unless_libstdcxx_rng();
     RNG a(1);
     RNG b(1);
     std::vector<Move> out;
