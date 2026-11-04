@@ -27,6 +27,7 @@
 // wall clock entirely, so an iteration budget alone bounds the run and no clock
 // read can reach control flow (see the `has_deadline` note in src/search.cpp).
 
+#include "libstdcxx_rng.h"
 #include "test_helpers.h"
 
 #include <array>
@@ -83,6 +84,7 @@ TEST_CASE("structured trajectory witness: List with pair_lambda_sum", "[trajecto
 }
 
 TEST_CASE("structured trajectory witness: Set with lambda_sum", "[trajectory][structured]") {
+    skip_unless_libstdcxx_rng();
     Model m;
     auto sv = m.set_var(9, 3, 6, "chosen");
     int32_t weight = m.lambda_sum(sv, element_cost);
@@ -108,6 +110,7 @@ TEST_CASE("structured trajectory witness: Set with lambda_sum", "[trajectory][st
 // b8f52f4 with only `SearchConfig::use_compound_moves` flipped; the pure List
 // and Set witnesses run no scalar batch and reproduced unchanged.
 TEST_CASE("structured trajectory witness: List mixed with scalars", "[trajectory][structured]") {
+    skip_unless_libstdcxx_rng();
     Model m;
     auto lv = m.list_var(6, "order");
     auto b = m.bool_var("use");

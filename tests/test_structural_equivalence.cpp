@@ -44,6 +44,7 @@
 // prints. Never re-derive them from the current build -- that turns the guard
 // into a tautology, which is the one failure mode it cannot survive.
 
+#include "libstdcxx_rng.h"
 #include "test_helpers.h"
 
 #include <array>
@@ -274,6 +275,7 @@ uint64_t run_scenario(const Scenario& sc) {
 }  // namespace
 
 TEST_CASE("default structural batch keeps its pre-generator trajectory", "[structural][moves]") {
+    skip_unless_libstdcxx_rng();
     for (const Scenario& sc : kScenarios) {
         INFO("scenario " << sc.name);
         const uint64_t actual = run_scenario(sc);

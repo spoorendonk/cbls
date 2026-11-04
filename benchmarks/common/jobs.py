@@ -23,6 +23,7 @@ import os
 import signal
 import socket
 import subprocess
+import sys
 import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -157,6 +158,18 @@ def parse_cpu_list(text: str) -> list[int]:
 SYS_CPU = Path("/sys/devices/system/cpu")
 
 
+def allowed_cpus() -> set[int]:
+    """The CPUs this process may run on: its affinity mask on Linux.
+
+    Elsewhere (macOS) there is no affinity API, so it is every CPU the OS
+    reports. Checked by `sys.platform` rather than `hasattr` so mypy, whose
+    typeshed has `sched_getaffinity` only on Linux, passes on both (#355).
+    """
+    if sys.platform == "linux":
+        return os.sched_getaffinity(0)
+    return set(range(os.cpu_count() or 1))
+
+
 def cpuset_problems(cpus: Sequence[int], sys_cpu: Path = SYS_CPU) -> list[str]:
     """Why `cpus` is not a set of distinct physical cores this process may use.
 
@@ -166,7 +179,7 @@ def cpuset_problems(cpus: Sequence[int], sys_cpu: Path = SYS_CPU) -> list[str]:
     claim cannot be checked.
     """
     problems: list[str] = []
-    allowed = os.sched_getaffinity(0)
+    allowed = allowed_cpus()
     if outside := sorted(set(cpus) - allowed):
         problems.append(f"CPUs {outside} are not in this process's affinity {sorted(allowed)}")
     for cpu in cpus:

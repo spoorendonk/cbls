@@ -123,7 +123,12 @@ from typing import TYPE_CHECKING
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from benchmarks.common.jobs import LockHeldError, run_process, wallclock_lock  # noqa: E402
+from benchmarks.common.jobs import (  # noqa: E402
+    LockHeldError,
+    allowed_cpus,
+    run_process,
+    wallclock_lock,
+)
 from benchmarks.common.provenance import (  # noqa: E402
     REPO_ROOT,
     build_dir_problems,
@@ -456,7 +461,7 @@ def preflight(
 
 def available_cpus() -> int:
     """How many CPUs this process may run on (its affinity mask, not the machine's)."""
-    return len(os.sched_getaffinity(0))
+    return len(allowed_cpus())
 
 
 def _cpu_problems(args: argparse.Namespace) -> list[str]:

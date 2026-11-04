@@ -141,7 +141,14 @@ constexpr const char* kSolveMasterDoc =
 // object (#159).
 
 struct PySolveCallback : SolveCallback {
+    // nanobind 3 dropped the slot count and deprecates passing it; clang reports
+    // that at this expansion site even with nanobind on -isystem (#355). The
+    // floor (pyproject.toml) is still 2.x, where it is required.
+#if NB_VERSION_MAJOR >= 3
+    NB_TRAMPOLINE(SolveCallback);
+#else
     NB_TRAMPOLINE(SolveCallback, 1);
+#endif
     void on_progress(const SolveProgress& p) override { NB_OVERRIDE_PURE(on_progress, p); }
 };
 

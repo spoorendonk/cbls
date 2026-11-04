@@ -107,9 +107,10 @@ include(Catch)
 # LABEL without the Catch2 [slow] TAG. Re-derive with `ctest -N`, never by incrementing.
 #
 # SKIP_RETURN_CODE 4 maps Catch2's SKIP() onto ctest's "Skipped" rather than a
-# failure. No test uses SKIP() today -- the data-gated ROADEF tests that needed
-# it went with the nuclear-outage benchmark -- but it stays so the next
-# instance-gated test reports honestly instead of a confusing red at push.
+# failure. Its only users are the tests pinned to libstdc++'s <random>
+# distributions, which skip off libstdc++ (tests/libstdcxx_rng.h, #355); on
+# Linux nothing skips. It also lets the next instance-gated test report
+# honestly instead of a confusing red at push.
 catch_discover_tests(cbls_tests
     TEST_SPEC "~[timing]~[slow]"
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}

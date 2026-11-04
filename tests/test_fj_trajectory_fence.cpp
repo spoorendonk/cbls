@@ -76,6 +76,8 @@
 // before #272 scored each Novelty candidate under W' and W in one pass; #272
 // reproduced all three unchanged.
 
+#include "libstdcxx_rng.h"
+
 #include <algorithm>
 #include <catch2/catch_test_macros.hpp>
 #include <cbls/cbls.h>
@@ -224,6 +226,7 @@ uint64_t nonlinear_novelty_trajectory() {
 
 TEST_CASE("FJ's batch-API trajectory matches its recorded fingerprint",
           "[fj][violated_set][trajectory]") {
+    skip_unless_libstdcxx_rng();
     const uint64_t h = batch_api_trajectory();
     CAPTURE(h);
     REQUIRE(h == 0xe63589f3625faca1ULL);
@@ -231,6 +234,7 @@ TEST_CASE("FJ's batch-API trajectory matches its recorded fingerprint",
 
 TEST_CASE("FJ's two-phase run() trajectory matches its recorded fingerprint",
           "[fj][violated_set][trajectory]") {
+    skip_unless_libstdcxx_rng();
     const uint64_t h = two_phase_run_trajectory();
     CAPTURE(h);
     REQUIRE(h == 0xfefd9a2f749d666bULL);
@@ -238,6 +242,7 @@ TEST_CASE("FJ's two-phase run() trajectory matches its recorded fingerprint",
 
 TEST_CASE("FJ's Novelty trajectory over non-linear rows matches its recorded fingerprint",
           "[fj][violated_set][trajectory]") {
+    skip_unless_libstdcxx_rng();
     const uint64_t h = nonlinear_novelty_trajectory();
     CAPTURE(h);
     REQUIRE(h == 0x773677ae558b7b7eULL);

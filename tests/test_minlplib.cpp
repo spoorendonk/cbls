@@ -5,6 +5,7 @@
 // instances are downloaded. Fixture layout mirrors a real minlplib `.nl` (header block,
 // then b / x / r / J / O / C segments).
 
+#include "libstdcxx_rng.h"
 #include "test_helpers.h"
 
 #include <algorithm>
@@ -1113,6 +1114,7 @@ TEST_CASE("MINLPLib ex4_1_8 solves within a loose gap of its published bound",
 // 20/30 with it off, but seed 13 is no longer among them. Seeds 11 and 26 solve
 // at 8 000 with it on (9/30 do), so 15 000 still carries ~1.9x.
 TEST_CASE("MINLPLib st_e40 reaches feasibility on a small iteration budget", "[minlplib][solve]") {
+    skip_unless_libstdcxx_rng();
     // bounds.csv: st_e40,other,4,8,min,30.41421356,30.4142136,0
     const double primal_bks = 30.41421356;
 

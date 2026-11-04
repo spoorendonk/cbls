@@ -153,6 +153,23 @@ contention inflates a solve (by 1.4-1.7x at `-j12`: `UC-CHPED 40-unit 1-period
 feasibility` was 9.95s alone and 17.1s contended). Tag if it exceeds ~10s on
 **either** basis. Don't tag one just to get a green commit — pre-push will still run it.
 
+### Off Linux (macOS)
+
+Linux with libstdc++ is the platform that gates; on it nothing below skips. The
+fences also pass on macOS (libc++, arm64), with tests that cannot hold there
+skipped, not rewritten (#355):
+
+- C++ tests pinned to a seeded trajectory call `skip_unless_libstdcxx_rng()`
+  (`tests/libstdcxx_rng.h`): `<random>`'s distributions are
+  implementation-defined, and libc++ draws differently. A new test that pins a
+  seeded trajectory, fingerprint or seed-built scenario calls it too.
+- Python tests of `ulimit -v`, `taskset`, `/proc` or a seeded trajectory carry
+  `pytest.mark.skipif(sys.platform != "linux", ...)`.
+- `os.sched_getaffinity` is Linux-only in typeshed, so mypy fails off Linux on
+  a bare call: use `benchmarks.common.jobs.allowed_cpus()`.
+
+Skips change no roster count: a skipped test is still listed.
+
 ## LSP
 
 ### C++

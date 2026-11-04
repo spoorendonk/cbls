@@ -102,7 +102,7 @@ expect "cancelled_warning_flags names any -w, -Werror[=x] or -Wno-*" \
 /R/src/werror.cpp
 /R/src/werror_eq.cpp
 /R/src/wno.cpp" \
-	"$(echo "$FP" | cancelled_warning_flags)"
+	"$(echo "$FP" | cancelled_warning_flags | LC_ALL=C sort)" # a set; macOS's locale sorts werror_eq first (#355)
 expect "cancelled_warning_flags exempts the environment's CMAKE_CXX_FLAGS tokens" \
 	"/R/buildtools/t.cpp
 /R/src/werror.cpp" \

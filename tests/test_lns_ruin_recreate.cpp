@@ -6,6 +6,8 @@
 // and the length bounds survive, the operation is a function of the seed, and
 // it finds improvements.
 
+#include "libstdcxx_rng.h"
+
 #include <algorithm>
 #include <catch2/catch_test_macros.hpp>
 #include <cbls/cbls.h>
@@ -184,6 +186,7 @@ TEST_CASE("ruin and recreate keeps the cover when the deadline has passed (#202)
 }
 
 TEST_CASE("LNS on a model with no partition makes the draws it always made (#202)", "[lns]") {
+    skip_unless_libstdcxx_rng();
     // The partition path must not touch a scalar model's random stream. Pinned
     // against the commit before #202 (5fe2d5f): the same rounds there leave
     // this assignment and this next draw.

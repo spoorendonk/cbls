@@ -1,4 +1,5 @@
 #include <cbls/cbls.h>
+#include <cinttypes>
 #include <cstdio>
 
 int main() {
@@ -13,7 +14,7 @@ int main() {
     auto result = cbls::solve(m, 5.0);
     printf("objective = %f\n", result.objective);
     printf("feasible = %s\n", result.feasible ? "true" : "false");
-    printf("iterations = %ld\n", result.iterations);
+    printf("iterations = %" PRId64 "\n", result.iterations);
     printf("time = %.3fs\n", result.time_seconds);
     return 0;
 }

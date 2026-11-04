@@ -51,6 +51,10 @@ def test_with_memory_limit_is_a_no_op_without_a_limit() -> None:
     assert with_memory_limit(["prog"], 0) == ["prog"]
 
 
+@pytest.mark.skipif(
+    sys.platform != "linux",
+    reason="`ulimit -v` (the memory cap) is Linux-only; macOS's sh refuses it (#355)",
+)
 def test_with_memory_limit_actually_caps_the_child() -> None:
     # Asserting on the wrapper's shape would pass even if the quoting were wrong,
     # so run it and ask the child what its own limit is. 2 GB in KiB.
@@ -58,6 +62,10 @@ def test_with_memory_limit_actually_caps_the_child() -> None:
     assert outcome.stdout.strip() == str(2 * 1024 * 1024)
 
 
+@pytest.mark.skipif(
+    sys.platform != "linux",
+    reason="`ulimit -v` (the memory cap) is Linux-only; macOS's sh refuses it (#355)",
+)
 def test_with_memory_limit_preserves_arguments_containing_spaces() -> None:
     outcome = run_process(["/bin/echo", "two words", "--flag=a b"], mem_limit_gb=1.0)
     assert outcome.stdout.rstrip("\n") == "two words --flag=a b"
@@ -119,6 +127,10 @@ def test_cpu_seconds_counts_what_the_child_burned_not_its_wall_time() -> None:
     assert idle.cpu_seconds < busy.cpu_seconds - 0.2
 
 
+@pytest.mark.skipif(
+    sys.platform != "linux",
+    reason="`ulimit -v` (the memory cap) is Linux-only; macOS's sh refuses it (#355)",
+)
 def test_cpu_seconds_includes_the_grandchildren_a_wrapper_reaped() -> None:
     """A solver behind a wrapper (the memory cap's shell) burns its CPU in a
     grandchild; `wait4` folds it in once the wrapper has waited for it."""
@@ -144,10 +156,11 @@ def test_with_cpuset_is_a_no_op_without_a_set() -> None:
     assert with_cpuset(["prog"], []) == ["prog"]
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="taskset (the CPU pin) is Linux-only (#355)")
 def test_cpuset_pins_the_child_to_exactly_that_set() -> None:
     """Asked of the child, as for the memory cap: the wrapper's shape would pass
     even if `taskset` never ran."""
-    cpu = min(os.sched_getaffinity(0))
+    cpu = min(jobs.allowed_cpus())
     probe = "import os; print(sorted(os.sched_getaffinity(0)))"
     outcome = run_process([sys.executable, "-c", probe], cpuset=[cpu], mem_limit_gb=4.0)
     assert outcome.returncode == 0, outcome.stderr
@@ -180,7 +193,7 @@ def _machine(sys_cpu: Path, siblings: dict[int, str]) -> Path:
 def test_cpuset_problems_names_smt_siblings_and_unreadable_topology(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(os, "sched_getaffinity", lambda _pid: {0, 1, 2, 3})
+    monkeypatch.setattr(jobs, "allowed_cpus", lambda: {0, 1, 2, 3})
     sys_cpu = _machine(tmp_path, {0: "0-1", 1: "0-1", 2: "2-3", 3: "2-3"})
     assert cpuset_problems([0, 2], sys_cpu) == []
     assert cpuset_problems([0, 1], sys_cpu) == [
@@ -196,7 +209,7 @@ def test_cpuset_problems_refuses_cpus_outside_this_process_affinity(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """`taskset` would fail on them only once the first job ran."""
-    monkeypatch.setattr(os, "sched_getaffinity", lambda _pid: {0, 1})
+    monkeypatch.setattr(jobs, "allowed_cpus", lambda: {0, 1})
     sys_cpu = _machine(tmp_path, {0: "0", 4: "4"})
     assert cpuset_problems([0, 4], sys_cpu) == [
         "CPUs [4] are not in this process's affinity [0, 1]"

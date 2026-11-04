@@ -7,6 +7,8 @@
 // `cbls::solve()` with that pointer null. So the first thing to pin is that a
 // null pointer leaves the trajectory exactly what it was.
 
+#include "libstdcxx_rng.h"
+
 #include <algorithm>
 #include <atomic>
 #include <catch2/catch_test_macros.hpp>
@@ -143,6 +145,7 @@ TEST_CASE("a solve submits every incumbent as it finds it", "[parallel][coord]")
 // ---------------------------------------------------------------------------
 
 TEST_CASE("a stalled search adopts a peer's solution from the pool", "[parallel][coord]") {
+    skip_unless_libstdcxx_rng();
     // The model is chosen so the gift is genuinely OUT OF REACH of the search
     // itself inside the budget. `sum(x) >= kTarget` over kVars integer columns,
     // minimising sum of squares: reaching the target is easy and FJ does it in
@@ -1738,6 +1741,7 @@ TEST_CASE("with sharing off a worker runs behind the global bound",
 
 TEST_CASE("a shared bound is never loosened by the worker's own worse incumbent",
           "[parallel][coord][shared_bound]") {
+    skip_unless_libstdcxx_rng();
     // record_best derives `obj - eps` from each new OWN best. The peer's
     // objective lands between the two record_best calls of the first feasible
     // batch, and the hook's improvement is still worse than it, so the second
@@ -1885,6 +1889,7 @@ TEST_CASE("a lone worker's own incumbents leave a continuous objective's traject
 
 TEST_CASE("one peer improvement is one shared tightening on a continuous objective",
           "[parallel][coord][shared_bound]") {
+    skip_unless_libstdcxx_rng();
     // A peer far ahead, submitted once. Every own best after it is behind the
     // peer and is bounded at the shared cap, then grows the step (#241), so the
     // cap at the grown step sits under the bound. That is no peer moving the
@@ -2221,6 +2226,7 @@ TEST_CASE("a shared bound reaches a worker before its first feasible point",
 
 TEST_CASE("an own best that ties the shared bound still counts as an improvement",
           "[parallel][coord][shared_bound]") {
+    skip_unless_libstdcxx_rng();
     // Pins a KNOWN ASYMMETRY of the measured treatment arm (#179), not a design
     // goal. With sharing on, an own best EQUAL to the portfolio's best is not
     // "behind" it, so record_best returns true -- weights and stagnation reset --

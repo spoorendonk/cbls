@@ -8,7 +8,10 @@ seeds as nested in instances rather than as independent pairs.
 from __future__ import annotations
 
 import json
+import sys
 from typing import TYPE_CHECKING
+
+import pytest
 
 from benchmarks.minlplib.portfolio_ab import REPO, _sign_test, analyze, main, t975
 
@@ -135,6 +138,7 @@ def test_run_refuses_an_unoptimised_build(tmp_path: Path) -> None:
     assert not out.exists()
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="/proc/loadavg is Linux-only (#355)")
 def test_run_stamps_rows_repairs_a_torn_tail_and_refuses_another_campaign(tmp_path: Path) -> None:
     build = _fake_build(tmp_path, "Release")
     out = tmp_path / "ab.jsonl"

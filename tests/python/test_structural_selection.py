@@ -9,6 +9,7 @@ surface and the validation that keeps an ill-formed neighbour list from reaching
 an unchecked index (#156).
 """
 
+import sys
 from typing import Any
 
 import _cbls_core as cbls
@@ -66,6 +67,10 @@ class TestStructuralSelection:
         result = cbls.solve(m, 0.0, 42, True, None, None, 3, None, cfg)
         assert result.feasible
 
+    @pytest.mark.skipif(
+        sys.platform != "linux",
+        reason="seed-pinned trajectory; libc++'s <random> distributions draw differently (#355)",
+    )
     def test_selection_reaches_the_engine(self) -> None:
         """A non-default policy must change the search, not just the config.
 

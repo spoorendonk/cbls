@@ -13,6 +13,7 @@
 // incremental-vs-full comparison vacuous, which is the failure mode a structural
 // probe falls into by default.
 
+#include "libstdcxx_rng.h"
 #include "test_helpers.h"
 
 #include <algorithm>
@@ -417,6 +418,7 @@ TEST_CASE("a fixed-length ordered subset can still change its membership", "[lis
 }
 
 TEST_CASE("a permutation List still offers no insert or remove", "[list][partition]") {
+    skip_unless_libstdcxx_rng();
     Model m;
     const int32_t h = m.list_var(5, "perm");
     m.close();

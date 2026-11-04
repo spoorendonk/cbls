@@ -289,6 +289,10 @@ def test_run_job_passes_the_budget_timeout_cap_and_own_session(
     assert command[-4:] == list(GUIDED.flags)
 
 
+@pytest.mark.skipif(
+    sys.platform != "linux",
+    reason="`ulimit -v` (the memory cap) is Linux-only; macOS's sh refuses it (#355)",
+)
 def test_run_job_end_to_end_with_a_stand_in_runner(tmp_path: Path) -> None:
     binary = _fake_binary(tmp_path)
     results = tmp_path / "results"
@@ -302,6 +306,10 @@ def test_run_job_end_to_end_with_a_stand_in_runner(tmp_path: Path) -> None:
     assert not rb.needs_run(job, results, force=False, retry_failed=False)
 
 
+@pytest.mark.skipif(
+    sys.platform != "linux",
+    reason="`ulimit -v` (the memory cap) is Linux-only; macOS's sh refuses it (#355)",
+)
 def test_a_job_killed_by_its_timeout_leaves_a_timeout_record_and_no_old_files(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -368,6 +376,10 @@ def test_a_directory_from_another_commit_is_refused(tmp_path: Path) -> None:
     assert rc == 2
 
 
+@pytest.mark.skipif(
+    sys.platform != "linux",
+    reason="`ulimit -v` (the memory cap) is Linux-only; macOS's sh refuses it (#355)",
+)
 def test_the_machine_record_is_written_once(tmp_path: Path) -> None:
     binary = _fake_binary(tmp_path)
     results = tmp_path / "results"
@@ -570,6 +582,10 @@ def test_score_refuses_the_published_table_from_a_modified_tree(tmp_path: Path) 
         _score(results, "out", score.PUBLISHED_TABLE)
 
 
+@pytest.mark.skipif(
+    sys.platform != "linux",
+    reason="`ulimit -v` (the memory cap) is Linux-only; macOS's sh refuses it (#355)",
+)
 def test_a_modified_tree_stamps_the_directory_not_comparable(tmp_path: Path) -> None:
     binary = _fake_binary(tmp_path)
     results = tmp_path / "results"
