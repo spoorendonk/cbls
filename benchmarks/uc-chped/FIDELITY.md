@@ -387,7 +387,7 @@ settled against the authors' own artefacts, not against the paper's prose.
 
 ### 7.1 Sources
 
-The citation in §1 was wrong in its title. The report at
+§1's citation once gave a wrong title. The report at
 <https://web.fc.up.pt/dcc/Pubs/TReports/TR14/dcc-2014-05.pdf> is
 J. P. Pedroso, M. Kubo, A. Viana, *Unit commitment with valve-point loading
 effect*, DCC-2014-05, also arXiv:1404.4944 (<https://arxiv.org/abs/1404.4944>,

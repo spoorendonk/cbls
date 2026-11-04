@@ -422,10 +422,10 @@ hold for it, and their gaps are not gaps against Table 2.
 - **ucp40/12p and 24p never found a feasible point because none existed before
   #193 (#152):** period 12 needs 12628 MW of demand plus reserve against 12622 MW
   of total `P_max`, a shortfall of exactly the residual of 6 both horizons ended
-  at, also after 600 s
+  at, also after 600 s at `e9b28a6`
   ([`traces/ucp40-600s-trace.csv`](../../../benchmarks/instances/uc-chped/traces/ucp40-600s-trace.csv)).
-  ucp200 at 12/24 periods was short too, and the four extended horizons for a
-  different reason, until #194. Every committed instance now has capacity slack
+  ucp200 at 12/24 periods was short too (fixed by #193); the four extended
+  horizons, for a different reason, until #194. Every committed instance now has capacity slack
   in every period, and a test pins it.
 - **The repaired instances have only smoke runs** (10 s, uniform budget, seed
   42, `--verify`, shared machines): after #193, `ucp40` and `ucp200` were
