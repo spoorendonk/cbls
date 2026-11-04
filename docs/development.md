@@ -12,9 +12,10 @@ both gate the same binaries from one place. An explicit `-DCMAKE_BUILD_TYPE=Debu
 still overrides it. The suite is mostly real solver runs, so the type is not
 cosmetic: the full `ctest` is ~490s at the old empty default and ~25s at
 Release (both re-measured 2026-09-26 at 566 tests, `-j12`, on an idle machine;
-the gate runs at `-j$(nproc)` over the CPUs the push inherits, which the
-group rules cap at 4, so expect its wall-clock to be longer than the `-j12`
-figures in this file).
+the gate runs at `-j$(nproc)` over the CPUs the push inherits: at most 4
+where the host pins pushes, or with the `hooks.localCiCpus` override
+(CLAUDE.md's **Build & Test**), so expect its wall-clock to be longer than
+the `-j12` figures in this file).
 
 `CMakeLists.txt` also picks up `ccache` as a compiler launcher when the machine
 has it (`apt install ccache`), which matters because pre-push's ```clean fence is
