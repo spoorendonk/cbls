@@ -1,8 +1,9 @@
 # MINLPLib non-convex benchmark subset
 
 External yardstick for the CBLS continuous machinery (reverse-mode AD on a
-transcendental DAG + Newton jump values). Where MIPLIB-FJ (`../miplib-fj/`)
-exercises the pure-linear search core, this subset targets **non-convex
+transcendental DAG + Newton jump values). Where MIPfeas (`../mipfeas/`; it
+superseded the retired MIPLIB-FJ, #90) exercises the pure-linear search core,
+this subset targets **non-convex
 mixed-integer non-linear** instances — the regime where standalone CBLS
 competitors (Yuck, fzn-oscar-cbls) cannot even *encode* most cases, because
 FlatZinc has no transcendental float constraints. Coverage is the headline
@@ -223,11 +224,15 @@ documents. No published Yuck numbers exist for these instances.
 ## Files
 
 - `download.py` — CSV-driven selection + per-instance `.nl` fetch + validation.
+- `status.py` — one status per catalogue instance over the full library, and
+  the modelled set as a `bounds.csv` (see "Full-library status").
+- `heldout/` — the held-out roster: its `bounds.csv`, `.nl` files, pool
+  snapshot and the presolve-322 sample; see [HELDOUT.md](HELDOUT.md).
 - `bounds.csv` — fetched roster with published primal/dual bounds and the
   catalogue integer-variable count.
 - `comparison.csv` — the `cbls_minlplib` runner's rows, assembled by
   `run_benchmark.py` after SCIP has checked every verified row (see
-  "Verification" below; the runner refuses to write this file itself): CBLS objective,
+  "SCIP baseline" below; the runner refuses to write this file itself): CBLS objective,
   gap-to-BKS, gap-to-dual, feasibility, notes, commit SHA, closest-approach
   residual (`max_violation`), integer-variable count (`n_int_vars`), the LNS
   destroy-repair count of the run (`lns_repairs`), how many of those repairs the
@@ -299,10 +304,24 @@ documents. No published Yuck numbers exist for these instances.
   arms on a 25-instance held-out sample (`heldout/presolve_322_sample.txt`);
   see [HELDOUT.md](HELDOUT.md). It writes only to a scratch `--out-dir` and refuses one
   anywhere inside `benchmarks/instances/`, so it can never touch the files
-  listed above.
+  listed above. `../../minlplib/presolve_report.py` adds #331's GM(gap+1)
+  section to that campaign's report.
+- `../../minlplib/nl_check.cpp` — the `cbls_minlplib_nl_check` target: reads
+  and models each NL file without solving; `status.py` and the presolve
+  census run it.
+- `../../minlplib/independent_check.py` — re-checks a row's `.sol` in SCIP,
+  outside this engine's DAG (#205); see "SCIP baseline".
+- `../../minlplib/scip_shards.py`, `check_staged.py`, `gm_ratio.py` — the
+  full-library campaign's SCIP shards, staged-row check and score (see
+  "Full-library campaign").
+- `../../minlplib/portfolio_ab.cpp`, `portfolio_ab.py` — the
+  `cbls_minlplib_portfolio` shared-bound A/B harness and its scoring (see
+  "Portfolio A/B").
+- `../../minlplib/runner.py` — the `cbls_minlplib` runner's row, exit-status
+  and note contract, as the drivers and reports read it.
 
 Regenerate `scip_baseline.csv` and `comparison_all.csv` with (needs the
-`benchmarks` extra — `pip install -e '.[benchmarks]'`):
+`benchmarks` extra — `uv sync --extra dev --extra benchmarks`):
 
     .venv/bin/python3 benchmarks/minlplib/reference_solve.py --time-limit 60
 
@@ -723,6 +742,12 @@ seed refuses the dirty tree that leaves.
 <!-- campaign_report:begin provenance -->
 Latest run: **60s per instance, seed 1, feasibility tolerance 1e-6**, engine commit `4524460` (recorded per row in `comparison.csv`; the budget, the seed and the machine are read from `comparison.run.json`, which the driver writes at publish time; machine: simon-Legion-5-Pro-16ACH6H (AMD Ryzen 5 5600H with Radeon Graphics), 12 CPUs (12 usable), 13.0 GiB RAM, load 0.73 at start; 1 solve(s) at a time, 1 thread(s) each).
 <!-- campaign_report:end provenance -->
+
+**These are not the current engine's numbers.** `4524460` (2026-10-02)
+predates compound moves on by default (`79a694a`), #201's structural-batch
+fallback, #226's defaults (among them the objective tie-break on, `9e1cce9`)
+and the #270-#274 performance changes. No table has been regenerated since; #256's full-library campaign is
+the open issue that will publish one.
 
 The tally below, the gap buckets and the
 anytime profile all come from that **one** run; its incumbent trace is committed
@@ -1738,9 +1763,12 @@ smoke roster (#226 Run A), not on this one. #211's changes to the FJ tolerance,
 to the reference algorithm's values, not fitted.
 
 The held-out roster in `heldout/` was drawn before any of these were measured on
-it and none was fitted to it (HELDOUT.md). The next regeneration (#228) runs it
-at the same budget and seeds and reports its aggregates beside this roster's, so
-an in-sample advantage shows as a gap between the two.
+it and none was fitted to it (HELDOUT.md). It is no longer unseen: #228's laptop
+smoke ran it, and the #265 `xk tune` study searched over all fifty
+(`benchmarks/tune/minlplib.study.toml`). That study confirmed no setting and
+changed no default, so the roster is still un-fitted. #256 is the open issue that
+reports a held-out score beside this roster's, so an in-sample advantage shows
+as a gap between the two.
 
 **The tie-break and the `search_config` cell.** The cell records
 `objective_tie_break` only when it is off (see "Ablation arms"), so a default
@@ -1760,18 +1788,23 @@ a table names its engine commit and the tie-break's state.
   stable of the two — most of its rows terminate with a proof rather than at the
   limit (the head-to-head table has the counts) — but the rows that hit the limit
   are as draw-dependent as the CBLS numbers.
-- The roster's size budget (`nvars <= 150`, `ncons <= 150`) is set by what the
-  NL reader and the selection filter admit, not chosen to favour either solver.
-  It does mean the baseline runs SCIP on instances well inside its comfortable
+- The roster's size budget (`nvars <= 150`, `ncons <= 150`) is a roster choice,
+  pinned with its membership, not a limit of the NL reader: the full-library
+  selection has no size budget (#283). It was not chosen to favour either
+  solver. It does mean the baseline runs SCIP on instances well inside its comfortable
   range, which is the right way round: the comparison should not flatter the
   engine under test.
 - **The roster is the subset CBLS can express**, and this is the largest
   confounder in the SCIP comparison — it points the *opposite* way to the size
   caveat above, so the two belong together. The selection filter (see "Selection
   method") admits an instance only if every operator column it uses falls inside
-  the CBLS DAG's op set, and the NL reader additionally rejects `V`/`S`/`F`/`d`
-  segments. SCIP has no such restriction and would run the excluded instances.
-  This is therefore a comparison on CBLS's expressible domain, not on MINLPLib.
+  the CBLS DAG's op set, and the NL reader rejects `S` and `F` segments (it
+  inlines `V` and skips `d`, #281; see "Operator support"). The published
+  table is therefore a comparison on CBLS's expressible domain, not on
+  MINLPLib. The full-library status (#283) narrows that domain's exclusions to
+  four operators, the reader's `S`/`F` refusals and a missing primal bound, and
+  #256's campaign runs both solvers on its modelled set; its score is not
+  published yet.
 
 ## Portfolio A/B: the shared objective bound (#179)
 

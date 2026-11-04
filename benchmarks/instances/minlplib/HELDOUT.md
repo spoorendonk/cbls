@@ -1,9 +1,13 @@
 # MINLPLib held-out roster (#144)
 
 A second set of fifty MINLPLib instances that **no default was fitted to and no
-result has been published against** (#145's transfer check below is the only
-result recorded on it, and it publishes no table). It exists so the parameter transfer check
-in #145 has unseen instances to run on. The shipped unproductive-batch exit
+table has been published against**. It was drawn so the parameter transfer check
+in #145 had unseen instances to run on. It is still un-fitted but no longer
+unseen: results recorded on it are #145's transfer check (below), #228's laptop
+smoke rows (posted on #228, no table) and the #265 `xk tune` study, which
+searched over all fifty (`benchmarks/tune/minlplib.study.toml`), confirmed no
+setting and changed no default. #331's presolve-322 sample is drawn from it too
+(below). #256 reads a held-out score with that history in mind. The shipped unproductive-batch exit
 threshold was set by a grid over the published roster in `../bounds.csv`, and
 the headline result is published against that same roster. Without a held-out
 set, "the engine is good on non-convex MINLP" cannot be told apart from "the
@@ -27,7 +31,8 @@ any kind existed on any version of the set:
 No solver had been run on any version of this set when either revision was
 made. At no point did a result
 exist that could have informed either change. When this was written, none of
-the fifty names appeared anywhere else in the repository.
+the fifty names appeared anywhere else in the repository; they now also appear
+in the #265 study's configuration and in #331's sample list.
 
 ## Files
 
