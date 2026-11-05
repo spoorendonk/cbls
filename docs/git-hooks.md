@@ -75,8 +75,9 @@ The three hooks are wcp's (see **wcp's files in this repository**); `gate-lib.sh
   or cancelling them with `-Wno-*`, `-w` or `-Werror` (flags from the
   environment are exempt: the rule polices the project, not the machine). ctest
   runs it as `clang_tidy_gate_probe` (Skipped without the pinned clang-tidy
-  in this tree's or the main checkout's `.venv`), and `gate_lib_shell_test` tests the text filters in `.githooks/gate-lib.sh`
-  that the old pre-push gates used. Never add a `default:` to a `NodeOp`
+  in this tree's or the main checkout's `.venv`), and `gate_lib_shell_test`
+  tests the text filters in `.githooks/gate-lib.sh` that the old pre-push
+  gates used. Never add a `default:` to a `NodeOp`
   switch: it is what would hide the case.
 
   **No `-Werror`**: with it in `compile_commands.json` every clang-diagnostic

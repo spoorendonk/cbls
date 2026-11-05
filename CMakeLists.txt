@@ -338,8 +338,11 @@ if(CBLS_BUILD_TESTS)
         get_filename_component(_cbls_git_common "${_cbls_git_common}" ABSOLUTE
             BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
         get_filename_component(_cbls_git_common_name "${_cbls_git_common}" NAME)
-        if(_cbls_git_common_name STREQUAL ".git")
-            get_filename_component(_cbls_main_checkout "${_cbls_git_common}" DIRECTORY)
+        get_filename_component(_cbls_main_checkout "${_cbls_git_common}" DIRECTORY)
+        # The probe script there proves the repo is this project, not an
+        # enclosing one (a tarball unpacked under a git-managed $HOME).
+        if(_cbls_git_common_name STREQUAL ".git"
+           AND EXISTS "${_cbls_main_checkout}/.githooks/tidy-probe.sh")
             list(APPEND _cbls_tidy_hints "${_cbls_main_checkout}/.venv/bin")
         endif()
     endif()
