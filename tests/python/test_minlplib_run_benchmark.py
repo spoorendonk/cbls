@@ -912,6 +912,58 @@ def test_a_resume_leaves_a_final_no_solution_alone_and_assembles_no_table(
     assert staged_checked(paths.stage, "b"), "the other rows must still be scorable"
 
 
+def test_a_killed_further_attempt_leaves_nothing_the_scorer_refuses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A header-only row beside a final record reads as unchecked, whose advice is a no-op now."""
+    make_inst_dir(tmp_path, ["a"])
+    args = make_args(tmp_path, seed=2, build=False, merge=False)
+    paths = resolve_paths(args, "abc1234")
+    paths.stage.mkdir(parents=True)
+    assert staging_stamp_conflict(paths.stage, args, "abc1234") is None
+    _fail_twice(tmp_path, monkeypatch, "a", paths.stage)
+    (paths.stage / "a.csv").write_text(HEADER + "\n")
+    (paths.stage / "a.trace.csv").write_text(TRACE_HEADER + "\n")
+    assert execute(args, "abc1234", ["a"], paths) == 1
+    assert not (paths.stage / "a.csv").exists()
+    assert not (paths.stage / "a.trace.csv").exists()
+    assert (paths.stage / "a.csv.rejected").exists(), "the no-solution's evidence stays"
+    assert recorded_attempts(paths.stage / "a.failures") == ["exit 1", "exit 1"]
+
+
+def test_the_second_failure_says_the_instance_is_now_final(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    monkeypatch.setattr(subprocess, "run", fake_runner(returncode=RUNNER_EXIT_ERRORED))
+    with pytest.raises(RuntimeError, match="one more failed attempt"):
+        run_roster(make_args(tmp_path), "abc1234", ["a"], stage)
+    with pytest.raises(RuntimeError, match="--retry-final a asks for another"):
+        run_roster(make_args(tmp_path), "abc1234", ["a"], stage)
+
+
+def test_dry_run_reports_the_final_no_solution_and_exits_as_the_run_would(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    make_inst_dir(tmp_path, ["a", "b"])
+    args = make_args(tmp_path, seed=2, build=False, merge=False)
+    paths = resolve_paths(args, "abc1234")
+    paths.stage.mkdir(parents=True)
+    assert staging_stamp_conflict(paths.stage, args, "abc1234") is None
+    _fail_twice(tmp_path, monkeypatch, "a", paths.stage)
+    capsys.readouterr()
+    assert run_benchmark.describe_plan(args, "abc1234", ["a", "b"], paths, []) == 1
+    out = capsys.readouterr().out
+    assert "WOULD ASSEMBLE NO TABLE: final no-solution(s), not solved: a" in out
+    assert "solve (x1, serial)" in out
+    assert "run record" not in out
+
+    # Under another stamp the records would be cleared or the run refused: nothing is final.
+    assert run_benchmark.describe_plan(args, "def5678", ["a", "b"], paths, []) == 0
+    assert "WOULD ASSEMBLE" not in capsys.readouterr().out
+
+
 def test_retry_final_solves_a_final_no_solution_again_by_name(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -936,7 +988,8 @@ def test_retry_final_solves_a_final_no_solution_again_by_name(
         (3, {}, False, True),
         (2, {"instances": ["a"]}, False, True),
         (2, {"retry_final": ["a"]}, False, False),
-        (2, {"resume": False}, False, False),
+        (2, {"resume": False}, False, True),
+        (2, {"resume": False, "instances": ["a"]}, False, True),
         (2, {"resume": False}, True, False),
     ],
     ids=[
@@ -945,7 +998,8 @@ def test_retry_final_solves_a_final_no_solution_again_by_name(
         "three-attempts-are-final",
         "instances-does-not-ask-for-it",
         "retry-final-asks-for-it",
-        "no-resume-starts-over",
+        "no-resume-does-not-ask-for-it",
+        "no-resume-on-one-name-does-not-ask-for-it",
         "a-new-stamp-clears-the-record",
     ],
 )

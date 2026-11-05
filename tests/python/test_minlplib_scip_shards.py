@@ -22,6 +22,7 @@ from benchmarks.minlplib.gm_ratio import load_scip_shards
 from benchmarks.minlplib.reference_solve import load_bounds
 from benchmarks.minlplib.scip_shards import (
     StampMismatchError,
+    attempted_a_solve,
     capped,
     main,
     reference_command,
@@ -90,13 +91,46 @@ def test_clean_exit_publishes_the_row_and_its_merged_csv(tmp_path: Path) -> None
     assert (shards / "a.log").exists()
 
 
-def test_no_row_leaves_a_failure_marker_with_the_exit(tmp_path: Path) -> None:
+def test_a_process_that_never_reached_a_solve_records_no_attempt(tmp_path: Path) -> None:
+    """#323: a missing pyscipopt, run twice, must not make the whole roster final."""
     shards = tmp_path / "shards"
     shards.mkdir()
     rc = solve_shard(shards, "a", stub_command(tmp_path, {"a": "nothing"}), cap_seconds=30)
     assert rc == 1
     assert not (shards / "a.csv").exists()
-    assert recorded_attempts(shards / "a.failed") == ["exit 1"]
+    assert not (shards / "a.failed").exists()
+
+
+def test_a_broken_environment_is_reported_failed_and_recovers_once_fixed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    argv, shards = _final_campaign(tmp_path, monkeypatch, {"a": "ok", "b": "nothing"})
+    (shards / "a.failed").unlink()
+    for _ in range(2):
+        assert main([*argv, "--instances", "b"]) == 1
+    assert "0 solved, 0 skipped (row present), 1 failed: b" in capsys.readouterr().out
+    assert not (shards / "b.failed").exists()
+    fixed = stub_command(tmp_path, {"a": "ok", "b": "ok"})
+    monkeypatch.setattr(scip_shards, "reference_command", lambda *_: fixed)
+    assert main(argv) == 0
+    assert (shards / "b.csv").exists()
+
+
+@pytest.mark.parametrize(
+    ("rc", "wrote_output", "attempted"),
+    [
+        (0, False, False),
+        (1, False, False),
+        (2, False, False),
+        (127, False, False),
+        (1, True, True),
+        (124, False, True),
+        (134, False, True),
+        (137, False, True),
+    ],
+)
+def test_what_counts_as_an_attempt(rc: int, wrote_output: bool, attempted: bool) -> None:
+    assert attempted_a_solve(rc, wrote_output=wrote_output) is attempted
 
 
 def test_a_retry_that_fails_again_appends_a_second_attempt(tmp_path: Path) -> None:
@@ -196,9 +230,9 @@ def test_retry_final_solves_it_again_by_name_and_a_success_drops_the_marker(
 def test_a_retry_final_that_fails_again_appends_its_attempt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    argv, shards = _final_campaign(tmp_path, monkeypatch, {"a": "nothing"})
+    argv, shards = _final_campaign(tmp_path, monkeypatch, {"a": "abort"})
     assert main([*argv, "--retry-final", "a"]) == 1
-    assert recorded_attempts(shards / "a.failed") == ["exit 134", "exit 137", "exit 1"]
+    assert recorded_attempts(shards / "a.failed") == ["exit 134", "exit 137", "exit 134"]
 
 
 def test_a_retry_final_name_outside_the_run_is_refused(
@@ -319,12 +353,12 @@ def test_the_scorer_reads_the_shards_the_driver_writes(tmp_path: Path) -> None:
     names = ["good", "dead"]
     roster = {b.instance: b for b in load_bounds(write_bounds(tmp_path / "bounds.csv", names))}
     shards = tmp_path / "shards"
-    cmd = stub_command(tmp_path, {"good": "ok", "dead": "nothing"})
+    cmd = stub_command(tmp_path, {"good": "ok", "dead": "abort"})
     run_shards(shards, names, cmd, jobs=2, cap_seconds=30)
     side = load_scip_shards(shards, roster)
     assert set(side.rows) == {"good"}
     assert side.rows["good"].feasible
-    assert side.failures == {"dead": "exit 1"}
+    assert side.failures == {"dead": "exit 134"}
     assert side.attempts == {"dead": 1}
 
 

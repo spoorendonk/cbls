@@ -1258,12 +1258,10 @@ def final_no_solutions(
 
     Each has no row to resume from, a `.rejected` row and two recorded failed
     attempts (what `gm_ratio.py` scores as no-solution), and is not named by
-    `--retry-final`. `--no-resume` starts every instance over, by request and
-    for all of them alike, so it settles nothing. Read after
-    `staging_stamp_conflict`: the attempts a new stamp clears do not count.
+    `--retry-final`. `--no-resume` is no way round it: with `--instances` it would
+    give one instance a third attempt under the stamp its record was made under.
+    Read after `staging_stamp_conflict`: the attempts a new stamp clears do not count.
     """
-    if not args.resume:
-        return []
     return [
         name
         for name in roster
@@ -1272,6 +1270,23 @@ def final_no_solutions(
         and (stage / f"{name}.csv{REJECTED_SUFFIX}").exists()
         and attempts_exhausted(stage / f"{name}{FAILURES_SUFFIX}")
     ]
+
+
+def planned_final_no_solutions(
+    args: argparse.Namespace, sha: str, roster: Sequence[str], stage: Path
+) -> list[str]:
+    """`final_no_solutions` as `--dry-run` sees it: another stamp clears or refuses the records."""
+    stamp = stage / STAMP_NAME
+    if not stamp.is_file() or stamp.read_text() != staging_stamp(args, sha):
+        return []
+    return final_no_solutions(args, sha, roster, stage)
+
+
+def discard_staged(stage: Path, name: str) -> None:
+    """Delete `name`'s staged row, trace and `.checked` marker; the `.rejected` ones stay."""
+    checked_marker(stage, name).unlink(missing_ok=True)
+    for suffix in (".csv", ".trace.csv"):
+        (stage / f"{name}{suffix}").unlink(missing_ok=True)
 
 
 def run_roster(args: argparse.Namespace, sha: str, roster: Sequence[str], stage: Path) -> int:
@@ -1292,25 +1307,29 @@ def run_roster(args: argparse.Namespace, sha: str, roster: Sequence[str], stage:
         # row whose solve was killed (header-only or torn) say anything about
         # this attempt: if the runner dies before it opens its CSV, a row left
         # here would be set aside and counted as this attempt's (#312).
-        checked_marker(stage, name).unlink(missing_ok=True)
-        for suffix in (".csv", ".trace.csv"):
-            (stage / f"{name}{suffix}").unlink(missing_ok=True)
+        discard_staged(stage, name)
         log = stage / f"{name}.log"
         completed = run_process(cmd, log=log)
         if completed.returncode != 0 or not staged_complete(args, sha, name, stage):
             # Exit 0 without a publishable row is a failed solve too, as it is
             # on the SCIP side: left in place it could never be scored.
             quarantine_staged(stage, name, completed.returncode)
-            what_next = (
-                f"The runner threw on this instance; its row, set aside as {name}.csv"
-                f"{REJECTED_SUFFIX}, carries read-error/build-error/solve-error: no search "
-                "ran, so publishing the table would put a row in it that measures nothing. A "
-                "re-run solves it again rather than resuming past it: one more failed "
-                "attempt, resuming at this commit, makes it a final cbls no-solution (#312), "
-                "or fix the instance."
-                if completed.returncode == RUNNER_EXIT_ERRORED
-                else "Re-running resumes from here."
-            )
+            if attempts_exhausted(stage / f"{name}{FAILURES_SUFFIX}"):
+                what_next = (
+                    f"Its failed attempts make it a final cbls no-solution (#312): a re-run "
+                    f"leaves it alone, unless --retry-final {name} asks for another attempt."
+                )
+            elif completed.returncode == RUNNER_EXIT_ERRORED:
+                what_next = (
+                    f"The runner threw on this instance; its row, set aside as {name}.csv"
+                    f"{REJECTED_SUFFIX}, carries read-error/build-error/solve-error: no search "
+                    "ran, so publishing the table would put a row in it that measures nothing. A "
+                    "re-run solves it again rather than resuming past it: one more failed "
+                    "attempt, resuming at this commit, makes it a final cbls no-solution (#312), "
+                    "or fix the instance."
+                )
+            else:
+                what_next = "Re-running resumes from here."
             raise RuntimeError(
                 f"{name} failed (exit {completed.returncode}); see {log}. {what_next}"
             )
@@ -1320,7 +1339,8 @@ def run_roster(args: argparse.Namespace, sha: str, roster: Sequence[str], stage:
 
 
 #: The suffix a staged file gets when its solve exited nonzero; `staged_complete`
-#: then finds no row, so a re-run solves the instance again.
+#: then finds no row, so a re-run solves the instance again, unless its attempts
+#: have made it final (`final_no_solutions`).
 REJECTED_SUFFIX = ".rejected"
 
 #: The record of `name`'s failed attempts, one `exit <rc> <utc>` line each, which
@@ -1478,6 +1498,9 @@ def execute(args: argparse.Namespace, sha: str, roster: Sequence[str], paths: Pa
             return 2
         final = final_no_solutions(args, sha, roster, paths.stage)
         for name in final:
+            # What a killed further attempt left (no whole row, or `final_no_solutions`
+            # would not hold) measures nothing, and the scorer would refuse it as unchecked.
+            discard_staged(paths.stage, name)
             print(
                 f"{name}: final cbls no-solution (two failed attempts), not solved again; "
                 f"--retry-final {name} asks for another attempt"
@@ -1488,8 +1511,8 @@ def execute(args: argparse.Namespace, sha: str, roster: Sequence[str], paths: Pa
         if final:
             print(
                 f"{len(final)} final no-solution(s) have no row, so no table was assembled: "
-                f"{', '.join(final)}. The staged rows are checked: score them with "
-                "gm_ratio.py --cbls-staging.",
+                f"{', '.join(final)}. Score the staging directory with gm_ratio.py "
+                "--cbls-staging.",
                 file=sys.stderr,
             )
             return 1
@@ -1514,19 +1537,29 @@ def describe_plan(
         print(f"WOULD REFUSE: {problem}")
     if args.build:
         print(f"build: {' '.join(build_command(args))}")
-    if roster:
+    final = planned_final_no_solutions(args, sha, roster, paths.stage)
+    solving = [name for name in roster if name not in final]
+    if solving:
         print(
-            f"solve (x{len(roster)}, serial): "
-            f"{' '.join(runner_command(args, sha, roster[0], paths.stage))}"
+            f"solve (x{len(solving)}, serial): "
+            f"{' '.join(runner_command(args, sha, solving[0], paths.stage))}"
         )
-    if args.merge:
-        print(f"merge: {' '.join(merge_command(args.inst_dir))}")
-    print(f"run record: {run_record_path(paths.out)}")
-    if paths.seeds_out is not None:
-        print(f"publish: seed {args.seed}'s rows into {paths.seeds_out}")
-    print(f"estimated {len(roster) * args.time_limit / 60.0:.0f} min of solving on a quiet machine")
-    # Non-zero on a refusal, so --dry-run is usable as a scriptable precheck.
-    return 2 if problems else 0
+    if final:
+        print(f"WOULD ASSEMBLE NO TABLE: final no-solution(s), not solved: {', '.join(final)}")
+    else:
+        if args.merge:
+            print(f"merge: {' '.join(merge_command(args.inst_dir))}")
+        print(f"run record: {run_record_path(paths.out)}")
+        if paths.seeds_out is not None:
+            print(f"publish: seed {args.seed}'s rows into {paths.seeds_out}")
+    print(
+        f"estimated {len(solving) * args.time_limit / 60.0:.0f} min of solving on a quiet machine"
+    )
+    # Non-zero on a refusal or a run that would publish nothing, the exits the
+    # run itself gives, so --dry-run is usable as a scriptable precheck.
+    if problems:
+        return 2
+    return 1 if final else 0
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -1594,7 +1627,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--no-resume",
         dest="resume",
         action="store_false",
-        help="re-solve every instance even if a staged result exists",
+        help="re-solve every instance even if a staged result exists, final no-solutions "
+        "excepted (--retry-final, or a new stamp)",
     )
     parser.add_argument(
         "--retry-final",

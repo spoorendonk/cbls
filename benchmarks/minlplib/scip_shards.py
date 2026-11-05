@@ -13,8 +13,12 @@ shard per instance in `SHARD_DIR`. That shard layout is what
 * `<instance>.merged.csv`: the subset run's merged CSV (`--merged-out`);
   the scorer ignores it.
 * `<instance>.failed`: one line per failed attempt, `exit <rc> <utc>`, when the
-  process ran past the wrapper cap (`timeout` exit 124, or 137 after `-k`) or
-  wrote no row. A retry appends: the scorer counts the lines (#312).
+  process ran past the wrapper cap (`timeout` exit 124, or 137 after `-k`), died
+  by a signal or left a torn row. A retry appends: the scorer counts the lines
+  (#312). A process that exits by itself with nothing written solved nothing
+  (`reference_solve.py` turns a solve's errors into rows, so this is a missing
+  `pyscipopt`, a refusal, a broken environment) and records no attempt (#323):
+  counted, a broken environment would make a whole roster final.
 * `<instance>.log`: the process's stdout and stderr.
 
 SCIP runs at its defaults (`--seed 0`: no `randomseedshift`) for `--time-limit`
@@ -180,6 +184,16 @@ def has_whole_row_at(path: Path) -> bool:
     return path.exists() and has_whole_row(path)
 
 
+def attempted_a_solve(rc: int, *, wrote_output: bool) -> bool:
+    """Whether a run without a publishable row counts as a failed attempt on its instance.
+
+    It does if it wrote anything, hit the cap, or died by a signal (128+N). Any
+    other exit with nothing written never reached a solve, as on the cbls side,
+    where a runner that stages no row records nothing (#312, #323).
+    """
+    return wrote_output or rc in CAP_EXITS or rc > 128
+
+
 def solve_shard(
     shards: Path,
     name: str,
@@ -190,9 +204,9 @@ def solve_shard(
 
     Returns the process's exit code, as a shell reports it. The row is published
     (renamed from `.csv.tmp`) when the process wrote one whole row and was not
-    stopped by the cap; otherwise `.failed` gains a line recording the exit. "Whole row" is
-    `gm_ratio.has_whole_row`, the scorer's own test, so a torn file is neither
-    published nor skipped on resume.
+    stopped by the cap; otherwise `.failed` gains a line recording the exit, if
+    `attempted_a_solve`. "Whole row" is `gm_ratio.has_whole_row`, the scorer's own
+    test, so a torn file is neither published nor skipped on resume.
     """
     csv_path = shards / f"{name}.csv"
     if has_whole_row_at(csv_path):
@@ -216,7 +230,7 @@ def solve_shard(
     if tmp.exists() and has_whole_row(tmp) and rc not in CAP_EXITS:
         tmp.replace(csv_path)
         failed.unlink(missing_ok=True)
-    else:
+    elif attempted_a_solve(rc, wrote_output=tmp.exists()):
         append_attempt(failed, rc)
     return rc
 
@@ -335,7 +349,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         jobs=args.jobs,
         cap_seconds=args.cap,
     )
-    failed = sorted(n for n in solving if (args.shards / f"{n}{SCIP_FAILED_SUFFIX}").exists())
+    # By the row, not the marker: a run that never reached a solve leaves no marker.
+    failed = sorted(n for n in solving if not has_whole_row_at(args.shards / f"{n}.csv"))
     solved = sum(1 for rc in exits.values() if rc is not None) - len(failed)
     skipped = sum(1 for rc in exits.values() if rc is None)
     print(

@@ -170,7 +170,8 @@ Both halves read that `bounds.csv`; neither writes under `benchmarks/instances/`
   failed ones. The #256 rule: one
   retry with the memory cap raised, then SCIP no-solution, named with its exit.
   A marker with two attempts is left alone on a re-run unless `--retry-final
-  NAME` asks for it (#323). `stamp.txt` records budget and seed and refuses a
+  NAME` asks for it, and the run exits 1 (#323). A process that exits by itself
+  with nothing written never reached a solve and records no attempt. `stamp.txt` records budget and seed and refuses a
   run under others; `--restart` deletes the `.failed` markers first.
 - cbls: `../../minlplib/run_benchmark.py`, one instance per call, at the
   campaign's thread count. A nonzero runner exit sets the row aside as
@@ -178,9 +179,10 @@ Both halves read that `bounds.csv`; neither writes under `benchmarks/instances/`
   `<instance>.failures`; the next call solves it again (one retry, then cbls
   no-solution). Exit 0 without a publishable row counts the same; an exit before
   a row is staged records nothing; a success clears the record, and a stamp
-  change clears every record. With two attempts recorded, a resume leaves the
+  change clears every record. With two attempts recorded, a re-run leaves the
   instance alone, says it is final and assembles no table (exit 1), unless
-  `--retry-final NAME` asks for it; `--instances NAME` does not (#323). Once SCIP has checked a staged row the driver
+  `--retry-final NAME` asks for it; `--instances NAME` and `--no-resume` do not
+  (#323). Once SCIP has checked a staged row the driver
   writes `<instance>.checked` with the row's sha256. `../../minlplib/check_staged.py
   --inst-dir NL --staging-dir STAGE` does the check and marking without solving
   (for rows a killed or pre-#307 driver left unchecked); it refuses a stamp for
