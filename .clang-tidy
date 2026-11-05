@@ -149,13 +149,13 @@
 # It cannot stand alone either: it is a mapping of compiler diagnostics, not a
 # registered check, so `-*,clang-diagnostic-*` exits 1 with "Error: no checks
 # enabled." The gate probe, .githooks/tidy-probe.sh -- run by ctest as
-# `clang_tidy_gate_probe`, pre-push's included (its worktree borrows the main
-# checkout's .venv clang-tidy, #370; Skipped only where no .venv has one) --
-# lints a copy of
-# .githooks/tidy-probe/incomplete_switch.cpp in every config directory,
-# through clang-tidy's own directory lookup over a mirror of the configs, and
-# fails unless the incomplete enum-class switch in it is reported. So an edit here that drops
-# or reorders this entry goes red rather than quiet.
+# `clang_tidy_gate_probe`, in pre-push's test fence too (its worktree uses the
+# main checkout's .venv clang-tidy, #370; Skipped only where neither .venv has
+# one) -- lints a copy of .githooks/tidy-probe/incomplete_switch.cpp in every
+# config directory, through clang-tidy's own directory lookup over a mirror of
+# the configs, and fails unless the incomplete enum-class switch in it is
+# reported. So an edit here that drops or reorders this entry goes red rather
+# than quiet.
 Checks: >
   -*,
   bugprone-*,

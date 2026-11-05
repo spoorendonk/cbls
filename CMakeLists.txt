@@ -319,16 +319,22 @@ if(CBLS_BUILD_TESTS)
     # This tree's own .venv first, then the main checkout's (issue #370):
     # pre-push builds in a fresh `git worktree add`, which has no .venv, and
     # NO_DEFAULT_PATH keeps the PATH pre-push sets up out of the search. The
-    # main checkout is the parent of git's common dir when that is a `.git`,
-    # the rule pre-push uses for its tools.
+    # main checkout is the parent of git's common dir when that is a `.git`
+    # (pre-push's test for its second tools entry). Only the main checkout:
+    # CMake cannot see which linked worktree a push came from, so a push from
+    # one with its own .venv, where the main checkout has none, still skips.
     set(_cbls_tidy_hints "${CMAKE_CURRENT_SOURCE_DIR}/.venv/bin")
-    execute_process(
-        COMMAND git -C "${CMAKE_CURRENT_SOURCE_DIR}" rev-parse --git-common-dir
-        OUTPUT_VARIABLE _cbls_git_common
-        OUTPUT_STRIP_TRAILING_WHITESPACE
-        RESULT_VARIABLE _cbls_git_rc
-        ERROR_QUIET)
-    if(_cbls_git_rc EQUAL 0 AND _cbls_git_common)
+    find_package(Git QUIET)
+    if(GIT_FOUND)
+        execute_process(
+            COMMAND "${GIT_EXECUTABLE}" rev-parse --git-common-dir
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+            OUTPUT_VARIABLE _cbls_git_common
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            RESULT_VARIABLE _cbls_git_rc
+            ERROR_QUIET)
+    endif()
+    if(GIT_FOUND AND _cbls_git_rc EQUAL 0 AND _cbls_git_common)
         get_filename_component(_cbls_git_common "${_cbls_git_common}" ABSOLUTE
             BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
         get_filename_component(_cbls_git_common_name "${_cbls_git_common}" NAME)
@@ -339,6 +345,7 @@ if(CBLS_BUILD_TESTS)
     endif()
     find_program(CBLS_CLANG_TIDY clang-tidy
         HINTS ${_cbls_tidy_hints} NO_DEFAULT_PATH)
+    message(STATUS "clang_tidy_gate_probe: clang-tidy ${CBLS_CLANG_TIDY}")
     add_test(NAME clang_tidy_gate_probe
         COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/.githooks/tidy-probe.sh"
                 "${CBLS_CLANG_TIDY}" "${CMAKE_BINARY_DIR}")
