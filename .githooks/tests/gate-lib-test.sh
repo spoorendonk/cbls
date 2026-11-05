@@ -260,7 +260,7 @@ run_pc() { # run_pc DIR -> exit code; output in $PC/out, calls appended to calls
 (
 	for v in $(env | sed -n 's/^\(GIT_[A-Za-z_]*\)=.*/\1/p'); do unset "$v"; done
 	cd "$PC/repo" && git init -q && git add pyproject.toml &&
-		git -c user.name=t -c user.email=t@t commit -q --no-verify -m init &&
+		git -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -q --no-verify -m init &&
 		git worktree add -q "$PC/wt" 2>/dev/null
 ) || echo "FAIL: pre-commit fixture: git setup"
 : >"$PC/calls.log"
@@ -269,8 +269,21 @@ expect "pre-commit: runs .venv's ruff format, ruff check and mypy, not PATH's" \
 	"$PC/repo/.venv/bin/ruff format --check .|$PC/repo/.venv/bin/ruff check .|$PC/repo/.venv/bin/mypy ." \
 	"$(grep -v -- '--version' "$PC/calls.log" | paste -sd '|' -)"
 expect "pre-commit: a linked worktree without .venv uses the main checkout's (0)" 0 "$(run_pc "$PC/wt")"
+mkdir -p "$PC/wt/.venv/bin"
+tool_stub "$PC/wt/.venv/bin" ruff 0.15.0
+expect "pre-commit: a worktree's off-pin ruff falls through to the main checkout's (0)" 0 "$(run_pc "$PC/wt")"
+rm -rf "$PC/wt/.venv"
 tool_stub "$PC/repo/.venv/bin" ruff 0.15.0
+: >"$PC/calls.log"
 expect "pre-commit: ruff off its pyproject pin refuses (1)" 1 "$(run_pc "$PC/repo")"
+expect "pre-commit: the off-pin refusal names both versions and the uv sync" 1 \
+	"$(grep -c 'no ruff at 0\.16\.1.*ruff is 0\.15\.0.*uv sync' "$PC/out")"
+expect "pre-commit: mypy still runs when ruff is refused" 1 "$(grep -c '/mypy \.$' "$PC/calls.log")"
+tool_stub "$PC/repo/.venv/bin" ruff 0.16.1
+cp "$PC/repo/pyproject.toml" "$PC/pyproject.saved"
+sed 's/"ruff==0.16.1"/"ruff == 0.16.1"/' "$PC/pyproject.saved" >"$PC/repo/pyproject.toml"
+expect "pre-commit: a pin it cannot read refuses (1)" 1 "$(run_pc "$PC/repo")"
+cp "$PC/pyproject.saved" "$PC/repo/pyproject.toml"
 rm -rf "$PC/repo/.venv"
 expect "pre-commit: no .venv refuses (1), with ruff and mypy on PATH" 1 "$(run_pc "$PC/repo")"
 expect "pre-commit: the refusal names the uv sync to run" 1 "$(grep -c 'no mypy in .venv/bin.*uv sync' "$PC/out")"

@@ -64,32 +64,51 @@ if common=$(git rev-parse --git-common-dir 2>/dev/null) &&
 	main_bin="${common%/.git}/.venv/bin"
 fi
 
-setup_hint='Run `uv sync --extra dev --extra benchmarks` in the main checkout (a linked worktree uses its .venv) and commit again.'
+# What to run when a tool is missing or off its pin. The second command is for
+# when the first fails to build the C++ extension (as in #371): it installs the
+# pinned tools without building the project, and keeps the installed one.
+setup_hint='Run `uv sync --extra dev --extra benchmarks` in the main checkout (a linked worktree uses its .venv); if that fails building cbls, `uv sync --inexact --no-install-project --extra dev --extra benchmarks` installs the tools alone. Then commit again.'
+
+# The pinned version of NAME: X in a `"NAME==X"` line of pyproject.toml, as the
+# dev extra spells it. Empty when pyproject.toml does not name NAME at all; a
+# refusal (return 1) when it names NAME in a spelling read here as no pin, so a
+# rewritten pin cannot switch the version check off unseen.
+pin_of() {
+	pin=$(sed -n "s/^[[:space:]]*\"$1==\([^\";]*\)\".*/\1/p" pyproject.toml 2>/dev/null | sed -n 1p)
+	if [ -z "$pin" ] && grep -q "[\"'\[[:space:]]$1[[:space:]]*[=<>~!;\"']" pyproject.toml 2>/dev/null; then
+		printf 'pre-commit: pyproject.toml names %s, but not as a `"%s==X",` line; its version cannot be checked.\n' "$1" "$1" >&2
+		return 1
+	fi
+	printf '%s\n' "$pin"
+}
 
 # The pinned tool NAME as a path on stdout, or a message on stderr and a
-# non-zero return (it runs in a `$(...)` subshell, so the caller sets status). Its version is the second field of `NAME --version` (`ruff
-# 0.16.1`, `mypy 2.3.0 (compiled: yes)`), compared with `"NAME==X"` in
-# pyproject.toml when that pins one.
+# non-zero return (it runs in a `$(...)` subshell, so the caller sets status).
+# The first `.venv/bin/NAME` at the pin wins: this checkout's, then the main
+# checkout's. A version is the second field of `NAME --version` (`ruff 0.16.1`,
+# `mypy 2.3.0 (compiled: yes)`).
 pinned_tool() {
-	tool=''
+	want=$(pin_of "$1") || {
+		printf 'pre-commit: so %s not run.\n' "$2" >&2
+		return 1
+	}
+	rejected=''
 	for dir in "$PWD/.venv/bin" "$main_bin"; do
-		if [ -n "$dir" ] && [ -x "$dir/$1" ]; then
-			tool="$dir/$1"
-			break
+		[ -n "$dir" ] && [ -x "$dir/$1" ] || continue
+		got=$("$dir/$1" --version 2>/dev/null | awk '{ print $2; exit }')
+		if [ -z "$want" ] || [ "$got" = "$want" ]; then
+			printf '%s\n' "$dir/$1"
+			return 0
 		fi
+		rejected="$rejected $dir/$1 is ${got:-of an unknown version};"
 	done
-	if [ -z "$tool" ]; then
+	if [ -z "$rejected" ]; then
 		printf 'pre-commit: no %s in .venv/bin, so %s not run. %s\n' "$1" "$2" "$setup_hint" >&2
-		return 1
+	else
+		printf 'pre-commit: no %s at %s, as pyproject.toml pins (%s), so %s not run. %s\n' \
+			"$1" "$want" "${rejected# }" "$2" "$setup_hint" >&2
 	fi
-	want=$(sed -n "s/^[[:space:]]*\"$1==\([^\"]*\)\".*/\1/p" pyproject.toml 2>/dev/null | sed -n 1p)
-	got=$("$tool" --version 2>/dev/null | awk '{ print $2; exit }')
-	if [ -n "$want" ] && [ "$got" != "$want" ]; then
-		printf 'pre-commit: %s is %s %s, not %s as pyproject.toml pins, so %s not run. %s\n' \
-			"$tool" "$1" "${got:-of an unknown version}" "$want" "$2" "$setup_hint" >&2
-		return 1
-	fi
-	printf '%s\n' "$tool"
+	return 1
 }
 
 if ruff=$(pinned_tool ruff "the format and lint checks were"); then
