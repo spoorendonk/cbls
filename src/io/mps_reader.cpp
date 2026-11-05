@@ -23,7 +23,7 @@
 //     wholesale drops both and the file stops compiling. Every value, capacity and control flow is
 //     unchanged. RE-APPLY THESE after any sync that rewrites those lines --
 //     clang-tidy must report zero before a push, so an upstream hunk that
-//     reverts them leaves findings for someone else's commit to fix. They are fixed here
+//     reverts them leaves findings for someone else to fix. They are fixed here
 //     rather than by switching the checks off in src/io/.clang-tidy so
 //     that the three native adapters in this directory keep that coverage;
 //     the naming check is exempted there instead, because renaming
@@ -42,8 +42,8 @@
 //     findings in this file that cannot be answered by a respelling: clearing
 //     them means restructuring the functions, and that structural delta is
 //     precisely what this vendoring contract is meant to prevent. Unlike the
-//     respellings above these cost nothing if a sync drops them — the push gate
-//     just goes red and they get re-applied — but re-apply them anyway, and
+//     respellings above these cost little if a sync drops them — the hand
+//     clang-tidy check before a push reports them — but re-apply them anyway, and
 //     re-check the scores while you are there.
 
 #include "cbls/io_mps.h"

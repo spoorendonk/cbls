@@ -149,8 +149,9 @@
 # It cannot stand alone either: it is a mapping of compiler diagnostics, not a
 # registered check, so `-*,clang-diagnostic-*` exits 1 with "Error: no checks
 # enabled." The gate probe, .githooks/tidy-probe.sh -- run by ctest as
-# `clang_tidy_gate_probe`, so by pre-push's test fence (skipped when the
-# pinned clang-tidy is missing) -- lints a copy of
+# `clang_tidy_gate_probe`, which skips this lint in pre-push's worktree (no
+# .venv, so no pinned clang-tidy) and runs it in a checkout with .venv --
+# lints a copy of
 # .githooks/tidy-probe/incomplete_switch.cpp in every config directory,
 # through clang-tidy's own directory lookup over a mirror of the configs, and
 # fails unless the incomplete enum-class switch in it is reported. So an edit here that drops

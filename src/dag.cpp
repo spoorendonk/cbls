@@ -243,8 +243,8 @@ static double pair_lambda_extra_value(const ExprNode& node, ConstSpan<ChildRef> 
 // neither did -- no -Wall, and `.clang-tidy`'s leading `-*` switched the
 // diagnostics off). No hook blocks on either now: both are checked by hand
 // before a push (CLAUDE.md, Git Hooks). `.githooks/tidy-probe.sh` keeps proving
-// the clang-tidy half bites. Never
-// add a `default:` here: it is exactly what would hide the missed case. The
+// the clang-tidy half bites. Never add a `default:` here: it is exactly what
+// would hide the missed case. The
 // warning covers `default:`-free switches only, so `grep -rn 'NodeOp::' src/
 // include/ python/` for the other places an op is named: `src/io.cpp` has two
 // switches, and `node_is_affine` in src/feasibility_jump.cpp has a deliberate

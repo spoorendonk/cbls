@@ -36,7 +36,8 @@ dev = [
     # are pinned exactly: clang-format's output and clang-tidy's finding set
     # both change between major releases, so an unpinned or system copy would
     # reformat differently from everyone else's commit and report a different
-    # set at push time. The hooks prefer .venv/bin over PATH for this reason.
+    # set in the clang-tidy check before a push. The hooks prefer .venv/bin
+    # over PATH for this reason.
     "clang-format==22.1.8",
     "clang-tidy==22.1.8",
     # Also in [build-system].requires, but pip resolves that in an isolated

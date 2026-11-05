@@ -2,8 +2,8 @@
 
 Without ``InheritParentConfig: true`` clang-tidy drops the root's ``Checks:``,
 leaves nothing enabled, and exits 1 with "Error: no checks enabled." -- every
-translation unit under ``src/io/`` then goes silently unlinted while the
-pre-push gate reports success. That was the live state until issue #121's
+translation unit under ``src/io/`` then goes silently unlinted while a
+clang-tidy run reports success. That was the live state until issue #121's
 ``src/io`` half; this test is what stops it coming back.
 """
 

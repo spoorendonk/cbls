@@ -44,8 +44,8 @@ if(NB_DIR_RESULT EQUAL 0 AND NB_DIR)
     # that clobber -- the day nanobind stops doing it, the path becomes a
     # non-existent `cmake/include`, which CMake does NOT treat as an error. It
     # would simply drop the -isystem, nanobind's macros would go back to being
-    # reported against bindings.cpp, and the push gate would turn red on
-    # somebody else's commit. Fail loudly here instead.
+    # reported against bindings.cpp, and the clang-tidy check before a push
+    # would report them on somebody else's commit. Fail loudly here instead.
     execute_process(
         COMMAND "${Python_EXECUTABLE}" -m nanobind --include_dir
         OUTPUT_STRIP_TRAILING_WHITESPACE OUTPUT_VARIABLE NB_INCLUDE_DIR

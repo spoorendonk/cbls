@@ -96,7 +96,7 @@ cancelled_warning_flags() { # [EXEMPT]
 }
 
 # scan_build_log LOG SRC_ROOT BIN_DIR
-# The pre-push compiler-warning decision on a build log that the gate probe
+# The pre-wcp pre-push's compiler-warning decision on a build log the gate probe
 # TU was compiled into. Returns 2 when the probe's -Wswitch is absent (the
 # scan cannot see this build's compiler output, so a clean result would mean
 # nothing); 1, printing them, when first-party warnings other than the
@@ -117,10 +117,10 @@ scan_build_log() {
 }
 
 # hook_files_that_are_code: of the changed paths on stdin, the .githooks/ files
-# a push must still build and test for, though the hooks directory is otherwise
-# treated as not-code by pre-push. The probe and its lib feed a CMake target and
-# two ctests; the pre-wcp pre-push also held the compiler-warning scan, which
-# only a build exercises.
+# a push must still build and test for, though the pre-wcp pre-push otherwise
+# treated the hooks directory as not-code. The probe and its lib feed a CMake
+# target and two ctests; that pre-push also held the compiler-warning scan,
+# which only a build exercises.
 hook_files_that_are_code() {
 	grep -E '^\.githooks/(tidy-probe|gate-lib|tests/|pre-push$)' || true
 }
