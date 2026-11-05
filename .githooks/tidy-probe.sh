@@ -3,11 +3,12 @@
 #
 # Usage: .githooks/tidy-probe.sh CLANG_TIDY BUILD_DIR
 #
-# Run by ctest as `clang_tidy_gate_probe` on every full or fast suite run. In
-# pre-push's test fence only Check A runs: its worktree has no .venv, so CMake
-# finds no pinned clang-tidy and Check B exits 77 (Skipped); run ctest in a
-# checkout with .venv for it. (The pre-wcp pre-push also ran this probe
-# whenever a push changed a .clang-tidy, a CMakeLists.txt or the probe.)
+# Run by ctest as `clang_tidy_gate_probe` on every full or fast suite run,
+# pre-push's test fence included. CMake looks for the pinned clang-tidy in this
+# tree's .venv, then in the main checkout's (#370): pre-push's worktree has no
+# .venv of its own. Only where neither has one does Check B exit 77
+# (Skipped). (The pre-wcp pre-push also ran this probe whenever a push changed
+# a .clang-tidy, a CMakeLists.txt or the probe.)
 #
 # The gate needs two things that each fail OPEN when missing, which is why a
 # probe rather than a review guards them:

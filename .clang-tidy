@@ -149,8 +149,8 @@
 # It cannot stand alone either: it is a mapping of compiler diagnostics, not a
 # registered check, so `-*,clang-diagnostic-*` exits 1 with "Error: no checks
 # enabled." The gate probe, .githooks/tidy-probe.sh -- run by ctest as
-# `clang_tidy_gate_probe`, which skips this lint in pre-push's worktree (no
-# .venv, so no pinned clang-tidy) and runs it in a checkout with .venv --
+# `clang_tidy_gate_probe`, pre-push's included (its worktree borrows the main
+# checkout's .venv clang-tidy, #370; Skipped only where no .venv has one) --
 # lints a copy of
 # .githooks/tidy-probe/incomplete_switch.cpp in every config directory,
 # through clang-tidy's own directory lookup over a mirror of the configs, and

@@ -315,8 +315,30 @@ if(CBLS_BUILD_TESTS)
     # different default set and rejects keys this .clang-tidy uses. Without it
     # the probe still checks the compile flags, then exits 77, and ctest
     # reports it Skipped, not Passed.
+    #
+    # This tree's own .venv first, then the main checkout's (issue #370):
+    # pre-push builds in a fresh `git worktree add`, which has no .venv, and
+    # NO_DEFAULT_PATH keeps the PATH pre-push sets up out of the search. The
+    # main checkout is the parent of git's common dir when that is a `.git`,
+    # the rule pre-push uses for its tools.
+    set(_cbls_tidy_hints "${CMAKE_CURRENT_SOURCE_DIR}/.venv/bin")
+    execute_process(
+        COMMAND git -C "${CMAKE_CURRENT_SOURCE_DIR}" rev-parse --git-common-dir
+        OUTPUT_VARIABLE _cbls_git_common
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        RESULT_VARIABLE _cbls_git_rc
+        ERROR_QUIET)
+    if(_cbls_git_rc EQUAL 0 AND _cbls_git_common)
+        get_filename_component(_cbls_git_common "${_cbls_git_common}" ABSOLUTE
+            BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+        get_filename_component(_cbls_git_common_name "${_cbls_git_common}" NAME)
+        if(_cbls_git_common_name STREQUAL ".git")
+            get_filename_component(_cbls_main_checkout "${_cbls_git_common}" DIRECTORY)
+            list(APPEND _cbls_tidy_hints "${_cbls_main_checkout}/.venv/bin")
+        endif()
+    endif()
     find_program(CBLS_CLANG_TIDY clang-tidy
-        HINTS "${CMAKE_CURRENT_SOURCE_DIR}/.venv/bin" NO_DEFAULT_PATH)
+        HINTS ${_cbls_tidy_hints} NO_DEFAULT_PATH)
     add_test(NAME clang_tidy_gate_probe
         COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/.githooks/tidy-probe.sh"
                 "${CBLS_CLANG_TIDY}" "${CMAKE_BINARY_DIR}")
