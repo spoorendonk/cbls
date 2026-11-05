@@ -43,8 +43,8 @@
 //     them means restructuring the functions, and that structural delta is
 //     precisely what this vendoring contract is meant to prevent. Unlike the
 //     respellings above these cost little if a sync drops them — the hand
-//     clang-tidy check before a push reports them — but re-apply them anyway, and
-//     re-check the scores while you are there.
+//     clang-tidy check before a push reports them — but re-apply them anyway,
+//     and re-check the scores while you are there.
 
 #include "cbls/io_mps.h"
 
