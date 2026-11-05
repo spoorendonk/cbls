@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from benchmarks.common.records import append_attempt, recorded_attempts
+from benchmarks.minlplib import scip_shards
 from benchmarks.minlplib.gm_ratio import load_scip_shards
 from benchmarks.minlplib.reference_solve import load_bounds
 from benchmarks.minlplib.scip_shards import (
@@ -140,6 +141,89 @@ def test_main_refuses_another_budget_without_restart(
     assert main(["--nl-dir", str(nl), "--shards", str(shards), "--instances", "a"]) == 2
     assert "--restart" in capsys.readouterr().err
     assert recorded_attempts(shards / "a.failed") == ["exit 124"]
+
+
+def _final_campaign(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, modes: dict[str, str]
+) -> tuple[list[str], Path]:
+    """A shard directory where `a` has two failed attempts; `main` runs `modes`' stub."""
+    nl = tmp_path / "nl"
+    nl.mkdir()
+    write_bounds(nl / "bounds.csv", list(modes))
+    shards = tmp_path / "shards"
+    shards.mkdir()
+    (shards / "stamp.txt").write_text(shard_stamp(60, 0))
+    append_attempt(shards / "a.failed", 134)
+    append_attempt(shards / "a.failed", 137)
+    stub = stub_command(tmp_path, modes)
+    monkeypatch.setattr(scip_shards, "reference_command", lambda *_: stub)
+    return ["--nl-dir", str(nl), "--shards", str(shards)], shards
+
+
+def test_a_re_run_leaves_a_final_no_solution_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """#323: a third attempt that succeeds would drop the marker and score as solved."""
+    argv, shards = _final_campaign(tmp_path, monkeypatch, {"a": "ok", "b": "ok"})
+    assert main(argv) == 1
+    assert not (shards / "a.csv").exists(), "the final no-solution was solved again"
+    assert recorded_attempts(shards / "a.failed") == ["exit 134", "exit 137"]
+    assert (shards / "b.csv").exists(), "the rest of the roster still runs"
+    out = capsys.readouterr().out
+    assert "a: final no-solution" in out
+    assert "--retry-final a" in out
+    assert "1 solved, 0 skipped (row present), 0 failed, 1 final no-solution: a" in out
+
+
+def test_naming_an_instance_in_instances_does_not_retry_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A campaign may resume one name at a time: `--instances` is no decision to retry."""
+    argv, shards = _final_campaign(tmp_path, monkeypatch, {"a": "ok"})
+    assert main([*argv, "--instances", "a"]) == 1
+    assert not (shards / "a.csv").exists()
+
+
+def test_retry_final_solves_it_again_by_name_and_a_success_drops_the_marker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    argv, shards = _final_campaign(tmp_path, monkeypatch, {"a": "ok", "b": "ok"})
+    assert main([*argv, "--retry-final", "a"]) == 0
+    assert (shards / "a.csv").exists()
+    assert not (shards / "a.failed").exists()
+
+
+def test_a_retry_final_that_fails_again_appends_its_attempt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    argv, shards = _final_campaign(tmp_path, monkeypatch, {"a": "nothing"})
+    assert main([*argv, "--retry-final", "a"]) == 1
+    assert recorded_attempts(shards / "a.failed") == ["exit 134", "exit 137", "exit 1"]
+
+
+def test_a_retry_final_name_outside_the_run_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    argv, shards = _final_campaign(tmp_path, monkeypatch, {"a": "ok", "b": "ok"})
+    assert main([*argv, "--instances", "b", "--retry-final", "a"]) == 2
+    assert "--retry-final names outside this run: a" in capsys.readouterr().err
+    assert not (shards / "b.csv").exists(), "refused before anything ran"
+
+
+def test_one_attempt_still_gets_its_retry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    argv, shards = _final_campaign(tmp_path, monkeypatch, {"a": "ok"})
+    (shards / "a.failed").unlink()
+    append_attempt(shards / "a.failed", 134)
+    assert main(argv) == 0
+    assert (shards / "a.csv").exists()
+
+
+def test_a_restart_clears_the_attempts_so_nothing_is_final_under_the_new_stamp(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    argv, shards = _final_campaign(tmp_path, monkeypatch, {"a": "ok"})
+    assert main([*argv, "--restart", "--seed", "1"]) == 0
+    assert (shards / "a.csv").exists()
 
 
 def test_a_torn_attempt_line_is_dropped_not_glued_onto_the_next(tmp_path: Path) -> None:

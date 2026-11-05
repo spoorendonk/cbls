@@ -78,6 +78,11 @@ Guards, because this file's output is published:
 * sets aside (`.rejected`) the staged row of any solve whose runner exited
   nonzero, so a resume re-solves it: a solve that lost portfolio workers (#170)
   writes an ordinary-looking row and says so only in its exit status;
+* leaves an instance with two recorded failed attempts alone on a resume, since
+  a third that succeeds would turn a final no-solution into solved depending on
+  how often someone re-runs (#323), and then assembles no table, which would
+  lack its row: `--retry-final NAME` asks for another attempt, `--instances NAME`
+  does not, since a campaign runs one name per call;
 * marks each staged row the independent SCIP check has passed (or demoted) with
   `<instance>.checked`, holding the CSV's sha256, so a scorer reading the
   staging directory can tell a checked row from one a killed driver left (#307);
@@ -140,6 +145,7 @@ from benchmarks.common.provenance import (  # noqa: E402
 from benchmarks.common.records import (  # noqa: E402
     append_attempt,
     atomic_write,
+    attempts_exhausted,
     csv_header,
     stamp_refusal,
     write_json,
@@ -456,7 +462,14 @@ def preflight(
         common_preflight(args, sha, roster, dirty_paths)
         + _seeds_table_problems(args)
         + _cpu_problems(args)
+        + _retry_final_problems(args, roster)
     )
+
+
+def _retry_final_problems(args: argparse.Namespace, roster: Sequence[str]) -> list[str]:
+    """Refuse a `--retry-final` name this run would not reach: it would quietly retry nothing."""
+    unreached = sorted(set(args.retry_final) - set(roster))
+    return [f"--retry-final names outside this run: {', '.join(unreached)}"] if unreached else []
 
 
 def available_cpus() -> int:
@@ -1238,6 +1251,29 @@ def print_seeds_summary(
         )
 
 
+def final_no_solutions(
+    args: argparse.Namespace, sha: str, roster: Sequence[str], stage: Path
+) -> list[str]:
+    """The roster instances the #256 rule has settled, which a resume leaves alone (#323).
+
+    Each has no row to resume from, a `.rejected` row and two recorded failed
+    attempts (what `gm_ratio.py` scores as no-solution), and is not named by
+    `--retry-final`. `--no-resume` starts every instance over, by request and
+    for all of them alike, so it settles nothing. Read after
+    `staging_stamp_conflict`: the attempts a new stamp clears do not count.
+    """
+    if not args.resume:
+        return []
+    return [
+        name
+        for name in roster
+        if name not in args.retry_final
+        and not staged_complete(args, sha, name, stage)
+        and (stage / f"{name}.csv{REJECTED_SUFFIX}").exists()
+        and attempts_exhausted(stage / f"{name}{FAILURES_SUFFIX}")
+    ]
+
+
 def run_roster(args: argparse.Namespace, sha: str, roster: Sequence[str], stage: Path) -> int:
     """Solve every roster instance serially, skipping the ones already staged.
 
@@ -1440,8 +1476,23 @@ def execute(args: argparse.Namespace, sha: str, roster: Sequence[str], paths: Pa
         if conflict:
             print(conflict, file=sys.stderr)
             return 2
-        resumed = run_roster(args, sha, roster, paths.stage)
-        verify_staged(args, roster, paths.stage)
+        final = final_no_solutions(args, sha, roster, paths.stage)
+        for name in final:
+            print(
+                f"{name}: final cbls no-solution (two failed attempts), not solved again; "
+                f"--retry-final {name} asks for another attempt"
+            )
+        solving = [name for name in roster if name not in final]
+        resumed = run_roster(args, sha, solving, paths.stage)
+        verify_staged(args, solving, paths.stage)
+        if final:
+            print(
+                f"{len(final)} final no-solution(s) have no row, so no table was assembled: "
+                f"{', '.join(final)}. The staged rows are checked: score them with "
+                "gm_ratio.py --cbls-staging.",
+                file=sys.stderr,
+            )
+            return 1
         if resumed:
             print(
                 f"note: {resumed} of {len(roster)} row(s) were staged by an earlier invocation; "
@@ -1544,6 +1595,13 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         dest="resume",
         action="store_false",
         help="re-solve every instance even if a staged result exists",
+    )
+    parser.add_argument(
+        "--retry-final",
+        nargs="+",
+        default=[],
+        metavar="NAME",
+        help="solve these again though two failed attempts made them final no-solutions",
     )
     parser.add_argument(
         "--no-build",

@@ -139,6 +139,9 @@ def append_csv_row(path: Path, values: Iterable[object]) -> None:
 #: One failed attempt on an instance: `exit <rc> <utc>`.
 ATTEMPT_LINE = re.compile(r"(exit [0-9]+) [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z")
 
+#: Failed attempts a final no-solution needs: the first and its one retry (#256).
+FAILED_ATTEMPTS_REQUIRED = 2
+
 
 def shell_exit(returncode: int) -> int:
     """`returncode` as `sh` reports it: a death by signal N is 128+N, not -N.
@@ -174,6 +177,15 @@ def recorded_attempts(path: Path) -> list[str]:
         return []
     matches = (ATTEMPT_LINE.fullmatch(line) for line in path.read_text().splitlines())
     return [m.group(1) for m in matches if m]
+
+
+def attempts_exhausted(path: Path) -> bool:
+    """Whether `path` records the failed attempts a final no-solution needs (#323).
+
+    The drivers' test for leaving an instance alone and the scorer's for accepting
+    its failure are this one count, so a re-run cannot outvote the #256 rule.
+    """
+    return len(recorded_attempts(path)) >= FAILED_ATTEMPTS_REQUIRED
 
 
 def repair_torn_tail(path: Path) -> bool:

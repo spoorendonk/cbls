@@ -169,15 +169,18 @@ Both halves read that `bounds.csv`; neither writes under `benchmarks/instances/`
   is the 15-min wrapper cap); a re-run retries only the missing and
   failed ones. The #256 rule: one
   retry with the memory cap raised, then SCIP no-solution, named with its exit.
-  `stamp.txt` records budget and seed and refuses a run under others;
-  `--restart` deletes the `.failed` markers first.
+  A marker with two attempts is left alone on a re-run unless `--retry-final
+  NAME` asks for it (#323). `stamp.txt` records budget and seed and refuses a
+  run under others; `--restart` deletes the `.failed` markers first.
 - cbls: `../../minlplib/run_benchmark.py`, one instance per call, at the
   campaign's thread count. A nonzero runner exit sets the row aside as
   `<instance>.csv.rejected` and appends `exit <rc> <utc>` to
   `<instance>.failures`; the next call solves it again (one retry, then cbls
   no-solution). Exit 0 without a publishable row counts the same; an exit before
   a row is staged records nothing; a success clears the record, and a stamp
-  change clears every record. Once SCIP has checked a staged row the driver
+  change clears every record. With two attempts recorded, a resume leaves the
+  instance alone, says it is final and assembles no table (exit 1), unless
+  `--retry-final NAME` asks for it; `--instances NAME` does not (#323). Once SCIP has checked a staged row the driver
   writes `<instance>.checked` with the row's sha256. `../../minlplib/check_staged.py
   --inst-dir NL --staging-dir STAGE` does the check and marking without solving
   (for rows a killed or pre-#307 driver left unchecked); it refuses a stamp for
@@ -191,9 +194,10 @@ Both halves read that `bounds.csv`; neither writes under `benchmarks/instances/`
   directory instead: every staged row needs a matching `.checked`, a lone
   `.rejected` counts as cbls no-solution. In
   either mode a lone `.rejected` or a `.failed` also needs two recorded failed
-  attempts, and fewer is refused by name (#312). `--partial` gives an interim
-  score without those requirements, and is the only way to score a campaign staged
-  before #312.
+  attempts, and fewer is refused by name (#312). A shard stamp whose budget or
+  seed differs from SCIP's rows is refused too. `--partial` gives an interim
+  score without the attempts and `.checked` requirements, and is the only way to
+  score a campaign staged before #312.
 
 ## Yuck / fzn-oscar-cbls coverage
 

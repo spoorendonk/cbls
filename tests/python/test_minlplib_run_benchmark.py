@@ -120,6 +120,7 @@ def make_args(tmp_path: Path, **overrides: object) -> argparse.Namespace:
         "trace": True,
         "merge": True,
         "resume": True,
+        "retry_final": [],
         "build": True,
         "dry_run": False,
     }
@@ -869,6 +870,121 @@ def test_a_solve_that_succeeds_clears_the_attempts_before_it(
     monkeypatch.setattr(subprocess, "run", fake_runner())
     run_roster(make_args(tmp_path), "abc1234", ["a"], stage)
     assert not (stage / "a.failures").exists()
+
+
+def _fail_twice(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str, stage: Path) -> None:
+    """Leave `name` as the scorer's final no-solution: a `.rejected` row and two attempts."""
+    monkeypatch.setattr(subprocess, "run", fake_runner(returncode=1))
+    for _ in range(2):
+        with pytest.raises(RuntimeError):
+            run_roster(make_args(tmp_path), "abc1234", [name], stage)
+
+
+def test_a_resume_leaves_a_final_no_solution_alone_and_assembles_no_table(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """#323: a third attempt that succeeds would make the scorer read it as solved."""
+    make_inst_dir(tmp_path, ["a", "b"])
+    args = make_args(tmp_path, seed=2, build=False, merge=False)
+    paths = resolve_paths(args, "abc1234")
+    paths.stage.mkdir(parents=True)
+    assert staging_stamp_conflict(paths.stage, args, "abc1234") is None
+    _fail_twice(tmp_path, monkeypatch, "a", paths.stage)
+    capsys.readouterr()
+
+    solved: list[str] = []
+
+    def runner(cmd: Sequence[str], **kwargs: object) -> object:
+        if "--instance" in cmd:
+            solved.append(cmd[cmd.index("--instance") + 1])
+        return seeded_runner()(cmd, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", runner)
+    assert execute(args, "abc1234", ["a", "b"], paths) == 1
+    assert solved == ["b"], "the final no-solution was solved again"
+    captured = capsys.readouterr()
+    assert "a: final cbls no-solution" in captured.out
+    assert "--retry-final a" in captured.out
+    assert "no table was assembled: a." in captured.err
+    assert not paths.out.exists()
+    assert recorded_attempts(paths.stage / "a.failures") == ["exit 1", "exit 1"]
+    assert (paths.stage / "a.csv.rejected").exists()
+    assert staged_checked(paths.stage, "b"), "the other rows must still be scorable"
+
+
+def test_retry_final_solves_a_final_no_solution_again_by_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    make_inst_dir(tmp_path, ["a", "b"])
+    args = make_args(tmp_path, seed=2, build=False, merge=False, retry_final=["a"])
+    paths = resolve_paths(args, "abc1234")
+    paths.stage.mkdir(parents=True)
+    assert staging_stamp_conflict(paths.stage, args, "abc1234") is None
+    _fail_twice(tmp_path, monkeypatch, "a", paths.stage)
+    monkeypatch.setattr(subprocess, "run", seeded_runner())
+    assert execute(args, "abc1234", ["a", "b"], paths) == 0
+    assert staged_complete(args, "abc1234", "a", paths.stage)
+    assert not (paths.stage / "a.failures").exists()
+    assert paths.out.exists()
+
+
+@pytest.mark.parametrize(
+    ("attempts", "overrides", "stamp_change", "final"),
+    [
+        (1, {}, False, False),
+        (2, {}, False, True),
+        (3, {}, False, True),
+        (2, {"instances": ["a"]}, False, True),
+        (2, {"retry_final": ["a"]}, False, False),
+        (2, {"resume": False}, False, False),
+        (2, {"resume": False}, True, False),
+    ],
+    ids=[
+        "one-attempt-gets-its-retry",
+        "two-attempts-are-final",
+        "three-attempts-are-final",
+        "instances-does-not-ask-for-it",
+        "retry-final-asks-for-it",
+        "no-resume-starts-over",
+        "a-new-stamp-clears-the-record",
+    ],
+)
+def test_what_counts_as_a_final_no_solution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    attempts: int,
+    overrides: dict[str, object],
+    stamp_change: bool,
+    final: bool,
+) -> None:
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    args = make_args(tmp_path, **overrides)
+    assert staging_stamp_conflict(stage, make_args(tmp_path), "abc1234") is None
+    monkeypatch.setattr(subprocess, "run", fake_runner(returncode=1))
+    for _ in range(attempts):
+        with pytest.raises(RuntimeError):
+            run_roster(make_args(tmp_path), "abc1234", ["a"], stage)
+    sha = "def5678" if stamp_change else "abc1234"
+    assert staging_stamp_conflict(stage, args, sha) is None
+    assert run_benchmark.final_no_solutions(args, sha, ["a"], stage) == (["a"] if final else [])
+
+
+def test_a_final_no_solution_needs_the_rejected_row_the_scorer_reads(tmp_path: Path) -> None:
+    """Attempts without the row score as a missing instance: solving it is the only way out."""
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    for _ in range(2):
+        append_attempt(stage / "a.failures", 1)
+    assert run_benchmark.final_no_solutions(make_args(tmp_path), "abc1234", ["a"], stage) == []
+
+
+def test_a_retry_final_name_outside_the_run_is_refused(tmp_path: Path) -> None:
+    args = make_args(tmp_path, retry_final=["a", "typo"])
+    assert run_benchmark._retry_final_problems(args, ["a", "b"]) == [
+        "--retry-final names outside this run: typo"
+    ]
+    assert run_benchmark._retry_final_problems(make_args(tmp_path), ["a"]) == []
 
 
 def test_a_death_by_signal_is_recorded_as_sh_reports_it(

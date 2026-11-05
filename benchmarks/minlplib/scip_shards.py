@@ -29,8 +29,12 @@ retry drops its `.failed` marker. The #256 rule for what is left after one
 retry (hub, 2026-11-01): run it again once with the memory cap raised (the
 campaign ran under a 110G cgroup cap), and a failure that remains counts as
 "SCIP: no solution", named with its exit. A final score refuses a marker with
-fewer than two attempts. The shard directory's `stamp.txt` records the budget
-and seed. A run under another one is refused; with `--restart` it deletes every
+fewer than two attempts, and a re-run leaves a marker with two alone unless
+`--retry-final NAME` asks for it: a third attempt that succeeds would otherwise
+turn a final no-solution into solved, depending on how often someone re-runs
+(#323). `--instances NAME` does not ask for it, since a campaign may be resumed
+one name at a time. The shard directory's `stamp.txt` records the budget and
+seed. A run under another one is refused; with `--restart` it deletes every
 `.failed` marker first, since an attempt under another configuration is no
 retry of this one.
 
@@ -39,7 +43,7 @@ Usage, from any directory, under the machine lock (one lock for the whole run;
 
     xk lock -- .venv/bin/python3 benchmarks/minlplib/scip_shards.py \\
         --nl-dir NL_DIR --shards SHARD_DIR [--jobs 16] [--time-limit 60] \\
-        [--cap 900] [--instances NAME ...]
+        [--cap 900] [--instances NAME ...] [--retry-final NAME ...]
 """
 
 from __future__ import annotations
@@ -55,7 +59,12 @@ from typing import TYPE_CHECKING
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from benchmarks.common.records import append_attempt, atomic_write, shell_exit  # noqa: E402
+from benchmarks.common.records import (  # noqa: E402
+    append_attempt,
+    atomic_write,
+    attempts_exhausted,
+    shell_exit,
+)
 from benchmarks.minlplib.gm_ratio import (  # noqa: E402
     SCIP_FAILED_SUFFIX,
     SCIP_MERGED_SUFFIX,
@@ -152,6 +161,25 @@ def reset_on_new_stamp(shards: Path, stamp: str, *, restart: bool) -> list[str]:
     return cleared
 
 
+def final_no_solutions(shards: Path, names: Sequence[str], retry: Sequence[str]) -> list[str]:
+    """The instances of `names` the #256 rule has settled, which this run leaves alone (#323).
+
+    Each has no whole row and two recorded failed attempts, and is not in `retry`.
+    Read after `reset_on_new_stamp`: the attempts it clears do not count.
+    """
+    return [
+        name
+        for name in names
+        if name not in retry
+        and not has_whole_row_at(shards / f"{name}.csv")
+        and attempts_exhausted(shards / f"{name}{SCIP_FAILED_SUFFIX}")
+    ]
+
+
+def has_whole_row_at(path: Path) -> bool:
+    return path.exists() and has_whole_row(path)
+
+
 def solve_shard(
     shards: Path,
     name: str,
@@ -167,7 +195,7 @@ def solve_shard(
     published nor skipped on resume.
     """
     csv_path = shards / f"{name}.csv"
-    if csv_path.exists() and has_whole_row(csv_path):
+    if has_whole_row_at(csv_path):
         return None
     tmp = shards / f"{name}.csv.tmp"
     merged = shards / f"{name}{SCIP_MERGED_SUFFIX}"
@@ -242,6 +270,13 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="another budget or seed was stamped here: delete every .failed marker first",
     )
+    parser.add_argument(
+        "--retry-final",
+        nargs="+",
+        default=[],
+        metavar="NAME",
+        help="solve these again though two failed attempts made them final no-solutions",
+    )
     args = parser.parse_args(argv)
     if args.jobs < 1:
         parser.error("--jobs must be at least 1")
@@ -265,6 +300,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"not in the roster: {', '.join(unknown)}", file=sys.stderr)
         return 2
     names = [n for n in roster if n in wanted] if wanted else roster
+    # A name this run would not reach would quietly retry nothing.
+    unreached = sorted(set(args.retry_final) - set(names))
+    if unreached:
+        print(f"--retry-final names outside this run: {', '.join(unreached)}", file=sys.stderr)
+        return 2
     args.shards.mkdir(parents=True, exist_ok=True)
     try:
         cleared = reset_on_new_stamp(
@@ -279,22 +319,31 @@ def main(argv: Sequence[str] | None = None) -> int:
             f"{len(cleared)} instance(s): {', '.join(cleared)}",
             flush=True,
         )
-    print(f"[{_now()}] start: {len(names)} instance(s), {args.jobs} at a time", flush=True)
+    final = final_no_solutions(args.shards, names, args.retry_final)
+    for name in final:
+        print(
+            f"{name}: final no-solution (two failed attempts), not solved again; "
+            f"--retry-final {name} asks for another attempt",
+            flush=True,
+        )
+    solving = [n for n in names if n not in final]
+    print(f"[{_now()}] start: {len(solving)} instance(s), {args.jobs} at a time", flush=True)
     exits = run_shards(
         args.shards,
-        names,
+        solving,
         reference_command(args.nl_dir, args.time_limit, args.seed),
         jobs=args.jobs,
         cap_seconds=args.cap,
     )
-    failed = sorted(n for n in names if (args.shards / f"{n}{SCIP_FAILED_SUFFIX}").exists())
+    failed = sorted(n for n in solving if (args.shards / f"{n}{SCIP_FAILED_SUFFIX}").exists())
     solved = sum(1 for rc in exits.values() if rc is not None) - len(failed)
     skipped = sum(1 for rc in exits.values() if rc is None)
     print(
         f"[{_now()}] done: {solved} solved, {skipped} skipped (row present), "
-        f"{len(failed)} failed{': ' + ', '.join(failed) if failed else ''}"
+        f"{len(failed)} failed{': ' + ', '.join(failed) if failed else ''}, "
+        f"{len(final)} final no-solution{': ' + ', '.join(final) if final else ''}"
     )
-    return 1 if failed else 0
+    return 1 if failed or final else 0
 
 
 if __name__ == "__main__":

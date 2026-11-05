@@ -30,7 +30,9 @@ Without `--partial`, a scored instance left with a lone `.rejected` row or a SCI
 `.failed` marker needs two recorded failed attempts (`exit <rc> <utc>` lines, in
 `<instance>.failures` beside the rejected row and in the `.failed` marker itself);
 fewer is refused by name. A campaign staged before #312 has no such lines, so it
-scores only with `--partial`.
+scores only with `--partial`. Both drivers leave an instance with two recorded
+attempts alone on a resume, so how often someone re-runs cannot turn a final
+no-solution into solved (#323); `--retry-final NAME` asks for another attempt.
 
 The SCIP shards are `scip_shards.py`'s output: `<instance>.csv`, or an
 `<instance>.failed` marker with one `exit <rc> <utc>` line per failed attempt.
@@ -67,7 +69,9 @@ PROVENANCE comes from the data: the engine commit and thread count from the cbls
 rows, the SCIP version from its rows, and the budget from SCIP's `scip_version`
 cell (`... / 60s / ...`) and the cbls side's record (the staging stamp's
 `time-limit=`, or the run record beside `comparison.csv`). Two budgets that
-disagree are refused, and so is a `--budget` that disagrees with them.
+disagree are refused, and so is a `--budget` that disagrees with them. The shard
+stamp's `seed=` must match the seed in SCIP's `scip_version` cells too: `.failed`
+markers carry neither, so the stamp is all that says what they failed under.
 `--memory-cap` is free text: the cap is not in the data.
 
 COMPLETENESS (CLAUDE.md, Measuring): the roster is read first, and by default a
@@ -95,7 +99,11 @@ from typing import TYPE_CHECKING
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from benchmarks.common.records import atomic_write, recorded_attempts  # noqa: E402
+from benchmarks.common.records import (  # noqa: E402
+    FAILED_ATTEMPTS_REQUIRED,
+    atomic_write,
+    recorded_attempts,
+)
 from benchmarks.minlplib.campaign_report import (  # noqa: E402
     Row,
     ScipRow,
@@ -126,9 +134,6 @@ WIN_FACTOR = 1.01
 #: instance, mixed provenance.
 EXIT_REFUSED = 2
 
-#: Failed attempts a final no-solution needs: the first and its one retry (#256).
-FAILED_ATTEMPTS_REQUIRED = 2
-
 #: How many names a refusal or a list prints before it says how many more.
 NAMES_SHOWN = 10
 
@@ -147,6 +152,9 @@ SCIP_BUDGET_FIELD = re.compile(r"/\s*([0-9]+(?:\.[0-9]*)?)s\s*/")
 
 #: The staging stamp's budget line (`run_benchmark.staging_stamp`).
 STAMP_BUDGET_KEY = "time-limit"
+#: The seed field of SCIP's `scip_version` cell, and the shard stamp's seed line.
+SCIP_SEED_FIELD = re.compile(r"/\s*seed\s+([0-9]+)\s*$")
+STAMP_SEED_KEY = "seed"
 
 NOT_STATED = "not stated"
 NO_NOTE = "no note recorded"
@@ -461,21 +469,39 @@ def scip_budget(scip: ScipSide) -> float | None:
     return found.pop() if found else None
 
 
-def staging_budget(stage: Path) -> float | None:
-    """The `time-limit=` line of a staging directory's stamp; None when it has no stamp."""
+def _stamp_number(stage: Path, wanted: str) -> float | None:
+    """The `wanted=` line of a directory's stamp; None without a stamp, refused without the line."""
     stamp = stage / STAMP_NAME
     if not stamp.exists():
         return None
     for line in stamp.read_text().splitlines():
         key, sep, value = line.partition("=")
-        if sep and key.strip() == STAMP_BUDGET_KEY:
+        if sep and key.strip() == wanted:
             try:
                 return float(value)
             except ValueError as exc:
-                raise RefusedError(
-                    f"{stamp}: {STAMP_BUDGET_KEY}={value!r} is not a number"
-                ) from exc
-    raise RefusedError(f"{stamp}: has no {STAMP_BUDGET_KEY}= line")
+                raise RefusedError(f"{stamp}: {wanted}={value!r} is not a number") from exc
+    raise RefusedError(f"{stamp}: has no {wanted}= line")
+
+
+def staging_budget(stage: Path) -> float | None:
+    """The `time-limit=` line of a staging directory's stamp; None when it has no stamp."""
+    return _stamp_number(stage, STAMP_BUDGET_KEY)
+
+
+def reconcile_shard_seed(scip: ScipSide, shards: Path) -> None:
+    """Refuse a shard stamp whose `seed=` is not the seed in SCIP's rows (#323).
+
+    A `.failed` marker carries no seed, so a `--restart --seed 1` beside a seed 0
+    campaign's rows would otherwise read its own failures as the campaign's.
+    Mixed row seeds are `mixed SCIP versions`, refused where the versions are read.
+    """
+    stamped = _stamp_number(shards, STAMP_SEED_KEY)
+    matches = (SCIP_SEED_FIELD.search(row.version) for row in scip.rows.values())
+    seeds = sorted({float(m.group(1)) for m in matches if m})
+    if stamped is not None and seeds and seeds != [stamped]:
+        rows = ", ".join(f"{s:g}" for s in seeds)
+        raise RefusedError(f"SCIP scip_version seed {rows}, but SCIP shard stamp seed {stamped:g}")
 
 
 def table_budget(table: Path) -> float | None:
@@ -944,6 +970,7 @@ def run(args: argparse.Namespace) -> Score:
     budget = reconcile_budget(
         {"SCIP scip_version": scip_budget(scip), **shard_stamp, **derived}, args.budget
     )
+    reconcile_shard_seed(scip, args.scip_shards)
     return score(
         bounds,
         cbls,

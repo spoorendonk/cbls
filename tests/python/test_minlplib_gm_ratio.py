@@ -631,6 +631,24 @@ def test_a_shard_stamp_unlike_the_scip_rows_is_refused(
     assert main(argv) == 0
 
 
+def test_a_shard_stamp_seed_unlike_the_scip_rows_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """#323: `--restart --seed 1 --instances y` beside a seed 0 campaign's rows, at one budget."""
+    bounds, table, shards = campaign(tmp_path, [("a", 0.0, 0.0), ("y", 0.0, 0.0)])
+    (shards / "y.csv").unlink()
+    write_failed(shards, "y")
+    (shards / "stamp.txt").write_text("time-limit=60\nseed=1\n")
+    argv = ["--bounds", str(bounds), "--cbls", str(table), "--scip-shards", str(shards)]
+    assert main(argv) == EXIT_REFUSED
+    assert "SCIP scip_version seed 0, but SCIP shard stamp seed 1" in capsys.readouterr().err
+    (shards / "stamp.txt").write_text("time-limit=60\n")
+    assert main(argv) == EXIT_REFUSED
+    assert "has no seed= line" in capsys.readouterr().err
+    (shards / "stamp.txt").write_text("time-limit=60\nseed=0\n")
+    assert main(argv) == 0
+
+
 # --------------------------------------------------------------------------
 # Staging and shard directories.
 # --------------------------------------------------------------------------
