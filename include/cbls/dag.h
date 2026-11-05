@@ -165,10 +165,10 @@ enum class NodeOp : uint8_t {
     /// blocks on either now; zero first-party warnings and zero clang-tidy
     /// findings are checked by hand before a push (CLAUDE.md, Git Hooks).
     /// `.githooks/tidy-probe.sh` proves the clang-tidy check still bites. Only a
-    /// `default:`-free switch is covered -- not an `if`/`==`
-    /// chain, and not `node_is_affine` in `src/feasibility_jump.cpp`, whose
-    /// deliberate `default:` classes a new op as non-affine without a word --
-    /// so `grep -rn 'NodeOp::' src/ include/ python/` for the rest.
+    /// `default:`-free switch is covered -- not an `if`/`==` chain, and not
+    /// `node_is_affine` in `src/feasibility_jump.cpp`, whose deliberate
+    /// `default:` classes a new op as non-affine without a word -- so
+    /// `grep -rn 'NodeOp::' src/ include/ python/` for the rest.
     Custom,
     // The six below are #186's, appended after `Custom` for the same reason
     // `Custom` was appended last: every existing enumerator keeps its value.

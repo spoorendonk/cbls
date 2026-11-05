@@ -29,7 +29,7 @@ if(NB_DIR_RESULT EQUAL 0 AND NB_DIR)
     # its macros generate is attributed to the expansion site in bindings.cpp --
     # code we did not write and cannot change. NB_MODULE alone expands to a
     # C-style array, which clang-tidy's modernize-avoid-c-arrays reports at
-    # `NB_MODULE(_cbls_core, m)`. clang-tidy is a hard block at push (#121), so
+    # `NB_MODULE(_cbls_core, m)`. clang-tidy must report zero before a push (#121), so
     # re-declaring the same directory SYSTEM is what keeps third-party findings
     # out of our ratchet; CMake de-duplicates and emits it once, as -isystem.
     # Our own code in bindings.cpp is still fully checked. Spelled here rather

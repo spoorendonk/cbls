@@ -1,8 +1,10 @@
 #!/bin/bash
 # Shared, pure text filters for the compiler-warning gates (issue #171).
 #
-# Sourced by pre-push and tidy-probe.sh, and exercised on synthetic input by
-# .githooks/tests/gate-lib-test.sh (ctest `gate_lib_shell_test`). They live
+# Sourced by tidy-probe.sh, and exercised on synthetic input by
+# .githooks/tests/gate-lib-test.sh (ctest `gate_lib_shell_test`). The pre-wcp
+# pre-push sourced them too; today's hooks do not (docs/git-hooks.md), and the
+# push-time filters below wait for a lint fence to use them again. They live
 # apart from the hooks precisely so they can be tested: each decides what a
 # gate sees, and a filter that silently matches nothing makes the gate pass.
 #
@@ -117,14 +119,15 @@ scan_build_log() {
 # hook_files_that_are_code: of the changed paths on stdin, the .githooks/ files
 # a push must still build and test for, though the hooks directory is otherwise
 # treated as not-code by pre-push. The probe and its lib feed a CMake target and
-# two ctests; pre-push itself holds the compiler-warning scan, which only a
-# build exercises.
+# two ctests; the pre-wcp pre-push also held the compiler-warning scan, which
+# only a build exercises.
 hook_files_that_are_code() {
 	grep -E '^\.githooks/(tidy-probe|gate-lib|tests/|pre-push$)' || true
 }
 
 # probe_trigger_files: of the changed paths on stdin, those that can change
-# what the clang-tidy gate sees, so pre-push runs tidy-probe.sh for them.
+# what the clang-tidy gate sees, for which the pre-wcp pre-push ran
+# tidy-probe.sh.
 probe_trigger_files() {
 	grep -E '(^|/)\.clang-tidy$|(^|/)CMakeLists\.txt$|^\.githooks/(tidy-probe|gate-lib\.sh$)' || true
 }

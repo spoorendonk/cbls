@@ -1,5 +1,5 @@
-# Check contract for the clang-tidy runs in .githooks/pre-commit (safe --fix
-# subset) and .githooks/pre-push (full sweep, hard block).
+# Check contract for clang-tidy over the changed files, run by hand before a
+# push (CLAUDE.md, Git Hooks): no hook runs it now (docs/git-hooks.md).
 #
 # Owned by this repository, like its sibling .clang-format.
 #
@@ -148,9 +148,9 @@
 #
 # It cannot stand alone either: it is a mapping of compiler diagnostics, not a
 # registered check, so `-*,clang-diagnostic-*` exits 1 with "Error: no checks
-# enabled." The gate probe, .githooks/tidy-probe.sh -- run by pre-push when a
-# .clang-tidy or CMakeLists.txt changes, and by ctest as
-# `clang_tidy_gate_probe` -- lints a copy of
+# enabled." The gate probe, .githooks/tidy-probe.sh -- run by ctest as
+# `clang_tidy_gate_probe`, so by pre-push's test fence (skipped when the
+# pinned clang-tidy is missing) -- lints a copy of
 # .githooks/tidy-probe/incomplete_switch.cpp in every config directory,
 # through clang-tidy's own directory lookup over a mirror of the configs, and
 # fails unless the incomplete enum-class switch in it is reported. So an edit here that drops

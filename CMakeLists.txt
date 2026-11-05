@@ -165,8 +165,8 @@ FetchContent_MakeAvailable(json)
 # diagnostic the compile command turned on (-Wunused-variable, the -Wextra set).
 # -Wswitch -- what reports a NodeOp that some `default:`-free switch in
 # src/dag.cpp or src/io.cpp does not handle -- is on by default in clang but
-# only under -Wall in GCC, the compiler this build actually uses, whose output
-# the pre-push hook also gates.
+# only under -Wall in GCC, the compiler the Linux build uses, whose output is
+# also checked by hand before a push (CLAUDE.md, Git Hooks).
 #
 # Per target, never add_compile_options(): a directory-wide flag would also
 # reach Catch2's own library, which FetchContent builds in this tree, and the
@@ -180,14 +180,15 @@ FetchContent_MakeAvailable(json)
 # No -Werror, deliberately. Two reasons, the second measured:
 #  - It would turn the next compiler release's new -Wall member into a build
 #    that does not compile, on a user's machine as readily as ours.
-#  - It breaks the clang-tidy gate. With -Werror in compile_commands.json every
+#  - It breaks clang-tidy. With -Werror in compile_commands.json every
 #    clang-diagnostic finding becomes a compiler error, clang-tidy exits 1, and
-#    the pre-push hook reports a configuration fault instead of the finding.
-# The blocking gates are instead the pre-push clang-tidy sweep (clang's view of
-# these flags) and the pre-push scan of the gated build's own output (GCC's
-# view -- at this commit GCC reported two -Wrange-loop-construct that clang
-# does not, so the sweep alone is not enough). That scan follows the local
-# GCC version, so a compiler upgrade can block a push -- never a user's build.
+#    the run reports a configuration fault instead of the finding.
+# The checks are instead clang-tidy over the changed files (clang's view of
+# these flags) and a read of the build's own output (GCC's view -- at #171 GCC
+# reported two -Wrange-loop-construct that clang does not, so clang-tidy alone
+# is not enough). Since 2026-10-14 no hook runs either: both are checked by
+# hand before a push (docs/git-hooks.md). A compiler upgrade can add warnings
+# to fix before a push -- never break a user's build.
 #
 # Only flags both compilers know belong here: clang-tidy parses this command
 # line, and a GCC-only -W option would make every TU report

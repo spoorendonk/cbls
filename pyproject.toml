@@ -19,15 +19,12 @@ dev = [
     # the import -- pytest exits 2 having run nothing -- rather than skip one
     # file. mypy --strict over every tracked .py needs it for the same reason.
     "numpy>=1.24",
-    # Without these, a `.[dev]`-only install yields
-    # a pre-push whose Python gate cannot run at all. (That gate now reports a
-    # missing tool as a finding rather than skipping in silence; the older
-    # advisory ruff/mypy steps still guard on the binary existing and skip
-    # quietly, which is why they are advisory.)
+    # Without these, a `.[dev]`-only install yields a pre-commit whose
+    # Python gate (ruff and mypy over the whole tree) cannot run at all.
     #
     # Pinned exactly, for the same reason as the clang tools below and stated
-    # once there: both are a HARD BLOCK at push over every tracked .py outside
-    # benchmarks/ (issue #154), and both change their finding set and their
+    # once there: both are a HARD BLOCK at commit over the whole tree
+    # (docs/git-hooks.md), and both change their finding set and their
     # formatter style between releases. Unpinned, "the gated files are at zero"
     # silently means "at zero on whichever version this checkout resolved", and
     # a fresh clone six months from now goes red with no code change — whose

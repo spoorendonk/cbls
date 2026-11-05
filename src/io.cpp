@@ -78,11 +78,11 @@ static std::string op_to_string(NodeOp op) {
             // prints an op does not say "Unknown".
             //
             // This switch is `default:`-free so that -Wswitch names any op
-            // nobody handled, and since #171 that is a gate: the build passes
-            // -Wall and pre-push fails on a warning in its output, and the
-            // clang-tidy sweep reports `clang-diagnostic-switch` (measured:
-            // deleting this case is reported by both). See the note on
-            // evaluate() in src/dag.cpp.
+            // nobody handled: since #171 the build passes -Wall, and
+            // clang-tidy reports `clang-diagnostic-switch` (measured:
+            // deleting this case is reported by both). No hook blocks on
+            // either; both are checked by hand before a push. See the note
+            // on evaluate() in src/dag.cpp.
             return "Custom";
         case NodeOp::Element:
             return "Element";

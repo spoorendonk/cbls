@@ -3,9 +3,9 @@
 #
 # Usage: .githooks/tidy-probe.sh CLANG_TIDY BUILD_DIR
 #
-# Run by ctest as `clang_tidy_gate_probe` on every full or fast suite run, and
-# by the pre-push hook whenever the push could change what the gate sees (a
-# .clang-tidy, a CMakeLists.txt, or this probe).
+# Run by ctest as `clang_tidy_gate_probe` on every full or fast suite run, so
+# by pre-push's test fence. (The pre-wcp pre-push also ran it whenever a push
+# changed a .clang-tidy, a CMakeLists.txt or this probe; docs/git-hooks.md.)
 #
 # The gate needs two things that each fail OPEN when missing, which is why a
 # probe rather than a review guards them:
@@ -18,8 +18,8 @@
 #      a diagnostic the build does not turn on can never be reported, whatever
 #      the check list says. (Not -Wswitch itself: clang enables that by
 #      default, so for the NodeOp switches item 1 was the whole hole on the
-#      clang-tidy side. GCC, which compiles the build, needs -Wall for it --
-#      pre-push gates GCC's warnings separately.)
+#      clang-tidy side. GCC, which compiles the Linux build, needs -Wall for it --
+#      GCC's warnings are read from the build log by hand before a push.)
 #
 # Check A (flags) reads only the compile database, so it runs even where there
 # is no clang-tidy: a checkout without .venv still gets it.

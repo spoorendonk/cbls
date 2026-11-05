@@ -238,11 +238,12 @@ static double pair_lambda_extra_value(const ExprNode& node, ConstSpan<ChildRef> 
 // dispatch-through-a-table alternative outright.
 //
 // ADDING A NodeOp: the switch is deliberately `default:`-free, so a missed case is
-// a -Wswitch warning, and since #171 that warning blocks a push twice over: GCC
-// compiles this with -Wall and pre-push fails on a warning in the build output,
-// and the clang-tidy gate reports `clang-diagnostic-switch` (before #171 neither
-// did -- no -Wall, and `.clang-tidy`'s leading `-*` switched the diagnostics
-// off). `.githooks/tidy-probe.sh` keeps proving the clang-tidy half bites. Never
+// a -Wswitch warning, and since #171 it shows up twice over: GCC compiles this
+// with -Wall, and clang-tidy reports `clang-diagnostic-switch` (before #171
+// neither did -- no -Wall, and `.clang-tidy`'s leading `-*` switched the
+// diagnostics off). No hook blocks on either now: both are checked by hand
+// before a push (CLAUDE.md, Git Hooks). `.githooks/tidy-probe.sh` keeps proving
+// the clang-tidy half bites. Never
 // add a `default:` here: it is exactly what would hide the missed case. The
 // warning covers `default:`-free switches only, so `grep -rn 'NodeOp::' src/
 // include/ python/` for the other places an op is named: `src/io.cpp` has two
@@ -519,7 +520,7 @@ static double extremum_share(const ExprNode& node, ConstSpan<ChildRef> children,
 // non-finite or non-differentiable point rather than any nesting between them.
 // It scores higher than evaluate() only because a derivative needs more such
 // guards, not because the cases interact. Reverse-mode AD calls it once per DAG
-// edge, so it sits on the same hot path. The `default:`-free table is gated the
+// edge, so it sits on the same hot path. The `default:`-free table is checked the
 // same way -- see the note on evaluate() above.
 //
 // Non-finite partials. Every propagation pass multiplies the edges along a path

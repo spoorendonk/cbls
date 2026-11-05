@@ -22,8 +22,8 @@
 //     includes below are for -- a sync that takes upstream's include block
 //     wholesale drops both and the file stops compiling. Every value, capacity and control flow is
 //     unchanged. RE-APPLY THESE after any sync that rewrites those lines --
-//     clang-tidy is a hard block at push, so an upstream hunk that reverts
-//     them turns the gate red on someone else's commit. They are fixed here
+//     clang-tidy must report zero before a push, so an upstream hunk that
+//     reverts them leaves findings for someone else's commit to fix. They are fixed here
 //     rather than by switching the checks off in src/io/.clang-tidy so
 //     that the three native adapters in this directory keep that coverage;
 //     the naming check is exempted there instead, because renaming
