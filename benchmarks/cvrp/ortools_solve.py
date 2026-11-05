@@ -19,10 +19,12 @@ largest X instances is a different model size, not a looser constraint, and
 nothing. `R` can still bind harder here than for `cbls_cvrp`: that searches
 through capacity-infeasible states, while OR-Tools' greedy construction must
 place every customer within `R` routes, and if it cannot, the solve fails
-before any search (`routing_status` ROUTING_FAIL, a row with
-`feasible=false`). Instances with few customers per route and a tight `k` are
-the likeliest, so read `routing_status` on a roster before publishing its
-OR-Tools rows.
+before any search: a row with `feasible=false` and `routing_status`
+ROUTING_FAIL_TIMEOUT (measured on X-n101-k25 at fleets 1 and 10), the status a
+budget too short for the construction gives as well, so the status alone does
+not separate the two. Instances with few customers per route and a tight `k`
+are the likeliest; `score.py` lists every such row, so read them on a roster
+before publishing its OR-Tools rows.
 
 THE SEARCH. First solution `PATH_CHEAPEST_ARC`, then `GUIDED_LOCAL_SEARCH`,
 both OR-Tools' documented CVRP defaults; every other parameter is the library

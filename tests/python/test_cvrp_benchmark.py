@@ -646,11 +646,12 @@ def test_score_calls_out_failing_routing_statuses_by_name(tmp_path: Path) -> Non
     for instance in SMOKE:
         _write_ortools_run(results, instance, seed=1, status=2)
         _write_ortools_run(results, instance, seed=2, status=1)
-    _write_ortools_run(results, SMOKE[1], seed=2, status=3)
+    _write_ortools_run(results, SMOKE[1], seed=2, status=4)
     _write_ortools_run(results, SMOKE[0], seed=1, status=99)
     text = _score(results)
     assert "## OR-Tools rows with a failing routing_status" in text
-    assert f"| {SMOKE[1]} | 2 | ROUTING_FAIL |" in text
+    assert "The status does not separate a fleet too tight" in text
+    assert f"| {SMOKE[1]} | 2 | ROUTING_FAIL_TIMEOUT |" in text
     assert f"| {SMOKE[0]} | 1 | unknown status 99 |" in text
     assert text.count("ROUTING_") == 1
     # A failed row still counts as an infeasible run, not as a dropped one.
@@ -664,6 +665,7 @@ def test_score_says_when_no_routing_status_fails(tmp_path: Path) -> None:
     text = _score(results)
     assert f"None of the {len(SMOKE)} OR-Tools rows has a failing routing_status." in text
     assert "| routing_status |" not in text
+    assert "The status does not separate" not in text
 
 
 def test_score_has_no_routing_section_without_ortools_rows(tmp_path: Path) -> None:

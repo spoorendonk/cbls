@@ -340,8 +340,10 @@ def band_table(runs: list[Run], customers: dict[str, int]) -> list[str]:
 
 def routing_callout(runs: list[Run]) -> list[str]:
     """OR-Tools rows whose search did not run as asked (#204): called out rather
-    than refused, because a failed construction is a result of the fleet it was
-    given (`ortools_solve.py`), and re-running would repeat it. Empty without
+    than refused, because a failed construction can be a result of the fleet it
+    was given, which re-running would repeat. The status cannot say which: a
+    fleet too tight and a budget too short both give ROUTING_FAIL_TIMEOUT
+    (`ortools_solve.py`), so the section says to read the rows. Empty without
     OR-Tools rows."""
     rows = [r for r in runs if r.group[0] == "ortools"]
     if not rows:
@@ -350,7 +352,13 @@ def routing_callout(runs: list[Run]) -> list[str]:
     lines = ["", "## OR-Tools rows with a failing routing_status", ""]
     if not failing:
         return [*lines, f"None of the {len(rows)} OR-Tools rows has a failing routing_status."]
-    lines += ["| instance | seed | routing_status |", "|---|---|---|"]
+    lines += [
+        "The status does not separate a fleet too tight for the construction from a budget "
+        "too short for it: read these rows before publishing them.",
+        "",
+        "| instance | seed | routing_status |",
+        "|---|---|---|",
+    ]
     for run in sorted(failing, key=lambda r: (r.instance, r.seed)):
         status = _int(run.record["routing_status"])
         name = ROUTING_STATUS_NAMES.get(status, f"unknown status {status}")
