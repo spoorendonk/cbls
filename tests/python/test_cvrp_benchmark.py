@@ -574,6 +574,34 @@ def test_check_publishable_refuses_the_full_roster_and_its_unflagged_dev_rows(
     score.check_publishable(runs, [], "report", 60.0)
 
 
+def test_a_run_over_more_than_the_roster_publishes_without_its_dev_rows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The published command end to end: a stand-in `report` of all but one smoke
+    instance, whose row in the directory plays a dev row, even a failed one."""
+    inst_dir = tmp_path / "inst"
+    (inst_dir / "X").mkdir(parents=True)
+    dev, *held_out = SMOKE
+    for instance in held_out:
+        shutil.copy(INST_DIR / "X" / f"{instance}.vrp", inst_dir / "X")
+    shutil.copy(INST_DIR / "manifest.csv", inst_dir)
+    rows = (INST_DIR / "smoke.csv").read_text().splitlines()
+    report = [rows[0], *(r for r in rows[1:] if not r.startswith(f"{dev},"))]
+    (inst_dir / "report.csv").write_text("\n".join(report) + "\n")
+    out = tmp_path / "results.md"
+    monkeypatch.setattr(score, "PUBLISHED_TABLE", out)
+    results = _stamped(tmp_path / "r")
+    _write_run(results, dev, arm=DEFAULT, budget=60.0, status=rb.STATUS_FAILED)
+    for instance in held_out:
+        _write_run(results, instance, arm=DEFAULT, budget=60.0)
+        _write_run(results, instance, arm=DEFAULT, budget=60.0, threads=8)
+    argv = [str(results), "--roster", "report", "--budget", "60"]
+    assert score.main([*argv, "--inst-dir", str(inst_dir), "--out", str(out)]) == 0
+    text = out.read_text()
+    assert f"| cbls/default t8 | {held_out[0]} |" in text
+    assert dev not in text
+
+
 def test_score_refuses_the_published_table_across_thread_counts(tmp_path: Path) -> None:
     """Above one thread, only the Hexaly row set is published (#200, #204)."""
     results = _stamped(tmp_path / "r")

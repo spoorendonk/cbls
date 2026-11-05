@@ -124,8 +124,8 @@ start, guided local search, the same matrix, budget and fleet as `cbls_cvrp`,
 also single-threaded and paired only at `--threads 1`. Its search takes no
 seed, so its seeds differ only in timing. Hexaly is quoted, not re-run: its published X-set
 figures (60 s, AMD Ryzen 7 7700, 8 cores; 0.7% average, 0.1 / 0.5 / 0.6 / 0.8 /
-0.9% per size band) are different hardware, and a different budget or thread
-count wherever a row's differ, and `score.py` prints them labelled so beside
+0.9% per size band) are different hardware, and different instances, budget or
+thread count wherever a row's differ, and `score.py` prints them labelled so beside
 its per-band table. Its 8-thread `cbls` rows at 60 s are the set to read beside
 them; `--threads` above the physical cores allowed is refused unless
 `--not-comparable`.
@@ -142,9 +142,9 @@ the baselines run at `--threads 1` alone. It needs a machine with 8 physical
 cores, and every group on the same seeds:
 
 ```sh
-.venv/bin/python benchmarks/cvrp/run_benchmark.py --roster full --budget 60 \
+xk lock -- .venv/bin/python benchmarks/cvrp/run_benchmark.py --roster full --budget 60 \
     --seeds 1 2 3 4 5 --arms default pyvrp ortools --threads 1 --results RESULTS
-.venv/bin/python benchmarks/cvrp/run_benchmark.py --roster full --budget 60 \
+xk lock -- .venv/bin/python benchmarks/cvrp/run_benchmark.py --roster full --budget 60 \
     --seeds 1 2 3 4 5 --arms default --threads 8 --results RESULTS
 .venv/bin/python benchmarks/cvrp/score.py RESULTS --roster report --budget 60 \
     --ab cbls/default@1 pyvrp --out benchmarks/instances/cvrp/results.md

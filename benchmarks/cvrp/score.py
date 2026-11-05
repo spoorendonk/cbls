@@ -310,8 +310,9 @@ def band_of(customers: int) -> int | None:
 def band_table(runs: list[Run], customers: dict[str, int]) -> list[str]:
     lines = [
         f"Hexaly: published figures, {HEXALY_BUDGET:g} s on an AMD Ryzen 7 7700 "
-        f"({HEXALY_THREADS} cores) -- different hardware, and a different budget or thread "
-        "count wherever a row's differ; quoted for context, not a paired comparison.",
+        f"({HEXALY_THREADS} cores), over the whole X set -- different hardware, and different "
+        "instances, budget or thread count wherever a row's differ; quoted for context, "
+        "not a paired comparison.",
         "",
         "| group | band | instances | with a feasible run | mean of instance mean gaps % "
         "| Hexaly % |",
