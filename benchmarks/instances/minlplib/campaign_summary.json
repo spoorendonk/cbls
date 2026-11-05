@@ -1359,7 +1359,7 @@
   "not_regenerated": [
     "#107's BEFORE column itself: a pre-#107 table that is not committed, held as the FREE_VARIABLES_BEFORE_* / NO_FREE_VARIABLES_BEFORE_* constants (the differences from the generated column are rendered), and #107's own AFTER figures, which were the previous published table's (21086c2+107).",
     "Per-seed and multi-commit measurements (nvs01's eight seeds, the #102 probe, the portfolio A/B, the replication spreads quoted in Results, the st_e40/nvs01 re-checks): separate campaigns, not the committed tables.",
-    "The across-seed spread, the per-instance median/range table and the LNS repair summary in Results: transcribed from the driver's across-seed summary (campaign_report.py --seeds) and comparison_seeds.csv, which no README block renders.",
+    "The across-seed spread, the per-instance median/range table and the LNS repair summary in Results: transcribed from the driver's across-seed summary (campaign_report.py --seeds) and comparison_seeds.csv, which no README block renders; and the previous table's cells beside them, read from git history.",
     "The ex6_2_6 'stale catalogue row' note under SCIP baseline: a prose reading of one scip_baseline.csv row, not an aggregate.",
     "SCIP's CPU/wall ratio (~1.0), its clock type and its version string as quoted in prose: measured or read from SCIP, not from the tables' aggregates.",
     "Machine descriptions of runs with no run record (the SCIP run's hardware).",

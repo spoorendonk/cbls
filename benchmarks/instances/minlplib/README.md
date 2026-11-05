@@ -494,8 +494,8 @@ own, and a later seed refuses that dirty tree.
    Review the diff. Pass no `--budget`, `--seed` or `--machine`: they are read
    from `comparison.run.json`, a stated value the record contradicts (and any
    `--machine`) is a provenance warning, and the rewrite is refused on any
-   provenance warning, when a documented failure came back feasible, or when the
-   record names another commit than the rows. `--check-readme` instead exits 1
+   provenance warning or when a documented failure came back feasible. A record
+   naming another commit than the rows is refused outright, in every mode. `--check-readme` instead exits 1
    naming any stale block, as `test_the_committed_readme_blocks_are_the_generators_rendering`
    and `test_the_committed_summary_json_is_the_generators` fail; `README_BUDGET` /
    `README_SEED` / `README_MACHINE` in that test file stay `None`, matching the
@@ -553,8 +553,9 @@ full-library `bounds.csv` and writes nothing under `benchmarks/instances/`
 
 The published table is seed 1, pre-registered, of #123's three-seed campaign;
 seeds 2 and 3 are in `comparison_seeds.csv` and their spread under "Across
-seeds", beside this table, never in place of it. Every number in this section
-comes from that one run and its committed `anytime_trace.csv`, reproducible
+seeds", beside this table, never in place of it. The tally, the gap buckets
+and the anytime profile come from that one run and its committed
+`anytime_trace.csv`, reproducible
 from the commit each row's `commit_sha` names. The budget is wall-clock, so a
 fixed seed does not pin the iteration count: re-running an *unmodified* binary
 at one seed moved `kall_ellipsoids_tc02b` from 55.1% to 78.2%. Treat a row as
@@ -611,8 +612,12 @@ Five rows have a numerically zero BKS (`|BKS| < 1e-12`), for which the runner wr
 Seeds 1, 2 and 3, all at engine commit `4524460`, 60s per instance, one solve at
 a time with one thread, `resumed: 0` in every record, on one host (AMD Ryzen 5
 5600H, 12 logical CPUs, 13.0 GiB, per the run records). The start-of-run
-1-minute loads (0.73 / 0.92 / 0.49) were not the "near zero" step 7 asks for;
-the run diary is on [#123](https://github.com/spoorendonk/cbls/issues/123).
+1-minute loads (0.73 / 0.92 / 0.49) were not the "near zero" step 7 asks for.
+Only seed 2's is step 7's back-to-back case (seed 3's last solve decaying);
+seed 1's followed the preflight and runner build, seed 3's another session's
+pre-push `ctest`. Neither is a tenant during the run, but both are judgements
+from the timeline, not records. The run diary is on
+[#123](https://github.com/spoorendonk/cbls/issues/123).
 
 **Spread.** Feasible: **48 on every seed**. Matching BKS, over the 48 claim-set
 rows: **26 / 27 / 28** (min / median / max; seeds 1/2/3: 28, 27, 26). `elec25`
@@ -679,10 +684,13 @@ row, whose cell is an absolute residual. The last column is `lns_repairs`
 | `eg_all_s` | 88.3 | 3.43 | 3.43 – 88.3 | 0 (0) / 0 (0) / 0 (0) |
 
 **What moved since the previous table** (one seed at `21086c2+107`, committed
-in `0648067`): feasible 46 → 48 (`nvs01` and `st_e40`); 18 rows better than
-every new seed (those two and three zero-BKS rows among them), 3 worse
-(`chain50`, `gear4`, `st_e08`, which no longer matches BKS), the rest inside the
-new range. This sums 291 engine commits between `0648067` and `4524460` with no
+in `0648067`), sorting claim-set rows by `gap_to_bks%` (infeasible worst): a
+row is better when the old value is worse than all three new seeds, worse when
+it is better than all three, else inside the new range; rows `matches-bks` in
+the old table and on all three seeds are left out as unchanged. Feasible 46 →
+48 (`nvs01` and `st_e40`); 18 better (those two and three zero-BKS rows among
+them), 3 worse (`chain50`, `gear4`, `st_e08`, which no longer matches BKS), the
+rest inside. This sums 291 engine commits between `0648067` and `4524460` with no
 per-change ablation, so no row is attributed to a single change except `st_e40`
 and `nvs01` (#102, measured beforehand), and it is not evidence that the search
 got better in the sense #87 asks about. The per-row comparison and the
@@ -824,7 +832,8 @@ line before the verdict.
 
 First buy the eligibility floor cheaply: a three-seed (`1 42 7`), 10 s pilot
 (~25 minutes, another directory) whose `determined + not-determined +
-final-invariant + arrival-invariant` reaches 10; never quote its verdict. Check
+final-invariant + arrival-invariant` at or above 10 says the real campaign will
+clear the floor comfortably; never quote its verdict. Check
 the printed `nvs01` `r` against 0.945 first: a large gap means a wrong
 measurement or engine drift. Record verdict, commit, seeds and budget here. It
 **does not authorise an engine change**, which #149 sends to its own issue,
