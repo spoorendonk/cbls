@@ -63,6 +63,13 @@ def test_a_name_without_k_is_refused() -> None:
     assert ort.main(["--instance", "X-n101", "--budget", "1"]) == 2
 
 
+def test_the_scorers_routing_status_names_are_the_enums() -> None:
+    from ortools.constraint_solver import routing_enums_pb2  # noqa: PLC0415
+
+    enum = routing_enums_pb2.RoutingSearchStatus.DESCRIPTOR.enum_types_by_name["Value"]
+    assert {v.number: v.name for v in enum.values} == score.ROUTING_STATUS_NAMES
+
+
 def test_ortools_is_single_threaded_only() -> None:
     assert ort.main(["--instance", "X-n101-k25", "--threads", "2"]) == 2
 
@@ -95,6 +102,8 @@ def test_ortools_solve_writes_a_record_and_sol_the_verifier_accepts(tmp_path: Pa
     assert record["feasible"] is True and record["verified"] is True
     assert record["fleet"] == 28 and record["routes_used"] <= 28
     assert record["solutions_found"] >= 1
+    assert record["routing_status"] in score.ROUTING_STATUS_GOOD
+    assert filed["routing_status"] == record["routing_status"]
     ttff = record["time_to_first_feasible"]
     assert ttff is not None and 0 < ttff <= record["wall_seconds"]
     verdict = verify(INST_DIR / "X" / "X-n101-k25.vrp", sol, record["objective"])

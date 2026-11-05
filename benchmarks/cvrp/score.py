@@ -22,11 +22,14 @@ What is scored, per group:
   95% t interval over the pairs and over the per-instance means, plus a sign test
   over instances -- the instance level is the one to read, since seeds are nested
   in instances. Only pairs where both runs are feasible differ; the rest are
-  counted.
+  counted;
+* for OR-Tools: the rows whose `routing_status` is failing, by name, or a line
+  saying there are none (#204).
 
 What is refused, rather than scored:
 
 * a record missing a `RECORD_FIELDS` entry;
+* an OR-Tools row with no `routing_status`;
 * more than one budget, unless `--budget` picks one;
 * a row whose `status` is not `ok` -- a timeout or a failed run is a defect to
   re-run (`run_benchmark.py --retry-failed`), not an infeasible result;
@@ -126,6 +129,25 @@ HEXALY_THREADS = 8
 HEXALY_BUDGET = 60.0
 
 
+#: OR-Tools' `RoutingSearchStatus`, by number: this module cannot import ortools,
+#: so `tests/python/test_cvrp_ortools.py` pins these against the enum.
+ROUTING_STATUS_NAMES: dict[int, str] = {
+    0: "ROUTING_NOT_SOLVED",
+    1: "ROUTING_SUCCESS",
+    2: "ROUTING_PARTIAL_SUCCESS_LOCAL_OPTIMUM_NOT_REACHED",
+    3: "ROUTING_FAIL",
+    4: "ROUTING_FAIL_TIMEOUT",
+    5: "ROUTING_INVALID",
+    6: "ROUTING_INFEASIBLE",
+    7: "ROUTING_OPTIMAL",
+}
+
+#: The statuses of a search that ran as asked: a budget that ends the search
+#: before a local optimum is the normal end of a timed run. Anything else,
+#: a number not listed included, is called out in the table (#204).
+ROUTING_STATUS_GOOD: frozenset[int] = frozenset({1, 2, 7})
+
+
 class ScoreError(Exception):
     """A refusal; the message says what and why."""
 
@@ -203,6 +225,8 @@ def _row_refusal(path: Path, record: dict[str, object], inst_dir: Path) -> str |
     completed = record.get("workers_completed")
     if isinstance(completed, int) and completed < _int(record["threads"]):
         return f"{path}: {completed} of {record['threads']} portfolio workers completed (#170)"
+    if record["engine"] == "ortools" and type(record.get("routing_status")) is not int:
+        return f"{path}: no routing_status, so #204's check on it cannot be made"
     if record["feasible"] is True and record["objective"] is not None:
         sol = path.with_name(path.name.removesuffix(".json") + ".sol")
         if not sol.exists():
@@ -311,6 +335,26 @@ def band_table(runs: list[Run], customers: dict[str, int]) -> list[str]:
                 f"| {_fmt(statistics.fmean(means) if means else math.nan)} "
                 f"| {HEXALY_BAND_GAPS[band]:.1f} |"
             )
+    return lines
+
+
+def routing_callout(runs: list[Run]) -> list[str]:
+    """OR-Tools rows whose search did not run as asked (#204): called out rather
+    than refused, because a failed construction is a result of the fleet it was
+    given (`ortools_solve.py`), and re-running would repeat it. Empty without
+    OR-Tools rows."""
+    rows = [r for r in runs if r.group[0] == "ortools"]
+    if not rows:
+        return []
+    failing = [r for r in rows if _int(r.record["routing_status"]) not in ROUTING_STATUS_GOOD]
+    lines = ["", "## OR-Tools rows with a failing routing_status", ""]
+    if not failing:
+        return [*lines, f"None of the {len(rows)} OR-Tools rows has a failing routing_status."]
+    lines += ["| instance | seed | routing_status |", "|---|---|---|"]
+    for run in sorted(failing, key=lambda r: (r.instance, r.seed)):
+        status = _int(run.record["routing_status"])
+        name = ROUTING_STATUS_NAMES.get(status, f"unknown status {status}")
+        lines.append(f"| {run.instance} | {run.seed} | {name} |")
     return lines
 
 
@@ -560,6 +604,7 @@ def score(args: argparse.Namespace) -> str:
         "## Per size band",
         "",
         *band_table(runs, customers),
+        *routing_callout(runs),
     ]
     if args.ab:
         lines += ["", "## Paired A/B", "", *paired_ab(runs, args.ab[0], args.ab[1])]

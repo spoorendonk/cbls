@@ -617,6 +617,81 @@ def test_published_threads_refuse_any_other_thread_count(
         score.check_published_threads(groups, 60.0)
 
 
+def test_check_publishable_refuses_groups_on_different_seed_sets(tmp_path: Path) -> None:
+    results = _stamped(tmp_path / "r")
+    for seed in (1, 2):
+        _write_run(results, SMOKE[0], arm=DEFAULT, seed=seed)
+    _write_run(results, SMOKE[0], arm=DEFAULT, threads=8)
+    runs = score.build_runs(score.load_records(results), dict(BKS), INST_DIR)
+    with pytest.raises(score.ScoreError, match="different seeds"):
+        score.check_publishable(runs, [], "report", 60.0)
+
+
+ORTOOLS = rb.ARMS["ortools"]
+
+
+def _write_ortools_run(results: Path, instance: str, *, seed: int, status: int) -> Path:
+    """An OR-Tools row; a failed status has the shape `ortools_solve.py` leaves."""
+    path = _write_run(results, instance, arm=ORTOOLS, seed=seed, engine="ortools")
+    record = json.loads(path.read_text())
+    record["routing_status"] = status
+    if status not in score.ROUTING_STATUS_GOOD:
+        record.update(feasible=False, objective=None, time_to_first_feasible=None)
+    path.write_text(json.dumps(record))
+    return path
+
+
+def test_score_calls_out_failing_routing_statuses_by_name(tmp_path: Path) -> None:
+    results = _stamped(tmp_path / "r")
+    for instance in SMOKE:
+        _write_ortools_run(results, instance, seed=1, status=2)
+        _write_ortools_run(results, instance, seed=2, status=1)
+    _write_ortools_run(results, SMOKE[1], seed=2, status=3)
+    _write_ortools_run(results, SMOKE[0], seed=1, status=99)
+    text = _score(results)
+    assert "## OR-Tools rows with a failing routing_status" in text
+    assert f"| {SMOKE[1]} | 2 | ROUTING_FAIL |" in text
+    assert f"| {SMOKE[0]} | 1 | unknown status 99 |" in text
+    assert text.count("ROUTING_") == 1
+    # A failed row still counts as an infeasible run, not as a dropped one.
+    assert f"| ortools/ortools t1 | {SMOKE[1]} | 2 | 1 |" in text
+
+
+def test_score_says_when_no_routing_status_fails(tmp_path: Path) -> None:
+    results = _stamped(tmp_path / "r")
+    for instance in SMOKE:
+        _write_ortools_run(results, instance, seed=1, status=7)
+    text = _score(results)
+    assert f"None of the {len(SMOKE)} OR-Tools rows has a failing routing_status." in text
+    assert "| routing_status |" not in text
+
+
+def test_score_has_no_routing_section_without_ortools_rows(tmp_path: Path) -> None:
+    results = _stamped(tmp_path / "r")
+    for instance in SMOKE:
+        _write_run(results, instance)
+    assert "routing_status" not in _score(results)
+
+
+def test_score_refuses_an_ortools_row_without_a_routing_status(tmp_path: Path) -> None:
+    results = _stamped(tmp_path / "r")
+    for instance in SMOKE:
+        _write_run(results, instance, arm=ORTOOLS, engine="ortools")
+    with pytest.raises(score.ScoreError, match="no routing_status"):
+        _score(results)
+
+
+@pytest.mark.parametrize("value", [None, True])
+def test_score_refuses_an_ortools_row_whose_routing_status_is_not_a_number(
+    tmp_path: Path, value: object
+) -> None:
+    results = _stamped(tmp_path / "r")
+    for instance in SMOKE:
+        _write_run(results, instance, arm=ORTOOLS, engine="ortools", routing_status=value)
+    with pytest.raises(score.ScoreError, match="no routing_status"):
+        _score(results)
+
+
 def test_check_publishable_passes_the_hexaly_row_set(tmp_path: Path) -> None:
     """Directly: a publish path through `score` would write the real table."""
     results = _stamped(tmp_path / "r")
