@@ -15,8 +15,8 @@
 # commit proceeds. ruff and mypy are different: they are pinned in this
 # project's dev extra, a clone that cannot run them has skipped the setup
 # CLAUDE.md requires (`uv sync`, which needs no commit), and skipping them let
-# commits through unchecked. So a Python tool that cannot run refuses the
-# commit and says what to run.
+# commits through unchecked. So a Python tool that cannot run, or is not at
+# its pin, refuses the commit and says what to run.
 #
 # **Format only, for C++ (#178).** No hook runs clang-tidy over the changed
 # files: tidying here ran a header's every includer at each commit, and
@@ -43,50 +43,65 @@ run() {
 	"$@" || status=1
 }
 
-# **`--no-sync` (#371).** A plain `uv run` syncs the project first, and here a
-# sync after any change to `pyproject.toml` rebuilds the editable C++ extension:
-# a full scikit-build-core build of the library and its tests (about 1.5 min at
-# -j2), run inside the hook, outside the machine's build lock and at ninja's
-# default parallelism. On the Mac mini that build failed in the hook ("Failed
-# to build cbls"; a rerun under the hook's environment at -j2 built cleanly, so
-# why it failed is not known). The venv kept its old install, so every later
-# commit retried the build and failed, and the probe read the failure as a
-# missing tool and skipped ruff and mypy. `--no-sync` runs the tools in the venv
-# as it stands; `uv sync` keeps it current.
-uvrun() { uv run --no-sync --quiet "$@"; }
+# **The venv's own tools, never `uv run` (#371).** A `uv run` syncs the project
+# first, and here a sync after any change to `pyproject.toml` rebuilds the
+# editable C++ extension: a full scikit-build-core build of the library and its
+# tests (about 1.5 min at -j2), run inside the hook, outside the machine's build
+# lock and at ninja's default parallelism. On the Mac mini that build failed in
+# the hook ("Failed to build cbls"; a rerun under the hook's environment at -j2
+# built cleanly, so why it failed is not known). The venv kept its old install,
+# so every later commit retried the build, and the hook read the failure as a
+# missing tool and skipped ruff and mypy. `uv run --no-sync` would still find a
+# global ruff or mypy on PATH, of another version, so the tools are run as
+# `.venv/bin/ruff` and `.venv/bin/mypy`: this checkout's, then, in a linked
+# worktree, the main checkout's (`main_bin`, as the C++ half below finds it),
+# and only at the version `pyproject.toml` pins. `uv sync` keeps the venv
+# current; nothing here changes it.
+main_bin=''
+if common=$(git rev-parse --git-common-dir 2>/dev/null) &&
+	common=$(CDPATH='' cd -- "$common" 2>/dev/null && pwd) &&
+	[ "${common%/.git}" != "$common" ] && [ -d "${common%/.git}/.venv/bin" ]; then
+	main_bin="${common%/.git}/.venv/bin"
+fi
 
-# Can this tool be run at all? Asked once per tool, so a tool that cannot start
-# gets one clear message, uv's own first line included, instead of three
-# failures that read as lint findings.
-have() {
-	probe=$(uvrun "$1" --version 2>&1)
-	if [ $? -eq 0 ]; then
-		return 0
+setup_hint='Run `uv sync --extra dev --extra benchmarks` in the main checkout (a linked worktree uses its .venv) and commit again.'
+
+# The pinned tool NAME as a path on stdout, or a message on stderr and a
+# non-zero return (it runs in a `$(...)` subshell, so the caller sets status). Its version is the second field of `NAME --version` (`ruff
+# 0.16.1`, `mypy 2.3.0 (compiled: yes)`), compared with `"NAME==X"` in
+# pyproject.toml when that pins one.
+pinned_tool() {
+	tool=''
+	for dir in "$PWD/.venv/bin" "$main_bin"; do
+		if [ -n "$dir" ] && [ -x "$dir/$1" ]; then
+			tool="$dir/$1"
+			break
+		fi
+	done
+	if [ -z "$tool" ]; then
+		printf 'pre-commit: no %s in .venv/bin, so %s not run. %s\n' "$1" "$2" "$setup_hint" >&2
+		return 1
 	fi
-	printf 'pre-commit: could not run %s: %s\n' "$1" "$(printf '%s' "$probe" | head -n 1)" >&2
-	return 1
+	want=$(sed -n "s/^[[:space:]]*\"$1==\([^\"]*\)\".*/\1/p" pyproject.toml 2>/dev/null | sed -n 1p)
+	got=$("$tool" --version 2>/dev/null | awk '{ print $2; exit }')
+	if [ -n "$want" ] && [ "$got" != "$want" ]; then
+		printf 'pre-commit: %s is %s %s, not %s as pyproject.toml pins, so %s not run. %s\n' \
+			"$tool" "$1" "${got:-of an unknown version}" "$want" "$2" "$setup_hint" >&2
+		return 1
+	fi
+	printf '%s\n' "$tool"
 }
 
-cannot_run() {
-	printf 'pre-commit: %s could not be run, so %s not run. Set up the venv with `uv sync --extra dev --extra benchmarks` and commit again.\n' \
-		"$1" "$2" >&2
-	status=1
-}
-
-if ! command -v uv >/dev/null 2>&1; then
-	cannot_run uv "the format, lint and type checks were"
+if ruff=$(pinned_tool ruff "the format and lint checks were"); then
+	run "$ruff" format --check .
+	run "$ruff" check .
 else
-	if have ruff; then
-		run uvrun ruff format --check .
-		run uvrun ruff check .
-	else
-		cannot_run ruff "the format and lint checks were"
-	fi
-	if have mypy; then
-		run uvrun mypy .
-	else
-		cannot_run mypy "the type check was"
-	fi
+	status=1
+fi
+if mypy=$(pinned_tool mypy "the type check was"); then
+	run "$mypy" .
+else
+	status=1
 fi
 
 # ---------------------------------------------------------------------- C++
@@ -96,15 +111,11 @@ fi
 # Prefer the project's pinned clang tools in `.venv/bin`, when it has them, over
 # whatever is on PATH: clang-format's output changes between major versions. A
 # linked worktree (`git worktree add`) has no `.venv` of its own, as it is
-# untracked, or one `uv run` made that holds only what the project declares, so
-# the main checkout's comes next: the directory holding the common git
+# untracked, or one that holds only what the project declares, so the main
+# checkout's comes next (`main_bin` above): the directory holding the common git
 # directory, when that is a `.git` (not a submodule's, or a bare repository
 # elsewhere). Both, tool by tool, the worktree's own first.
-if common=$(git rev-parse --git-common-dir 2>/dev/null) &&
-	common=$(CDPATH='' cd -- "$common" 2>/dev/null && pwd) &&
-	[ "${common%/.git}" != "$common" ] && [ -d "${common%/.git}/.venv/bin" ]; then
-	PATH="${common%/.git}/.venv/bin:$PATH"
-fi
+[ -z "$main_bin" ] || PATH="$main_bin:$PATH"
 [ ! -d .venv/bin ] || PATH="$PWD/.venv/bin:$PATH"
 
 # **The pinned major version, when the project declares one**: the first line

@@ -232,6 +232,49 @@ expect "probe: one diagnostic missing fails (1)" 1 "$(run_stub partial)"
 expect "probe: clang-tidy exiting nonzero fails (1), even with all tags" 1 "$(run_stub crashes)"
 expect "probe: a lookup that escapes the mirror fails (1)" 1 "$(run_stub escape)"
 
+# --- pre-commit's Python half (#371) ------------------------------------------
+# It must run the pinned ruff and mypy from .venv/bin (this checkout's, then the
+# main checkout's from a linked worktree), never through uv (whose sync rebuilt
+# the C++ extension in the hook), and refuse the commit when they are missing or
+# off their pin, even with another ruff or mypy on PATH. A subshell without git's
+# hook variables: ctest may be running under pre-push.
+PC="$SCRATCH/pc"
+mkdir -p "$PC/repo/.venv/bin" "$PC/global"
+tool_stub() { # tool_stub DIR NAME VERSION
+	printf '#!/bin/sh\necho "%s $*" >>"%s/calls.log"\n[ "$1" = --version ] && echo "%s %s (stub)"\nexit 0\n' \
+		"$1/$2" "$PC" "$2" "$3" >"$1/$2"
+	chmod +x "$1/$2"
+}
+tool_stub "$PC/repo/.venv/bin" ruff 0.16.1
+tool_stub "$PC/repo/.venv/bin" mypy 2.3.0
+tool_stub "$PC/global" ruff 0.16.1
+tool_stub "$PC/global" mypy 2.3.0
+printf '[project]\nname = "x"\ndev = [\n    "ruff==0.16.1",\n    "mypy==2.3.0",\n]\n' >"$PC/repo/pyproject.toml"
+run_pc() { # run_pc DIR -> exit code; output in $PC/out, calls appended to calls.log
+	(
+		for v in $(env | sed -n 's/^\(GIT_[A-Za-z_]*\)=.*/\1/p'); do unset "$v"; done
+		cd "$1" && PATH="$PC/global:$PATH" sh "$REPO/.githooks/pre-commit" >"$PC/out" 2>&1
+	)
+	echo $?
+}
+(
+	for v in $(env | sed -n 's/^\(GIT_[A-Za-z_]*\)=.*/\1/p'); do unset "$v"; done
+	cd "$PC/repo" && git init -q && git add pyproject.toml &&
+		git -c user.name=t -c user.email=t@t commit -q --no-verify -m init &&
+		git worktree add -q "$PC/wt" 2>/dev/null
+) || echo "FAIL: pre-commit fixture: git setup"
+: >"$PC/calls.log"
+expect "pre-commit: pinned .venv tools pass (0)" 0 "$(run_pc "$PC/repo")"
+expect "pre-commit: runs .venv's ruff format, ruff check and mypy, not PATH's" \
+	"$PC/repo/.venv/bin/ruff format --check .|$PC/repo/.venv/bin/ruff check .|$PC/repo/.venv/bin/mypy ." \
+	"$(grep -v -- '--version' "$PC/calls.log" | paste -sd '|' -)"
+expect "pre-commit: a linked worktree without .venv uses the main checkout's (0)" 0 "$(run_pc "$PC/wt")"
+tool_stub "$PC/repo/.venv/bin" ruff 0.15.0
+expect "pre-commit: ruff off its pyproject pin refuses (1)" 1 "$(run_pc "$PC/repo")"
+rm -rf "$PC/repo/.venv"
+expect "pre-commit: no .venv refuses (1), with ruff and mypy on PATH" 1 "$(run_pc "$PC/repo")"
+expect "pre-commit: the refusal names the uv sync to run" 1 "$(grep -c 'no mypy in .venv/bin.*uv sync' "$PC/out")"
+
 rm -rf "$SCRATCH"
 if [ "$FAILS" -ne 0 ]; then
 	echo "$FAILS case(s) failed"
