@@ -373,9 +373,22 @@ def check_arguments(args: argparse.Namespace) -> str | None:
     unknown = [a for a in args.arms if a not in ARMS]
     if unknown:
         return f"unknown arm(s) {unknown}; known: {sorted(ARMS)}"
+    return thread_complaint(args)
+
+
+def thread_complaint(args: argparse.Namespace) -> str | None:
+    """Why `--threads` does not fit the arms or the CPUs."""
     single = [a for a in args.arms if ARMS[a].engine in BASELINE_SCRIPTS]
     if single and args.threads != [1]:
         return f"arm(s) {single} are single-threaded; run them with --threads 1 alone"
+    # The thread count a row is labelled with is only true if it had the CPUs:
+    # workers sharing them all complete, so nothing downstream would notice.
+    cpus = len(jobs.allowed_cpus())
+    if max(args.threads) > cpus and not args.not_comparable:
+        return (
+            f"--threads {max(args.threads)} on {cpus} allowed CPU(s) oversubscribes them, and "
+            "its numbers are not comparable; use more CPUs, or pass --not-comparable"
+        )
     return None
 
 

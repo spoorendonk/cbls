@@ -70,7 +70,8 @@ comparative claim, so the table's ordering rule does not gate them:
   don't grow it into an epic.
 - **`List` → CVRP** (CVRPLIB X set, Hexaly's List encoding, scored as gap to
   the pinned best-known values, with PyVRP and OR-Tools' routing library at
-  equal budget and threads as context). Built under epic #182, now closed; its
+  equal budget and one thread as context, and an 8-thread `cbls` row set beside
+  Hexaly's 8-core figures). Built under epic #182, now closed; its
   campaign, #204, moved to #87.
   **In the tree, unpublished**: `cbls_cvrp`, its driver, verifier, scorer and
   PyVRP baseline landed in #196-#200, the OR-Tools baseline in #204, but until #204 publishes results `List` still has no evidence (next

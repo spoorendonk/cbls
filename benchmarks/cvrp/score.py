@@ -16,8 +16,8 @@ What is scored, per group:
 * per instance: runs, feasible runs, best / mean / median gap over the feasible
   runs, mean time to first feasible;
 * per size band (Hexaly's, `SIZE_BANDS`): the mean of the per-instance mean
-  gaps, beside Hexaly's published per-band averages, which are a different
-  machine, budget and thread count and are labelled so;
+  gaps, beside Hexaly's published per-band averages: another machine always, and
+  another budget or thread count wherever the row's differ, labelled so;
 * with `--ab A B`: the per-(instance, seed) difference in gap, A minus B, with a
   95% t interval over the pairs and over the per-instance means, plus a sign test
   over instances -- the instance level is the one to read, since seeds are nested
@@ -120,6 +120,9 @@ HEXALY_BAND_GAPS: tuple[float, ...] = (0.1, 0.5, 0.6, 0.8, 0.9)
 #: The one thread count above 1 a published table may carry: a `cbls` row set to
 #: read beside Hexaly's 8-core figures (#204), labelled by `thread_labels`.
 HEXALY_THREADS = 8
+
+#: The budget of those figures; a row set at any other is not read beside them.
+HEXALY_BUDGET = 60.0
 
 
 class ScoreError(Exception):
@@ -280,8 +283,9 @@ def band_of(customers: int) -> int | None:
 
 def band_table(runs: list[Run], customers: dict[str, int]) -> list[str]:
     lines = [
-        "Hexaly: published figures, 60 s on an AMD Ryzen 7 7700 (8 cores) -- different "
-        "hardware, budget and threads; quoted for context, not a paired comparison.",
+        f"Hexaly: published figures, {HEXALY_BUDGET:g} s on an AMD Ryzen 7 7700 "
+        f"({HEXALY_THREADS} cores) -- different hardware, and a different budget or thread "
+        "count wherever a row's differ; quoted for context, not a paired comparison.",
         "",
         "| group | band | instances | with a feasible run | mean of instance mean gaps % "
         "| Hexaly % |",
@@ -429,13 +433,13 @@ def check_published_threads(groups: set[tuple[str, str, int]]) -> None:
         )
 
 
-def thread_labels(runs: list[Run]) -> list[str]:
+def thread_labels(runs: list[Run], budget: float) -> list[str]:
     """One line per group above one thread, so its rows are not read as the
     single-threaded comparison (`paired_ab` refuses that pairing as well)."""
     lines = []
     for group in sorted(g for g in {r.group for r in runs} if g[2] > 1):
         beside = ""
-        if group[2] == HEXALY_THREADS:
+        if group[2] == HEXALY_THREADS and budget == HEXALY_BUDGET:
             beside = f"; to read beside Hexaly's {HEXALY_THREADS}-core figures"
         lines.append(
             f"{_group_label(group)} is a portfolio of {group[2]} threads{beside}; "
@@ -525,7 +529,7 @@ def score(args: argparse.Namespace) -> str:
         + "".join(f"; {v}" for v in versions)
         + ".",
         "",
-        *[line for label in thread_labels(runs) for line in (label, "")],
+        *[line for label in thread_labels(runs, budget) for line in (label, "")],
         "## Per instance",
         "",
         *instance_table(runs, instances),

@@ -22,7 +22,7 @@ minimum, and neither engine is held to it.
 
 THREADS. PyVRP is single-threaded, so `--threads` must be 1. Its rows are
 compared only against `cbls_cvrp --threads 1`; `score.py` refuses a paired A/B
-across thread counts, and a multi-thread CBLS row is reported on its own.
+across thread counts, and a multi-thread CBLS row set is labelled as one.
 
 THE CLI AND THE RECORD mirror `cbls_cvrp`'s, so `run_benchmark.py` runs it as
 the `pyvrp` arm and `verify_solution.py` / `score.py` score both engines alike:

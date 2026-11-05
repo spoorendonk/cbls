@@ -614,8 +614,8 @@ def test_check_publishable_passes_the_hexaly_row_set(tmp_path: Path) -> None:
 def test_score_labels_a_row_set_above_one_thread(tmp_path: Path) -> None:
     results = _stamped(tmp_path / "r")
     for instance in SMOKE:
-        _write_run(results, instance, arm=DEFAULT)
-        _write_run(results, instance, arm=DEFAULT, threads=8)
+        _write_run(results, instance, arm=DEFAULT, budget=60.0)
+        _write_run(results, instance, arm=DEFAULT, budget=60.0, threads=8)
     text = _score(results)
     label = (
         "cbls/default t8 is a portfolio of 8 threads; to read beside Hexaly's 8-core figures; "
@@ -624,6 +624,25 @@ def test_score_labels_a_row_set_above_one_thread(tmp_path: Path) -> None:
     assert label in text
     assert text.index(label) < text.index("## Per instance")
     assert "cbls/default t1 is a portfolio" not in text
+
+
+def test_score_does_not_read_another_budget_beside_hexaly(tmp_path: Path) -> None:
+    results = _stamped(tmp_path / "r")
+    for instance in SMOKE:
+        _write_run(results, instance, arm=DEFAULT, budget=10.0, threads=8)
+    text = _score(results)
+    assert "cbls/default t8 is a portfolio of 8 threads; not a paired comparison" in text
+    assert "to read beside Hexaly" not in text
+
+
+def test_more_threads_than_allowed_cpus_is_not_comparable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("benchmarks.common.jobs.allowed_cpus", lambda: {0, 1, 2, 3})
+    complaint = rb.check_arguments(_args(tmp_path, threads=[1, 8]))
+    assert complaint is not None and "oversubscribes" in complaint
+    assert rb.check_arguments(_args(tmp_path, threads=[1, 8], not_comparable=True)) is None
+    assert rb.check_arguments(_args(tmp_path, threads=[1, 4])) is None
 
 
 def test_score_labels_other_thread_counts_without_the_hexaly_reading(tmp_path: Path) -> None:
