@@ -564,13 +564,86 @@ def test_score_refuses_the_published_table_from_the_smoke_roster(tmp_path: Path)
 
 
 def test_score_refuses_the_published_table_across_thread_counts(tmp_path: Path) -> None:
-    """Multi-thread CBLS is never set beside single-thread PyVRP (#200)."""
+    """Above one thread, only the Hexaly row set is published (#200, #204)."""
     results = _stamped(tmp_path / "r")
     for instance in SMOKE:
         _write_run(results, instance, arm=DEFAULT, threads=4)
         _write_run(results, instance, arm=rb.ARMS["pyvrp"], threads=1)
     with pytest.raises(score.ScoreError, match="thread"):
         _score(results, "roster", "smoke", "out", score.PUBLISHED_TABLE)
+
+
+CBLS_T1 = ("cbls", "default", 1)
+CBLS_T8 = ("cbls", "default", 8)
+PYVRP_T1 = ("pyvrp", "pyvrp", 1)
+
+
+def test_published_threads_allow_the_hexaly_row_set_beside_its_single_thread_group() -> None:
+    score.check_published_threads({CBLS_T1, CBLS_T8, PYVRP_T1})
+    score.check_published_threads({CBLS_T1, PYVRP_T1})
+
+
+@pytest.mark.parametrize(
+    ("groups", "complaint"),
+    [
+        ({CBLS_T8, PYVRP_T1}, "without the same arm at 1 thread"),
+        ({CBLS_T8}, "without the same arm at 1 thread"),
+        ({("cbls", "guided", 1), CBLS_T8}, "without the same arm at 1 thread"),
+        ({CBLS_T1, ("cbls", "default", 4)}, "cbls/default t4"),
+        ({("cbls", "default", 4)}, "cbls/default t4"),
+        ({("pyvrp", "pyvrp", 8), PYVRP_T1}, "pyvrp/pyvrp t8"),
+    ],
+)
+def test_published_threads_refuse_any_other_thread_count(
+    groups: set[tuple[str, str, int]], complaint: str
+) -> None:
+    with pytest.raises(score.ScoreError, match=complaint):
+        score.check_published_threads(groups)
+
+
+def test_check_publishable_passes_the_hexaly_row_set(tmp_path: Path) -> None:
+    """Directly: a publish path through `score` would write the real table."""
+    results = _stamped(tmp_path / "r")
+    _write_run(results, SMOKE[0], arm=DEFAULT)
+    _write_run(results, SMOKE[0], arm=DEFAULT, threads=8)
+    _write_run(results, SMOKE[0], arm=rb.ARMS["pyvrp"], engine="pyvrp")
+    runs = score.build_runs(score.load_records(results), dict(BKS), INST_DIR)
+    score.check_publishable(runs, [], "report")
+
+
+def test_score_labels_a_row_set_above_one_thread(tmp_path: Path) -> None:
+    results = _stamped(tmp_path / "r")
+    for instance in SMOKE:
+        _write_run(results, instance, arm=DEFAULT)
+        _write_run(results, instance, arm=DEFAULT, threads=8)
+    text = _score(results)
+    label = (
+        "cbls/default t8 is a portfolio of 8 threads; to read beside Hexaly's 8-core figures; "
+        "not a paired comparison with the single-threaded baselines."
+    )
+    assert label in text
+    assert text.index(label) < text.index("## Per instance")
+    assert "cbls/default t1 is a portfolio" not in text
+
+
+def test_score_labels_other_thread_counts_without_the_hexaly_reading(tmp_path: Path) -> None:
+    results = _stamped(tmp_path / "r")
+    for instance in SMOKE:
+        _write_run(results, instance, arm=DEFAULT, threads=4)
+    text = _score(results)
+    assert "cbls/default t4 is a portfolio of 4 threads; not a paired comparison" in text
+    assert "to read beside Hexaly" not in text
+
+
+def test_score_publishes_nothing_on_the_hexaly_rule_without_a_single_thread_group(
+    tmp_path: Path,
+) -> None:
+    """Through `score`, not only the helper: `check_publishable` must call it."""
+    results = _stamped(tmp_path / "r")
+    for instance in SMOKE:
+        _write_run(results, instance, arm=DEFAULT, threads=8)
+    with pytest.raises(score.ScoreError, match="without the same arm"):
+        _score(results, "out", score.PUBLISHED_TABLE)
 
 
 def test_score_refuses_the_published_table_from_a_modified_tree(tmp_path: Path) -> None:

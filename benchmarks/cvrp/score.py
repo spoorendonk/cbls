@@ -38,8 +38,9 @@ What is refused, rather than scored:
   multi-thread CBLS row set beside it would not be the same comparison;
 * writing `PUBLISHED_TABLE` from a directory stamped not comparable (`--jobs`
   above 1, or a modified tree), from rows of a modified tree, from a partial
-  roster, on a roster outside `PUBLISHABLE_ROSTERS`, or with a group outside
-  `PUBLISHABLE_GROUPS`.
+  roster, on a roster outside `PUBLISHABLE_ROSTERS`, with a group outside
+  `PUBLISHABLE_GROUPS`, or with a group above one thread other than a `cbls`
+  group at `HEXALY_THREADS` beside its own single-thread group.
 
     .venv/bin/python benchmarks/cvrp/score.py /tmp/cvrp-smoke --roster smoke
     .venv/bin/python benchmarks/cvrp/score.py /tmp/cvrp-ab --roster dev --ab guided default
@@ -115,6 +116,10 @@ PUBLISHABLE_ROSTERS: frozenset[str] = frozenset({"report", "full"})
 #: Hexaly's published X-set figures (60 s, AMD Ryzen 7 7700, 8 cores): average
 #: gap to BKS per size band, in `SIZE_BANDS` order. Quoted, not re-run.
 HEXALY_BAND_GAPS: tuple[float, ...] = (0.1, 0.5, 0.6, 0.8, 0.9)
+
+#: The one thread count above 1 a published table may carry: a `cbls` row set to
+#: read beside Hexaly's 8-core figures (#204), labelled by `thread_labels`.
+HEXALY_THREADS = 8
 
 
 class ScoreError(Exception):
@@ -403,18 +408,47 @@ def uneven_groups(runs: list[Run], instances: list[str]) -> dict[str, list[str]]
     return out
 
 
+def check_published_threads(groups: set[tuple[str, str, int]]) -> None:
+    """Every published group is at one thread, the baselines' count (#200), except
+    a `cbls` group at `HEXALY_THREADS` (#204). That one sits beside the same arm
+    at one thread: alone, it would have nothing the baselines can be read against."""
+    stray = sorted(
+        g for g in groups if g[2] != 1 and not (g[0] == "cbls" and g[2] == HEXALY_THREADS)
+    )
+    if stray:
+        raise ScoreError(
+            f"refusing to write the published table {PUBLISHED_TABLE}: "
+            f"{[_group_label(g) for g in stray]}; a published group runs at 1 thread, "
+            f"or is a cbls group at {HEXALY_THREADS} threads"
+        )
+    alone = sorted(g for g in groups if g[2] != 1 and (g[0], g[1], 1) not in groups)
+    if alone:
+        raise ScoreError(
+            f"refusing to write the published table {PUBLISHED_TABLE}: "
+            f"{[_group_label(g) for g in alone]} without the same arm at 1 thread"
+        )
+
+
+def thread_labels(runs: list[Run]) -> list[str]:
+    """One line per group above one thread, so its rows are not read as the
+    single-threaded comparison (`paired_ab` refuses that pairing as well)."""
+    lines = []
+    for group in sorted(g for g in {r.group for r in runs} if g[2] > 1):
+        beside = ""
+        if group[2] == HEXALY_THREADS:
+            beside = f"; to read beside Hexaly's {HEXALY_THREADS}-core figures"
+        lines.append(
+            f"{_group_label(group)} is a portfolio of {group[2]} threads{beside}; "
+            "not a paired comparison with the single-threaded baselines."
+        )
+    return lines
+
+
 def check_publishable(runs: list[Run], banners: list[str], roster: str) -> None:
     """Refuse a table that may not become `PUBLISHED_TABLE`: one carrying a
-    group outside `PUBLISHABLE_GROUPS`, more than one thread count, any banner,
-    or the wrong roster."""
-    threads = sorted({r.group[2] for r in runs})
-    if len(threads) > 1:
-        # PyVRP is single-threaded: a multi-thread CBLS row beside it would read
-        # as the same comparison, which it is not (#200).
-        raise ScoreError(
-            f"refusing to write the published table {PUBLISHED_TABLE}: rows at "
-            f"{threads} threads; publish one thread count per table"
-        )
+    group outside `PUBLISHABLE_GROUPS`, a thread count `check_published_threads`
+    refuses, any banner, or the wrong roster."""
+    check_published_threads({r.group for r in runs})
     groups = sorted({r.group[:2] for r in runs} - PUBLISHABLE_GROUPS)
     if groups or banners:
         raise ScoreError(
@@ -491,6 +525,7 @@ def score(args: argparse.Namespace) -> str:
         + "".join(f"; {v}" for v in versions)
         + ".",
         "",
+        *[line for label in thread_labels(runs) for line in (label, "")],
         "## Per instance",
         "",
         *instance_table(runs, instances),
