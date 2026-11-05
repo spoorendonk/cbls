@@ -9,18 +9,20 @@
 # the type recorded for this repository, and this is the union of the Python and
 # C++ ones rather than either.
 #
-# **Fails open, loudly.** git reads any non-zero exit as a refusal, so a hook
-# that insisted on a toolchain would refuse every commit in a clone that has not
-# run `uv sync`, or on a machine without clang — worse than an ungated commit,
-# and unfixable without the very commit it is refusing. Each missing tool, and
-# a clang-format of another major version than the project pins, is announced
-# on stderr and the commit proceeds. The push gate and the review still stand
-# behind it.
+# **The C++ half fails open, loudly; the Python half fails closed (#371).** git
+# reads any non-zero exit as a refusal. A missing clang-format, or one of
+# another major version than the project pins, is announced on stderr and the
+# commit proceeds. ruff and mypy are different: they are pinned in this
+# project's dev extra, a clone that cannot run them has skipped the setup
+# CLAUDE.md requires (`uv sync`, which needs no commit), and skipping them let
+# commits through unchecked. So a Python tool that cannot run refuses the
+# commit and says what to run.
 #
-# **Format only, for C++ (#178).** clang-tidy runs in the push gate, where its
-# passes are cached and a changed header is tidied once, on its own; tidying
-# here as well ran a header's every includer at commit and again at push. The
-# gate, and the scheduled full lint, are where clang-tidy's findings block.
+# **Format only, for C++ (#178).** No hook runs clang-tidy over the changed
+# files: tidying here ran a header's every includer at each commit, and
+# pre-push's test fence runs only `clang_tidy_gate_probe`, which checks that the
+# config still reports diagnostics, not the tree. Zero clang-tidy findings is
+# checked by hand before a push (CLAUDE.md, **Git Hooks**).
 #
 # **Both halves run.** A binding is two languages that have to agree, and a
 # commit that formats one of them is a commit that half-checked itself. Neither
@@ -41,23 +43,23 @@ run() {
 	"$@" || status=1
 }
 
-# Can this tool be run at all?
-#
-# `command -v uv` says only that uv is here. A project scaffolded by `wcp init`
-# has `[tool.ruff]` and `[tool.mypy]` configured and neither tool installed —
-# which is the *default* state of a fresh scaffold, not an edge case — and there
-# `uv run ruff` exits 2 with "Failed to spawn". Read as a lint failure that
-# refuses every commit in the project, including the commit that would add the
-# dependency. Asked once per tool, so a missing one is a skip and a real failure
-# is still a failure.
-#
-# It cannot tell a missing tool from an environment uv will not build — an
-# unresolvable lock, an offline index, a local dependency that fails to
-# compile. The message below says so rather than sending the reader to `uv add`
-# for a problem that is not a missing dependency, and uv's own error is shown
-# once so the reader has something to act on.
+# **`--no-sync` (#371).** A plain `uv run` syncs the project first, and here a
+# sync after any change to `pyproject.toml` rebuilds the editable C++ extension:
+# a full scikit-build-core build of the library and its tests (about 1.5 min at
+# -j2), run inside the hook, outside the machine's build lock and at ninja's
+# default parallelism. On the Mac mini that build failed in the hook ("Failed
+# to build cbls"; a rerun under the hook's environment at -j2 built cleanly, so
+# why it failed is not known). The venv kept its old install, so every later
+# commit retried the build and failed, and the probe read the failure as a
+# missing tool and skipped ruff and mypy. `--no-sync` runs the tools in the venv
+# as it stands; `uv sync` keeps it current.
+uvrun() { uv run --no-sync --quiet "$@"; }
+
+# Can this tool be run at all? Asked once per tool, so a tool that cannot start
+# gets one clear message, uv's own first line included, instead of three
+# failures that read as lint findings.
 have() {
-	probe=$(uv run --quiet "$1" --version 2>&1)
+	probe=$(uvrun "$1" --version 2>&1)
 	if [ $? -eq 0 ]; then
 		return 0
 	fi
@@ -65,23 +67,25 @@ have() {
 	return 1
 }
 
-skipped() {
-	printf 'pre-commit: %s could not be run here; %s skipped.\n' "$1" "$2" >&2
+cannot_run() {
+	printf 'pre-commit: %s could not be run, so %s not run. Set up the venv with `uv sync --extra dev --extra benchmarks` and commit again.\n' \
+		"$1" "$2" >&2
+	status=1
 }
 
 if ! command -v uv >/dev/null 2>&1; then
-	echo "pre-commit: uv is not on PATH; format, lint and type checks were skipped." >&2
+	cannot_run uv "the format, lint and type checks were"
 else
 	if have ruff; then
-		run uv run ruff format --check .
-		run uv run ruff check .
+		run uvrun ruff format --check .
+		run uvrun ruff check .
 	else
-		skipped ruff "the format and lint checks were"
+		cannot_run ruff "the format and lint checks were"
 	fi
 	if have mypy; then
-		run uv run mypy .
+		run uvrun mypy .
 	else
-		skipped mypy "the type check was"
+		cannot_run mypy "the type check was"
 	fi
 fi
 
