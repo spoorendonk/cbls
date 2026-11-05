@@ -43,7 +43,7 @@ whole-roster command the README used to document:
   (`cbls::solve(model, time_limit, seed, ...)`), so a per-instance process sees
   exactly the state a whole-roster process would. The budget is wall-clock in
   either case, which is the dominant source of run-to-run spread; see the
-  README's "These are single-sample numbers".
+  README's "Results".
 
 Guards, because this file's output is published:
 
