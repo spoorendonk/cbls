@@ -137,13 +137,32 @@ them; `--threads` above the physical cores allowed is refused unless
     --ab cbls/guided pyvrp
 ```
 
+The published table takes two invocations over one results directory, because
+the baselines run at `--threads 1` alone. It needs a machine with 8 physical
+cores, and every group on the same seeds:
+
+```sh
+.venv/bin/python benchmarks/cvrp/run_benchmark.py --roster full --budget 60 \
+    --seeds 1 2 3 4 5 --arms default pyvrp ortools --threads 1 --results RESULTS
+.venv/bin/python benchmarks/cvrp/run_benchmark.py --roster full --budget 60 \
+    --seeds 1 2 3 4 5 --arms default --threads 8 --results RESULTS
+.venv/bin/python benchmarks/cvrp/score.py RESULTS --roster report --budget 60 \
+    --ab cbls/default@1 pyvrp --out benchmarks/instances/cvrp/results.md
+```
+
+`--ab` must name `cbls/default@1`: with the 8-thread group beside it, `cbls/default`
+is ambiguous. The table's OR-Tools section lists any row with a failing
+`routing_status`; read those before publishing.
+
 ## Dev and report rosters
 
 Arms, the fleet rule `R` and the neighbour count `k` are chosen on `dev.csv`, so
 a table over all 100 would partly be reported on the instances it was tuned on.
 Following `benchmarks/instances/minlplib/HELDOUT.md`, the dev set is drawn with a
 seed fixed in advance, and **results are reported on `report.csv`**, the 80
-instances outside it. A table that includes dev instances must flag them.
+instances outside it: `score.py` refuses to write the published table on any other
+roster, and scoring a run over all 100 with `--roster report` leaves the dev rows
+out. A table on `full` carries no flag on its dev rows, so it stays a working table.
 
 The draw, as `download.py` implements it:
 

@@ -563,6 +563,17 @@ def test_score_refuses_the_published_table_from_the_smoke_roster(tmp_path: Path)
         _score(results, "out", score.PUBLISHED_TABLE)
 
 
+def test_check_publishable_refuses_the_full_roster_and_its_unflagged_dev_rows(
+    tmp_path: Path,
+) -> None:
+    results = _stamped(tmp_path / "r")
+    _write_run(results, SMOKE[0], arm=DEFAULT)
+    runs = score.build_runs(score.load_records(results), dict(BKS), INST_DIR)
+    with pytest.raises(score.ScoreError, match="full roster"):
+        score.check_publishable(runs, [], "full", 60.0)
+    score.check_publishable(runs, [], "report", 60.0)
+
+
 def test_score_refuses_the_published_table_across_thread_counts(tmp_path: Path) -> None:
     """Above one thread, only the Hexaly row set is published (#200, #204)."""
     results = _stamped(tmp_path / "r")

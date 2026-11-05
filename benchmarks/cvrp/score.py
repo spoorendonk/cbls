@@ -113,9 +113,10 @@ PUBLISHABLE_GROUPS: frozenset[tuple[str, str]] = frozenset(
 )
 
 #: The rosters a published table may be scored on: results are reported on
-#: `report.csv` (README, "Dev and report rosters"), or on all 100 with the dev
-#: instances flagged; never on the smoke or dev subsets alone.
-PUBLISHABLE_ROSTERS: frozenset[str] = frozenset({"report", "full"})
+#: `report.csv` (README, "Dev and report rosters"). Not on `full`, whose table
+#: would carry the dev instances unflagged, nor on the smoke or dev subsets. A
+#: run over all 100 scores on `report`: rows off the roster are left out.
+PUBLISHABLE_ROSTERS: frozenset[str] = frozenset({"report"})
 
 #: Hexaly's published X-set figures (60 s, AMD Ryzen 7 7700, 8 cores): average
 #: gap to BKS per size band, in `SIZE_BANDS` order. Quoted, not re-run.
