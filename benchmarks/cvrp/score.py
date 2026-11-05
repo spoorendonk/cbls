@@ -37,10 +37,11 @@ What is refused, rather than scored:
 * an A/B between different thread counts: PyVRP is single-threaded, and a
   multi-thread CBLS row set beside it would not be the same comparison;
 * writing `PUBLISHED_TABLE` from a directory stamped not comparable (`--jobs`
-  above 1, or a modified tree), from rows of a modified tree, from a partial
-  roster, on a roster outside `PUBLISHABLE_ROSTERS`, with a group outside
-  `PUBLISHABLE_GROUPS`, or with a group above one thread other than a `cbls`
-  group at `HEXALY_THREADS` beside its own single-thread group.
+  above 1, more threads than cores, or a modified tree), from rows of a modified
+  tree, from a partial roster, on a roster outside `PUBLISHABLE_ROSTERS`, with a group outside
+  `PUBLISHABLE_GROUPS`, with groups on different seed sets, or with a group above
+  one thread other than a `cbls` group at `HEXALY_THREADS` and `HEXALY_BUDGET`
+  beside its own single-thread group.
 
     .venv/bin/python benchmarks/cvrp/score.py /tmp/cvrp-smoke --roster smoke
     .venv/bin/python benchmarks/cvrp/score.py /tmp/cvrp-ab --roster dev --ab guided default
@@ -412,10 +413,30 @@ def uneven_groups(runs: list[Run], instances: list[str]) -> dict[str, list[str]]
     return out
 
 
-def check_published_threads(groups: set[tuple[str, str, int]]) -> None:
+def check_published_seeds(runs: list[Run]) -> None:
+    """Every published group ran the same seeds: a mean over one seed beside a mean
+    over five reads as the same measurement. `uneven_groups` checks within a group."""
+    seeds: dict[tuple[str, str, int], set[int]] = defaultdict(set)
+    for run in runs:
+        seeds[run.group].add(run.seed)
+    if len({frozenset(s) for s in seeds.values()}) > 1:
+        listed = {_group_label(g): sorted(s) for g, s in sorted(seeds.items())}
+        raise ScoreError(
+            f"refusing to write the published table {PUBLISHED_TABLE}: "
+            f"groups ran different seeds: {listed}"
+        )
+
+
+def check_published_threads(groups: set[tuple[str, str, int]], budget: float) -> None:
     """Every published group is at one thread, the baselines' count (#200), except
-    a `cbls` group at `HEXALY_THREADS` (#204). That one sits beside the same arm
-    at one thread: alone, it would have nothing the baselines can be read against."""
+    a `cbls` group at `HEXALY_THREADS` and `HEXALY_BUDGET` (#204), whose only reason
+    to be published is Hexaly's figures. That one sits beside the same arm at one
+    thread: alone, it would have nothing the baselines can be read against."""
+    if budget != HEXALY_BUDGET and any(g[2] != 1 for g in groups):
+        raise ScoreError(
+            f"refusing to write the published table {PUBLISHED_TABLE}: multi-thread rows at "
+            f"{budget:g} s; they are published only at Hexaly's {HEXALY_BUDGET:g} s"
+        )
     stray = sorted(
         g for g in groups if g[2] != 1 and not (g[0] == "cbls" and g[2] == HEXALY_THREADS)
     )
@@ -448,11 +469,12 @@ def thread_labels(runs: list[Run], budget: float) -> list[str]:
     return lines
 
 
-def check_publishable(runs: list[Run], banners: list[str], roster: str) -> None:
+def check_publishable(runs: list[Run], banners: list[str], roster: str, budget: float) -> None:
     """Refuse a table that may not become `PUBLISHED_TABLE`: one carrying a
-    group outside `PUBLISHABLE_GROUPS`, a thread count `check_published_threads`
-    refuses, any banner, or the wrong roster."""
-    check_published_threads({r.group for r in runs})
+    group outside `PUBLISHABLE_GROUPS`, thread counts or seed sets the checks above
+    refuse, any banner, or the wrong roster."""
+    check_published_threads({r.group for r in runs}, budget)
+    check_published_seeds(runs)
     groups = sorted({r.group[:2] for r in runs} - PUBLISHABLE_GROUPS)
     if groups or banners:
         raise ScoreError(
@@ -498,7 +520,8 @@ def score(args: argparse.Namespace) -> str:
     if not comparable:
         banners.append(
             "**NOT COMPARABLE**: this directory was run with jobs sharing the machine, "
-            "from a modified tree, or carries no stamp. Its numbers are a tooling check, "
+            "more threads than cores, from a modified tree, or carries no stamp. Its numbers "
+            "are a tooling check, "
             "not a measurement."
         )
     dirty = [c for c in commits if c.endswith("-dirty")]
@@ -507,7 +530,7 @@ def score(args: argparse.Namespace) -> str:
     for group, problems in uneven.items():
         banners.append(f"**PARTIAL**: {group}: {'; '.join(problems)}")
     if args.out is not None and args.out.resolve() == PUBLISHED_TABLE.resolve():
-        check_publishable(runs, banners, args.roster)
+        check_publishable(runs, banners, args.roster, budget)
     machine = read_json_object(results / MACHINE_NAME) or {}
     host = machine.get("machine")
     cpu = host.get("cpu_model") if isinstance(host, dict) else None

@@ -195,6 +195,19 @@ def cpuset_problems(cpus: Sequence[int], sys_cpu: Path = SYS_CPU) -> list[str]:
     return problems
 
 
+def physical_cores(cpus: Iterable[int], sys_cpu: Path = SYS_CPU) -> int | None:
+    """How many physical cores `cpus` span, or None if the topology cannot be read:
+    SMT siblings count once (`cpuset_problems`, #240)."""
+    cores: set[frozenset[int]] = set()
+    for cpu in cpus:
+        path = sys_cpu / f"cpu{cpu}" / "topology" / "thread_siblings_list"
+        try:
+            cores.add(frozenset(parse_cpu_list(path.read_text())))
+        except (OSError, ValueError):
+            return None
+    return len(cores)
+
+
 #: How often `run_process` polls for the child's exit. The cost is at most this
 #: much added to a job's wall time, against budgets of seconds to minutes.
 _POLL_SECONDS = 0.01

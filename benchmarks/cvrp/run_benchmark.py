@@ -35,7 +35,10 @@ WHAT IS REFUSED, before anything runs:
   each other's iterations at a fixed wall-clock budget, so their numbers are
   comparable neither to each other nor to a one-up run. `--not-comparable` is
   stamped into the directory and `score.py` banners every table from it and
-  refuses to write the published table.
+  refuses to write the published table;
+* `--threads` above the physical cores this process may use, without
+  `--not-comparable`: oversubscribed workers all complete, so nothing else would
+  show that a row labelled N threads did not have N cores.
 
 The whole run holds `jobs.wallclock_lock`, the lock the MINLPLib drivers take,
 so two timed drivers never share the machine. The machine record and the engine
@@ -336,14 +339,16 @@ def run_job(job: Job, binary: Path, args: argparse.Namespace, sha: str) -> tuple
 def stamp_text(sha: str, comparable: bool) -> str:
     """What makes two invocations' records comparable: the commit, the arm table
     (every arm, not just this invocation's, so adding an arm to a later
-    invocation does not refuse), and whether the jobs ran one at a time."""
+    invocation does not refuse), and whether the jobs ran one at a time, each
+    with a core per thread."""
     lines = [f"commit={sha}", f"comparable={'yes' if comparable else 'no'}"]
     lines += [f"arm {arm.engine}/{arm.name}={' '.join(arm.flags)}" for arm in ARMS.values()]
     return "\n".join(lines) + "\n"
 
 
 def stamp_comparable(results: Path) -> bool:
-    """Whether the directory's jobs ran one at a time; False when unstamped."""
+    """Whether the directory's jobs ran one at a time, each with a core per thread;
+    False when unstamped."""
     stamp = results / STAMP_NAME
     return stamp.exists() and "comparable=yes\n" in stamp.read_text()
 
@@ -381,13 +386,17 @@ def thread_complaint(args: argparse.Namespace) -> str | None:
     single = [a for a in args.arms if ARMS[a].engine in BASELINE_SCRIPTS]
     if single and args.threads != [1]:
         return f"arm(s) {single} are single-threaded; run them with --threads 1 alone"
-    # The thread count a row is labelled with is only true if it had the CPUs:
+    # The thread count a row is labelled with is only true if it had the cores:
     # workers sharing them all complete, so nothing downstream would notice.
-    cpus = len(jobs.allowed_cpus())
-    if max(args.threads) > cpus and not args.not_comparable:
+    # One thread needs no topology.
+    if max(args.threads) == 1 or args.not_comparable:
+        return None
+    cores = jobs.physical_cores(jobs.allowed_cpus())
+    if cores is None or max(args.threads) > cores:
         return (
-            f"--threads {max(args.threads)} on {cpus} allowed CPU(s) oversubscribes them, and "
-            "its numbers are not comparable; use more CPUs, or pass --not-comparable"
+            f"--threads {max(args.threads)} on {cores} physical core(s) (None: unreadable) "
+            "oversubscribes them, and its numbers are not comparable; use more cores, or pass "
+            "--not-comparable"
         )
     return None
 

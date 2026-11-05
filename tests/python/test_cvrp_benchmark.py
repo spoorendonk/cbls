@@ -579,8 +579,24 @@ PYVRP_T1 = ("pyvrp", "pyvrp", 1)
 
 
 def test_published_threads_allow_the_hexaly_row_set_beside_its_single_thread_group() -> None:
-    score.check_published_threads({CBLS_T1, CBLS_T8, PYVRP_T1})
-    score.check_published_threads({CBLS_T1, PYVRP_T1})
+    score.check_published_threads({CBLS_T1, CBLS_T8, PYVRP_T1}, 60.0)
+    score.check_published_threads({CBLS_T1, PYVRP_T1}, 60.0)
+    score.check_published_threads({CBLS_T1, PYVRP_T1}, 10.0)
+
+
+def test_published_threads_refuse_the_hexaly_row_set_at_another_budget() -> None:
+    with pytest.raises(score.ScoreError, match="only at Hexaly's 60 s"):
+        score.check_published_threads({CBLS_T1, CBLS_T8}, 30.0)
+
+
+def test_published_seeds_refuse_groups_on_different_seed_sets(tmp_path: Path) -> None:
+    results = _stamped(tmp_path / "r")
+    for seed in (1, 2):
+        _write_run(results, SMOKE[0], arm=DEFAULT, seed=seed)
+    _write_run(results, SMOKE[0], arm=DEFAULT, threads=8)
+    runs = score.build_runs(score.load_records(results), dict(BKS), INST_DIR)
+    with pytest.raises(score.ScoreError, match="different seeds"):
+        score.check_published_seeds(runs)
 
 
 @pytest.mark.parametrize(
@@ -598,7 +614,7 @@ def test_published_threads_refuse_any_other_thread_count(
     groups: set[tuple[str, str, int]], complaint: str
 ) -> None:
     with pytest.raises(score.ScoreError, match=complaint):
-        score.check_published_threads(groups)
+        score.check_published_threads(groups, 60.0)
 
 
 def test_check_publishable_passes_the_hexaly_row_set(tmp_path: Path) -> None:
@@ -608,7 +624,7 @@ def test_check_publishable_passes_the_hexaly_row_set(tmp_path: Path) -> None:
     _write_run(results, SMOKE[0], arm=DEFAULT, threads=8)
     _write_run(results, SMOKE[0], arm=rb.ARMS["pyvrp"], engine="pyvrp")
     runs = score.build_runs(score.load_records(results), dict(BKS), INST_DIR)
-    score.check_publishable(runs, [], "report")
+    score.check_publishable(runs, [], "report", 60.0)
 
 
 def test_score_labels_a_row_set_above_one_thread(tmp_path: Path) -> None:
@@ -635,14 +651,23 @@ def test_score_does_not_read_another_budget_beside_hexaly(tmp_path: Path) -> Non
     assert "to read beside Hexaly" not in text
 
 
-def test_more_threads_than_allowed_cpus_is_not_comparable(
+def test_more_threads_than_physical_cores_is_not_comparable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("benchmarks.common.jobs.allowed_cpus", lambda: {0, 1, 2, 3})
+    monkeypatch.setattr("benchmarks.common.jobs.physical_cores", lambda _cpus: 4)
     complaint = rb.check_arguments(_args(tmp_path, threads=[1, 8]))
     assert complaint is not None and "oversubscribes" in complaint
     assert rb.check_arguments(_args(tmp_path, threads=[1, 8], not_comparable=True)) is None
     assert rb.check_arguments(_args(tmp_path, threads=[1, 4])) is None
+
+
+def test_unreadable_topology_is_not_comparable_above_one_thread(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("benchmarks.common.jobs.physical_cores", lambda _cpus: None)
+    complaint = rb.check_arguments(_args(tmp_path, threads=[2]))
+    assert complaint is not None and "oversubscribes" in complaint
+    assert rb.check_arguments(_args(tmp_path, threads=[1])) is None
 
 
 def test_score_labels_other_thread_counts_without_the_hexaly_reading(tmp_path: Path) -> None:
@@ -660,7 +685,7 @@ def test_score_publishes_nothing_on_the_hexaly_rule_without_a_single_thread_grou
     """Through `score`, not only the helper: `check_publishable` must call it."""
     results = _stamped(tmp_path / "r")
     for instance in SMOKE:
-        _write_run(results, instance, arm=DEFAULT, threads=8)
+        _write_run(results, instance, arm=DEFAULT, budget=60.0, threads=8)
     with pytest.raises(score.ScoreError, match="without the same arm"):
         _score(results, "out", score.PUBLISHED_TABLE)
 

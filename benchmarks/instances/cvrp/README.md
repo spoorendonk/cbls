@@ -127,7 +127,8 @@ figures (60 s, AMD Ryzen 7 7700, 8 cores; 0.7% average, 0.1 / 0.5 / 0.6 / 0.8 /
 0.9% per size band) are different hardware, and a different budget or thread
 count wherever a row's differ, and `score.py` prints them labelled so beside
 its per-band table. Its 8-thread `cbls` rows at 60 s are the set to read beside
-them; `--threads` above the allowed CPUs is refused unless `--not-comparable`.
+them; `--threads` above the physical cores allowed is refused unless
+`--not-comparable`.
 
 ```sh
 .venv/bin/python benchmarks/cvrp/run_benchmark.py --roster smoke --budget 10 \

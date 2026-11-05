@@ -190,6 +190,14 @@ def _machine(sys_cpu: Path, siblings: dict[int, str]) -> Path:
     return sys_cpu
 
 
+def test_physical_cores_counts_smt_siblings_once(tmp_path: Path) -> None:
+    sys_cpu = _machine(tmp_path, {0: "0-1", 1: "0-1", 2: "2-3", 3: "2-3"})
+    assert jobs.physical_cores({0, 1, 2, 3}, sys_cpu) == 2
+    assert jobs.physical_cores({0, 2}, sys_cpu) == 2
+    assert jobs.physical_cores({0, 1}, sys_cpu) == 1
+    assert jobs.physical_cores({0, 4}, sys_cpu) is None
+
+
 def test_cpuset_problems_names_smt_siblings_and_unreadable_topology(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
