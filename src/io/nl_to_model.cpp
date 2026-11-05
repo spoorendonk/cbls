@@ -620,7 +620,7 @@ ColumnBoxes column_boxes(const NlProblem& prob, const NlToModelOptions& opts,
     box.integral.assign(n_cols, 0);
     for (std::size_t j = 0; j < n_cols; ++j) {
         if (j < prob.var_bounds.size()) {
-            // A NaN bound is "no bound" here, as clamp_lo/clamp_hi already read
+            // A NaN bound is "no bound" here, as lo_missing/hi_missing already read
             // it. Handing one to propagate_bounds would throw, and io_nl.h
             // promises to skip a malformed file rather than throw out of the
             // adapter.
