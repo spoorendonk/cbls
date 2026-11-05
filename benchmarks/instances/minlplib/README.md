@@ -166,7 +166,8 @@ Both halves read that `bounds.csv`; neither writes under `benchmarks/instances/`
   `reference_solve.py` once per instance, `--jobs` single-thread solves at a
   time under one machine lock. Each instance leaves `<instance>.csv` or an
   `<instance>.failed` marker (one `exit <rc> <utc>` line per failed attempt; 124
-  is the 15-min wrapper cap); a re-run retries only those. The #256 rule: one
+  is the 15-min wrapper cap); a re-run retries only the missing and
+  failed ones. The #256 rule: one
   retry with the memory cap raised, then SCIP no-solution, named with its exit.
   `stamp.txt` records budget and seed and refuses a run under others;
   `--restart` deletes the `.failed` markers first.
@@ -180,7 +181,7 @@ Both halves read that `bounds.csv`; neither writes under `benchmarks/instances/`
   writes `<instance>.checked` with the row's sha256. `../../minlplib/check_staged.py
   --inst-dir NL --staging-dir STAGE` does the check and marking without solving
   (for rows a killed or pre-#307 driver left unchecked); it refuses a stamp for
-  another roster, host or commit, lists a row whose check raised (exit 1), and
+  another roster or host, lists a row whose check raised (exit 1), and
   leaves header-only, torn and unstageable rows unmarked: re-solve those with
   the driver at the stamp's commit (`--instances NAME`).
 - Score: `../../minlplib/gm_ratio.py --bounds NL/bounds.csv --cbls
@@ -188,9 +189,10 @@ Both halves read that `bounds.csv`; neither writes under `benchmarks/instances/`
   feasible and head-to-head counts and names every no-solution instance. It
   refuses an incomplete roster. `--cbls-staging STAGE` scores the staging
   directory instead: every staged row needs a matching `.checked`, a lone
-  `.rejected` counts as cbls no-solution, and a lone `.rejected` or a `.failed`
-  needs two recorded failed attempts (#312). `--partial` gives an interim score
-  without those requirements, and is the only way to score a campaign staged
+  `.rejected` counts as cbls no-solution. In
+  either mode a lone `.rejected` or a `.failed` also needs two recorded failed
+  attempts, and fewer is refused by name (#312). `--partial` gives an interim
+  score without those requirements, and is the only way to score a campaign staged
   before #312.
 
 ## Yuck / fzn-oscar-cbls coverage
@@ -360,7 +362,8 @@ box must be quiet**: on a wall-clock budget a concurrent build, test suite or
 benchmark changes every row's iteration count. Check `uptime` first; the driver
 never parallelises solves, and `--build-jobs` (build only) defaults to 4.
 
-**It refuses** (the module docstring gives each reason): a dirty tree (its own
+**It refuses** (the module docstring gives some reasons; the table with each
+one is on [#358](https://github.com/spoorendonk/cbls/issues/358#issuecomment-6652522933)): a dirty tree (its own
 published tables excepted); a build dir that is unconfigured, not
 `CMAKE_BUILD_TYPE=Release`, configured from another checkout, or with
 `CBLS_SANITIZE` or `CBLS_PROFILE` (sticky cache entries a flag-less `cmake -B
@@ -505,8 +508,8 @@ own, and a later seed refuses that dirty tree.
 3. Delete any staleness paragraph in **Results** the new numbers retire.
 4. **Attribute material movement to the engine changes, not to an algorithmic
    improvement**: `git log --oneline <old commit>..<new commit> -- src include`,
-   naming the trajectory-changing ones ("What moved since the previous table" is
-   the worked example). A row that moved by less than its across-seed range is
+   naming the trajectory-changing ones (#123's attribution against `21086c2+107`
+   is the worked example). A row that moved by less than its across-seed range is
    not evidence.
 5. `analysis_notes.csv` is merged into the note column by the runner, onto rows
    that came back infeasible; a noted instance that came back feasible and
@@ -528,7 +531,7 @@ own, and a later seed refuses that dirty tree.
 8. Run `.venv/bin/pytest tests/python/test_minlplib_scip_baseline.py tests/python/test_minlplib_campaign_report.py`.
    The second is red on any regenerated table until step 2 has rewritten the
    blocks and `test_the_committed_tables_reproduce_the_readme`'s pinned numbers
-   match them. `test_safe_gap_reproduces_the_cpp_runners_published_gap_column`
+   are updated by hand to match them. `test_safe_gap_reproduces_the_cpp_runners_published_gap_column`
    needs at least 15 distinct instances across the seeds with resolution to
    cross-check (a row within 0.01% of BKS has none), a zero-BKS one among them,
    so a new table can legitimately turn it red. Then run the full gated suite
@@ -544,7 +547,7 @@ Latest run: **60s per instance, seed 1, feasibility tolerance 1e-6**, engine com
 predates compound moves on by default (`79a694a`), #201's structural-batch
 fallback, #226's defaults (among them the objective tie-break on, `9e1cce9`)
 and the #270-#273 search performance changes. No open issue regenerates this
-table: #256's full-library campaign gives the newer cbls/SCIP score over the
+table: #256's full-library campaign will give the newer cbls/SCIP score over the
 full-library `bounds.csv` and writes nothing under `benchmarks/instances/`
 (#306 scores it, #253 publishes it in the docs).
 
@@ -1141,8 +1144,8 @@ The MIPfeas half has no committed driver: each pair is two `cbls_mipfeas
 --instance I --inst-dir benchmarks/instances/mipfeas --out-dir D --budget 30
 --seed S --threads 4 --commit <sha>` runs, the control adding
 `--no-share-bound`, seeds 1001-1006 over the 10 pilot-admitted instances, run
-serially under the machine lock with the arm order alternating with seed
-parity, each scored with `primal_integral.primal_integral` against the roster
+serially under the machine lock, both arms of a pair back to back and the arm
+order alternating with seed parity, each scored with `primal_integral.primal_integral` against the roster
 optimum over [0, 30 s]. `portfolio_ab.py analyze` accepts those rows
 (`instance`, `seed`, `share`, `pi`, `gap`).
 

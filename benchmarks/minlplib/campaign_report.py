@@ -1716,13 +1716,12 @@ NOT_REGENERATED: tuple[str, ...] = (
     "The across-seed spread, the per-instance median/range table and the LNS "
     "repair summary in Results: transcribed from the driver's across-seed summary "
     "(campaign_report.py --seeds) and comparison_seeds.csv, which no README block "
-    "renders; and the previous table's cells beside them, read from git history.",
+    "renders.",
     "The ex6_2_6 'stale catalogue row' note under SCIP baseline: a prose reading of "
     "one scip_baseline.csv row, not an aggregate.",
     "SCIP's CPU/wall ratio (~1.0), its clock type and its version string as quoted "
     "in prose: measured or read from SCIP, not from the tables' aggregates.",
-    "Machine descriptions of runs with no run record (the SCIP run's hardware), and "
-    "load averages sampled during a campaign rather than recorded at its start.",
+    "Machine descriptions of runs with no run record (the SCIP run's hardware).",
     "Published bounds quoted in prose (e.g. st_e40's BKS): reference values from "
     "bounds.csv, not run-derived.",
     "Single cells quoted inside the root-cause and per-instance prose (e.g. nvs01's "

@@ -1315,8 +1315,8 @@ TEST_CASE("the unproductive-batch exit waits for the outer loop's stagnation cou
     // `min(2.0, remaining())` and so cost seconds but almost no iterations; on
     // the iteration-budgeted path the same spurious kicks are nearly free. A
     // deterministic test cannot see that half, which is exactly why it is the
-    // half recorded in benchmarks/instances/minlplib/README.md with a measured
-    // A/B instead.
+    // half recorded on #102 with a measured A/B instead (the MINLPLib
+    // README keeps a summary).
     auto run = [](int64_t unproductive) {
         Model m;
         build_long_descent_with_coupled_objective(m);
