@@ -66,15 +66,30 @@ enum AmplOp : std::uint8_t {
 // int32, a node is non-negative.
 constexpr int32_t kRemovedColumn = std::numeric_limits<int32_t>::min();
 
-// Supply a finite bound where the column has none. A bound that is finite —
-// declared in the file or derived by propagation — is honoured as written,
-// however wide; only "no bound" is replaced, because the replacement is not
-// entailed by the constraints and so can cut off feasible points.
-double clamp_lo(double lb, double inf_clamp) {
-    return (std::isnan(lb) || is_unbounded_below(lb)) ? -inf_clamp : lb;
+// Whether a column side is "no bound": NaN or past the infinity convention. A
+// bound that is finite — declared in the file or derived by propagation — is
+// honoured as written, however wide; only "no bound" is replaced, because the
+// replacement is not entailed by the constraints and so can cut off feasible
+// points.
+bool lo_missing(double lb) {
+    return std::isnan(lb) || is_unbounded_below(lb);
 }
-double clamp_hi(double ub, double inf_clamp) {
-    return (std::isnan(ub) || is_unbounded_above(ub)) ? inf_clamp : ub;
+bool hi_missing(double ub) {
+    return std::isnan(ub) || is_unbounded_above(ub);
+}
+
+// The finite box edge that replaces a missing side, given the column's other,
+// finite side `other` (pass kNlInf / -kNlInf when that is missing too). It is
+// ±clamp, unless `other` is at or beyond that clamp: there ±clamp would land on
+// or past the real bound, so the box would exclude it or shrink to one point
+// (#357). The box then reaches `clamp` beyond `other` instead, so the bound
+// stays inside it with room on the open side. Columns whose finite side lies
+// inside the clamp get exactly the ±clamp they always did.
+double fallback_lo(double other, double clamp) {
+    return (std::isfinite(other) && other <= -clamp) ? other - clamp : -clamp;
+}
+double fallback_hi(double other, double clamp) {
+    return (std::isfinite(other) && other >= clamp) ? other + clamp : clamp;
 }
 
 // `coef * h`, without a multiply for the unit coefficients.
@@ -653,9 +668,11 @@ struct ColumnVar {
 ColumnVar add_column(Model& m, int32_t j, bool discrete, double box_lb, double box_ub,
                      const NlToModelOptions& opts) {
     ColumnVar out;
-    double lb = clamp_lo(box_lb, opts.inf_clamp);
-    double ub = clamp_hi(box_ub, opts.inf_clamp);
-    const bool clamp_used = lb != box_lb || ub != box_ub;
+    const bool no_lb = lo_missing(box_lb);
+    const bool no_ub = hi_missing(box_ub);
+    double lb = no_lb ? fallback_lo(no_ub ? kNlInf : box_ub, opts.inf_clamp) : box_lb;
+    double ub = no_ub ? fallback_hi(no_lb ? -kNlInf : box_lb, opts.inf_clamp) : box_ub;
+    const bool clamp_used = no_lb || no_ub;
     if (lb > ub) {
         std::swap(lb, ub);  // defensive: degenerate bound ordering
     }
@@ -671,9 +688,13 @@ ColumnVar add_column(Model& m, int32_t j, bool discrete, double box_lb, double b
     // is not a searchable domain.
     // Propagated, not as-declared: a derived bound is entailed, so it
     // rightly suppresses the unsound int_inf_clamp fallback.
-    const double ilb = is_unbounded_below(box_lb) ? -opts.int_inf_clamp : std::ceil(lb - 1e-9);
-    const double iub = is_unbounded_above(box_ub) ? opts.int_inf_clamp : std::floor(ub + 1e-9);
-    const bool int_clamped = is_unbounded_below(box_lb) || is_unbounded_above(box_ub);
+    // The fallback is placed relative to the other side once it is rounded to
+    // the integers, as in the Float case (#357).
+    const double fin_lb = std::ceil(lb - 1e-9);
+    const double fin_ub = std::floor(ub + 1e-9);
+    const double ilb = no_lb ? fallback_lo(no_ub ? kNlInf : fin_ub, opts.int_inf_clamp) : fin_lb;
+    const double iub = no_ub ? fallback_hi(no_lb ? -kNlInf : fin_lb, opts.int_inf_clamp) : fin_ub;
+    const bool int_clamped = no_lb || no_ub;
     // A finite bound is honoured however wide, so one beyond the int
     // range arrives here unclipped and would make the casts below UB.
     // `Model::int_var` takes an int; that representational limit narrows

@@ -463,6 +463,45 @@ TEST_CASE("nl_to_model honours a large but finite Int bound", "[minlplib]") {
     REQUIRE_THAT(r.model.var(0).ub, WithinAbs(5.0e7, 1e-6));
 }
 
+TEST_CASE("nl_to_model keeps a finite bound beyond the clamp inside the box", "[minlplib]") {
+    // One side finite at or past the clamp, the other missing (#357). The
+    // fallback used to land on the wrong side of the real bound: the box then
+    // excluded it, or collapsed to one point though the bound leaves room. The
+    // box must hold the bound exactly and reach past it on the open side.
+    // Default clamps: inf_clamp 1e9, int_inf_clamp 1e6.
+    auto build = [](bool discrete, const std::string& bound) {
+        const int nlvbi = discrete ? 1 : 0;
+        std::string text = nl_header_disc(1, 0, 1, 1, 0, 1, 0, 0, nlvbi, 0, 0);
+        text += "b\n" + bound + "\n";
+        text += "O0 0\nn0\n";
+        NlToModelResult r = nl_to_model(parse_nl(text, "clamp-side"));
+        REQUIRE(r.supported);
+        REQUIRE(r.model.var(0).type == (discrete ? VarType::Int : VarType::Float));
+        CHECK(r.n_clamped_columns == 1);
+        return r;
+    };
+    SECTION("Int free below, ub -2e6: used to be fixed at -1e6, outside the bound") {
+        NlToModelResult r = build(true, "1 -2000000");  // type 1: upper only
+        CHECK_THAT(r.model.var(0).ub, WithinAbs(-2.0e6, 1e-9));
+        CHECK(r.model.var(0).lb <= -2.0e6 - 1.0);
+    }
+    SECTION("Int lb 2e6, no ub: used to collapse to the point 2e6") {
+        NlToModelResult r = build(true, "2 2000000");  // type 2: lower only
+        CHECK_THAT(r.model.var(0).lb, WithinAbs(2.0e6, 1e-9));
+        CHECK(r.model.var(0).ub >= 2.0e6 + 1.0);
+    }
+    SECTION("Float lb 5e9, no ub: used to swap to [1e9, 5e9]") {
+        NlToModelResult r = build(false, "2 5e9");
+        CHECK_THAT(r.model.var(0).lb, WithinAbs(5.0e9, 1e-6));
+        CHECK(r.model.var(0).ub > 5.0e9 + 1.0);
+    }
+    SECTION("Float free below, ub -5e9: used to swap to [-5e9, -1e9]") {
+        NlToModelResult r = build(false, "1 -5e9");
+        CHECK_THAT(r.model.var(0).ub, WithinAbs(-5.0e9, 1e-6));
+        CHECK(r.model.var(0).lb < -5.0e9 - 1.0);
+    }
+}
+
 TEST_CASE("nl_to_model clamps an unbounded Int column to a searchable box", "[minlplib]") {
     // A free integer column must not inherit the ±1e9 float clamp.
     std::string text = nl_header_disc(1, 0, 1, 1, 0, 1, 0, 0, /*nlvbi=*/1, 0, 0);

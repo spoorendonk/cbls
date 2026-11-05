@@ -157,8 +157,12 @@ struct NlToModelOptions {
     bool propagate_bounds = true;
     /// Fixed-point iteration cap for that pass; see `BoundPropagationOptions`.
     int max_propagation_passes = 10;
-    double inf_clamp = 1.0e9;  ///< ±inf variable bounds clamped to this magnitude
-    /// ±inf bounds on an *integer* column clamp to this instead. A ±1e9 integer
+    /// ±inf variable bounds clamped to this magnitude. Where the column's other
+    /// side is finite and already at or beyond it, the missing side is placed
+    /// this far beyond that bound instead, so the box keeps the bound (#357).
+    double inf_clamp = 1.0e9;
+    /// ±inf bounds on an *integer* column clamp to this instead, by the same
+    /// rule relative to a finite other side. A ±1e9 integer
     /// domain is not a searchable space; unbounded integers in practice mean
     /// "small non-negative count", so a far tighter box is the useful default.
     double int_inf_clamp = 1.0e6;

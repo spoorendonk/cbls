@@ -2691,7 +2691,10 @@ aₖxₖ <= hi − minactivity(rest)      aₖxₖ >= lo − maxactivity(rest)
 
 A bound that **exists**, declared or derived, is honoured however wide; only a
 missing one is invented, by `inf_clamp` (and the `.nl` side's `int_inf_clamp`),
-and `MpsToModelResult::n_clamped_columns` reports how often. Propagation is on by
+and `MpsToModelResult::n_clamped_columns` reports how often. On the `.nl` side,
+a missing bound whose other side is finite and at or beyond the clamp is placed
+one clamp beyond that bound rather than at ±clamp, which would exclude it or
+shrink the box to a point (#357). Propagation is on by
 default in both adapters and can be turned off; that disables propagation only,
 not the rule that the clamp supplies missing bounds rather than narrowing wide
 ones.
