@@ -3652,16 +3652,20 @@ bool FeasibilityJump::novelty_jump_search(double s_m, int budget) {
 //
 // Cost of the flag, per leg (d = v's linear rows; t = bound-trail and r =
 // row-activity entries since the leg's checkpoint): checkpoint O(1); fix
-// O(1) if v's box is already the point, else O(d) activity updates, plus O(nnz) for each row whose
-// slack is below its max variation plus the drift margin (O(1) for each other row), plus O(rows of
-// u) per bound of u it derives (DomainPropagator); changed_since's re-queue O(t log t) plus two
-// allocations, paid here and again in the undo, whose backtrack adds O(t + r). Memory: one
-// LinearRowStore and DomainPropagator, O(rows + vars + nnz), built once, plus a trail the stack's
-// unwinding empties. Even a leg that derives nothing pays the O(d) updates (when its fix changes
-// v's bounds), the re-queues and the backtrack. Measured (#341, engine 36f9de3, laptop, 20 s, seed
-// 1, 1 thread, 11 MIPfeas smoke + 10 MINLPLib, noisy): FJ iterations per CPU s on/off median 0.98,
-// range 0.85 (mad) .. 1.10 (chain50); Novelty moves per CPU s median 0.98, range 0.82 .. 1.22; the
-// slowdown does not track the tightening count (pk1: 6.5M, 0.93; mad: 0.3M,
+// O(1) if it changes no bound of v (v's box is already the point, or a
+// conflict), else O(d) activity updates, plus O(nnz) for each row whose
+// slack is below its max variation plus the drift margin (O(1) for each
+// other row), plus O(rows of u) per bound of u it derives
+// (DomainPropagator); changed_since's re-queue O(t log t) plus two
+// allocations, paid here and again in the undo, whose backtrack adds
+// O(t + r). Memory: one LinearRowStore and DomainPropagator,
+// O(rows + vars + nnz), built once, plus a trail the stack's unwinding
+// empties. Even a leg that derives nothing pays the O(d) updates (when its
+// fix changes v's bounds), the re-queues and the backtrack. Measured (#341,
+// engine 36f9de3, laptop, 20 s, seed 1, 1 thread, 11 MIPfeas smoke + 10
+// MINLPLib, noisy): FJ iterations per CPU s on/off median 0.98, range 0.85
+// (mad) .. 1.10 (chain50); Novelty moves per CPU s median 0.98, range
+// 0.82 .. 1.22; the slowdown does not track the tightening count (pk1: 6.5M, 0.93; mad: 0.3M,
 // 0.85). On the 8 instances with no tightenings the ratios lie in
 // 0.97 .. 1.00 (mas76 and maxmin 0.97; elec50 makes no Novelty moves).
 // Peak RSS on the largest smoke instance (neos-5114902-kasavu) 997 -> 1198
