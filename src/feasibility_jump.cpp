@@ -3320,7 +3320,8 @@ void FeasibilityJump::clear_novelty_stack() {
 // box, so it is re-queued -- under nj_requeue_neighbours' admission test --
 // to be scored on the wider one. At depth 1 (DomainPropagationOptions::cascade
 // off) every such var is a row-neighbour of the leg, which the leg's own
-// re-queue already covers; with cascade on it need not be. O(narrowed vars).
+// re-queue already covers; with cascade on it need not be. O(t log t) for t
+// bound-trail entries since `level` (DomainPropagator::changed_since).
 void FeasibilityJump::nj_backtrack_domains(int32_t level) {
     nj_requeue_narrowed(level);
     nj_domains_->backtrack(level);
@@ -3648,18 +3649,21 @@ bool FeasibilityJump::novelty_jump_search(double s_m, int budget) {
 // checkpoint that its undo backtracks to; vars that narrows are re-queued. The
 // return is false on a conflict, true otherwise.
 //
-// Cost of the flag, per leg (d = v's linear rows): checkpoint O(1); fix O(d)
-// activity updates plus O(nnz) per row that fails the slack filter plus
-// O(rows of u) per bound of u it derives (DomainPropagator); the re-queue
-// O(narrowed vars); the undo's backtrack O(trail entries). Memory: one
-// LinearRowStore and DomainPropagator, O(rows + vars + nnz), built once. So
-// throughput is unchanged where nothing propagates and pays for each derived
-// bound where something does. Measured (#341, engine 36f9de3, laptop, 20 s,
-// seed 1, 1 thread, 11 MIPfeas smoke + 10 MINLPLib, noisy): FJ iterations per
-// CPU s on/off median 0.98, range 0.85 (mad) .. 1.10 (chain50); Novelty moves
-// per CPU s median 0.98, range 0.82 .. 1.22; ~1.00 with no tightenings (mas76,
-// neos5). Peak RSS on the largest smoke instance (neos-5114902-kasavu) 997 ->
-// 1198 MiB (+20%).
+// Cost of the flag, per leg (d = v's linear rows, t = bound-trail entries
+// since the leg's checkpoint): checkpoint O(1); fix O(d) activity updates,
+// plus O(nnz) for each row whose slack is below its max variation (O(1) for
+// each other row), plus O(rows of u) per bound of u it derives
+// (DomainPropagator); changed_since's re-queue O(t log t) plus two
+// allocations, paid here and again in the undo, whose backtrack adds O(t).
+// Memory: one LinearRowStore and DomainPropagator, O(rows + vars + nnz),
+// built once, plus a trail the stack's unwinding empties. So a leg pays per
+// row scanned, not per bound derived, plus a fixed overhead even when nothing
+// is derived. Measured (#341, engine 36f9de3, laptop, 20 s, seed 1, 1 thread,
+// 11 MIPfeas smoke + 10 MINLPLib, noisy): FJ iterations per CPU s on/off
+// median 0.98, range 0.85 (mad) .. 1.10 (chain50); Novelty moves per CPU s
+// median 0.98, range 0.82 .. 1.22; 0.97 .. 1.00 on the instances with no
+// tightenings (mas76 0.97; neos5, eq6_1, eg_all_s 1.00). Peak RSS on the
+// largest smoke instance (neos-5114902-kasavu) 997 -> 1198 MiB (+20%).
 bool FeasibilityJump::nj_apply(int32_t v, double jump) {
     const auto& cids = model_.constraint_ids();
     const double objective_before = objective_value();
