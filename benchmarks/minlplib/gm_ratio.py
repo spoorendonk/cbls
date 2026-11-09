@@ -494,7 +494,8 @@ def reconcile_shard_seed(scip: ScipSide, shards: Path) -> None:
 
     A `.failed` marker carries no seed, so a `--restart --seed 1` beside a seed 0
     campaign's rows would otherwise read its own failures as the campaign's.
-    Mixed row seeds are `mixed SCIP versions`, refused where the versions are read.
+    Mixed row seeds are refused here too, before the versions are read (where
+    they would be `mixed SCIP versions`).
     """
     stamped = _stamp_number(shards, STAMP_SEED_KEY)
     matches = (SCIP_SEED_FIELD.search(row.version) for row in scip.rows.values())

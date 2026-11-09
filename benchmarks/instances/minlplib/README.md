@@ -164,7 +164,7 @@ Both halves read that `bounds.csv`; neither writes under `benchmarks/instances/`
 
 - SCIP: `../../minlplib/scip_shards.py --nl-dir NL --shards DIR` runs
   `reference_solve.py` once per instance, `--jobs` single-thread solves at a
-  time under one machine lock. Each instance leaves `<instance>.csv` or an
+  time under one machine lock. Each instance that reached a solve leaves `<instance>.csv` or an
   `<instance>.failed` marker (one `exit <rc> <utc>` line per failed attempt; 124
   is the 15-min wrapper cap); a re-run retries only the missing and
   failed ones. The #256 rule: one
@@ -402,7 +402,8 @@ and re-solves a header-only file, a torn last line, a row with another
 the runner threw. A nonzero runner exit renames row and trace `*.rejected`: a
 solve that lost portfolio workers (#170) says so only in its exit status.
 `stamp.txt` records commit, budget, seed, host and a hash of `bounds.csv`.
-`--no-resume` forces a full re-solve; `--staging-dir` moves it. It lives
+`--no-resume` forces a full re-solve, final no-solutions excepted
+(`--retry-final NAME`); `--staging-dir` moves it. It lives
 **outside the checkout** (#141), where neither pre-push's `rm -rf build` nor
 the worktree workflow reaches; old commit directories are safe to delete once
 published. **One timed driver runs at a time**: this one and `run_ablation.py`
@@ -809,7 +810,9 @@ done
 ```
 
 The `|| break` stops on a refusal (exit 2) or a throw (exit 1) instead of
-burning the remaining seeds. Each invocation resumes from its staging
+burning the remaining seeds. It stops too on a final no-solution (exit 1, no
+`seedN.csv` written): every re-run stops there again, since this recipe needs
+each seed's table, until `--retry-final NAME` solves it. Each invocation resumes from its staging
 directory. `--out` and `--no-trace` keep everything in `$FF` (the driver refuses
 either half of that pair without the other), and the driver's `usage_error` is
 the only guard between this recipe and the published tables. Then score it,
