@@ -2724,8 +2724,9 @@ it an empty box.
 the reduced one with a `Postsolve` that maps a reduced solution back to one value
 per original column. **Default off** (`PresolveOptions::enabled`). #331 measured it
 at `ef1bbad` and kept it off. The MIPfeas dev roster's pooled PI ratio was
-0.934, inside the 1.30 noise floor. On the MINLPLib dev sample it found one
-feasible point fewer at one seed, with a GM(gap+1) ratio of 1.025. The MPS
+0.934, inside the 1.30 noise floor. On the MINLPLib dev sample it solved one
+instance fewer at one seed (23 against 24 of 25), and its GM(gap+1) ratio of
+1.025 was inside the noise floor. The MPS
 adapter calls it under `MpsToModelOptions::presolve` (#325), the `.nl` adapter
 under `NlToModelOptions::presolve` (#326, #342).
 

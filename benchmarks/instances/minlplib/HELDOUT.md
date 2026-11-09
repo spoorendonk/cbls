@@ -1,9 +1,9 @@
 # MINLPLib held-out roster (#144)
 
-A second set of fifty MINLPLib instances that **no default was fitted to and no
-table has been published against**. It was drawn so the parameter transfer check
-in #145 had unseen instances to run on. It is still un-fitted but no longer
-unseen. Runs recorded on it, none publishing a table, include:
+A second set of fifty MINLPLib instances that **no default was fitted to, except
+presolve and compound propagation on the 25 of #331's sample, and no table has
+been published against**. It was drawn so the parameter transfer check in #145
+had unseen instances to run on. It is no longer unseen. Runs recorded on it, none publishing a table, include:
 
 - #145's transfer check (below);
 - #244's held-out smoke of the fitted defaults (10 s, seeds 1-2; every default

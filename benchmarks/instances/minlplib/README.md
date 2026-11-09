@@ -1098,8 +1098,9 @@ smoke roster (#226 Run A). #211's changes to the FJ tolerance,
 to the reference algorithm's values, not fitted.
 
 The held-out roster in `heldout/` was fitted to by none of these, but it is no
-longer unseen (the runs on it are listed in HELDOUT.md); #331 sets presolve and
-compound-propagation defaults from 25 of its instances. #228's smoke (`0c0a945`,
+longer unseen (the runs on it are listed in HELDOUT.md); #331 decided the presolve
+and compound-propagation defaults (both kept off) on 25 of its instances, which
+are in-sample for them. #228's smoke (`0c0a945`,
 60 s, seeds 1-2) found no in-sample gap between the two rosters (cbls/SCIP
 GM(gap+1) 1.81-1.84 held-out, 1.75-1.88 published); #256 runs the full library
 instead of a full-scale repeat.
@@ -1167,4 +1168,4 @@ order alternating with seed parity, each scored with `primal_integral.primal_int
 optimum over [0, 30 s]. `portfolio_ab.py analyze` accepts those rows
 (`instance`, `seed`, `share`, `pi`, `gap`).
 
-A held-out roster the shipped defaults were never fitted to lives in `heldout/`; method, pool size and composition are in [HELDOUT.md](HELDOUT.md) (#144).
+A held-out roster lives in `heldout/`. No shipped default was fitted to it except #331's presolve and compound propagation (both off), which were decided on 25 of its instances; method, pool size and composition are in [HELDOUT.md](HELDOUT.md) (#144).
