@@ -86,7 +86,8 @@ struct PresolveOptions {
     /// Most entries one aggregation may add (fill). No limit by default: an
     /// aggregation removes y's k other entries and adds at most k, and drops
     /// the row, so the total never grows; the limit only caps how much x's
-    /// column grows. Unmeasured; #331 measures presolve.
+    /// column grows. Unmeasured: #331 measured presolve only as a whole
+    /// and kept it off.
     int max_fill = std::numeric_limits<int>::max();
     /// Hard stop on the number of rounds; each round is O(nnz).
     int max_rounds = 20;

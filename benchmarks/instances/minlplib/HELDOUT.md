@@ -16,11 +16,14 @@ unseen. Runs recorded on it, none publishing a table, include:
 - the #265 `xk tune` study (`benchmarks/tune/minlplib.study.toml`): it
   searched on 35 of the fifty and re-checked its elites on the other 15,
   confirmed no setting and changed no default;
-- presolve smokes (#343, #347, #354).
+- presolve smokes (#343, #347, #354);
+- #331's presolve-322 campaign, run by #352 (engine `ef1bbad`, 60 s, seeds 1-3,
+  four arms, 300 runs on the 25 of the sample below; posted on #331).
 
-**Un-fitted until #331.** #331 sets the presolve and compound-propagation
-defaults from its presolve-322 sample, 25 of these fifty (below), and #352 runs
-those arms; once that lands, those 25 are in-sample for them. No open issue
+**Fitted in part since #331.** #331 decided the presolve and
+compound-propagation defaults (both kept off) on its presolve-322 sample, 25 of
+these fifty (below), so those 25 are in-sample for those two defaults. The other
+25 are still un-fitted. No open issue
 plans a held-out score beside the published roster's at full scale; #256 runs
 the full library instead. The shipped unproductive-batch exit
 threshold was set by a grid over the published roster in `../bounds.csv`, and

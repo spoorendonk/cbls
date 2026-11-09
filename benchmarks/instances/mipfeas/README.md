@@ -660,10 +660,13 @@ by measurement on exactly those 11, so on them a row is in-sample:
 | FJ-or-Novelty redrawn every batch | #209's pre-registered A/B, 10 seeds at 30s | `143c8da` |
 | objective tie-break on | #226 Run A, 5 seeds at 10s; gap at first feasible 0.748 | `9e1cce9` (#220) |
 | near-value kick off | #226 Run B on MINLPLib; Run A on this roster passed it | default kept since #217 (#219) |
-| `--presolve` and `--compound-propagation` off | #331's pre-registered four-arm run on the 22 in `tuned.txt`, 3 seeds at 60s: pooled PI ratio 0.934 (presolve), 1.142 (propagation), 0.993 (both), all inside the control's 1.30 noise floor | defaults kept since #325 and #340 |
 
-#209, #226 and #331 carry the numbers. The `xk tune` study (#264) then tuned on 11 more
-roster instances, and it confirmed no setting, so no default changed.
+#209 and #226 carry the numbers. The `xk tune` study (#264) then tuned on 11 more
+roster instances, and it confirmed no setting, so no default changed. #331 then
+decided `--presolve` and `--compound-propagation` on all 22, in a pre-registered
+four-arm run at 60s with 3 seeds: pooled PI ratios 0.934 (presolve), 1.142
+(propagation) and 0.993 (both), all inside the control's 1.30 noise floor, so
+both stay off.
 `tuned.txt` lists all 22. A table scored with `--held-out tuned.txt` reports the
 other 211, none of them tuned on. One scored over the whole roster names the 22:
 the effect on a roster-wide aggregate is small, but it is not zero.

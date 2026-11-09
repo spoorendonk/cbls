@@ -2774,7 +2774,7 @@ under `NlToModelOptions::presolve` (#326, #342).
   taken as `round(d)·b`), so substitution and postsolve are exact; at most
   `max_fill` rows gaining an x entry (default unlimited: each elimination drops
   y's entries and the row's two and adds at most one per row, so the total
-  nnz never grows; #331 measures it). Orientation: a continuous y first, then
+  nnz never grows; unmeasured: #331 measured presolve only as a whole). Orientation: a continuous y first, then
   the y in fewer rows, then the lower index; if its checks fail, the other is
   tried. Every check (transferred bounds finite and below `1e20`, every moved
   side and new coefficient finite) passes before anything changes, so an
