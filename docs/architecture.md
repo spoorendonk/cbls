@@ -1217,6 +1217,9 @@ documents — are in #209.
 for bit) runs each leg through a `DomainPropagator` over the model's linear
 rows ([above](#domain-propagation-over-linear-rows-329)), built on the first
 Novelty run: variable bounds never change after construction, so once.
+#331 measured it at `ef1bbad` and kept it off. The MIPfeas dev roster's pooled
+PI ratio was 1.142, and the MINLPLib dev sample's GM(gap+1) ratio 1.052, both
+worse and both inside the control's noise floor.
 
 - `nj_apply` takes a `checkpoint()` and `fix(v, jump)`; `nj_undo` backtracks
   to it; a commit (`clear_novelty_stack`) backtracks to the first leg's
@@ -2562,7 +2565,8 @@ solve(model, time_limit, seed, use_fj, hook, lns, lns_interval, callback, config
 | `cone_cache_bytes` | 256 MiB (`Model::kDefaultConeCacheBytes`) | `SearchConfig` | cap on the frozen model's cone cache (#271) |
 | `unproductive_iterations` | 300 | `SearchConfig` → `GFJConfig` | end an FJ batch after this many GLS iterations without a new real-violation low, and take the kick as due (#102); `<= 0` = fixed cadence |
 | `fj_exact_int_jump` | false | `SearchConfig` | exact Int argmin over all-linear rows (OR-Tools' `ComputeLinearJump`, #216) |
-| `compound_move_propagation` | false | `SearchConfig` | propagate each Novelty leg over the linear rows; next leg drawn inside the narrowed box (#339, #340) |
+| `compound_move_propagation` | false | `SearchConfig` | propagate each Novelty leg over the linear rows; next leg drawn inside the narrowed box (#339, #340); kept off by #331's measurement |
+| `presolve.enabled` | false | `MpsToModelOptions` / `NlToModelOptions` (`PresolveOptions`) | build the model from the presolved linear problem and postsolve the point ([Presolve](#presolve), #325, #326); kept off by #331's measurement. Under it, `coefficient_tightening` and `doubleton_aggregation` default on |
 | `perturb_near_value` | false | `SearchConfig` | OR-Tools' near-value diversification kick (#217) |
 | `fj_objective_tie_break` | true | `SearchConfig` | OR-Tools' affine-objective tie-break before the first feasible point (#218, #226) |
 | `restart_randomization` | false | `SearchConfig` | CP-SAT's restart randomisation as an arm (#239) |
@@ -2718,7 +2722,10 @@ it an empty box.
 
 `presolve(LinearProblem, PresolveOptions)` reduces a linear problem and returns
 the reduced one with a `Postsolve` that maps a reduced solution back to one value
-per original column. **Default off** (`PresolveOptions::enabled`). The MPS
+per original column. **Default off** (`PresolveOptions::enabled`). #331 measured it
+at `ef1bbad` and kept it off. The MIPfeas dev roster's pooled PI ratio was
+0.934, inside the 1.30 noise floor. On the MINLPLib dev sample it found one
+feasible point fewer at one seed, with a GM(gap+1) ratio of 1.025. The MPS
 adapter calls it under `MpsToModelOptions::presolve` (#325), the `.nl` adapter
 under `NlToModelOptions::presolve` (#326, #342).
 

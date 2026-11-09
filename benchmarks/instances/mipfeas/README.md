@@ -660,8 +660,9 @@ by measurement on exactly those 11, so on them a row is in-sample:
 | FJ-or-Novelty redrawn every batch | #209's pre-registered A/B, 10 seeds at 30s | `143c8da` |
 | objective tie-break on | #226 Run A, 5 seeds at 10s; gap at first feasible 0.748 | `9e1cce9` (#220) |
 | near-value kick off | #226 Run B on MINLPLib; Run A on this roster passed it | default kept since #217 (#219) |
+| `--presolve` and `--compound-propagation` off | #331's pre-registered four-arm run on the 22 in `tuned.txt`, 3 seeds at 60s: pooled PI ratio 0.934 (presolve), 1.142 (propagation), 0.993 (both), all inside the control's 1.30 noise floor | defaults kept since #325 and #340 |
 
-#209 and #226 carry the numbers. The `xk tune` study (#264) then tuned on 11 more
+#209, #226 and #331 carry the numbers. The `xk tune` study (#264) then tuned on 11 more
 roster instances, and it confirmed no setting, so no default changed.
 `tuned.txt` lists all 22. A table scored with `--held-out tuned.txt` reports the
 other 211, none of them tuned on. One scored over the whole roster names the 22:
@@ -686,7 +687,7 @@ the run:
 |---|---|---|
 | Threads | 1 (`--cbls-threads`, > 1 runs the cooperative portfolio) | CP-SAT's own count (`--cpsat-workers 0`, the default; recorded as `workers_started`), or N in the fj+ls mode (`--cpsat-workers N` -> `num_workers`) |
 | Algorithm | Feasibility Jump + ViolationLS + Novelty Jump | its full default portfolio; in the fj+ls mode `fj` + `ls` workers only (`filter_subsolvers`) |
-| Presolve | implied variable bounds only (activity-based propagation) by default; `--presolve` (#325, off by default) builds the model from the presolved problem (fixed columns, singleton and redundant rows, coefficient tightening (#327, on under `--presolve`; `--no-presolve-coef-tightening` turns it off), doubleton-equality aggregation (#337, on under `--presolve`; `--no-presolve-aggregation` turns it off), empty columns; see `docs/architecture.md`, Presolve) and writes the point postsolved | default, i.e. on |
+| Presolve | implied variable bounds only (activity-based propagation) by default; `--presolve` (#325, off by default, kept off by #331's measurement) builds the model from the presolved problem (fixed columns, singleton and redundant rows, coefficient tightening (#327, on under `--presolve`; `--no-presolve-coef-tightening` turns it off), doubleton-equality aggregation (#337, on under `--presolve`; `--no-presolve-aggregation` turns it off), empty columns; see `docs/architecture.md`, Presolve) and writes the point postsolved | default, i.e. on |
 | Feasibility tolerance | `1e-6`, stated explicitly | CP-SAT's own |
 | Unbounded column falls back to | `1e7` (`--inf-clamp`), where propagation derives nothing | not clamped |
 | Recorded per result | commit SHA, seed, tolerance, clamp + columns it still narrows, columns declared unbounded, columns tightened, propagation verdict and pass cap, compound-move, exact-Int-jump (#216, off by default), near-value-perturbation (#217, off by default), objective tie-break (#218, on by default since #226), propagation and presolve flags (`presolve`, `presolve_coef_tightening`, `presolve_aggregation`; with `--presolve`, its verdict, seconds and per-reduction counts as `presolve_*`), the point's own check against the instance file (`original_*` ratios), peak RSS, read/build/setup seconds, trace point count and trace source | OR-Tools version, seed, full parameter string, workers started (at its defaults), solver verdict, peak RSS, read/setup seconds, free-row count, trace source |
