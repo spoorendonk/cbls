@@ -26,7 +26,6 @@ from benchmarks.minlplib.ablation_report import (
     CONTROL_ARM,
     PROBE_ARM_NAME,
     render_report,
-    sign_test_p,
 )
 from benchmarks.minlplib.run_ablation import (
     ARMS,
@@ -994,14 +993,6 @@ def test_an_instance_with_one_control_run_is_not_scored(tmp_path: Path) -> None:
     assert "fewer than two comparable runs" in report
     # It must not have been scored as a move despite its 1e6 delta.
     assert "1 worse" not in report
-
-
-def test_the_sign_test_needs_more_than_a_bare_majority() -> None:
-    """Two instances one way and one the other is not a direction."""
-    assert sign_test_p(0, 0) == pytest.approx(1.0)
-    assert sign_test_p(2, 1) > 0.05
-    assert sign_test_p(10, 0) < 0.01
-    assert sign_test_p(5, 5) == pytest.approx(1.0)
 
 
 def test_a_held_wallclock_lock_refuses_the_campaign_before_it_touches_the_out_dir(

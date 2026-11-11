@@ -90,7 +90,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from benchmarks.common.records import csv_number
-from benchmarks.common.stats import sign_test_p as sign_test_p
+from benchmarks.common.stats import sign_test_p, t975
 from benchmarks.minlplib.runner import (
     CLAIM_EXCLUDED,
     COVERAGE_GAP_NOTES,
@@ -264,57 +264,11 @@ def min_move_points(primal_bks: float) -> float:
 #: out of every effect estimate and reported on their own as a drift check.
 PROBE_ARM_NAME = "gate-probe"
 
-#: Two-sided 95% Student multipliers by degrees of freedom (`k_control - 1`).
-#: At three seeds df = 2 and the multiplier is 4.30, not the 1.96 a normal
-#: approximation would use -- an earlier cut used 2.0 flat and printed a band
-#: roughly half its nominal width. Beyond the table `t_multiplier` holds the
-#: last tabulated value rather than relaxing to the normal one, which is the
-#: wider band of the two.
-T_95: dict[int, float] = {
-    1: 12.71,
-    2: 4.303,
-    3: 3.182,
-    4: 2.776,
-    5: 2.571,
-    6: 2.447,
-    7: 2.365,
-    8: 2.306,
-    9: 2.262,
-    10: 2.228,
-    15: 2.131,
-    20: 2.086,
-    30: 2.042,
-}
-NORMAL_Z_95 = 1.96
-
 #: Unanimous movers required before a direction is named without a significant
 #: sign test. Below it the movers are reported individually instead: one or two
 #: instances clearing their own floors is a fact about those instances, not an
 #: arm effect over the roster.
 MIN_UNANIMOUS_MOVERS = 4
-
-
-def t_multiplier(df: int) -> float:
-    """The two-sided 95% multiplier for `df` degrees of freedom."""
-    if df < 1:
-        return math.nan
-    if df in T_95:
-        return T_95[df]
-    # Between AND past the tabulated points take the next LOWER df's multiplier,
-    # which is the wider band: erring toward a floor that is too generous keeps a
-    # marginal move from being called a result. `>= 10` and not `> 10` because
-    # df 11-14 otherwise fell through to NORMAL_Z_95 -- 1.96, NARROWER than both
-    # the true t (2.20-2.15) and the tabulated df=10 value, i.e. the opposite of
-    # what this comment promises. Every df >= 1 now finds a tabulated multiplier,
-    # so NORMAL_Z_95 is a guard against a future edit to T_95 rather than a
-    # branch this table can reach; past df=30 the returned 2.042 is deliberately
-    # the wider of it and the asymptotic 1.96.
-    # `wider` is tested before it is indexed: `max([])` raises, so writing
-    # this as a conditional on `max(wider)` made NORMAL_Z_95 a fallback that
-    # could not actually fire. The tabulated value is always the wider band, so
-    # there is no df at which falling back to 1.96 is the safer answer.
-    wider = [k for k in T_95 if k < df]
-    return T_95[max(wider)] if wider else NORMAL_Z_95
 
 
 def format_points(value: float, *, signed: bool = True) -> str:
@@ -687,7 +641,10 @@ def noise_floor(comparisons: Sequence[Comparison], spreads: dict[str, float]) ->
             continue
         measured += 1
         scale = math.sqrt(1.0 / len(comparison.treatment.gaps) + 1.0 / len(comparison.control.gaps))
-        band = t_multiplier(len(comparison.control.gaps) - 1) * spread * scale
+        # The two-sided 95% Student multiplier at `k_control - 1` df: at three
+        # seeds 4.30, not the normal 1.96 or a flat 2.0, which prints a band
+        # about half its nominal width.
+        band = t975(len(comparison.control.gaps) - 1) * spread * scale
         # A floor must be meaningful in the UNITS OF THE THING IT BOUNDS, and a
         # measured spread finer than the runner's own tie band is not one. See
         # `min_move_points`.

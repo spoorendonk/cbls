@@ -66,8 +66,7 @@ if __package__ in (None, ""):
 
 from benchmarks.common.provenance import REPO_ROOT  # noqa: E402
 from benchmarks.common.records import atomic_write, read_json_object  # noqa: E402
-from benchmarks.common.stats import sign_test_p as sign_test_p  # noqa: E402
-from benchmarks.common.stats import t975  # noqa: E402
+from benchmarks.common.stats import sign_test_p, t975  # noqa: E402
 from benchmarks.cvrp.run_benchmark import (  # noqa: E402
     DEFAULT_INST_DIR,
     MACHINE_NAME,

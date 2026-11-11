@@ -5,7 +5,8 @@ from __future__ import annotations
 
 import math
 
-#: Two-sided 97.5% t quantiles by degrees of freedom; beyond the table, 1.96.
+#: Two-sided 95% Student multipliers (the 97.5% t quantile) by degrees of
+#: freedom.
 _T975 = {
     1: 12.706,
     2: 4.303,
@@ -26,10 +27,15 @@ _T975 = {
 
 
 def t975(df: int) -> float:
-    """The 97.5% t quantile at `df`, from the nearest tabulated df at or below it."""
+    """The 97.5% t quantile at `df`, NaN below 1.
+
+    Off the tabulated points, and past the last one, the next LOWER df's value is
+    used: it is the wider band, so a marginal difference is not called a result.
+    The normal 1.96 is never returned; it is narrower than t at every finite df.
+    """
     if df < 1:
         return math.nan
-    return _T975[max(k for k in _T975 if k <= df)] if df <= 60 else 1.96
+    return _T975[max(k for k in _T975 if k <= df)]
 
 
 def sign_test_p(a: int, b: int) -> float:

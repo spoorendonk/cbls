@@ -60,8 +60,7 @@ from benchmarks.common.provenance import (  # noqa: E402
     machine_record,
 )
 from benchmarks.common.records import repair_torn_tail  # noqa: E402
-from benchmarks.common.stats import sign_test_p  # noqa: E402
-from benchmarks.common.stats import t975 as t975  # noqa: E402
+from benchmarks.common.stats import sign_test_p, t975  # noqa: E402
 from benchmarks.mipfeas.primal_integral import primal_gap, primal_integral  # noqa: E402
 
 if TYPE_CHECKING:

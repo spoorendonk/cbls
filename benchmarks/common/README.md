@@ -1,8 +1,8 @@
 # benchmarks/common
 
 `benchmarks/common/` is **not** a benchmark. It holds what runners and drivers
-share: two C++ headers for the runners, `runner_args.h` and
-`search_config_flags.h`, and a Python package for the drivers (#160).
+share: C++ headers for the runners (`runner_args.h`, `search_config_flags.h`,
+`published_guard.h`, `runner_io.h`) and a Python package for the drivers (#160).
 
 `runner_args.h` holds three things. First the flag-value *reporting policy* (a
 bad double reports and returns NaN for a later positivity guard to turn into
@@ -20,6 +20,14 @@ policy split is deliberate: the rule is a library concern, the policy writes to
 stderr and calls `std::exit` and is pinned by
 `tests/python/test_run_benchmark.py`, so it lives next to the programs those
 tests run.
+
+`published_guard.h` is `check_published_write`, the refusals `minlplib` and
+`uc-chped` share before writing `<inst_dir>/comparison.csv` or
+`anytime_trace.csv`: `--out`/`--trace` naming one file or the table's temp file,
+a crossed artifact, a non-protocol run, a missing `--commit`. Its messages are
+pinned by `tests/python/test_cli.py`. `runner_io.h` is `file_exists`,
+`seconds_since`, `peak_rss_kib` and the temp-then-rename writes
+(`rename_into_place`, `write_atomically`) the four runners use.
 
 `search_config_flags.h` is the per-arm search configuration (#136): the flag
 table, its parse, its validation, its application onto `cbls::SearchConfig` and
@@ -62,7 +70,9 @@ plan (bounded workers, serial tail); `records.py` writes and reads the files a
 run leaves behind so that a kill leaves the old file or the new one, and lists
 where each benchmark's record schema is declared; `provenance.py` is the commit,
 the build-dir refusals and the machine record; `pins.py` hashes downloaded files
-against a committed pin table (the `mipfeas` and `cvrp` downloaders). What it deliberately does **not**
+against a committed pin table (the `mipfeas` and `cvrp` downloaders); `fetch.py`
+is the downloaders' HTTP fetch and HTML-page sniff; `stats.py` is the Student t
+quantile and the exact sign test the score and ablation reports use. What it deliberately does **not**
 hold is any benchmark's resume rule or record shape — `mipfeas`, the MINLPLib
 re-run and the ablation campaign resume on three different keys for reasons of
 measurement, and a single loop with per-benchmark hooks would only relocate

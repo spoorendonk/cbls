@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from benchmarks.common.provenance import REPO_ROOT
+from benchmarks.common.stats import t975
 from benchmarks.minlplib.ablation_report import (
     ARM_ONLY_FEASIBLE,
     BOTH_FEASIBLE,
@@ -42,7 +43,6 @@ from benchmarks.minlplib.ablation_report import (
     scored_instances,
     size_band,
     summarize_arm,
-    t_multiplier,
 )
 from benchmarks.minlplib.run_ablation import Arm, Run, failed_row
 from benchmarks.minlplib.runner import CLAIM_EXCLUDED, COMPLETED_SEARCH_NOTES
@@ -220,7 +220,7 @@ def test_the_floor_is_computed_from_the_control_s_own_across_seed_spread() -> No
     spreads = control_spreads({("a", CONTROL_ARM): control}, ["a"])
     assert spreads["a"] == pytest.approx(2.0)
     floor = noise_floor([compare(control, treatment)], spreads)
-    expected = t_multiplier(2) * 2.0 * math.sqrt(1 / 3 + 1 / 3)
+    expected = t975(2) * 2.0 * math.sqrt(1 / 3 + 1 / 3)
     assert floor.per_instance["a"] == pytest.approx(expected)
     assert floor.measured == 1
     assert floor.unmeasured == 0
@@ -884,31 +884,6 @@ def test_the_unmeasurable_floor_line_names_both_reasons(tmp_path: Path) -> None:
 
     assert "no instance has two comparable control runs" not in report
     assert "returned an identical gap on every seed" in report
-
-
-@pytest.mark.parametrize(
-    ("df", "multiplier"),
-    [
-        # df = 2 at three seeds, so the two-sided 95% multiplier is 4.30, not 2.0.
-        # An earlier cut used 2.0 flat and said it had "no degrees of freedom for"
-        # a t-interval, which is wrong in both directions: there are two, and the
-        # band it printed was about half its nominal width.
-        (2, 4.303),
-        (1, 12.71),
-        (7, 2.365),
-        # Off the tabulated points the NEXT LOWER df's multiplier is used, the
-        # wider band. df 11-14 once fell off the table and returned 1.96 --
-        # narrower than both the true t (2.20-2.15) and the tabulated df=10 value.
-        (11, 2.228),
-        (14, 2.228),
-        (50, 2.042),
-    ],
-)
-def test_the_student_multiplier_never_narrows_below_the_next_lower_df(
-    df: int, multiplier: float
-) -> None:
-    assert t_multiplier(df) == pytest.approx(multiplier)
-    assert t_multiplier(df) >= 1.96
 
 
 def test_a_row_where_a_search_did_complete_is_never_held_out(tmp_path: Path) -> None:

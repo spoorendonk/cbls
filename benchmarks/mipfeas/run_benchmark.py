@@ -60,6 +60,7 @@ from benchmarks.common.jobs import (  # noqa: E402
     run_jobs,
     run_process,
 )
+from benchmarks.common.pins import read_pin_table  # noqa: E402
 from benchmarks.common.provenance import (  # noqa: E402
     REPO_ROOT,
     commit_sha,
@@ -147,14 +148,6 @@ def resolve_roster(value: str, inst_dir: Path) -> Path:
     return named.get(value, Path(value))
 
 
-def read_pins(path: Path, key_column: str) -> dict[str, tuple[str, int]]:
-    """`{key: (sha256, bytes)}` from a pin table, empty when the file is absent."""
-    if not path.exists():
-        return {}
-    with open(path, newline="") as fh:
-        return {row[key_column]: (row["sha256"], int(row["bytes"])) for row in csv.DictReader(fh)}
-
-
 def _pin_complaint(label: str, path: Path, pinned: tuple[str, int] | None) -> str | None:
     """The complaint about `path` against its pin, or None when it matches.
 
@@ -184,7 +177,7 @@ def verify_preconditions(inst_dir: Path, instances: list[str]) -> list[str]:
     # point at a bare collection of instances (the vendored miplib-fj set, say),
     # which has no roster tables to pin; a directory that holds them and no
     # `references.csv` is the unpinned-yardstick state and is refused.
-    reference_pins = read_pins(inst_dir / REFERENCES_FILENAME, "file")
+    reference_pins = read_pin_table(inst_dir / REFERENCES_FILENAME, "file")
     present_references = [n for n in PINNED_REFERENCE_FILES if (inst_dir / n).exists()]
     if present_references and not reference_pins:
         problems.append(
@@ -202,7 +195,7 @@ def verify_preconditions(inst_dir: Path, instances: list[str]) -> list[str]:
             if complaint is not None:
                 problems.append(complaint)
 
-    instance_pins = read_pins(inst_dir / MANIFEST_FILENAME, "instance")
+    instance_pins = read_pin_table(inst_dir / MANIFEST_FILENAME, "instance")
     if not instance_pins:
         problems.append(
             f"{MANIFEST_FILENAME} is absent from {inst_dir}: no instance bytes are pinned."
@@ -257,7 +250,7 @@ def reference_record(inst_dir: Path, roster_path: Path) -> dict[str, object]:
     hashes alone for a roster that is not one of them would name a yardstick the run
     never used.
     """
-    pins = read_pins(inst_dir / REFERENCES_FILENAME, "file")
+    pins = read_pin_table(inst_dir / REFERENCES_FILENAME, "file")
     manifest = inst_dir / MANIFEST_FILENAME
     return {
         "instance_dir": str(inst_dir),

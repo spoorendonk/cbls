@@ -13,8 +13,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from benchmarks.common.stats import sign_test_p as _sign_test
-from benchmarks.minlplib.portfolio_ab import REPO, analyze, main, t975
+from benchmarks.minlplib.portfolio_ab import REPO, analyze, main
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -41,18 +40,6 @@ def test_instance_level_uses_one_mean_per_instance(tmp_path: Path) -> None:
     assert "n=18" in pairs
     assert "n=3" in instances
     assert "better=2 worse=1 flat=0" in instances
-
-
-def test_sign_test_is_two_sided() -> None:
-    assert _sign_test(10, 0) == 2 / 1024
-    assert _sign_test(5, 5) == 1.0
-    assert _sign_test(0, 0) == 1.0
-
-
-def test_t_quantile_falls_back_to_the_nearest_tabulated_df_below() -> None:
-    assert t975(9) == 2.262
-    assert t975(12) == 2.228
-    assert t975(1000) == 1.96
 
 
 def test_analyze_excludes_a_pair_whose_arm_lost_a_worker(tmp_path: Path) -> None:

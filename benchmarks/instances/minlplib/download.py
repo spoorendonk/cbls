@@ -35,13 +35,22 @@ import io
 import math
 import sys
 import urllib.error
-import urllib.request
 from fractions import Fraction
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+
+# Run as a script (`python download.py`, the documented form), only this file's
+# own directory is on sys.path; the repository root makes `benchmarks.common`
+# importable.
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+
+from benchmarks.common.fetch import http_get, looks_like_html  # noqa: E402
+
+USER_AGENT = "cbls-minlplib/0.1"
 
 CSV_URL = "https://www.minlplib.org/instancedata.csv"
 NL_URL_TEMPLATE = "https://www.minlplib.org/nl/{name}.nl"
@@ -157,15 +166,7 @@ def _to_float(cell: str) -> float | None:
 
 
 def fetch_bytes(url: str, timeout: int = 120) -> bytes:
-    req = urllib.request.Request(url, headers={"User-Agent": "cbls-minlplib/0.1"})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        data: bytes = resp.read()
-    return data
-
-
-def _looks_like_html(data: bytes) -> bool:
-    head = data[:128].lstrip().lower()
-    return head.startswith(b"<!doctype") or head.startswith(b"<html")
+    return http_get(url, USER_AGENT, timeout)
 
 
 class Instance:
@@ -486,7 +487,7 @@ def parse_csv(data: bytes) -> list[dict[str, str]]:
 
 def validate_nl(data: bytes) -> str | None:
     """Return an error string if `data` is not a valid text NL file, else None."""
-    if _looks_like_html(data):
+    if looks_like_html(data):
         return "server returned HTML (likely 404)"
     head = data[:64].lstrip()
     if not head.startswith(b"g"):
@@ -575,7 +576,7 @@ def _fetch_text_nl(name: str) -> tuple[bytes | None, str | None]:
     outage as "unfetchable", because that would change the committed membership.
     """
     data = fetch_bytes(NL_URL_TEMPLATE.format(name=name))
-    if _looks_like_html(data):
+    if looks_like_html(data):
         # An error page served with 200 is an outage, not a binary-NL instance.
         raise OSError("server returned HTML instead of an NL file")
     err = validate_nl(data)

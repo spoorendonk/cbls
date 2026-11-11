@@ -143,9 +143,6 @@ struct Args {
 // rest, which is what #130 factored out.
 using cbls::bench::parse_double;
 using cbls::bench::parse_int64;
-// The published-table guard's path comparison is shared with the other runners
-// (benchmarks/common/runner_args.h): every runner that publishes a table needs
-// it, and a second copy is where a fix to one silently diverges from the rest.
 
 /// True when a double flag names a usable positive quantity. Both failure modes
 /// of the parse layer fall out here: NaN (the token was not a number) and inf

@@ -6,6 +6,7 @@ records. These pin the mechanics every driver runs through, once.
 
 from __future__ import annotations
 
+import math
 import os
 import socket
 import subprocess
@@ -42,6 +43,7 @@ from benchmarks.common.records import (
     stamp_refusal,
     write_json,
 )
+from benchmarks.common.stats import sign_test_p, t975
 
 # --- jobs: one process ----------------------------------------------------------
 
@@ -604,3 +606,50 @@ def test_the_wallclock_lock_refuses_a_second_holder_and_ignores_xdg(
     assert not (tmp_path / "xdg").exists()
     with wallclock_lock("third"):
         pass  # released when the first holder's context exited
+
+
+@pytest.mark.parametrize(
+    ("better", "worse", "p"),
+    [(0, 0, 1.0), (5, 5, 1.0), (3, 3, 1.0), (5, 0, 2 / 32), (10, 0, 2 / 1024)],
+)
+def test_the_sign_test_is_exact_and_two_sided(better: int, worse: int, p: float) -> None:
+    assert sign_test_p(better, worse) == p
+    assert sign_test_p(worse, better) == p
+
+
+def test_the_sign_test_needs_more_than_a_bare_majority() -> None:
+    """Two instances one way and one the other is not a direction."""
+    assert sign_test_p(2, 1) > 0.05
+
+
+def test_the_sign_test_does_not_overflow_past_a_float_power_of_two() -> None:
+    # A float 2**n raises OverflowError past n = 1023.
+    assert sign_test_p(1000, 1000) == pytest.approx(1.0, abs=0.03)
+    assert sign_test_p(2000, 0) == 0.0
+
+
+@pytest.mark.parametrize(
+    ("df", "multiplier"),
+    [
+        # df = 2 at three seeds: 4.30, not the normal 1.96 or a flat 2.0.
+        (1, 12.706),
+        (2, 4.303),
+        (7, 2.365),
+        (9, 2.262),
+        # Off the tabulated points, and past the last, the next LOWER df's value:
+        # the wider band. df 11-14 once fell off the table and returned 1.96.
+        (11, 2.228),
+        (14, 2.228),
+        (50, 2.021),
+        (1000, 2.000),
+    ],
+)
+def test_the_student_multiplier_never_narrows_below_the_next_lower_df(
+    df: int, multiplier: float
+) -> None:
+    assert t975(df) == multiplier
+    assert t975(df) > 1.96
+
+
+def test_the_student_multiplier_is_nan_without_degrees_of_freedom() -> None:
+    assert math.isnan(t975(0))

@@ -907,9 +907,3 @@ def test_paired_ab_refuses_different_thread_counts(tmp_path: Path) -> None:
     _write_run(results, SMOKE[0], arm=DEFAULT, threads=4)
     with pytest.raises(score.ScoreError, match="thread counts"):
         _score(results, "allow_partial", True, "ab", ["guided", "default"])
-
-
-def test_sign_test_is_two_sided_and_exact() -> None:
-    assert score.sign_test_p(0, 0) == 1.0
-    assert score.sign_test_p(5, 0) == pytest.approx(2 / 32)
-    assert score.sign_test_p(3, 3) == 1.0
