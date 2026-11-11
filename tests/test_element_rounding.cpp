@@ -14,6 +14,7 @@
 // checked against.
 
 #include "test_helpers.h"
+#include "test_models.h"
 
 #include <algorithm>
 #include <catch2/catch_test_macros.hpp>
@@ -28,15 +29,7 @@
 #include <vector>
 
 using namespace cbls;
-
-namespace {
-
-double eval_at(Model& m, int32_t node) {
-    full_evaluate(m);
-    return m.node_value(node);
-}
-
-}  // namespace
+using cbls_test::eval_at;
 
 // ---------------------------------------------------------------------------
 // element

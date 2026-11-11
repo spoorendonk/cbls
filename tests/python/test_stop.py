@@ -15,12 +15,12 @@ The C++ side of the same feature is `tests/test_stop.cpp`, which covers the
 `TerminationReason::Cancelled` contract without an interpreter in the way.
 """
 
-import os
 import subprocess
 import sys
 import threading
 
 import _cbls_core as cbls
+from support import run_scenario
 
 # Generous against the ~1s solves below: this is a deadlock detector, not a
 # performance floor.
@@ -57,23 +57,7 @@ def _quadratic() -> "cbls.Model":
 
 
 def _run_scenario(name: str) -> subprocess.CompletedProcess[str]:
-    """Run one `__main__` scenario in a child interpreter, under a hard deadline."""
-    env = dict(os.environ)
-    # The child imports _cbls_core directly, without conftest.py to place the
-    # build directory on the path -- hand it this process's search path instead.
-    env["PYTHONPATH"] = os.pathsep.join(p for p in sys.path if p)
-    # Every scenario assertion lives in the child, so an inherited
-    # PYTHONOPTIMIZE would strip them and leave a child that prints OK and
-    # exits 0 without having checked anything.
-    env["PYTHONOPTIMIZE"] = "0"
-    return subprocess.run(
-        [sys.executable, os.path.abspath(__file__), name],
-        capture_output=True,
-        text=True,
-        timeout=CHILD_TIMEOUT_SECONDS,
-        check=False,
-        env=env,
-    )
+    return run_scenario(__file__, name, CHILD_TIMEOUT_SECONDS)
 
 
 def _assert_scenario_ok(name: str) -> str:

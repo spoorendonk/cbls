@@ -2,10 +2,7 @@
 
 import _cbls_core as cbls
 import pytest
-
-
-def vid(handle: int) -> int:
-    return -(handle + 1)
+from support import vid
 
 
 class TestSolver:

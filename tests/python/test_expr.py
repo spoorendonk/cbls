@@ -22,11 +22,7 @@ from typing import Any
 
 import _cbls_core as cbls
 import pytest
-
-
-def vid(handle: int) -> int:
-    """Variable id from an int32 API variable handle."""
-    return -(handle + 1)
+from support import vid
 
 
 def eval_handle(m: Any, handle: int, values: dict[int, float]) -> float:

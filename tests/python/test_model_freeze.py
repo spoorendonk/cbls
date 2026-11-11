@@ -12,11 +12,7 @@ from __future__ import annotations
 
 import _cbls_core as cbls
 import pytest
-
-
-def vid(handle: int) -> int:
-    """Variable handle (negative, as the builders return) -> variable id."""
-    return -(handle + 1)
+from support import vid
 
 
 def _closed_model() -> tuple[cbls.Model, int, int, int]:

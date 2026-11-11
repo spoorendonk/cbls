@@ -10,6 +10,8 @@
 // numbers are reproducible and because that is the regime in which
 // `inner_solver_seconds` is deliberately blind -- which this file also pins.
 
+#include "test_models.h"
+
 #include <atomic>
 #include <catch2/catch_test_macros.hpp>
 #include <cbls/cbls.h>
@@ -21,21 +23,9 @@
 #include <vector>
 
 using namespace cbls;
+using cbls_test::quadratic_model;
 
 namespace {
-
-Model quadratic_model() {
-    Model m;
-    auto x = m.float_var(-5, 5);
-    auto y = m.float_var(-5, 5);
-    auto two = m.constant(2);
-    auto neg1 = m.constant(-1.0);
-    auto one = m.constant(1.0);
-    m.add_constraint(m.sum({one, m.prod(neg1, x), m.prod(neg1, y)}));  // x + y >= 1
-    m.minimize(m.sum({m.pow_expr(x, two), m.pow_expr(y, two)}));
-    m.close();
-    return m;
-}
 
 // A List and a Set, both consumed by the objective and a constraint, so the
 // structural batch has generators to sweep and moves to score. An unconsumed

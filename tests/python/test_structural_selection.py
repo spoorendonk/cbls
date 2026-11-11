@@ -14,10 +14,7 @@ from typing import Any
 
 import _cbls_core as cbls
 import pytest
-
-
-def vid(handle: int) -> int:
-    return -(handle + 1)
+from support import vid
 
 
 def set_cover_model(columns: int = 40, rows: int = 12) -> tuple[Any, int]:

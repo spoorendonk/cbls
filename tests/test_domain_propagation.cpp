@@ -1,6 +1,8 @@
 // LinearRowStore and DomainPropagator (#329): propagation over linear rows,
 // with an exact undo.
 
+#include "test_helpers.h"
+
 #include <catch2/catch_test_macros.hpp>
 #include <cbls/cbls.h>
 #include <cbls/domain_propagation.h>
@@ -11,10 +13,6 @@
 using namespace cbls;
 
 namespace {
-
-int32_t vid(int32_t handle) {
-    return handle_to_var_id(handle);
-}
 
 // Everything a backtrack must restore, read through the public accessors.
 struct Snapshot {

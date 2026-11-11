@@ -1,4 +1,5 @@
 #include "test_helpers.h"
+#include "test_models.h"
 
 #include <algorithm>
 #include <catch2/catch_test_macros.hpp>
@@ -18,6 +19,7 @@
 using namespace cbls;
 using Catch::Matchers::ContainsSubstring;
 using Catch::Matchers::WithinAbs;
+using cbls_test::bits_of;
 
 TEST_CASE("Sum evaluation", "[dag]") {
     Model m;
@@ -756,12 +758,6 @@ std::vector<double> full_walk_all_partials(const Model& model, int32_t expr_id) 
         }
     }
     return {adjoint.begin() + static_cast<std::ptrdiff_t>(num_nodes), adjoint.end()};
-}
-
-uint64_t bits_of(double d) {
-    uint64_t b = 0;
-    std::memcpy(&b, &d, sizeof b);
-    return b;
 }
 
 // Every entry point, against the reference, bit for bit, for one expression.

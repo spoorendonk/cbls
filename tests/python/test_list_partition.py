@@ -14,36 +14,19 @@ is CLAUDE.md's #156 crash class: it takes the interpreter down rather than
 failing a test, so the scenario cannot be asserted in-process.
 """
 
-import os
 import subprocess
 import sys
 
 import _cbls_core as cbls
 import numpy as np
 import pytest
+from support import run_scenario, vid
 
 CHILD_TIMEOUT_SECONDS = 30.0
 
 
-def vid(handle: int) -> int:
-    """Variable id from a variable handle."""
-    return -(handle + 1)
-
-
 def _run_scenario(name: str) -> subprocess.CompletedProcess[str]:
-    """Run one `__main__` scenario in a child interpreter, under a hard deadline."""
-    env = dict(os.environ)
-    # No conftest.py in the child to put the build directory on the path.
-    env["PYTHONPATH"] = os.pathsep.join(p for p in sys.path if p)
-    env["PYTHONOPTIMIZE"] = "0"
-    return subprocess.run(
-        [sys.executable, os.path.abspath(__file__), name],
-        capture_output=True,
-        text=True,
-        timeout=CHILD_TIMEOUT_SECONDS,
-        check=False,
-        env=env,
-    )
+    return run_scenario(__file__, name, CHILD_TIMEOUT_SECONDS)
 
 
 def test_list_var_of_one_argument_is_still_a_permutation() -> None:

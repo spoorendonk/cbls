@@ -14,7 +14,6 @@ acquire the GIL to call back into Python, so a mistake there DEADLOCKS it. The
 child re-executes this file as a script (`__main__` block at the bottom).
 """
 
-import os
 import subprocess
 import sys
 import threading
@@ -23,24 +22,13 @@ from typing import Any
 
 import _cbls_core as cbls
 import numpy as np
+from support import run_scenario
 
 CHILD_TIMEOUT_SECONDS = 60.0
 
 
 def _run_scenario(name: str) -> subprocess.CompletedProcess[str]:
-    env = dict(os.environ)
-    # The child has no conftest.py to put the build directory on the path.
-    env["PYTHONPATH"] = os.pathsep.join(p for p in sys.path if p)
-    # The assertions live in the child; an inherited -O would strip them.
-    env["PYTHONOPTIMIZE"] = "0"
-    return subprocess.run(
-        [sys.executable, os.path.abspath(__file__), name],
-        capture_output=True,
-        text=True,
-        timeout=CHILD_TIMEOUT_SECONDS,
-        check=False,
-        env=env,
-    )
+    return run_scenario(__file__, name, CHILD_TIMEOUT_SECONDS)
 
 
 def _assert_scenario_ok(name: str) -> None:

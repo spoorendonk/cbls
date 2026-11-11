@@ -13,6 +13,7 @@
 // each reports a feasible point that is not one.
 
 #include "test_helpers.h"
+#include "test_models.h"
 
 #include <catch2/catch_test_macros.hpp>
 #include <cbls/cbls.h>
@@ -25,16 +26,12 @@
 #include <vector>
 
 using namespace cbls;
+using cbls_test::eval_at;
 
 namespace {
 
 constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
 constexpr double kInf = std::numeric_limits<double>::infinity();
-
-double eval_at(Model& m, int32_t node) {
-    full_evaluate(m);
-    return m.node_value(node);
-}
 
 // A one-variable model x in [lb, ub] with `body(x)` as its only constraint and
 // `minimize x`, loaded through the .cbls reader exactly as the issue ran it.

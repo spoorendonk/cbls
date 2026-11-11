@@ -1,10 +1,7 @@
 """Tests for the no-commit weighted-violation-delta API via Python bindings."""
 
 import _cbls_core as cbls
-
-
-def vid(handle: int) -> int:
-    return -(handle + 1)
+from support import vid
 
 
 def _naive_total(m: "cbls.Model", vm: "cbls.ViolationManager", var_id: int, j: float) -> float:

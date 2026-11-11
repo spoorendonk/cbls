@@ -16,8 +16,6 @@ whole pytest run down instead of failing one test.
 from __future__ import annotations
 
 import math
-import os
-import subprocess
 import sys
 from functools import partial
 from typing import TYPE_CHECKING, Any
@@ -25,31 +23,12 @@ from typing import TYPE_CHECKING, Any
 import _cbls_core as cbls
 import numpy as np
 import pytest
+from support import run_scenario, vid
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
 CHILD_TIMEOUT_SECONDS = 20.0
-
-
-def vid(handle: int) -> int:
-    """Variable id from a variable handle."""
-    return -(handle + 1)
-
-
-def _run_scenario(name: str) -> subprocess.CompletedProcess[str]:
-    """Run one `__main__` scenario in a child interpreter, under a hard deadline."""
-    env = dict(os.environ)
-    env["PYTHONPATH"] = os.pathsep.join(p for p in sys.path if p)
-    env["PYTHONOPTIMIZE"] = "0"
-    return subprocess.run(
-        [sys.executable, os.path.abspath(__file__), name],
-        capture_output=True,
-        text=True,
-        timeout=CHILD_TIMEOUT_SECONDS,
-        check=False,
-        env=env,
-    )
 
 
 def _value_at(m: Any, handle: int, values: dict[int, float]) -> float:
@@ -253,7 +232,7 @@ def test_the_plain_lambda_forms_are_unchanged_by_the_extra_overloads() -> None:
 
 @pytest.mark.parametrize("scenario", ["bad_element", "bad_lambda_extra"])
 def test_a_bad_table_or_handle_raises_instead_of_reaching_the_engine(scenario: str) -> None:
-    proc = _run_scenario(scenario)
+    proc = run_scenario(__file__, scenario, CHILD_TIMEOUT_SECONDS)
     assert proc.returncode == 0, (
         f"child exited {proc.returncode} (negative = killed by that signal)\n"
         f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"

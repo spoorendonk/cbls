@@ -9,6 +9,8 @@
 // compares that against the pool's own width -- and separately asserts that
 // every worker index the portfolio asked for was actually run.
 
+#include "test_models.h"
+
 #include <algorithm>
 #include <atomic>
 #include <catch2/catch_test_macros.hpp>
@@ -25,21 +27,9 @@
 #include <vector>
 
 using namespace cbls;
+using cbls_test::quadratic_model;
 
 namespace {
-
-Model quadratic_model() {
-    Model m;
-    auto x = m.float_var(-5, 5);
-    auto y = m.float_var(-5, 5);
-    auto two = m.constant(2);
-    auto neg1 = m.constant(-1.0);
-    auto one = m.constant(1.0);
-    m.add_constraint(m.sum({one, m.prod(neg1, x), m.prod(neg1, y)}));  // x + y >= 1
-    m.minimize(m.sum({m.pow_expr(x, two), m.pow_expr(y, two)}));
-    m.close();
-    return m;
-}
 
 // A minimal thread pool with the `Executor` shape, which COUNTS the threads it
 // creates. It spawns per call rather than keeping a persistent set -- a real host

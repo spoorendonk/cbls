@@ -15,6 +15,8 @@
 // asserting a per-iteration cadence would be asserting a contract the class is
 // written to refuse.
 
+#include "test_models.h"
+
 #include <atomic>
 #include <catch2/catch_test_macros.hpp>
 #include <cbls/cbls.h>
@@ -29,46 +31,10 @@
 #include <vector>
 
 using namespace cbls;
+using cbls_test::integer_model;
+using cbls_test::quadratic_model;
 
 namespace {
-
-Model quadratic_model() {
-    Model m;
-    auto x = m.float_var(-5, 5);
-    auto y = m.float_var(-5, 5);
-    auto two = m.constant(2);
-    auto neg1 = m.constant(-1.0);
-    auto one = m.constant(1.0);
-    m.add_constraint(m.sum({one, m.prod(neg1, x), m.prod(neg1, y)}));  // x + y >= 1
-    m.minimize(m.sum({m.pow_expr(x, two), m.pow_expr(y, two)}));
-    m.close();
-    return m;
-}
-
-// A 20-column integer model: the target is easy to reach and the optimum is the
-// balanced assignment, so the search plateaus and keeps stagnating -- which is
-// what makes a diversification kick actually fire. The quadratic model above
-// improves on nearly every batch and takes almost no kicks at all.
-Model integer_model() {
-    Model m;
-    std::vector<int32_t> xs;
-    std::vector<int32_t> squares;
-    auto two = m.constant(2);
-    auto neg1 = m.constant(-1.0);
-    for (int i = 0; i < 20; ++i) {
-        xs.push_back(m.int_var(0, 10));
-        squares.push_back(m.pow_expr(xs.back(), two));
-    }
-    std::vector<int32_t> row;
-    row.push_back(m.constant(60.0));
-    for (int32_t x : xs) {
-        row.push_back(m.prod(neg1, x));
-    }
-    m.add_constraint(m.sum(row));
-    m.minimize(m.sum(squares));
-    m.close();
-    return m;
-}
 
 // Records the stream in order, plus just enough per-kind state to assert the
 // ordering rules without the test having to parse a log.

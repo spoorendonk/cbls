@@ -15,13 +15,13 @@ would take the whole pytest run down instead of failing one test.
 which the binding copies out to a list -- so it is covered here too.
 """
 
-import os
 import subprocess
 import sys
 from typing import TYPE_CHECKING, Any
 
 import _cbls_core as cbls
 import pytest
+from support import run_scenario, vid
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -29,26 +29,8 @@ if TYPE_CHECKING:
 CHILD_TIMEOUT_SECONDS = 20.0
 
 
-def vid(handle: int) -> int:
-    """Variable id from a variable handle."""
-    return -(handle + 1)
-
-
 def _run_scenario(name: str) -> subprocess.CompletedProcess[str]:
-    """Run one `__main__` scenario in a child interpreter, under a hard deadline."""
-    env = dict(os.environ)
-    # No conftest.py in the child to put the build directory on the path.
-    env["PYTHONPATH"] = os.pathsep.join(p for p in sys.path if p)
-    # The scenario's assertions live in the child; keep them.
-    env["PYTHONOPTIMIZE"] = "0"
-    return subprocess.run(
-        [sys.executable, os.path.abspath(__file__), name],
-        capture_output=True,
-        text=True,
-        timeout=CHILD_TIMEOUT_SECONDS,
-        check=False,
-        env=env,
-    )
+    return run_scenario(__file__, name, CHILD_TIMEOUT_SECONDS)
 
 
 # -2 is the first variable handle past a one-variable model: the boundary of the

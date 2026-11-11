@@ -2,6 +2,8 @@
 // its cap, and that a walk reading it computes what the collecting walk does,
 // to the bit.
 
+#include "test_models.h"
+
 #include <algorithm>
 #include <catch2/catch_test_macros.hpp>
 #include <cbls/cbls.h>
@@ -14,14 +16,9 @@
 #include <vector>
 
 using namespace cbls;
+using cbls_test::bits_of;
 
 namespace {
-
-uint64_t bits_of(double d) {
-    uint64_t u = 0;
-    std::memcpy(&u, &d, sizeof u);
-    return u;
-}
 
 void require_same_values(const Model& a, const Model& b) {
     const std::vector<double>& va = a.node_values();

@@ -8,6 +8,7 @@
 // null pointer leaves the trajectory exactly what it was.
 
 #include "libstdcxx_rng.h"
+#include "test_models.h"
 
 #include <algorithm>
 #include <atomic>
@@ -31,50 +32,10 @@
 #include <vector>
 
 using namespace cbls;
+using cbls_test::integer_model;
+using cbls_test::quadratic_model;
 
-namespace {
-
-// A continuous model with an objective, so no worker can ever exit on
-// TerminationReason::Feasible: every run here is budget-bounded.
-Model quadratic_model() {
-    Model m;
-    auto x = m.float_var(-5, 5);
-    auto y = m.float_var(-5, 5);
-    auto two = m.constant(2);
-    auto neg1 = m.constant(-1.0);
-    auto one = m.constant(1.0);
-    // x + y >= 1, minimise x^2 + y^2.
-    m.add_constraint(m.sum({one, m.prod(neg1, x), m.prod(neg1, y)}));
-    m.minimize(m.sum({m.pow_expr(x, two), m.pow_expr(y, two)}));
-    m.close();
-    return m;
-}
-
-// A 20-column integer model: reaching the target is easy, but the optimum is
-// the balanced assignment, so the search keeps finding new incumbents for a
-// long time -- which is what fills a shared pool.
-Model integer_model() {
-    Model m;
-    std::vector<int32_t> xs;
-    std::vector<int32_t> squares;
-    auto two = m.constant(2);
-    auto neg1 = m.constant(-1.0);
-    for (int i = 0; i < 20; ++i) {
-        xs.push_back(m.int_var(0, 10));
-        squares.push_back(m.pow_expr(xs.back(), two));
-    }
-    std::vector<int32_t> row;
-    row.push_back(m.constant(60.0));
-    for (int32_t x : xs) {
-        row.push_back(m.prod(neg1, x));
-    }
-    m.add_constraint(m.sum(row));
-    m.minimize(m.sum(squares));
-    m.close();
-    return m;
-}
-
-}  // namespace
+namespace {}  // namespace
 
 // ---------------------------------------------------------------------------
 // The invariant that protects every benchmark

@@ -4,6 +4,7 @@
 // domains (compute_var_jump's `box`). Undo and commit backtrack the domains.
 
 #include "test_helpers.h"
+#include "test_models.h"
 
 #include <algorithm>
 #include <catch2/catch_test_macros.hpp>
@@ -16,6 +17,7 @@
 #include <vector>
 
 using namespace cbls;
+using cbls_test::build_random_int_model;
 
 namespace {
 
@@ -50,40 +52,6 @@ LinearJumpScorer make_scorer(const Model& m) {
         sc.set_row_eligible(static_cast<int32_t>(c), true);
     }
     return sc;
-}
-
-// The trajectory fence's random over-constrained integer model (as in
-// test_fj_novelty_incremental.cpp): Novelty reaches local minima, backtracks
-// and bumps, so legs narrow domains and some fixes conflict.
-std::vector<int32_t> build_random_int_model(Model& m, uint32_t seed, int num_vars, int num_rows) {
-    std::mt19937 gen(seed);
-    std::uniform_int_distribution<int> pick_var(0, num_vars - 1);
-    std::uniform_int_distribution<int> pick_coef(1, 3);
-    std::uniform_int_distribution<int> pick_sign(0, 1);
-    std::uniform_int_distribution<int> pick_rhs(-2, 6);
-    std::vector<int32_t> handles;
-    handles.reserve(static_cast<size_t>(num_vars));
-    for (int i = 0; i < num_vars; ++i) {
-        handles.push_back(m.int_var(0, 4));
-    }
-    for (int r = 0; r < num_rows; ++r) {
-        std::vector<int> used;
-        while (used.size() < 4) {
-            const int v = pick_var(gen);
-            if (std::find(used.begin(), used.end(), v) == used.end()) {
-                used.push_back(v);
-            }
-        }
-        std::vector<int32_t> terms;
-        for (const int v : used) {
-            const double coef = (pick_sign(gen) != 0 ? 1.0 : -1.0) * pick_coef(gen);
-            terms.push_back(m.prod(m.constant(coef), handles[static_cast<size_t>(v)]));
-        }
-        const int32_t sum = m.sum(terms);
-        const double rhs = pick_rhs(gen);
-        m.add_constraint(r % 2 == 0 ? m.leq(sum, m.constant(rhs)) : m.geq(sum, m.constant(rhs)));
-    }
-    return handles;
 }
 
 // The same shape with every row nonlinear (a product of two vars plus a

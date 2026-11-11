@@ -9,6 +9,8 @@
 // (failing on iterations) or report a different reason (failing on
 // termination). None of them asserts on a duration.
 
+#include "test_models.h"
+
 #include <atomic>
 #include <catch2/catch_test_macros.hpp>
 #include <cbls/cbls.h>
@@ -20,24 +22,9 @@
 #include <vector>
 
 using namespace cbls;
+using cbls_test::quadratic_model;
 
 namespace {
-
-// A continuous model with an objective, so the search can never exit on
-// TerminationReason::Feasible and keeps finding new bests (the objective bound
-// is tightened on each), which is what keeps the progress callback firing.
-Model quadratic_model() {
-    Model m;
-    auto x = m.float_var(-5, 5);
-    auto y = m.float_var(-5, 5);
-    auto two = m.constant(2);
-    auto neg1 = m.constant(-1.0);
-    auto one = m.constant(1.0);
-    m.add_constraint(m.sum({one, m.prod(neg1, x), m.prod(neg1, y)}));  // x + y >= 1
-    m.minimize(m.sum({m.pow_expr(x, two), m.pow_expr(y, two)}));
-    m.close();
-    return m;
-}
 
 // Raise the token from inside the search's own progress callback rather than
 // from a sleeping thread: the cancellation then lands at a deterministic point

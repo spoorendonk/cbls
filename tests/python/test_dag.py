@@ -15,11 +15,7 @@ what they computed.
 import math
 
 import _cbls_core as cbls
-
-
-def vid(handle: int) -> int:
-    """Variable id from a variable handle."""
-    return -(handle + 1)
+from support import vid
 
 
 def test_delta_evaluate_takes_a_set_of_var_ids_and_returns_the_objective() -> None:

@@ -22,24 +22,18 @@ in a CHILD interpreter, following `test_model_handles.py`.
 
 from __future__ import annotations
 
-import os
-import subprocess
 import sys
 from typing import TYPE_CHECKING
 
 import _cbls_core as cbls
 import numpy as np
 import pytest
+from support import run_scenario, vid
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
 CHILD_TIMEOUT_SECONDS = 20.0
-
-
-def vid(handle: int) -> int:
-    """Variable handle (negative, as the builders return) -> variable id."""
-    return -(handle + 1)
 
 
 def dist(a: int, b: int) -> float:
@@ -200,25 +194,9 @@ def test_the_table_form_makes_no_python_calls_during_solve() -> None:
     assert table_objective == functor_objective
 
 
-def _run_scenario(name: str) -> subprocess.CompletedProcess[str]:
-    """Run one `__main__` scenario in a child interpreter, under a hard deadline."""
-    env = dict(os.environ)
-    # No conftest.py in the child to put the build directory on the path.
-    env["PYTHONPATH"] = os.pathsep.join(p for p in sys.path if p)
-    env["PYTHONOPTIMIZE"] = "0"
-    return subprocess.run(
-        [sys.executable, os.path.abspath(__file__), name],
-        capture_output=True,
-        text=True,
-        timeout=CHILD_TIMEOUT_SECONDS,
-        check=False,
-        env=env,
-    )
-
-
 @pytest.mark.parametrize("scenario", ["bad_table", "out_of_universe_element"])
 def test_a_bad_table_or_element_raises_instead_of_reading_past_the_table(scenario: str) -> None:
-    proc = _run_scenario(scenario)
+    proc = run_scenario(__file__, scenario, CHILD_TIMEOUT_SECONDS)
     assert proc.returncode == 0, (
         f"child exited {proc.returncode} (negative = killed by that signal)\n"
         f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
