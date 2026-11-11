@@ -5,7 +5,8 @@ INFORMS J. Computing 2024, https://doi.org/10.1287/ijoc.2023.0055;
 https://github.com/PyVRP/PyVRP) is an open-source solver of the HGS-CVRP
 lineage, run on the same machine at the same budget so a gap to BKS splits into
 what the budget costs and what the engine costs. SCIP cannot handle CVRP at
-n = 100..1000 within these budgets (the benchmark workflow's step 2).
+n = 100..1000 within these budgets, hence an open-source VRP solver as the
+reference (the benchmark workflow's step 2).
 
 THE SAME INSTANCE. The distance matrix is `verify_solution.distance_matrix`:
 TSPLIB EUC_2D `nint`, rounded per edge, from the shared Python `.vrp` reader:

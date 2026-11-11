@@ -366,9 +366,9 @@ def extend_horizon(inst: Instance, n_periods: int) -> Instance:
 
     The factor must stay <= 1 every day, so no day's demand or reserve exceeds
     the base profile's in the same hour and every period keeps at least the
-    base instance's capacity slack (sum(P_max) - demand - reserve); a factor
-    above 1 makes peaks infeasible under any assignment, since ucp200's base
-    peak has only 470 MW (0.74%) of slack (#194). `round()` cannot break this:
+    base instance's capacity slack (sum(P_max) - demand - reserve). ucp200's
+    base peak has only 470 MW (0.74%) of slack, so a factor much above 1 makes
+    peaks infeasible under any assignment (#194). `round()` cannot break this:
     the base profile is integral, and scaling an integer by a factor <= 1
     never rounds above it.
     """

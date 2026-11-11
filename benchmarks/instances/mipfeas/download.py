@@ -487,7 +487,7 @@ def update_references(here: Path, solu_bytes: bytes, roster: list[RosterEntry]) 
         print(line)
 
     # Smoke first: the only step that can refuse (a smoke name the new roster
-    # lacks), so the update stays all-or-nothing under the old pins.
+    # lacks), so a refusal never leaves solu/roster replaced under the old pins.
     write_smoke_csv(roster, here / SMOKE_FILENAME)
     (here / SOLU_FILENAME).write_bytes(solu_bytes)
     write_roster_csv(roster, roster_path)

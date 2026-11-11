@@ -34,7 +34,7 @@ def commit_sha(repo_root: Path = REPO_ROOT, *, ignore: Iterable[Path] = ()) -> s
 
     `git rev-parse --short=7`, not `git describe`, whose format changes once the
     repository gains a tag, silently reshaping recorded commits (#160; with no
-    tag the two print the same string).
+    tag the two print the same string, so earlier `describe` records match).
 
     Dirtiness is `git status --porcelain --untracked-files=no`: tracked files
     only, since a scratch file says nothing about the code that ran. So a new,
