@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/catch_tostring.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 #include <cbls/cbls.h>
@@ -20,104 +21,195 @@ using Catch::Matchers::ContainsSubstring;
 using Catch::Matchers::WithinAbs;
 using cbls_test::bits_of;
 
-TEST_CASE("Sum evaluation", "[dag]") {
-    Model m;
-    auto x = m.float_var(0, 10);
-    auto y = m.float_var(0, 10);
-    auto s = m.sum({x, y});
-    m.minimize(s);
+// ---- Each operator's value and partials, one table row per operator and point ----
+
+using Vars = std::vector<int32_t>;
+using MakeOp = int32_t (*)(Model&, const Vars&);
+using Boxes = std::vector<std::pair<double, double>>;
+
+constexpr MakeOp kSum = [](Model& m, const Vars& x) { return m.sum({x[0], x[1]}); };
+constexpr MakeOp kProd = [](Model& m, const Vars& x) { return m.prod(x[0], x[1]); };
+constexpr MakeOp kDiv = [](Model& m, const Vars& x) { return m.div_expr(x[0], x[1]); };
+constexpr MakeOp kPow2 = [](Model& m, const Vars& x) { return m.pow_expr(x[0], m.constant(2)); };
+constexpr MakeOp kSin = [](Model& m, const Vars& x) { return m.sin_expr(x[0]); };
+constexpr MakeOp kCos = [](Model& m, const Vars& x) { return m.cos_expr(x[0]); };
+constexpr MakeOp kAbs = [](Model& m, const Vars& x) { return m.abs_expr(x[0]); };
+constexpr MakeOp kMin = [](Model& m, const Vars& x) { return m.min_expr({x[0], x[1]}); };
+constexpr MakeOp kMax = [](Model& m, const Vars& x) { return m.max_expr({x[0], x[1]}); };
+constexpr MakeOp kNeg = [](Model& m, const Vars& x) { return m.neg(x[0]); };
+constexpr MakeOp kTan = [](Model& m, const Vars& x) { return m.tan_expr(x[0]); };
+constexpr MakeOp kExp = [](Model& m, const Vars& x) { return m.exp_expr(x[0]); };
+constexpr MakeOp kLog = [](Model& m, const Vars& x) { return m.log_expr(x[0]); };
+constexpr MakeOp kSqrt = [](Model& m, const Vars& x) { return m.sqrt_expr(x[0]); };
+constexpr MakeOp kGeq = [](Model& m, const Vars& x) { return m.geq(x[0], x[1]); };
+constexpr MakeOp kEq = [](Model& m, const Vars& x) { return m.eq_expr(x[0], x[1]); };
+constexpr MakeOp kNeq = [](Model& m, const Vars& x) { return m.neq(x[0], x[1]); };
+constexpr MakeOp kLt = [](Model& m, const Vars& x) { return m.lt(x[0], x[1]); };
+constexpr MakeOp kGt = [](Model& m, const Vars& x) { return m.gt(x[0], x[1]); };
+constexpr MakeOp kSignPower3 = [](Model& m, const Vars& x) {
+    return m.signpower_expr(x[0], m.constant(3.0));
+};
+constexpr MakeOp kTanh = [](Model& m, const Vars& x) { return m.tanh_expr(x[0]); };
+
+// Builds `make` over one float variable per box into `vars`, closes the model
+// and fully evaluates it at `at`.
+static int32_t build_op(Model& m, Vars& vars, MakeOp make, const Boxes& boxes,
+                        const std::vector<double>& at) {
+    for (const auto& [lo, hi] : boxes) {
+        vars.push_back(m.float_var(lo, hi));
+    }
+    const int32_t node = make(m, vars);
+    m.minimize(node);
     m.close();
-    m.var_mut(vid(x)).value = 3.0;
-    m.var_mut(vid(y)).value = 4.0;
+    for (size_t i = 0; i < vars.size(); ++i) {
+        m.var_mut(vid(vars[i])).value = at[i];
+    }
     full_evaluate(m);
-    REQUIRE(m.node_value(s) == 7.0);
+    return node;
 }
 
-TEST_CASE("Prod evaluation", "[dag]") {
-    Model m;
-    auto x = m.float_var(0, 10);
-    auto y = m.float_var(0, 10);
-    auto p = m.prod(x, y);
-    m.minimize(p);
-    m.close();
-    m.var_mut(vid(x)).value = 3.0;
-    m.var_mut(vid(y)).value = 4.0;
+// Central finite-difference of a single-output expr w.r.t. one variable.
+static double fd_partial(Model& m, int32_t expr_id, int32_t var_id, double h) {
+    double x0 = m.var(var_id).value;
+    m.var_mut(var_id).value = x0 + h;
     full_evaluate(m);
-    REQUIRE(m.node_value(p) == 12.0);
+    double fp = m.node_value(expr_id);
+    m.var_mut(var_id).value = x0 - h;
+    full_evaluate(m);
+    double fm = m.node_value(expr_id);
+    m.var_mut(var_id).value = x0;
+    full_evaluate(m);
+    return (fp - fm) / (2.0 * h);
 }
 
-TEST_CASE("Div evaluation", "[dag]") {
-    Model m;
-    auto x = m.float_var(0, 10);
-    auto y = m.float_var(1, 10);
-    auto d = m.div_expr(x, y);
-    m.minimize(d);
-    m.close();
-    m.var_mut(vid(x)).value = 6.0;
-    m.var_mut(vid(y)).value = 3.0;
-    full_evaluate(m);
-    REQUIRE(m.node_value(d) == 2.0);
+// How a row's value is checked against `expected`: equal, within 1e-10, or on
+// one side of it (a comparison's residual against 0: <= 0 holds, > 0 is violated).
+enum class Check : uint8_t { kExact, kNear, kBelow, kAtMost, kAbove };
+
+struct EvalRow {
+    const char* op;
+    MakeOp make;
+    Boxes boxes;
+    std::vector<double> at;
+    double expected;
+    Check check;
+};
+
+TEST_CASE("each operator evaluates to its value", "[dag]") {
+    const Boxes pair{{0, 10}, {0, 10}};
+    const double e = std::exp(1.0);
+    std::vector<EvalRow> rows = {
+        {"sum", kSum, pair, {3, 4}, 7, Check::kExact},
+        {"prod", kProd, pair, {3, 4}, 12, Check::kExact},
+        {"div", kDiv, {{0, 10}, {1, 10}}, {6, 3}, 2, Check::kExact},
+        {"pow 2", kPow2, {{0, 10}}, {3}, 9, Check::kExact},
+        {"sin", kSin, {{-10, 10}}, {M_PI / 2}, 1, Check::kNear},
+        {"cos", kCos, {{-10, 10}}, {0}, 1, Check::kNear},
+        {"abs", kAbs, {{-10, 10}}, {-5}, 5, Check::kExact},
+        {"min", kMin, pair, {3, 7}, 3, Check::kExact},
+        {"max", kMax, pair, {3, 7}, 7, Check::kExact},
+        {"neg", kNeg, {{0, 10}}, {5}, -5, Check::kExact},
+        {"tan", kTan, {{-1, 1}}, {0.5}, std::tan(0.5), Check::kNear},
+        {"exp", kExp, {{-10, 10}}, {1}, e, Check::kNear},
+        {"log", kLog, {{0.01, 10}}, {e}, 1, Check::kNear},
+        {"sqrt", kSqrt, {{0, 100}}, {9}, 3, Check::kNear},
+        {"geq holding", kGeq, pair, {5, 3}, 0, Check::kAtMost},  // residual y - x
+        {"geq violated", kGeq, pair, {2, 7}, 0, Check::kAbove},
+        {"neq violated", kNeq, pair, {3, 3}, 1, Check::kExact},
+        {"neq holding", kNeq, pair, {3, 5}, 0, Check::kExact},
+        {"lt holding", kLt, pair, {2, 5}, 0, Check::kBelow},
+        {"lt violated", kLt, pair, {5, 5}, 0, Check::kAbove},  // not strictly less
+        {"gt holding", kGt, pair, {7, 3}, 0, Check::kBelow},
+        {"gt violated", kGt, pair, {3, 3}, 0, Check::kAbove},             // not strictly greater
+        {"signpower 3", kSignPower3, {{-10, 10}}, {2}, 8, Check::kNear},  // sign(x)|x|^3
+        {"signpower 3", kSignPower3, {{-10, 10}}, {-2}, -8, Check::kNear},
+        {"signpower 3", kSignPower3, {{-10, 10}}, {0}, 0, Check::kNear},
+    };
+    for (double xv : {0.0, 1.0, -1.5, 3.0}) {
+        rows.push_back({"tanh", kTanh, {{-10, 10}}, {xv}, std::tanh(xv), Check::kNear});
+    }
+
+    for (const EvalRow& row : rows) {
+        Model m;
+        Vars vars;
+        const double value = m.node_value(build_op(m, vars, row.make, row.boxes, row.at));
+        INFO(row.op << " at " << Catch::Detail::stringify(row.at));
+        switch (row.check) {
+            case Check::kExact:
+                CHECK(value == row.expected);
+                break;
+            case Check::kNear:
+                CHECK_THAT(value, WithinAbs(row.expected, 1e-10));
+                break;
+            case Check::kBelow:
+                CHECK(value < row.expected);
+                break;
+            case Check::kAtMost:
+                CHECK(value <= row.expected);
+                break;
+            case Check::kAbove:
+                CHECK(value > row.expected);
+                break;
+        }
+    }
 }
 
-TEST_CASE("Pow evaluation", "[dag]") {
-    Model m;
-    auto x = m.float_var(0, 10);
-    auto two = m.constant(2);
-    auto p = m.pow_expr(x, two);
-    m.minimize(p);
-    m.close();
-    m.var_mut(vid(x)).value = 3.0;
-    full_evaluate(m);
-    REQUIRE(m.node_value(p) == 9.0);
-}
+// `tol` 0 checks each partial exactly; `fd_tol` > 0 also checks it against a
+// central finite difference with step 1e-5.
+struct PartialRow {
+    const char* op;
+    MakeOp make;
+    Boxes boxes;
+    std::vector<double> at;
+    std::vector<double> partials;
+    double tol;
+    double fd_tol;
+};
 
-TEST_CASE("Sin evaluation", "[dag]") {
-    Model m;
-    auto x = m.float_var(-10, 10);
-    auto s = m.sin_expr(x);
-    m.minimize(s);
-    m.close();
-    m.var_mut(vid(x)).value = M_PI / 2;
-    full_evaluate(m);
-    REQUIRE_THAT(m.node_value(s), WithinAbs(1.0, 1e-10));
-}
+TEST_CASE("each operator's AD partials match its derivative", "[dag]") {
+    const Boxes pair{{0, 10}, {0, 10}};
+    const double c = std::cos(0.5);
+    std::vector<PartialRow> rows = {
+        {"sum", kSum, pair, {3, 4}, {1, 1}, 0, 0},
+        {"prod", kProd, pair, {3, 4}, {4, 3}, 0, 0},
+        {"pow 2", kPow2, {{0, 10}}, {3}, {6}, 1e-10, 0},
+        {"sin", kSin, {{-10, 10}}, {1}, {std::cos(1.0)}, 1e-10, 0},
+        {"tan", kTan, {{-1, 1}}, {0.5}, {1.0 / (c * c)}, 1e-10, 0},
+        {"exp", kExp, {{-10, 10}}, {2}, {std::exp(2.0)}, 1e-10, 0},
+        {"log", kLog, {{0.01, 10}}, {3}, {1.0 / 3.0}, 1e-10, 0},
+        {"sqrt", kSqrt, {{0.01, 100}}, {4}, {1.0 / (2.0 * std::sqrt(4.0))}, 1e-10, 0},
+        {"geq", kGeq, pair, {5, 3}, {-1, 1}, 0, 0},  // y - x
+        {"lt", kLt, pair, {2, 5}, {1, -1}, 0, 0},    // x - y + eps
+        {"gt", kGt, pair, {7, 3}, {-1, 1}, 0, 0},    // y - x + eps
+        {"eq", kEq, pair, {5, 3}, {1, -1}, 0, 0},    // |x - y| with x > y
+        {"neq", kNeq, pair, {3, 5}, {0, 0}, 0, 0},   // non-differentiable: 0
+    };
+    for (double xv : {2.5, -2.5, 1.0, -1.0, 0.7}) {  // d/dx sign(x)|x|^3 = 3x^2
+        rows.push_back(
+            {"signpower 3", kSignPower3, {{-10, 10}}, {xv}, {3.0 * xv * xv}, 1e-8, 1e-4});
+    }
+    for (double xv : {0.0, 1.0, -1.5, 2.0}) {  // d/dx tanh(x) = 1 - tanh^2(x)
+        const double th = std::tanh(xv);
+        rows.push_back({"tanh", kTanh, {{-10, 10}}, {xv}, {1.0 - (th * th)}, 1e-10, 1e-5});
+    }
 
-TEST_CASE("Cos evaluation", "[dag]") {
-    Model m;
-    auto x = m.float_var(-10, 10);
-    auto c = m.cos_expr(x);
-    m.minimize(c);
-    m.close();
-    m.var_mut(vid(x)).value = 0.0;
-    full_evaluate(m);
-    REQUIRE_THAT(m.node_value(c), WithinAbs(1.0, 1e-10));
-}
-
-TEST_CASE("Abs evaluation", "[dag]") {
-    Model m;
-    auto x = m.float_var(-10, 10);
-    auto a = m.abs_expr(x);
-    m.minimize(a);
-    m.close();
-    m.var_mut(vid(x)).value = -5.0;
-    full_evaluate(m);
-    REQUIRE(m.node_value(a) == 5.0);
-}
-
-TEST_CASE("Min/Max evaluation", "[dag]") {
-    Model m;
-    auto x = m.float_var(0, 10);
-    auto y = m.float_var(0, 10);
-    auto mn = m.min_expr({x, y});
-    auto mx = m.max_expr({x, y});
-    auto total = m.sum({mn, mx});
-    m.minimize(total);
-    m.close();
-    m.var_mut(vid(x)).value = 3.0;
-    m.var_mut(vid(y)).value = 7.0;
-    full_evaluate(m);
-    REQUIRE(m.node_value(mn) == 3.0);
-    REQUIRE(m.node_value(mx) == 7.0);
+    for (const PartialRow& row : rows) {
+        Model m;
+        Vars vars;
+        const int32_t node = build_op(m, vars, row.make, row.boxes, row.at);
+        for (size_t i = 0; i < vars.size(); ++i) {
+            INFO(row.op << " at " << Catch::Detail::stringify(row.at) << ", d/dx" << i);
+            const double partial = compute_partial(m, node, vid(vars[i]));
+            if (row.tol == 0.0) {
+                CHECK(partial == row.partials[i]);
+            } else {
+                CHECK_THAT(partial, WithinAbs(row.partials[i], row.tol));
+            }
+            if (row.fd_tol > 0.0) {
+                CHECK_THAT(partial, WithinAbs(fd_partial(m, node, vid(vars[i]), 1e-5), row.fd_tol));
+            }
+        }
+    }
 }
 
 TEST_CASE("a tied Min/Max splits its slope among the tied children", "[dag][ad]") {
@@ -181,17 +273,6 @@ TEST_CASE("a strict comparison over integers needs a gap of one", "[dag][strict]
     full_evaluate(m);
     REQUIRE(m.node_value(lt) == 0.0);
     REQUIRE(m.node_value(gt) == 1.0);  // 3 > 3 fails by the gap
-}
-
-TEST_CASE("Neg evaluation", "[dag]") {
-    Model m;
-    auto x = m.float_var(0, 10);
-    auto n = m.neg(x);
-    m.minimize(n);
-    m.close();
-    m.var_mut(vid(x)).value = 5.0;
-    full_evaluate(m);
-    REQUIRE(m.node_value(n) == -5.0);
 }
 
 TEST_CASE("If-then-else evaluation", "[dag]") {
@@ -518,62 +599,6 @@ TEST_CASE("SetVar count", "[dag]") {
     REQUIRE(m.node_value(c) == 4.0);
 }
 
-// AD tests
-TEST_CASE("AD: sum partials", "[dag]") {
-    Model m;
-    auto x = m.float_var(0, 10);
-    auto y = m.float_var(0, 10);
-    auto s = m.sum({x, y});
-    m.minimize(s);
-    m.close();
-    m.var_mut(vid(x)).value = 3.0;
-    m.var_mut(vid(y)).value = 4.0;
-    full_evaluate(m);
-
-    REQUIRE(compute_partial(m, s, vid(x)) == 1.0);
-    REQUIRE(compute_partial(m, s, vid(y)) == 1.0);
-}
-
-TEST_CASE("AD: prod partials", "[dag]") {
-    Model m;
-    auto x = m.float_var(0, 10);
-    auto y = m.float_var(0, 10);
-    auto p = m.prod(x, y);
-    m.minimize(p);
-    m.close();
-    m.var_mut(vid(x)).value = 3.0;
-    m.var_mut(vid(y)).value = 4.0;
-    full_evaluate(m);
-
-    REQUIRE(compute_partial(m, p, vid(x)) == 4.0);
-    REQUIRE(compute_partial(m, p, vid(y)) == 3.0);
-}
-
-TEST_CASE("AD: pow partial", "[dag]") {
-    Model m;
-    auto x = m.float_var(0, 10);
-    auto two = m.constant(2);
-    auto p = m.pow_expr(x, two);
-    m.minimize(p);
-    m.close();
-    m.var_mut(vid(x)).value = 3.0;
-    full_evaluate(m);
-
-    REQUIRE_THAT(compute_partial(m, p, vid(x)), WithinAbs(6.0, 1e-10));
-}
-
-TEST_CASE("AD: sin partial", "[dag]") {
-    Model m;
-    auto x = m.float_var(-10, 10);
-    auto s = m.sin_expr(x);
-    m.minimize(s);
-    m.close();
-    m.var_mut(vid(x)).value = 1.0;
-    full_evaluate(m);
-
-    REQUIRE_THAT(compute_partial(m, s, vid(x)), WithinAbs(std::cos(1.0), 1e-10));
-}
-
 TEST_CASE("AD: chain rule sin(x^2)", "[dag]") {
     Model m;
     auto x = m.float_var(0, 10);
@@ -634,93 +659,6 @@ TEST_CASE("Batch AD matches per-variable AD", "[dag]") {
     REQUIRE_THAT(all[vid(x)], WithinAbs(compute_partial(m, f, vid(x)), 1e-10));
     REQUIRE_THAT(all[vid(y)], WithinAbs(compute_partial(m, f, vid(y)), 1e-10));
     REQUIRE_THAT(all[vid(z)], WithinAbs(compute_partial(m, f, vid(z)), 1e-10));
-}
-
-// ---- SignPower / Tanh (issue #72: MINLPLib opsignpower / optanh) ----
-
-// Central finite-difference of a single-output expr w.r.t. one variable.
-static double fd_partial(Model& m, int32_t expr_id, int32_t var_id, double h) {
-    double x0 = m.var(var_id).value;
-    m.var_mut(var_id).value = x0 + h;
-    full_evaluate(m);
-    double fp = m.node_value(expr_id);
-    m.var_mut(var_id).value = x0 - h;
-    full_evaluate(m);
-    double fm = m.node_value(expr_id);
-    m.var_mut(var_id).value = x0;
-    full_evaluate(m);
-    return (fp - fm) / (2.0 * h);
-}
-
-TEST_CASE("SignPower evaluation", "[dag]") {
-    Model m;
-    auto x = m.float_var(-10, 10);
-    auto p = m.constant(3.0);
-    auto sp = m.signpower_expr(x, p);
-    m.minimize(m.sum({sp}));
-    m.close();
-
-    m.var_mut(vid(x)).value = 2.0;
-    full_evaluate(m);
-    REQUIRE_THAT(m.node_value(sp), WithinAbs(8.0, 1e-10));  // sign(2)*|2|^3 = 8
-
-    m.var_mut(vid(x)).value = -2.0;
-    full_evaluate(m);
-    REQUIRE_THAT(m.node_value(sp), WithinAbs(-8.0, 1e-10));  // sign(-2)*|2|^3 = -8
-
-    m.var_mut(vid(x)).value = 0.0;
-    full_evaluate(m);
-    REQUIRE_THAT(m.node_value(sp), WithinAbs(0.0, 1e-10));
-}
-
-TEST_CASE("SignPower AD matches finite difference", "[dag]") {
-    Model m;
-    auto x = m.float_var(-10, 10);
-    auto p = m.constant(3.0);
-    auto sp = m.signpower_expr(x, p);
-    m.minimize(m.sum({sp}));
-    m.close();
-
-    for (double xv : {2.5, -2.5, 1.0, -1.0, 0.7}) {
-        m.var_mut(vid(x)).value = xv;
-        full_evaluate(m);
-        // d/dx sign(x)|x|^3 = 3|x|^2
-        REQUIRE_THAT(compute_partial(m, sp, vid(x)), WithinAbs(3.0 * xv * xv, 1e-8));
-        REQUIRE_THAT(compute_partial(m, sp, vid(x)),
-                     WithinAbs(fd_partial(m, sp, vid(x), 1e-5), 1e-4));
-    }
-}
-
-TEST_CASE("Tanh evaluation", "[dag]") {
-    Model m;
-    auto x = m.float_var(-10, 10);
-    auto t = m.tanh_expr(x);
-    m.minimize(m.sum({t}));
-    m.close();
-
-    for (double xv : {0.0, 1.0, -1.5, 3.0}) {
-        m.var_mut(vid(x)).value = xv;
-        full_evaluate(m);
-        REQUIRE_THAT(m.node_value(t), WithinAbs(std::tanh(xv), 1e-10));
-    }
-}
-
-TEST_CASE("Tanh AD matches finite difference", "[dag]") {
-    Model m;
-    auto x = m.float_var(-10, 10);
-    auto t = m.tanh_expr(x);
-    m.minimize(m.sum({t}));
-    m.close();
-
-    for (double xv : {0.0, 1.0, -1.5, 2.0}) {
-        m.var_mut(vid(x)).value = xv;
-        full_evaluate(m);
-        double th = std::tanh(xv);
-        // d/dx tanh(x) = 1 - tanh^2(x)
-        REQUIRE_THAT(compute_partial(m, t, vid(x)), WithinAbs(1.0 - (th * th), 1e-10));
-        REQUIRE_THAT(compute_partial(m, t, vid(x)),
-                     WithinAbs(fd_partial(m, t, vid(x), 1e-5), 1e-5));
-    }
 }
 
 // ---- Cone-restricted reverse-mode AD ----
