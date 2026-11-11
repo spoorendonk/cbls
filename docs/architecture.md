@@ -107,7 +107,6 @@ A one-screen map of the pipeline, its files, the extension points, build targets
 | `cbls_uc_chped` | `benchmarks/uc-chped/` | UC-CHPED benchmark runner |
 | `cbls_mipfeas` | `benchmarks/mipfeas/` | MIPfeas runner (one instance per process) |
 | `cbls_minlplib` | `benchmarks/minlplib/` | MINLPLib benchmark runner |
-| `cbls_minlplib_portfolio` | `benchmarks/minlplib/portfolio_ab.cpp` | MINLPLib portfolio A/B harness (shared-bound on/off, #179) |
 | `cbls_minlplib_nl_check` | `benchmarks/minlplib/nl_check.cpp` | reads and models NL files, no solve; per-instance status for `status.py` (#283) |
 | `cbls_setcover` | `benchmarks/setcover/` | OR-Library set-covering runner (the `Set`-variable example) |
 | `cbls_cvrp` | `benchmarks/cvrp/` | CVRPLIB X-set CVRP runner (the `List`-variable example, one instance per process) |
@@ -1460,9 +1459,7 @@ to expose to Python (#156).
 measured choice**, and no published result is derived from it. It feeds the
 opt-in `BestOfSample` and `ViolationGuided`, and `GranularBest` — the `Auto`
 default when a neighbour list is set — as the floor its one-element
-neighbourhoods are topped up to. `benchmarks/setcover/ab_selection.sh` A/Bs the
-**policies** on the set-covering roster at that default; it takes no
-`--structural-sample-size`, so sweeping the size itself means driving
+neighbourhoods are topped up to. Sweeping it means driving
 `cbls_setcover --structural-sample-size` directly.
 
 ### Structure-only models
@@ -2254,8 +2251,7 @@ const-handle split described below.
   as `solve_parallel`.
 
 Callers: `src/cli.cpp` and the `cvrp`, `uc-chped` and `minlplib` runners at
-`--threads > 1` use the master overload (#262), as does
-`cbls_minlplib_portfolio` at every thread count; `benchmarks/mipfeas/` uses the
+`--threads > 1` use the master overload (#262); `benchmarks/mipfeas/` uses the
 factory, as above.
 
 Sharing roughly halves a worker's marginal memory on a large model, at no
@@ -2273,8 +2269,7 @@ the column count.
 Four things make it cooperative rather than N independent runs, and all four
 are reached through one parameter -- `cbls::solve()`'s trailing
 `SearchCoordination*`, which is null at every call site outside this class
-(`setcover` always, the other runners at `--threads 1`; the portfolio A/B
-harness `cbls_minlplib_portfolio` never takes this path), where null leaves
+(`setcover` always, the other runners at `--threads 1`), where null leaves
 the single-threaded trajectory bit-identical:
 
 1. **Submit when found.** `record_best()` shares each new incumbent into the

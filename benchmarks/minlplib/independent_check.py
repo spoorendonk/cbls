@@ -79,8 +79,8 @@ DEMOTED_NOTE_PREFIX = "VERIFY-FAILED(independent: "
 #: solution nobody stands behind (`run_instance` in `minlplib.cpp`, same rule),
 #: plus the first-feasible pair. That point came from the same DAG verdicts SCIP
 #: has just contradicted, and no assignment of it was kept to check, so a row
-#: SCIP rejects stands behind no feasible point at all: `first_feasible_report`
-#: must not count it as reaching feasibility.
+#: SCIP rejects stands behind no feasible point at all: no reader may count it
+#: as reaching feasibility.
 BLANKED_COLUMNS = (
     "objective",
     "gap_to_bks%",

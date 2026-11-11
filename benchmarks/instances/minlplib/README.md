@@ -256,14 +256,14 @@ In this directory:
 In `../../minlplib/`: `run_benchmark.py` (the re-run driver, the supported way
 to regenerate `comparison.csv`); `campaign_report.py` (every run-derived number
 in **Results** and **SCIP baseline**, the JSON summary and the README blocks,
-#142; solves nothing); `first_feasible_report.py` (#149's score);
+#142; solves nothing);
 `run_ablation.py` and `ablation_report.py` (#143's ablation campaign; also
 `--campaign transfer-145` and `--campaign presolve-322` on the held-out roster,
 HELDOUT.md, with `presolve_report.py`; scratch `--out-dir` only, refused under
 `benchmarks/instances/`); `nl_check.cpp` (`cbls_minlplib_nl_check`: read and
 model, no solve); `independent_check.py` (#205's SCIP check of a row's `.sol`);
 `scip_shards.py`, `check_staged.py`, `gm_ratio.py` (the full-library campaign);
-`portfolio_ab.cpp`, `portfolio_ab.py` (the shared-bound A/B); `runner.py` (the
+`runner.py` (the
 runner's row, exit-status and note contract).
 
 Regenerate `scip_baseline.csv` and `comparison_all.csv` (needs the `benchmarks`
@@ -784,69 +784,16 @@ single-seed `nvs01` row is one draw from that spread.
 
 **Whether the roster behaves the same is open.** #149 closed with it deferred to
 a multi-seed campaign, and #123's three seeds are short of the rule's four, so
-`first_feasible_report.py` over them returns `INCONCLUSIVE` with 0 eligible
-instances. One instance supports no claim about the engine either way, and no
+its scorer over them returned `INCONCLUSIVE` with 0 eligible instances. One instance supports no claim about the engine either way, and no
 engine change may be made on it.
 
 **The campaign.** The runner publishes `first_feasible_objective` and
-`time_to_first_feasible` on every row (recording them changes no trajectory),
-and `benchmarks/minlplib/first_feasible_report.py` scores them. Clean tree (the
-driver refuses a dirty one, and `git rev-parse --short=7 HEAD` names the
-commit), 60 s, #134's eight seeds, all 50 instances (the scorer drops
-`elec25`/`elec50`), serially on an idle machine (`uptime`): **about 6.7 hours**.
-Staging goes outside `build/`, which pre-push deletes.
-
-```bash
-FF=/var/tmp/cbls-149            # anywhere outside the repo and outside build/
-mkdir -p "$FF"
-for SEED in 1 2 3 7 11 13 17 42; do
-    .venv/bin/python3 benchmarks/minlplib/run_benchmark.py \
-        --seed "$SEED" \
-        --time-limit 60 \
-        --out "$FF/seed$SEED.csv" \
-        --staging-dir "$FF/stage-seed$SEED" \
-        --no-trace || { echo "seed $SEED failed; stopping" >&2; break; }
-done
-```
-
-The `|| break` stops on a refusal (exit 2) or a throw (exit 1) instead of
-burning the remaining seeds. It stops too on a final no-solution (exit 1, no
-`seedN.csv` written): every re-run stops there again, since this recipe needs
-each seed's table, until `--retry-final NAME` solves it. Each invocation resumes from its staging
-directory. `--out` and `--no-trace` keep everything in `$FF` (the driver refuses
-either half of that pair without the other), and the driver's `usage_error` is
-the only guard between this recipe and the published tables. Then score it,
-which solves nothing (by path, so it works from any directory):
-
-```bash
-.venv/bin/python3 benchmarks/minlplib/first_feasible_report.py \
-    --table 1="$FF/seed1.csv"   --table 2="$FF/seed2.csv" \
-    --table 3="$FF/seed3.csv"   --table 7="$FF/seed7.csv" \
-    --table 11="$FF/seed11.csv" --table 13="$FF/seed13.csv" \
-    --table 17="$FF/seed17.csv" --table 42="$FF/seed42.csv" \
-    --csv "$FF/first_feasible_per_instance.csv"
-```
-
-It prints per instance the Pearson and Spearman `r` between first feasible and
-final objective, its bucket, a tally of dropped rows and the verdict. **The rule
-is pre-registered** in `first_feasible_report.py` (`R_DETERMINED`,
-`MIN_ELIGIBLE_INSTANCES`, `MIN_SEEDS_PER_INSTANCE`, argued there): eligible is 4+
-usable seeds with a spread on either axis; determined is 0.7 on *both* Pearson
-and Spearman (`final-invariant` and `arrival-invariant` count as not
-determined); the effect generalises at a median `r` of 0.7+ with a strict
-majority determined; under 10 eligible is `INCONCLUSIVE`, not "does not
-generalise". Final objectives are six significant figures, so `final-invariant`
-means agreement to ~1e-6; first-feasible ones are 17 digits. Read the bucket
-line before the verdict.
-
-First buy the eligibility floor cheaply: a three-seed (`1 42 7`), 10 s pilot
-(~25 minutes, another directory) whose `determined + not-determined +
-final-invariant + arrival-invariant` at or above 10 says the real campaign will
-clear the floor comfortably; never quote its verdict. Check
-the printed `nvs01` `r` against 0.945 first: a large gap means a wrong
-measurement or engine drift. Record verdict, commit, seeds and budget here. It
-**does not authorise an engine change**, which #149 sends to its own issue,
-hypothesis and regression test.
+`time_to_first_feasible` on every row (recording them changes no trajectory).
+The pre-registered scorer, `first_feasible_report.py`, and its campaign recipe
+(eight seeds, 60 s, all 50 instances) are in git history: `git show
+047f2d4c:benchmarks/minlplib/first_feasible_report.py`, and this section at
+`047f2d4c`. A verdict from it would not authorise an engine change, which #149
+sends to its own issue, hypothesis and regression test.
 
 ## SCIP baseline
 
@@ -1137,18 +1084,11 @@ table names its engine commit and the tie-break's state.
 
 ## Portfolio A/B: the shared objective bound (#179)
 
-`cbls_minlplib --threads N` has no shared-bound switch, so a portfolio A/B runs
-through `cbls_minlplib_portfolio` (`benchmarks/minlplib/portfolio_ab.cpp`), which
-builds the model as the runner does and runs `ParallelSearch` with the runner's
-per-worker hook and LNS. `benchmarks/minlplib/portfolio_ab.py` pairs and scores
-the arms:
-
-```
-.venv/bin/python3 benchmarks/minlplib/portfolio_ab.py run --instances nvs22 eq6_1 ... \
-    --seeds 1001 1002 1003 1004 --budget 20 --threads 4 --out ab.jsonl \
-    --lock ~/.cache/cbls-bench.lock
-.venv/bin/python3 benchmarks/minlplib/portfolio_ab.py analyze ab.jsonl
-```
+`cbls_minlplib --threads N` has no shared-bound switch, so #179 ran its A/B
+through `cbls_minlplib_portfolio` (`portfolio_ab.cpp`, which ran
+`ParallelSearch` with the runner's per-worker hook and LNS) and paired and
+scored the arms with `portfolio_ab.py`. Both are in git history at `047f2d4c`
+(`benchmarks/minlplib/`).
 
 Result (4 threads, 20 s, seeds 1001-1004, on 10 instances a pre-registered
 control-only pilot admitted because the control runs behind the portfolio's
@@ -1159,13 +1099,13 @@ worse on 1 and was flat on 1 (p = 0.039; CI [-0.183, +0.003]). All 40 runs were
 feasible in both arms. The engine binary and how main differs from it are on
 #179.
 
-The MIPfeas half has no committed driver: each pair is two `cbls_mipfeas
+The MIPfeas half had no committed driver: each pair is two `cbls_mipfeas
 --instance I --inst-dir benchmarks/instances/mipfeas --out-dir D --budget 30
 --seed S --threads 4 --commit <sha>` runs, the control adding
 `--no-share-bound`, seeds 1001-1006 over the 10 pilot-admitted instances, run
 serially under the machine lock, both arms of a pair back to back and the arm
 order alternating with seed parity, each scored with `primal_integral.primal_integral` against the roster
-optimum over [0, 30 s]. `portfolio_ab.py analyze` accepts those rows
-(`instance`, `seed`, `share`, `pi`, `gap`).
+optimum over [0, 30 s], and scored with `portfolio_ab.py analyze` (`instance`,
+`seed`, `share`, `pi`, `gap` rows).
 
 A held-out roster lives in `heldout/`. No shipped default was fitted to it except #331's presolve and compound propagation (both off), which were decided on 25 of its instances; method, pool size and composition are in [HELDOUT.md](HELDOUT.md) (#144).

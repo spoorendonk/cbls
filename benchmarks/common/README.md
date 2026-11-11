@@ -84,18 +84,9 @@ job records, which timeout a call carries — since that wiring is what a
 refactor silently drops. Drivers run as scripts reach the package through a
 `sys.path` shim on the repository root, as `run_ablation.py` always did.
 
-`tune_trial.py` is one `xk tune` evaluation (#262): it runs one runner once on
-one (instance, seed) — `mipfeas`, `minlplib`, `uc` (one horizon, `--periods`) or
-`cvrp` — and writes `<out-dir>/cost.json` with `{"cost": float|null, ...}`, read
-by a study's `[cost] json = "cost"`, `file = "{rundir}/cost.json"`. The value is
-the one each table scores, by that table's own code: the Primal Integral
-(`primal_integral.score_instance` against the roster's reference;
-`campaign_report.anytime_scores` against `bounds.csv`), UC's verified objective
-(for `relative = "reference"`), CVRP's `gap_percent`. `null` is a run the table
-would not score either (an error, an unverified row); xk counts it `failed`.
-Flags after `--` go to the runner, which is where a study's `{config}` lands.
 All four runners take `--threads N` (`parse_thread_count` in `runner_args.h`),
 the `ParallelSearch` portfolio above 1. `uc-chped` refuses that onto its
 published table, which measures the single-threaded `solve()`; `minlplib`
 publishes at 1 or at the campaign count 16 (#255, #256), one count per table.
-The study files that call it are in `benchmarks/tune/` (its README).
+(The `xk tune` trial driver `tune_trial.py` and its study files, #261-#266, are
+in git history: `git show 047f2d4c:benchmarks/common/tune_trial.py`.)

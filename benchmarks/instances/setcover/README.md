@@ -188,7 +188,8 @@ harness.
 
 **Result: not established.** Engine commit `8dc906b`, 20 seeds (42-61) per arm,
 `Set` encoding, one solve at a time on an idle machine, via
-`benchmarks/setcover/ab_selection.sh --time 10 --seeds 20`. 400 runs, every one
+`benchmarks/setcover/ab_selection.sh --time 10 --seeds 20` (in git history at
+`047f2d4c`). 400 runs, every one
 feasible and verified. This run is *after* #164's position-based move
 representation, so the per-candidate element-vector copy that confounded the
 first attempt is gone. It is *before* #201 (`35ec07c`), which changed the
@@ -326,17 +327,9 @@ ctest --test-dir build-rel -R setcover
 The runner verifies every solution against the instance file (not against the
 DAG) and exits non-zero if any run is infeasible or unverified.
 
-The selection A/B above is one command, and it refuses to run its arms
-concurrently:
-
-```bash
-./benchmarks/setcover/ab_selection.sh --time 10 --seeds 5
-# --arms first_improving,best_of_sample,violation_guided  for all three
-```
-
-It writes per-arm and merged per-seed CSVs plus a `run.txt` carrying the engine
-commit, the host and `uptime`, into a timestamped directory under `results/`
-(gitignored). Quote the commit it prints.
+The selection A/B above ran through `ab_selection.sh`, which is in git history
+(`git show 047f2d4c:benchmarks/setcover/ab_selection.sh`); it ran the arms
+serially, one `cbls_setcover` solve at a time.
 
 The runner's `--csv` output is the per-seed raw form. **No summary table is
 committed.** One used to be, and it went stale silently when #118 changed the

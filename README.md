@@ -73,7 +73,7 @@ With Python bindings (the venv first, which also builds the package into it):
 uv sync --extra dev
 cmake -B build -DCBLS_BUILD_PYTHON=ON -DPython_EXECUTABLE="$PWD/.venv/bin/python"
 cmake --build build
-.venv/bin/pytest          # 1856 tests, 266 of them for the bindings
+.venv/bin/pytest          # 1756 tests, 266 of them for the bindings
 ```
 
 Tests of the benchmark baselines skip themselves when `ortools` or `pyscipopt` is
@@ -137,7 +137,6 @@ The other directories under `benchmarks/` are **not** comparative benchmarks:
 | `benchmarks/cvrp/` | `cbls_cvrp` | the worked example for `List` variables: CVRPLIB X set, scored as gap to the best-known values, with PyVRP and OR-Tools as context. Unpublished until #204 |
 | `benchmarks/setcover/` | `cbls_setcover` | the worked example for `Set` variables: ten OR-Library instances under both a `Set` and a Bool encoding. Its result is a documented limitation, not a comparative claim |
 | `benchmarks/chped/` | none | CHPED dispatch model, data and SCIP reference. `examples/chped.cpp` uses the model; `reference_solve.py --uc` is UC-CHPED's SCIP reference |
-| `benchmarks/tune/` | none | `xk tune` parameter studies, one per benchmark class |
 | `benchmarks/common/` | none | headers and Python helpers the runners share |
 | `benchmarks/instances/miplib-fj/` | none | a retired benchmark's instances, kept because tests read them |
 

@@ -328,7 +328,7 @@ hot pricing of `t_cold = 0` startups undercuts the source. At 200 segments it
 lands 0.17 % *below* the proven `ucp13`-3p optimum and 0.38 % below the
 proven `ucp40`-1p optimum (55434.65 against 55644.79, on the data as corrected
 by #193; 0.44 % below the old instance's 55704.72 before it). For an exact value use the MINLP in
-`benchmarks/uc-chped/instance_identity.py`.
+`instance_identity.py` (§7; in git history at `047f2d4c`).
 
 ## 5. Severity & decision
 
@@ -419,7 +419,8 @@ final schedule (`y`, startups, dispatch).
 
 ### 7.2 Provenance, field by field
 
-`benchmarks/uc-chped/instance_identity.py` loads `ucp_data.py` (a stub supplies
+`instance_identity.py` (removed once #148 closed; `git show
+047f2d4c:benchmarks/uc-chped/instance_identity.py`) loads `ucp_data.py` (a stub supplies
 the one `gurobipy` name it imports, `multidict`) and compares every field of the
 authors' `ucp13(24)` and `ucp40(24)` with ours, exactly:
 
@@ -469,7 +470,7 @@ As a control, 2 and 3 were also run on the **authors' own** `ucp40` (loaded from
 
 Machine: the shared 12-core box, other single-threaded jobs running.
 PySCIPOpt 6.2.1, SCIP 10.0.2. Engine commit irrelevant (no CBLS solve);
-branch commit of the script: see `git log -- benchmarks/uc-chped/instance_identity.py`.
+branch commit of the script: see `git log 047f2d4c -- benchmarks/uc-chped/instance_identity.py`.
 
 | Case | Table 2 | Re-priced authors' schedule | MINLP `=` | MINLP `>=` | PWL ref (200 seg) |
 |---|---:|---:|---:|---:|---:|
@@ -553,7 +554,7 @@ for an unrelated reason until #194.
 
 #193 regenerated every `ucp*.jsonl` built from the 40-unit data (only `P_max`
 changed) and removed #148's interim relabelling of the `ucp40` rows as bounds
-for a related system. `tests/python/test_uc_chped_instance_identity.py` pins
+for a related system. `tests/python/test_uc_chped_instances.py` pins
 the corrected state: 550 at units 19-20 in every 40-unit copy, and no
 capacity-short period in any committed instance. The runner scores `ucp40`
 against its own bounds as it does `ucp13`; a `ucp40` result measured before
@@ -568,9 +569,11 @@ model's demand row is `>=`, a relaxation not certified to share it (§7.4). The 
 it (121635.52, +0.18 %); the test asserts only `objective >= known_optimum`
 and `< 140000`.
 
-Reproduce (from the repository root; fetch the upstream files first):
+Reproduce (from the repository root; fetch the upstream files and restore the
+script from git history first):
 
 ```
+git show 047f2d4c:benchmarks/uc-chped/instance_identity.py > benchmarks/uc-chped/instance_identity.py
 mkdir -p U/RESULTS && cd U && curl -sLO https://www.dcc.fc.up.pt/~jpp/code/valve/ucp_data.py
 for c in ucp13-1 ucp13-3 ucp40-1; do curl -sL -o RESULTS/$c.txt https://www.dcc.fc.up.pt/~jpp/code/valve/RESULTS/$c.txt; done; cd ..
 .venv/bin/python benchmarks/uc-chped/instance_identity.py --upstream-dir U --time-limit 600 --pwl-segments 200

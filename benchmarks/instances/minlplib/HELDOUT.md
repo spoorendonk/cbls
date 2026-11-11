@@ -13,7 +13,8 @@ had unseen instances to run on. It is no longer unseen. Runs recorded on it, non
   cbls/SCIP GM(gap+1) ratio of 1.81-1.84 held-out against 1.75-1.88 published,
   no overfit at that scale (posted on #228);
 - #256's dev run, compound moves on vs off (60 s, seeds 1-3, posted on #256);
-- the #265 `xk tune` study (`benchmarks/tune/minlplib.study.toml`): it
+- the #265 `xk tune` study (`benchmarks/tune/minlplib.study.toml`, in git
+  history at `047f2d4c`): it
   searched on 35 of the fifty and re-checked its elites on the other 15,
   confirmed no setting and changed no default;
 - presolve smokes (#343, #347, #354);

@@ -394,11 +394,6 @@ if(CBLS_BUILD_BENCHMARKS)
     cbls_enable_warnings(cbls_minlplib)
     # json for benchmarks/mipfeas/worker_accounting.h (--threads, #262).
     target_include_directories(cbls_minlplib PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${json_SOURCE_DIR}/include)
-    # #179's portfolio A/B harness: cbls_minlplib's tables are single-threaded.
-    add_executable(cbls_minlplib_portfolio benchmarks/minlplib/portfolio_ab.cpp)
-    target_link_libraries(cbls_minlplib_portfolio PRIVATE cbls_lib)
-    cbls_enable_warnings(cbls_minlplib_portfolio)
-    target_include_directories(cbls_minlplib_portfolio PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     # #283's per-instance status: read + model each NL file, no solve
     # (benchmarks/instances/minlplib/status.py runs it).
     add_executable(cbls_minlplib_nl_check benchmarks/minlplib/nl_check.cpp)

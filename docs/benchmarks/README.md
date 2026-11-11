@@ -183,7 +183,8 @@ Engine experiments, not benchmarks, kept beside them:
   and record (#188).
 - `linear-jump-pingpong.md` and `linear-jump-pingpong.patch`: whether the
   closed-form jump scorer ping-pongs on Float plateaus (#178).
-- `benchmarks/tune/`: one `xk tune` study file per benchmark class (#261).
+- the `xk tune` study files (#261-#266), formerly `benchmarks/tune/`: in git
+  history at `047f2d4c`.
 
 ## Retiring a benchmark
 

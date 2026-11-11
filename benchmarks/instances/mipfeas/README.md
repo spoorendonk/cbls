@@ -170,7 +170,7 @@ benchmarks/instances/mipfeas/
   references.csv       sha256 + byte size of the three above (committed)
   tune_confirm.csv     the tuning study's held-out 10, outside the roster, with
                        their .solu optima (committed, not in references.csv; a
-                       pytest checks them against the .solu; benchmarks/tune/, #264)
+                       pytest checks them against the .solu; #264)
   tuned.txt            the 22 roster instances settings were tuned on (the tune
                        study's screen + intermediate sets); scoring roster.csv
                        with --held-out tuned.txt reports the other 211 (#255)
@@ -183,7 +183,6 @@ benchmarks/mipfeas/
   mipfeas.cpp        CBLS runner, one instance per process
   cpsat_solve.py     CP-SAT baseline (defaults, or fj+ls), same result schema
   run_benchmark.py   driver: parallel, resumable, memory-capped
-  run_arms.py        CBLS against CBLS: flag-set arms, interleaved, locked per solve (#331)
   verify_solution.py independent feasibility check against the instance file
   primal_integral.py scoring -> comparison.csv + <stem>_report.md
   testdata/          a frozen results directory and the two artifacts scored
@@ -472,53 +471,12 @@ question is asked.
 The driver is resumable: a job whose result file exists is skipped, so an
 interrupted run continues where it stopped.
 
-### Comparing CBLS flag sets (`run_arms.py`, #331)
+### Comparing CBLS flag sets (#331)
 
-`run_arms.py` runs one engine under several flag sets (arms) and scores them
-against each other. `--campaign presolve-322`, the default, has four arms:
-`control` (the runner's defaults), `presolve` (`--presolve`, with coefficient
-tightening and aggregation on), `compound-propagation`
-(`--compound-propagation`) and `both`.
-
-```sh
-# The 22 tuned.txt instances x seeds 1 2 3 x 4 arms, 60 s each, locked per solve
-.venv/bin/python benchmarks/mipfeas/run_arms.py --out-dir <dir> --budget 60 \
-    --seeds 1 2 3 -- --cbls-threads 4 --cpuset 0,2,4,6
-# Re-score what is there
-.venv/bin/python benchmarks/mipfeas/run_arms.py --out-dir <dir> --budget 60 \
-    --seeds 1 2 3 --report-only
-```
-
-- **Every solve is one `run_benchmark.py --engines cbls` call** on a
-  one-instance roster (`<dir>/rosters/`), into `<dir>/<arm>/seed<N>`, so
-  verification, the pin check, resume and the run record are that driver's.
-- **Order is instance-major, then seed, then arm**: the arms of one (instance,
-  seed) run back to back, so drift in the machine's state hits them alike.
-- **Each solve takes the machine lock** (`--lock-command`, `xk lock --` by
-  default; `''` for none), and nothing holds it between solves. A cell already
-  solved and verified is skipped without taking it.
-- **Arguments after `--` go to `run_benchmark.py`.** Flags the arms or the plan
-  set (`--presolve`, `--compound-propagation`, `--seed`, `--budget`,
-  `--results-dir`, …) are refused there, and so is any abbreviation of them or
-  of `--cbls-bin`/`--engine-commit`, which argparse would expand.
-- **`campaign.json` stamps the out-dir.** A run refuses a directory stamped with
-  any other campaign, arm flags, instances, seeds, budget, pass-through, engine
-  commit or runner-binary sha256; `--report-only` compares the first five. A
-  run refuses a missing binary. The sha256 and the commit are re-checked before
-  and after every solve: a rebuild or a commit mid-campaign stops it, and a
-  solve that ran across one has its result moved aside (`.drifted`) for a
-  resume to re-run.
-- **`arms_report.md`** has a row per arm and seed (feasible count, the shifted
-  geometric mean of the primal integral, its ratio to the control, median setup
-  seconds, maximum peak RSS) and a row per arm pooled over seeds (feasible count,
-  PI SGM, ratio, per-seed ratio range). PI means cover only the instances
-  published in every arm at that seed, so a row one arm withholds leaves every
-  arm's mean. The noise floor is the control's PI SGM max / min over the seeds
-  it names, over the instances published in every arm at every seed; a ratio
-  inside it is not a difference. A scorer refusal ends with "no report
-  written" and the row it names. The report refuses arms run
-  at different engine commits; a killed solve's row, which records none, is
-  scored as a failure and not counted as a commit.
+#331 compared flag-set arms (presolve, compound propagation, both) with
+`run_arms.py`, which ran each solve through `run_benchmark.py` under the
+machine lock. The campaign is closed and the script is in git history:
+`git show 047f2d4c:benchmarks/mipfeas/run_arms.py`.
 
 ### Running the portfolio (`--cbls-threads`)
 

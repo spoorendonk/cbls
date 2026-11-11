@@ -11,9 +11,9 @@
 //   cbls_setcover --encoding set --structural-selection violation_guided
 //                 --structural-sample-size 8
 //
-// ab_selection.sh in this directory is the A/B harness for the last of those:
-// the `Set` encoding under two structural-selection policies, several seeds per
-// arm, run serially.
+// The A/B of the last of those (the `Set` encoding under two
+// structural-selection policies) ran through ab_selection.sh, now in git
+// history at 047f2d4c.
 
 #include "data.h"
 #include "setcover_model.h"

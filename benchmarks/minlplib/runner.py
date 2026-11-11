@@ -1,8 +1,8 @@
 """The `cbls_minlplib` runner's contract, as every Python consumer reads it.
 
 One row per instance, one exit status per invocation, one vocabulary of notes.
-Both drivers (`run_benchmark.py`, `run_ablation.py`) and both reports
-(`ablation_report.py`, `first_feasible_report.py`) read it from here; until
+Both drivers (`run_benchmark.py`, `run_ablation.py`) and the ablation report
+(`ablation_report.py`) read it from here; until
 #160 each spelled out its own copy and a test pinned the copies equal.
 `benchmarks/minlplib/minlplib.cpp` is the source of truth, and the tests pin
 this module against its literals rather than against a run.

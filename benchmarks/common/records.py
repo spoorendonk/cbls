@@ -40,10 +40,6 @@ ablation campaign row  `run_ablation.RESULT_COLUMNS`      `(instance, arm, seed)
                        (provenance + the runner row)      `results.csv`, less the trailing
                                                           partial block, under a matching
                                                           `stamp.txt`
-minlplib portfolio     `portfolio_ab.run_one` (the        `(instance, seed, share)` in
-A/B row (#179)         `cbls_minlplib_portfolio` JSON     the `.jsonl`, less a torn tail,
-                       line + `run_campaign`'s stamp)     every row matching the run's
-                                                          `commit_sha`/`budget`/`threads`
 cvrp job record        `cvrp.score.RECORD_FIELDS` (both   `<arm>/t<threads>/b<budget>/
 (#199)                 engines); written by               <instance>.s<seed>.json` under
                        `cvrp.run_benchmark.job_record`    `<engine>/` holds a readable

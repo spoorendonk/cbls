@@ -93,7 +93,7 @@ therefore `--neighbours 20` and #204 runs it, with `guided` as the comparison
 arm.
 
 **Tuned since, no change.** The `xk tune` pilot on `dev.csv` (#263, #278;
-`benchmarks/tune/cvrp.study.toml`) searched the neighbour count, the
+`benchmarks/tune/cvrp.study.toml`, in git history at `047f2d4c`) searched the neighbour count, the
 structural selection and its sample size, the perturbation period and LNS. It
 confirmed no setting at 10-30 s, so the default arm above stays. That is no
 evidence the defaults are best at longer budgets: its fidelity stage failed

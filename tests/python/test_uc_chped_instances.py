@@ -1,7 +1,7 @@
 """#148/#193: the Table 2 bounds describe this repository's ucp13 and ucp40.
 
-`benchmarks/uc-chped/instance_identity.py` settles it against the authors' GPL
-`ucp_data.py` (FIDELITY.md section 7). #148 found ucp40's units 19-20 capped at
+#148 settled it against the authors' GPL `ucp_data.py` (FIDELITY.md section
+7; its script, `instance_identity.py`, is in git history). #148 found ucp40's units 19-20 capped at
 500 MW where the source has 550, and relabelled its cited rows as bounds for a
 related system; #193 corrected the data in `benchmarks/chped/` and removed the
 relabel. What this pins is the corrected state: the committed instances carry
@@ -18,7 +18,6 @@ import functools
 import importlib.util
 import json
 import subprocess
-import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -121,21 +120,6 @@ def test_uc_chped_scores_ucp40_against_its_table2_bounds(tmp_path: Path) -> None
             assert r["lb"] == lbs[(name, r["periods"])], r
             assert (r["gap_pct"] != "") == (r["feasible"] == "true" and r["objective"] != ""), r
         assert any(r["gap_pct"] != "" for r in mine), f"no scored {name} row: {mine}"
-
-
-def test_instance_identity_refuses_an_upstream_file_with_another_hash(tmp_path: Path) -> None:
-    """A revised or tampered `ucp_data.py` must not silently become the yardstick:
-    the check loads only the file whose sha256 FIDELITY.md section 7.1 records."""
-    (tmp_path / "ucp_data.py").write_text("def ucp13(periods):\n    return None\n")
-    script = ROOT / "benchmarks" / "uc-chped" / "instance_identity.py"
-    result = subprocess.run(
-        [sys.executable, str(script), "--upstream-dir", str(tmp_path), "--skip-solves"],
-        capture_output=True,
-        text=True,
-        timeout=120,
-    )
-    assert result.returncode != 0
-    assert "refusing to compare" in result.stderr, result.stderr
 
 
 @functools.cache

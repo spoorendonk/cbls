@@ -142,10 +142,8 @@ struct SearchConfig {
     //
     // 8 is a NEUTRAL PLACEHOLDER, not a measured choice, and no published
     // result in this repo is derived from it; #203's CVRP smoke ran at this
-    // default. A caller that cares should sweep it on its own instances:
-    // benchmarks/setcover/ab_selection.sh A/Bs the POLICIES at this default and
-    // has no --structural-sample-size flag of its own, so sweeping the size
-    // itself means driving cbls_setcover --structural-sample-size directly.
+    // default. A caller that cares should sweep it on its own instances, e.g.
+    // with cbls_setcover --structural-sample-size.
     int structural_sample_size = 8;
     // Optional granular neighbourhood handed to the BUILT-IN generators, making
     // a move's target one of the moved element's nearest neighbours instead of a
