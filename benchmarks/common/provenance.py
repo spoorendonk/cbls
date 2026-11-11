@@ -29,20 +29,17 @@ def _git(repo_root: Path, *argv: str) -> str:
 def commit_sha(repo_root: Path = REPO_ROOT, *, ignore: Iterable[Path] = ()) -> str:
     """The commit a run is attributed to, marked `-dirty` when the tree is modified.
 
-    A plain SHA from a modified checkout claims a reproducibility the result does
-    not have -- the code that ran is not the code at that commit.
+    A plain SHA from a modified checkout would claim the code that ran is the
+    code at that commit.
 
-    `git rev-parse --short=7` and not `git describe`, whose output format changes
-    the moment the repository gains its first tag -- a recorded commit would
-    silently change shape mid-history. (The mipfeas driver used `describe`
-    until #160; with no tag in the repository the two print the same string.)
+    `git rev-parse --short=7`, not `git describe`, whose format changes once the
+    repository gains a tag, silently reshaping recorded commits (#160; with no
+    tag the two print the same string).
 
-    Dirtiness comes from `git status --porcelain --untracked-files=no`, which
-    covers modifications to tracked files. Untracked files are deliberately not
-    counted: a scratch file beside the source says nothing about the code that
-    ran. The corollary is that a *new*, never-added source file does not mark the
-    tree dirty, so this is a guard against edited code, not against every
-    difference from HEAD.
+    Dirtiness is `git status --porcelain --untracked-files=no`: tracked files
+    only, since a scratch file says nothing about the code that ran. So a new,
+    never-added source file does not mark the tree dirty: this guards against
+    edited code, not every difference from HEAD.
 
     `ignore` names files whose modification does not count (`modified_paths`
     says exactly which entries are dropped). The default, nothing ignored, is
@@ -164,12 +161,9 @@ def build_dir_problems(
             "not Release; these are wall-clock-budgeted solves and an unoptimised build "
             "measures a different engine"
         )
-    # Both are sticky cache entries, so a build dir configured once with either
-    # keeps it through every later flag-less `cmake -B build` while
-    # CMAKE_BUILD_TYPE still reads Release. A sanitizer binary runs several-fold
-    # slower and -fno-omit-frame-pointer costs throughput, so either would
-    # publish wall-clock-budgeted rows measured on an engine nobody runs. See
-    # docs/profiling.md.
+    # Both are sticky cache entries that survive a flag-less `cmake -B build`
+    # while CMAKE_BUILD_TYPE still reads Release; a sanitizer binary runs
+    # several-fold slower and frame pointers cost throughput (docs/profiling.md).
     if cmake_true(cache.get("CBLS_SANITIZE", "")):
         problems.append(
             f"{build_dir} is configured with CBLS_SANITIZE={cache['CBLS_SANITIZE']}; "
@@ -182,8 +176,7 @@ def build_dir_problems(
             "frame pointers cost throughput and docs/profiling.md says a build-profile "
             "wall-clock is not a benchmark number. Use a separate build directory."
         )
-    # Every configured cache records it, so a cache without one is not one this
-    # check can vouch for -- and skipping the comparison would pass it.
+    # Every configured cache records it; without one the checkout cannot be checked.
     home = cache.get("CMAKE_HOME_DIRECTORY")
     if not home:
         problems.append(

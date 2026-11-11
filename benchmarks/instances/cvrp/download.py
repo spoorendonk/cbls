@@ -38,9 +38,8 @@ import sys
 from pathlib import Path
 from typing import NamedTuple
 
-# Run as a script (`python download.py`, the documented form), only this file's
-# own directory is on sys.path; the repository root makes `benchmarks.common`
-# importable.
+# Run as a script, only this directory is on sys.path; the repository root makes
+# `benchmarks.common` importable.
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 

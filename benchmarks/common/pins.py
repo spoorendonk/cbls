@@ -30,11 +30,8 @@ def read_pin_table(path: Path, key_column: str) -> dict[str, tuple[str, int]]:
 
 
 def write_pin_table(path: Path, key_column: str, rows: dict[str, tuple[str, int]]) -> None:
-    # Temp-then-rename, like every other file a benchmark writes. A pin table is
-    # committed data a run driver gates on, and a truncated table does not merely
-    # lose rows: a downloader reads a key it cannot find as a first acquisition
-    # and re-pins whatever is on disk with no flag, which is exactly the
-    # overwrite the update flags exist to require.
+    # Temp-then-rename: a truncated table makes a downloader read a missing key
+    # as a first acquisition and re-pin what is on disk without the update flag.
     tmp = path.with_name(path.name + ".tmp")
     with open(tmp, "w", newline="") as fh:
         writer = csv.writer(fh)

@@ -47,9 +47,8 @@ import zipfile
 from pathlib import Path
 from typing import NamedTuple
 
-# Run as a script (`python download.py`, the documented form), only this file's
-# own directory is on sys.path; the repository root makes `benchmarks.common`
-# importable.
+# Run as a script, only this directory is on sys.path; the repository root makes
+# `benchmarks.common` importable.
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
@@ -75,9 +74,8 @@ SMOKE_FILENAME = "smoke.csv"
 REFERENCES_FILENAME = "references.csv"
 
 #: The files every published gap is measured against, pinned by hash in
-#: `references.csv`. The solution file is the yardstick itself; the two roster
-#: tables are the derivation of it this benchmark actually reads, and pinning the
-#: derivation as well as its input is what makes a hand-edited roster visible.
+#: `references.csv`: the solution file (the yardstick) and the two roster tables
+#: derived from it, pinned too so a hand-edited roster is visible.
 PINNED_REFERENCE_FILES: tuple[str, ...] = (SOLU_FILENAME, ROSTER_FILENAME, SMOKE_FILENAME)
 
 # MIPfeas: 240 benchmark-set instances minus the 7 known-infeasible ones.
@@ -347,11 +345,9 @@ def write_manifest(names: list[str], target_dir: Path, path: Path, *, update: bo
     `bytes` doubles as the size proxy the run driver schedules on: the largest
     instances are run serially rather than alongside others.
 
-    Merged into what is already committed rather than replacing it. `--subset smoke`
-    fetches 11 of the 233 names, and rewriting the file from those alone drops the
-    other 222 rows -- after which the run driver sees no sizes and schedules the
-    largest instances alongside everything else instead of alone. That is the #103
-    failure mode: running a tool over a subset silently destroys committed data.
+    Merged into the committed rows, not replacing them: `--subset smoke` fetches
+    11 of the 233, and rewriting from those would drop the other 222 sizes, so
+    the driver would schedule the largest instances alongside the rest (#103).
 
     An instance the manifest has never seen is added; one whose bytes have *moved*
     is a substitution, and is refused unless `update` says so. Returns the names
@@ -380,9 +376,8 @@ def write_manifest(names: list[str], target_dir: Path, path: Path, *, update: bo
         return changed
     write_pin_table(path, "instance", rows)
     print(f"[write] {path.name} ({len(rows)} instances, {refreshed} refreshed)")
-    # Named, not counted. `N refreshed` is the same number whether one row was
-    # added or two hundred were, so a file that lost its rows and re-pinned
-    # whatever happened to be on disk reported exactly like a normal run.
+    # Named, not counted: `N refreshed` reads the same whether one row was added
+    # or a lost table re-pinned everything on disk.
     for name in sorted(added):
         print(f"  + added {name}")
     return changed
@@ -391,14 +386,11 @@ def write_manifest(names: list[str], target_dir: Path, path: Path, *, update: bo
 def unpinned_present(names: list[str], target_dir: Path, path: Path) -> list[str]:
     """Instance files on disk that the pin table does not cover.
 
-    The add path is flagless on purpose -- acquiring an instance nobody has pinned
-    is not an overwrite. But it doubles as an unflagged RE-pin whenever the table
-    itself is missing or short: delete `manifest.csv`, substitute an instance, and
-    the next run pins the substituted bytes and exits 0, after which
-    `verify_preconditions` passes because the manifest now agrees with the file.
-    So the add path stays flagless only for a file that is genuinely NEW to a
-    directory; a file already on disk that the table does not cover is the
-    absent-table case and is refused.
+    The add path is flagless because acquiring an unpinned instance is not an
+    overwrite, but with a missing or short table it would be an unflagged
+    re-pin of substituted bytes that `verify_preconditions` then passes. So it
+    stays flagless only for a file new to the directory; a file already on disk
+    that the table does not cover is refused.
     """
     pinned = read_pin_table(path, "instance")
     return sorted(
@@ -432,11 +424,8 @@ def pin_fetched_instances(names: list[str], here: Path, *, update: bool) -> int:
     if not moved:
         return 0
     if update:
-        # The same visible-diff rule --update-references follows: accepting moved
-        # bytes re-pins a published row's input, so it names the rows rather than
-        # only reporting that the file was rewritten. `refreshed` cannot stand in --
-        # it counts every row written, which is the same number whether one instance
-        # moved or none did.
+        # As --update-references does: re-pinning a published row's input names
+        # the rows; `refreshed` counts every row written, moved or not.
         print(f"[update] instance bytes: {len(moved)} re-pinned")
         for name in sorted(moved):
             print(f"  ~ changed  {name}.mps.gz")
@@ -473,9 +462,8 @@ def verify_mode(here: Path, names: list[str]) -> int:
             file=sys.stderr,
         )
         return 1
-    # What was checked, not just that nothing failed. "every pinned file matches"
-    # over zero present instances is a green light after a fetch that fell over,
-    # and the README sells --verify as the offline check of all of them.
+    # Says what was checked, not just that nothing failed: zero present
+    # instances would otherwise read as a green light.
     print(
         f"OK: {len(PINNED_REFERENCE_FILES)} reference file(s) and {checked}/{len(names)} "
         "instance(s) match what is pinned."
@@ -498,10 +486,8 @@ def update_references(here: Path, solu_bytes: bytes, roster: list[RosterEntry]) 
     for line in changes:
         print(line)
 
-    # Smoke first: it is the only step that can refuse -- a smoke name the new
-    # roster no longer carries -- so running it first keeps the update
-    # all-or-nothing instead of leaving the solution file and roster replaced under
-    # the old pins.
+    # Smoke first: the only step that can refuse (a smoke name the new roster
+    # lacks), so the update stays all-or-nothing under the old pins.
     write_smoke_csv(roster, here / SMOKE_FILENAME)
     (here / SOLU_FILENAME).write_bytes(solu_bytes)
     write_roster_csv(roster, roster_path)
@@ -529,14 +515,11 @@ def check_reference_pins(here: Path, solu_bytes: bytes, roster: list[RosterEntry
             read_roster_csv(here / ROSTER_FILENAME) if (here / ROSTER_FILENAME).exists() else [],
             roster,
         )
-    # The committed derivation is checked too: a hand-edited roster.csv is the same
-    # defect as a revised upstream, and only this catches it.
+    # The committed derivation too: only this catches a hand-edited roster.csv.
     local = verify_references(here)
     if upstream is not None:
-        # Already reported against the upstream bytes; saying it twice adds nothing.
-        # Filtered only in that case: when upstream matches its pin, a local copy
-        # that does not is new information rather than a duplicate, and dropping it
-        # would let the script print "match their pins" about a tampered file.
+        # Already reported against upstream. Only in that case: when upstream
+        # matches, a mismatched local copy is a tampered file and must be reported.
         local = [p for p in local if not p.startswith(SOLU_FILENAME + ":")]
     problems += local
     return problems

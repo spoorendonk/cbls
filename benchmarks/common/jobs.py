@@ -34,13 +34,11 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Iterator, Sequence
 
-#: The lock `wallclock_lock` takes. ONE fixed path, resolved once at import:
-#: deliberately not `$XDG_STATE_HOME`, which two shells can set differently and
-#: which would then hand them two locks. Per user -- another user's run on the
-#: same machine is not excluded by it (the ablation driver's load-average gate
-#: is what notices that). Named by host, so a home directory shared between
-#: machines (NFS, where flock is enforced across clients) does not make one
-#: machine's run refuse another's. Tests point it elsewhere by patching this name.
+#: The lock `wallclock_lock` takes: one fixed path resolved at import, not
+#: `$XDG_STATE_HOME`, which two shells can set differently into two locks. Per
+#: user (another user's run is caught only by the ablation driver's load-average
+#: gate) and per host, so a home shared over NFS, where flock spans clients,
+#: does not make one machine refuse another's run. Tests patch this name.
 WALLCLOCK_LOCK = (
     Path.home() / ".local" / "state" / "cbls" / f"wallclock-{socket.gethostname()}.lock"
 )
@@ -54,15 +52,14 @@ class LockHeldError(RuntimeError):
 def wallclock_lock(owner: str) -> Iterator[None]:
     """Hold the machine's wall-clock lock for the whole run, or raise `LockHeldError`.
 
-    Every driver that runs wall-clock-budgeted solves serially and publishes or
-    compares their numbers takes it (`minlplib/run_benchmark.py`,
-    `minlplib/run_ablation.py`): two such runs sharing the machine halve each
-    other's iteration counts with nothing in either record saying so, which is
-    what makes a run record's "one solve at a time" true rather than asserted.
-    Non-blocking: a second driver refuses rather than waiting. `flock` is held on
-    the inode and dropped by the kernel when the holder exits, so a lock file a
-    crash left behind is not stale -- never delete it to get past a refusal.
-    `owner` is written into the file so the refusal can name who holds it.
+    Taken by every driver that publishes or compares serial wall-clock-budgeted
+    solves (`minlplib/run_benchmark.py`, `minlplib/run_ablation.py`): two such
+    runs sharing the machine halve each other's iteration counts unrecorded, so
+    this makes a record's "one solve at a time" true rather than asserted.
+    Non-blocking: a second driver refuses rather than waits. The kernel drops
+    the `flock` when the holder exits, so a lock file left by a crash is not
+    stale; never delete it to get past a refusal. `owner` is written into the
+    file so the refusal can name the holder.
     """
     path = WALLCLOCK_LOCK
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -87,11 +84,10 @@ def wallclock_lock(owner: str) -> Iterator[None]:
 def with_memory_limit(command: Sequence[str], limit_gb: float | None) -> list[str]:
     """Wrap a command so the child caps its own address space before exec.
 
-    Not `preexec_fn`: a driver may run jobs from a thread pool, and preexec_fn in
-    a multithreaded parent can deadlock the child between fork and exec -- the one
-    failure mode an unattended multi-hour run must not have. `ulimit` in the
-    intermediate shell does the same job with no fork-safety question. `"$0" "$@"`
-    passes the argv through without re-quoting it.
+    Not `preexec_fn`: drivers may run jobs from a thread pool, and preexec_fn in
+    a multithreaded parent can deadlock the child between fork and exec. `ulimit`
+    in an intermediate shell has no fork-safety question; `"$0" "$@"` passes the
+    argv through without re-quoting.
     """
     if not limit_gb:
         return list(command)
@@ -331,15 +327,13 @@ def run_jobs[J, R](
     job before it has finished.
 
     Every job runs on a pool thread, one-worker runs and the tail included, never
-    on the caller's. That is what a Ctrl-C relies on: it lands in the caller, and
-    leaving the pool waits for the jobs in flight, so a solve that is running
-    finishes and writes its record. On the caller's own thread the interrupt
-    would land inside `subprocess.run`, which kills the child and leaves nothing.
+    on the caller's: a Ctrl-C lands in the caller, and leaving the pool waits for
+    the jobs in flight, so a running solve finishes and writes its record. On the
+    caller's thread it would land inside `subprocess.run`, which kills the child
+    and leaves nothing.
 
-    `run_one` should not raise on a job's own failure: an exception is re-raised
-    where the caller iterates, which cancels every job still queued and the whole
-    tail -- on an unattended run, one transient OSError costing the rest of the
-    roster.
+    `run_one` should not raise on a job's own failure: an exception re-raised
+    where the caller iterates cancels every queued job and the whole tail.
     """
     with ThreadPoolExecutor(max_workers=max(workers, 1)) as pool:
         yield from pool.map(run_one, jobs)

@@ -42,9 +42,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-# Run as a script (`python download.py`, the documented form), only this file's
-# own directory is on sys.path; the repository root makes `benchmarks.common`
-# importable.
+# Run as a script, only this directory is on sys.path; the repository root makes
+# `benchmarks.common` importable.
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
@@ -55,12 +54,11 @@ USER_AGENT = "cbls-minlplib/0.1"
 CSV_URL = "https://www.minlplib.org/instancedata.csv"
 NL_URL_TEMPLATE = "https://www.minlplib.org/nl/{name}.nl"
 
-# Operator columns CBLS can express today. An instance is selectable only if all
-# of its remaining (nonzero) operator columns fall in this set. In the NL text
-# format these are realised by standard opcodes (e.g. signpower/rpower appear as
-# OPPOW); the SignPower DAG op added in #72 is available for direct model
-# building. optanh maps onto Tanh; the rest onto existing DAG ops (see
-# src/io/nl_to_model.cpp).
+# Operator columns CBLS can express; an instance is selectable only if all its
+# nonzero operator columns are here. In text NL these are standard opcodes
+# (signpower/rpower arrive as OPPOW; the SignPower DAG op, #72, serves direct
+# model building); optanh maps onto Tanh, the rest onto existing DAG ops
+# (src/io/nl_to_model.cpp).
 SUPPORTED_OP_COLUMNS: frozenset[str] = frozenset(
     {
         "opabs",
@@ -81,8 +79,8 @@ SUPPORTED_OP_COLUMNS: frozenset[str] = frozenset(
     }
 )
 
-# Operator columns CBLS cannot express; an instance using any of these is skipped
-# at selection time. Listed explicitly for the README provenance table.
+# Operator columns CBLS cannot express; an instance using any is skipped. Listed
+# explicitly for the README provenance table.
 UNSUPPORTED_OP_COLUMNS: frozenset[str] = frozenset(
     {
         "opcentropy",
@@ -111,25 +109,21 @@ ACCEPTED_PROBTYPES: frozenset[str] = frozenset(
 MAX_VARS = 150
 MAX_CONS = 150
 
-# Target roster size after stratification. Must match the published roster:
-# bounds.csv is written from the fetched set, so a smaller default would silently
-# shrink the roster the runner reads while the extra .nl files sit unused on disk.
+# Target roster size; must match the published roster, else bounds.csv (written
+# from the fetched set) silently shrinks the roster the runner reads.
 DEFAULT_ROSTER = 50
 
 # The held-out roster (#144; HELDOUT.md). The seed was fixed before the draw was
-# looked at and is committed with the membership it produced; changing it
-# re-draws the set, which is exactly what committing it exists to prevent. There
-# is deliberately no flag for it.
+# looked at and is committed with its membership; changing it re-draws the set,
+# so there is deliberately no flag for it.
 HELDOUT_SEED = 144
 HELDOUT_DIRNAME = "heldout"
 # The catalogue rows the split was drawn from: every filter survivor, restricted
-# to the columns the filter and classifier read. With it the published roster
-# and the held-out membership are both re-derivable offline (and are, by
-# tests/python/test_minlplib_heldout.py).
+# to the columns the filter and classifier read, so both rosters re-derive
+# offline (tests/python/test_minlplib_heldout.py does).
 POOL_FILENAME = "pool.csv"
-# Instances a fetch walk skipped because MINLPLib served them as something other
-# than text NL, per walk. Needed to replay a walk offline: `walk()` (published)
-# and `quota_walk()` (held-out) pass over these.
+# Instances each fetch walk skipped as not served in text NL, so `walk()`
+# (published) and `quota_walk()` (held-out) replay offline.
 UNFETCHABLE_FILENAME = "unfetchable.csv"
 POOL_COLUMNS: tuple[str, ...] = (
     "name",
@@ -190,10 +184,9 @@ class Instance:
         self.dualbound = dualbound
         self.objsense = objsense
         self.structure = structure
-        # Catalogue ground truth (nbinvars + nintvars). The runner cross-checks
-        # the NL reader's recovered integrality against this: the NL header gives
-        # integer *counts* per category and Gay's variable ordering gives their
-        # positions, so an off-by-one in that mapping shows up as a mismatch here.
+        # Catalogue nbinvars + nintvars. The runner cross-checks the NL reader's
+        # integrality against it: the header gives per-category counts and Gay's
+        # ordering their positions, so an off-by-one there shows as a mismatch.
         self.ndiscvars = ndiscvars
 
 
@@ -331,15 +324,13 @@ def _round_robin(
 def select(rows: list[dict[str, str]]) -> list[Instance]:
     """Apply the CSV filter and return every survivor in stratified order.
 
-    The caller walks this order and stops once enough instances have been
-    *fetched successfully*, so that instances the catalogue advertises as ``nl``
-    but serves as binary NL (the ``kriging_peaks-red*`` subfamily; ``-full*`` is
-    text) are replaced rather
-    than silently shrinking the roster.
+    The caller stops once enough instances are *fetched*, so ones advertised as
+    ``nl`` but served as binary NL (``kriging_peaks-red*``; ``-full*`` is text)
+    are replaced rather than shrinking the roster.
 
-    This order defines the published roster: bounds.csv is its first
-    DEFAULT_ROSTER fetchable entries, and tests/python/test_minlplib_heldout.py
-    pins that against a committed snapshot of the pool. Do not change it.
+    This order defines the published roster (bounds.csv is its first
+    DEFAULT_ROSTER fetchable entries), pinned against a committed pool snapshot
+    by tests/python/test_minlplib_heldout.py. Do not change it.
     """
     # Smallest first within each class.
     return _round_robin(survivors(rows), lambda i: (i.nvars + i.ncons, i.name))
@@ -348,11 +339,10 @@ def select(rows: list[dict[str, str]]) -> list[Instance]:
 def heldout_key(seed: int, name: str) -> str:
     """The held-out draw's order key: a seeded hash of the instance name.
 
-    A hash rather than ``random.Random(seed).shuffle``, because Python guarantees
-    only ``random()`` and seeding to be stable across versions, not ``shuffle``;
-    sha256 of a fixed string is stable everywhere, so the committed membership
-    can be re-derived by any interpreter. The key ignores size entirely: that is
-    the point of the draw (HELDOUT.md, "Why not the next fifty").
+    Not ``random.Random(seed).shuffle``: Python keeps only ``random()`` and
+    seeding stable across versions, while sha256 lets any interpreter re-derive
+    the committed membership. The key ignores size, which is the point of the
+    draw (HELDOUT.md, "Why not the next fifty").
     """
     return hashlib.sha256(f"cbls-minlplib-heldout:{seed}:{name}".encode()).hexdigest()
 
@@ -362,10 +352,9 @@ def select_heldout(
 ) -> dict[str, list[Instance]]:
     """The held-out candidates per structure class, each in `heldout_key` order.
 
-    `exclude` is the published roster -- the instances the shipped defaults were
-    fitted on -- plus the instances its walk already found unfetchable. Dropping
-    those up front rather than skipping them during the walk means a
-    known-binary instance never has to be fetched to be passed over.
+    `exclude` is the published roster (what the shipped defaults were fitted
+    on) plus its walk's unfetchables, dropped up front so a known-binary
+    instance is never fetched just to be passed over.
     """
     by_class: dict[str, list[Instance]] = {}
     for inst in survivors(rows):
@@ -429,10 +418,9 @@ def quota_walk(
 def walk(candidates: list[Instance], limit: int, unavailable: set[str]) -> list[Instance]:
     """The first `limit` candidates not in `unavailable` -- the fetch walk, offline.
 
-    `fetch_published` fetches in candidate order and skips an instance whose
-    body is not a text NL file; given the set of skipped names, this reproduces
-    its result without the network, which is what lets the tests pin the
-    published roster. The held-out draw replays through `quota_walk` instead.
+    Given the names `fetch_published` skipped as not text NL, this reproduces
+    its result without the network, so tests can pin the published roster. The
+    held-out draw replays through `quota_walk` instead.
     """
     return [inst for inst in candidates if inst.name not in unavailable][:limit]
 
@@ -572,8 +560,8 @@ def _write_atomic(path: Path, text: str) -> None:
 def _fetch_text_nl(name: str) -> tuple[bytes | None, str | None]:
     """(body, None) for a text NL file, (None, reason) for any other body.
 
-    A network failure raises: the held-out walk must not record a transient
-    outage as "unfetchable", because that would change the committed membership.
+    A network failure raises: an outage recorded as "unfetchable" would change
+    the committed held-out membership.
     """
     data = fetch_bytes(NL_URL_TEMPLATE.format(name=name))
     if looks_like_html(data):
@@ -621,12 +609,11 @@ def _fetch_heldout(
 ) -> tuple[list[Instance], list[Skip]] | None:
     """Fill the quotas with text-NL instances fetched into `out_dir`.
 
-    An existing .nl that validates as text NL is always reused, even under
-    --force: the committed files are the pinned bytes #145 runs on, and --force
-    only lifts the membership refusal. To re-fetch one, delete it first.
+    An existing .nl that validates as text NL is reused even under --force: the
+    committed files are the pinned bytes #145 runs on, and --force only lifts
+    the membership refusal. To re-fetch one, delete it first.
 
-    Unlike the published walk, a network failure aborts instead of skipping: a
-    transient outage recorded as a skip would change the committed membership.
+    Unlike the published walk, a network failure aborts rather than skips.
     """
     out_dir.mkdir(exist_ok=True)
     skips: list[Skip] = []
@@ -838,10 +825,8 @@ def main() -> int:
                 f"nvars={inst.nvars:4d} ncons={inst.ncons:4d} "
                 f"primal={inst.primalbound}"
             )
-        # Deliberately does NOT write bounds.csv: this is the pre-fetch roster and
-        # still contains instances the catalogue advertises as `nl` but serves as
-        # binary NL. Writing it would desynchronise bounds.csv from the .nl files
-        # on disk, and the runner would report those rows as not-found.
+        # No bounds.csv: the pre-fetch roster still holds binary-NL instances,
+        # which the runner would report as not-found.
         print("\n(selection only — no .nl fetched, bounds.csv left unchanged)")
         return 0
 

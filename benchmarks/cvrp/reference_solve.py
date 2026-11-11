@@ -3,17 +3,15 @@
 PyVRP (Wouda, Lan & Kool, "PyVRP: a high-performance VRP solver package",
 INFORMS J. Computing 2024, https://doi.org/10.1287/ijoc.2023.0055;
 https://github.com/PyVRP/PyVRP) is an open-source solver of the HGS-CVRP
-lineage. It is the reference solver this benchmark runs on the same machine, at
-the same budget, so a gap to BKS can be split into what the budget costs and
-what the engine costs. SCIP cannot handle CVRP at n = 100..1000 within these
-budgets, hence another open-source solver (the benchmark workflow's step 2).
+lineage, run on the same machine at the same budget so a gap to BKS splits into
+what the budget costs and what the engine costs. SCIP cannot handle CVRP at
+n = 100..1000 within these budgets (the benchmark workflow's step 2).
 
 THE SAME INSTANCE. The distance matrix is `verify_solution.distance_matrix`:
-TSPLIB EUC_2D `nint`, rounded per edge, from the shared Python `.vrp` reader --
-the same matrix the verifier recomputes every `cbls_cvrp` cost with, and whose
-agreement with `cbls_cvrp`'s own cost the scorer enforces on every row. The
-coordinates are passed to PyVRP too but its search reads only the matrices.
-Durations are all zero.
+TSPLIB EUC_2D `nint`, rounded per edge, from the shared Python `.vrp` reader:
+the matrix the verifier recomputes every `cbls_cvrp` cost with, whose agreement
+with `cbls_cvrp`'s own cost the scorer enforces on every row. PyVRP's search
+reads only the matrices, not the coordinates also passed. Durations are zero.
 
 THE FLEET. One vehicle type with `num_available = n`, the customer count: a
 fleet that can never bind, larger than `cbls_cvrp`'s default
@@ -73,10 +71,9 @@ def problem_data(inst: VrpInstance) -> ProblemData:
     """The instance as PyVRP's `ProblemData`, depot at location 0 and customer
     id `c` (CVRPLIB numbering) at location `c`."""
     dist = np.asarray(distance_matrix(inst), dtype=np.int64)
-    # PyVRP 0.14's stub types each matrix as `np.ndarray[int]`, the dtype in
-    # numpy's shape parameter, which no array type satisfies and which cannot
-    # even be spelled under current numpy stubs. The lists are passed as
-    # `list[Any]`; what PyVRP needs at runtime is a 2-D int64 array, as here.
+    # `list[Any]`: PyVRP 0.14's stub types each matrix `np.ndarray[int]` (dtype in
+    # numpy's shape parameter), which no array type satisfies; at runtime PyVRP
+    # needs a 2-D int64 array, as here.
     distances: list[Any] = [dist]
     durations: list[Any] = [np.zeros_like(dist)]
     return ProblemData(
@@ -102,10 +99,10 @@ def routes_of(data: ProblemData, result: Result) -> list[list[int]]:
 class Deadline:
     """A PyVRP stopping criterion on a clock started before `solve()` is called.
 
-    `MaxRuntime` starts its clock at the first stop check inside the iterated
-    local search, after `solve()` has already built the neighbourhoods and run
-    an exhaustive local search from a random start -- real search, outside the
-    budget. `cbls_cvrp`'s budget covers its whole search, so this one must too.
+    `MaxRuntime` starts at the first stop check inside the iterated local
+    search, after `solve()` has built the neighbourhoods and run an exhaustive
+    local search from a random start; `cbls_cvrp`'s budget covers its whole
+    search, so this one must too.
     """
 
     def __init__(self, seconds: float) -> None:
@@ -119,11 +116,10 @@ class Deadline:
 def time_to_first_feasible(result: Result, wall: float) -> float:
     """Seconds from the `solve()` call to the first feasible best solution.
 
-    PyVRP's statistics start with the iterated local search, so its setup --
-    the time `solve()` spent before the first iteration, `wall` less the
-    search's own `runtime` -- is added: the start solution comes out of that
-    setup and is often feasible already. Resolution is one iteration; a
-    feasible best with no iteration recorded reports the setup alone.
+    PyVRP's statistics start with the iterated local search, so the setup
+    before it (`wall` less `runtime`), which yields an often feasible start, is
+    added. Resolution is one iteration; a feasible best with no iteration
+    recorded reports the setup alone.
     """
     setup = max(wall - result.runtime, 0.0)
     elapsed = itertools.accumulate(result.stats.runtimes)

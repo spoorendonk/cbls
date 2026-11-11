@@ -1,10 +1,9 @@
 """OR-Tools routing baseline for the CVRP benchmark (#204).
 
-OR-Tools' vehicle routing library (`pywrapcp.RoutingModel`) with its guided
-local search metaheuristic is the second open-source baseline beside PyVRP
-(`reference_solve.py`), run on the same machine, at the same budget, over the
-same instance: `ortools` is already a `benchmarks` dependency (CP-SAT's
-MIPfeas arm), so this adds no package.
+OR-Tools' routing library (`pywrapcp.RoutingModel`) with guided local search:
+the second open-source baseline beside PyVRP (`reference_solve.py`), on the
+same machine, budget and instance. `ortools` is already a `benchmarks`
+dependency (CP-SAT's MIPfeas arm), so this adds no package.
 
 THE SAME INSTANCE. The arc costs are `verify_solution.distance_matrix`, TSPLIB
 EUC_2D `nint` rounded per edge, registered as a transit matrix: the matrix the
@@ -13,18 +12,16 @@ over the CVRPLIB demands.
 
 THE FLEET. `cbls_cvrp`'s own default, `R = k + max(3, ceil(0.1 k))`
 (`default_fleet` in `cvrp_model.h`), from the `k` in the X name. PyVRP gets a
-fleet of `n`; OR-Tools allocates per-vehicle state, so a fleet of 1000 on the
-largest X instances is a different model size, not a looser constraint, and
-`R` is the fleet the engine under test solves with. Unused vehicles cost
-nothing. `R` can still bind harder here than for `cbls_cvrp`: that searches
-through capacity-infeasible states, while OR-Tools' greedy construction must
-place every customer within `R` routes, and if it cannot, the solve fails
-before any search: a row with `feasible=false` and `routing_status`
-ROUTING_FAIL_TIMEOUT (measured on X-n101-k25 at fleets 1 and 10), the status a
-budget too short for the construction gives as well, so the status alone does
-not separate the two. Instances with few customers per route and a tight `k`
-are the likeliest; `score.py` lists every such row, so read them on a roster
-before publishing its OR-Tools rows.
+fleet of `n`, but OR-Tools allocates per-vehicle state, so a fleet of 1000 on
+the largest X instances is a different model size; `R` is the fleet the engine
+under test solves with, and unused vehicles cost nothing. `R` can bind harder
+than for `cbls_cvrp`, which searches through capacity-infeasible states:
+OR-Tools' greedy construction must place every customer within `R` routes, or
+the solve fails before any search with `feasible=false` and `routing_status`
+ROUTING_FAIL_TIMEOUT (measured on X-n101-k25 at fleets 1 and 10), the same
+status a budget too short for the construction gives. Few customers per route
+and a tight `k` are likeliest; `score.py` lists every such row, so read them
+on a roster before publishing its OR-Tools rows.
 
 THE SEARCH. First solution `PATH_CHEAPEST_ARC`, then `GUIDED_LOCAL_SEARCH`,
 both OR-Tools' documented CVRP defaults; every other parameter is the library
@@ -147,9 +144,8 @@ def run(args: argparse.Namespace, fleet: int) -> int:
     started: float  # set below, before the search can call back
     routing.model.AddAtSolutionCallback(lambda: found.append(time.monotonic() - started))
     params = search_parameters(args.budget)
-    # Closing builds the search's own structures (vehicle classes, filters,
-    # neighbourhoods): model build, so outside the clock. Solve would close it
-    # on the clock otherwise.
+    # Closing builds the search's structures (vehicle classes, filters,
+    # neighbourhoods): model build, so outside the clock, where Solve would do it.
     routing.model.CloseModelWithParameters(params)
     started = time.monotonic()
     build_seconds = started - build_started

@@ -1,14 +1,13 @@
 """UC-CHPED (Unit Commitment with Valve-Point Effects) instance data.
 
-The `ucp*.jsonl` files beside this module are DERIVED from it, by
-`gen_jsonl.py` in this directory -- a one-shot generator nothing imports, so
-grep will not connect the three. They are derived from `benchmarks/uc-chped/chped_data.py`
-as well, which this module loads BY PATH below for the 13- and 40-unit cost
-coefficients, so a change there goes stale here too. `benchmarks/uc-chped/data.h::load_jsonl` reads
-those files; regenerate them from the repo root with
-`.venv/bin/python benchmarks/instances/uc-chped/gen_jsonl.py` (the generator
-chdirs to its own directory, so the files land here whatever the cwd) after
-changing any instance below, or the committed data stops matching its source.
+The `ucp*.jsonl` files beside this module are DERIVED from it by `gen_jsonl.py`
+in this directory (a one-shot generator nothing imports), and from
+`benchmarks/uc-chped/chped_data.py`, which this module loads BY PATH for the
+13- and 40-unit cost coefficients. `benchmarks/uc-chped/data.h::load_jsonl`
+reads them. After changing either source, regenerate from the repo root with
+`.venv/bin/python benchmarks/instances/uc-chped/gen_jsonl.py` (it chdirs to its
+own directory, so the files land here whatever the cwd), or the committed data
+stops matching its source.
 
 Instances of Pedroso, Kubo & Viana (2014), "Unit commitment with valve-point
 loading effect", DCC-2014-05 / arXiv:1404.4944, whose GPL instance code is
@@ -20,11 +19,10 @@ benchmarks/uc-chped/FIDELITY.md section 7):
 - ucp13 -- IDENTICAL to the authors' ucp13(): costs, limits, the Kazarlis
   mapping and the demand/reserve profile. The mapping below is theirs (their
   table annotates each unit with its "corresp. in kazarlis").
-- ucp40 -- IDENTICAL to the authors' ucp40(). Until #193 it was not: P_max of
-  units 19 and 20 (1-indexed) was 500 here against the source's 550, an error
-  in CHPED_40UNIT (benchmarks/uc-chped/chped_data.py), which this module loads for its
-  cost data. With it corrected, the exact 1-period optimum reproduces Table 2's
-  55644.79 and Table 2's ucp40 bounds are bounds for this instance.
+- ucp40 -- IDENTICAL to the authors' ucp40(), including P_max 550 for units 19
+  and 20 (1-indexed) in CHPED_40UNIT (#193; benchmarks/uc-chped/chped_data.py).
+  The exact 1-period optimum reproduces Table 2's 55644.79, so Table 2's ucp40
+  bounds are bounds for this instance.
 - ucp100/ucp200 and extend_horizon() -- this repository's construction; the
   authors publish nothing for them and no bounds are claimed.
 
@@ -250,8 +248,8 @@ def _build_ucp40() -> Instance:
             689,
             612,
         ],
-        # Pedroso Table 2 (1hr MIP) bounds, {periods: (LB, UB)} -- for this
-        # instance since #193 restored units 19-20 to P_max 550 (the error #148 found).
+        # Pedroso Table 2 (1hr MIP) bounds, {periods: (LB, UB)}; valid for this
+        # instance with units 19-20 at P_max 550 (#148, #193).
         "known_bounds": {
             1: (55645, 55645),
             3: (178396, 178547),
@@ -366,17 +364,13 @@ def extend_horizon(inst: Instance, n_periods: int) -> Instance:
     which a search could exploit. A cosine would put day 0 at exactly 1, but
     it is symmetric about mid-week and repeats days 1-3 as days 6-4.
 
-    The factor is below 1 for every day, so no day's demand or reserve exceeds
-    the base profile's in the same hour, and an extended instance has at least
-    the base instance's capacity slack (sum(P_max) - demand - reserve) in every
-    period. That is the rule (#194). Until then the factor was
-    1 + 0.03*sin(2*pi*d/7), which exceeded 1 on days 1-3 (up to 1.029 on day
-    2) and pushed their peaks past total capacity -- ucp200's base peak has
-    only 470 MW (0.74%) of slack -- so period 36 of every extended instance,
-    60 of both 168-period ones and 84 of ucp200-168p (with #193's P_max) were
-    infeasible under any assignment. `round()` cannot break the rule: the base
-    profile is integral, and scaling an integer by a factor <= 1 never rounds
-    above it.
+    The factor must stay <= 1 every day, so no day's demand or reserve exceeds
+    the base profile's in the same hour and every period keeps at least the
+    base instance's capacity slack (sum(P_max) - demand - reserve); a factor
+    above 1 makes peaks infeasible under any assignment, since ucp200's base
+    peak has only 470 MW (0.74%) of slack (#194). `round()` cannot break this:
+    the base profile is integral, and scaling an integer by a factor <= 1
+    never rounds above it.
     """
     import math as _math
 
