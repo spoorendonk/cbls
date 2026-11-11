@@ -236,8 +236,8 @@ struct Insertion {
 // Algorithm 2's inner loops for one element: the lists in random order, every
 // position of each with room, each evaluated with probability 1 - beta. "A tour
 // that can serve c" is a cost, not a filter: key (real violation added on the
-// list's rows, objective), lexicographic, so a row-preserving position beats
-// any other; an empty list is the reference's new tour. Each position is
+// list's rows, objective), lexicographic, so a position that breaks no row
+// beats every one that does; an empty list is the reference's new tour. Each position is
 // probed and rolled back. Improves on `best` only strictly.
 Insertion best_insertion(Model& model, const ListPartition& part, int32_t e, Insertion best,
                          std::vector<int32_t>& order, RNG& rng, double tol) {

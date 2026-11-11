@@ -124,7 +124,9 @@ struct CliOptions {
     SearchConfig config;  // also holds lns_interval, which --lns-interval writes
     std::string format = "human";
     bool quiet = false;
-    // 0 = one worker per hardware thread. `--threads 1` gives a single-threaded,
+    // 0 = one worker per hardware thread: the portfolio shares incumbents and
+    // restarts stalled workers from them, so the default uses the machine.
+    // `--threads 1` gives a single-threaded,
     // exactly reproducible run (docs/profiling.md).
     int n_threads = 0;
 };

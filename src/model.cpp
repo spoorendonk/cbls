@@ -109,8 +109,8 @@ int32_t Model::alloc_var(VarType type, double lb, double ub, const std::string& 
     v.lb = lb;
     v.ub = ub;
     v.name = name;
-    // Offsets first: if the push below throws they are one entry long (an
-    // empty range), never one short.
+    // Offsets first: if the push below throws they are one entry too long
+    // (an empty range), never one short.
     if (st.dependent_offsets.empty()) {
         st.dependent_offsets.push_back(0);
     }
@@ -1259,8 +1259,9 @@ void Model::rebuild_back_references() {
 //  - it is not itself a constraint root (#192). Being a row is no parent edge,
 //    and a row's slot is found through its children (here the terms), so its
 //    drift would never be gated or re-grounded.
-//    The objective node is NOT refused: it is no row, and the rows over it
-//    read it directly. This requires that the objective is read RAW only
+//    The objective node is NOT refused: it is no row, the rows over it read
+//    it directly and so are gated, and refusing it would put every MPS
+//    objective row back on the re-sum. This requires that the objective is read RAW only
 //    between batches: every such reader (incumbent and bound tightening,
 //    LNS's state key, inner solver, pool) runs after the GLS loop, whose end
 //    re-grounds drifted Sums (reground_drifted_rows), and a throw out of a
@@ -1545,8 +1546,9 @@ void Model::add_objective_soft_constraint() {
     // Exactly the room the row takes (two nodes, two child refs, two values, one
     // constraint). A model at exact capacity (every copy, every model
     // `mps_to_model` sized) would otherwise DOUBLE each array, address space
-    // `ulimit -v` counts. No-ops where slack exists. `node_values_` is per-model,
-    // so copied per worker (#157); it is the largest on big MIPfeas instances.
+    // `ulimit -v` counts. No-ops where slack exists. `node_values_` must be in the
+    // list too: it is per-model, so copied per worker (#157), and leaving it
+    // out doubled a 34 MB array on the largest MIPfeas instance.
     st.nodes.reserve(st.nodes.size() + 2);
     st.parent_offsets.reserve(st.parent_offsets.size() + 2);
     st.child_refs.reserve(st.child_refs.size() + 2);
