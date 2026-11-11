@@ -301,3 +301,6 @@ leaves out.
 - **Terse output is not configured anywhere.** `pyproject.toml` sets
   `testpaths`, ruff's rules and mypy strict, but no `addopts`; pass
   `ctest --progress` and pytest `--tb=short -q` yourself.
+- **Comment share.** `.venv/bin/python tools/comment_share.py [--by-file AREA]`
+  prints comment lines over non-blank lines per area; `include/cbls` stood at
+  66% when the comment rule landed (#372, #394).

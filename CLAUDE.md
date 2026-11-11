@@ -206,6 +206,9 @@ above it and add `NOLINTNEXTLINE(readability-function-cognitive-complexity)`.
 
 - Don't invent APIs, flags or methods; verify they exist. Check current docs.
 - Don't suppress type errors or lint; fix the root cause.
+- Comments state the contract and why in one or two lines, with the issue
+  number for history; no incident retelling, no story repeated across files
+  or docs. `tools/comment_share.py` measures the share per area (#394).
 - **Performance matters** — these are solvers. A complexity win (O(n²) → O(1)
   stamp) lands on a cost argument written at the site, naming the regime it
   wins and loses in. A micro-optimisation needs a profile first.
