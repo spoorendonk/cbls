@@ -127,7 +127,6 @@ CONFIG_KEYS = (
     "share_objective_bound",
     "feasibility_tolerance",
     "compound_moves",
-    "exact_int_jump",
     "perturb_near_value",
     "objective_tie_break",
     "restart_randomization",
@@ -161,8 +160,8 @@ TUNABLE_DEFAULTS: dict[str, object] = {
 def config_string(result: dict[str, object]) -> str:
     """The `config` cell: every CONFIG_KEYS entry the result carries.
 
-    One key is back-filled, and the opt-in engine flags (`exact_int_jump`,
-    #216; `perturb_near_value`, #217; `objective_tie_break`, #218;
+    One key is back-filled, and the opt-in engine flags (`perturb_near_value`,
+    #217; `objective_tie_break`, #218;
     `restart_randomization` and `luby_restart_unit`, #239) dropped when off,
     and #267's tunable knobs (TUNABLE_DEFAULTS) dropped at their defaults;
     see their lines.
@@ -176,17 +175,16 @@ def config_string(result: dict[str, object]) -> str:
     cells = dict(result)
     if "share_objective_bound" not in cells and cells.get("threads") == 1:
         cells["share_objective_bound"] = True
-    # `exact_int_jump` (#216) the other way round: its off arm is what every row
-    # from before the flag ran, so off is DROPPED rather than back-filled. Off
-    # rows old and new then share one cell, which also keeps every table scored
-    # before the flag byte-identical, and only an on-arm row carries the key.
-    if cells.get("exact_int_jump") is False:
-        del cells["exact_int_jump"]
-    # `perturb_near_value` (#217) and the objective tie-break (#218): the same
-    # rule for the same reason. The tie-break has been on by default since
-    # #226, so a new default row carries `objective_tie_break=True` and does
-    # not match a table scored before it -- which is the point: that table was
-    # measured on the old default and must be regenerated, not averaged in.
+    # `perturb_near_value` (#217) and the objective tie-break (#218) the other
+    # way round: their off arm is what every row from before the flag ran, so
+    # off is DROPPED rather than back-filled. Off rows old and new then share
+    # one cell, which also keeps every table scored before the flag
+    # byte-identical, and only an on-arm row carries the key. (The exact Int
+    # jump, #216, had the same rule until #381 removed it.) The tie-break has
+    # been on by default since #226, so a new default row carries
+    # `objective_tie_break=True` and does not match a table scored before it --
+    # which is the point: that table was measured on the old default and must
+    # be regenerated, not averaged in.
     for opt_in in (
         "perturb_near_value",
         "objective_tie_break",

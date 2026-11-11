@@ -352,7 +352,6 @@ def _driver_args(**overrides: object) -> argparse.Namespace:
         "seed": 42,
         "inf_clamp": 1.0e7,
         "compound_moves": True,
-        "exact_int_jump": False,
         "perturb_near_value": False,
         "objective_tie_break": True,
         "propagate_bounds": True,
@@ -389,8 +388,6 @@ def _driver_args(**overrides: object) -> argparse.Namespace:
         ),
         ("cbls", {"propagate_bounds": False}, {"--no-propagate-bounds": None}, []),
         ("cbls", {"compound_moves": False}, {"--no-compound-moves": None}, ["--compound-moves"]),
-        ("cbls", {}, {}, ["--exact-int-jump"]),
-        ("cbls", {"exact_int_jump": True}, {"--exact-int-jump": None}, []),
         ("cbls", {}, {}, ["--perturb-near-value"]),
         ("cbls", {"perturb_near_value": True}, {"--perturb-near-value": None}, []),
         ("cbls", {}, {}, ["--no-objective-tie-break", "--objective-tie-break"]),
@@ -407,8 +404,6 @@ def _driver_args(**overrides: object) -> argparse.Namespace:
         "cbls-defaults",
         "no-bound-propagation",
         "no-compound-moves",
-        "exact-int-jump-off-by-default",
-        "exact-int-jump",
         "perturb-near-value-off-by-default",
         "perturb-near-value",
         "objective-tie-break-on-by-default",
@@ -524,7 +519,7 @@ def test_resuming_at_a_different_thread_count_is_refused(tmp_path: Path) -> None
 
 
 def test_resuming_under_a_different_search_arm_is_refused(tmp_path: Path) -> None:
-    # The same hole for CBLS's search-arm flags (#216): an --exact-int-jump re-run
+    # The same hole for CBLS's search-arm flags: a --perturb-near-value re-run
     # over an off-arm directory would skip every job and score a uniform off table.
     (tmp_path / "cbls").mkdir()
     result = tmp_path / "cbls" / "a.json"
@@ -536,20 +531,15 @@ def test_resuming_under_a_different_search_arm_is_refused(tmp_path: Path) -> Non
     # The rows below carry the tie-break, on by default since #226, so that each
     # part tests only its own flag; the tie-break's own part is further down.
     tie = {"objective_tie_break": True}
-    result.write_text(json.dumps({"instance": "a", "threads": 1, "exact_int_jump": False, **tie}))
-    assert check() is None
-    assert check(exact_int_jump=True) == 2
-    # A row from before the flag ran the off arm, so it is read as off, not skipped.
-    result.write_text(json.dumps({"instance": "a", "threads": 1, **tie}))
-    assert check() is None
-    assert check(exact_int_jump=True) == 2
-    # The same for the near-value kick (#217).
     result.write_text(
         json.dumps({"instance": "a", "threads": 1, "perturb_near_value": False, **tie})
     )
     assert check() is None
     assert check(perturb_near_value=True) == 2
+    # A row from before the flag (#217) ran the off arm, so it is read as off,
+    # not skipped.
     result.write_text(json.dumps({"instance": "a", "threads": 1, **tie}))
+    assert check() is None
     assert check(perturb_near_value=True) == 2
     # And the objective tie-break (#218), on by default since #226: a row from
     # before ran it off, so a default run cannot resume onto one.

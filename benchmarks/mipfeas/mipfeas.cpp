@@ -90,11 +90,8 @@ struct Args {
     // Feasibility Jump against their Feasibility Jump plus Novelty Jump and call
     // the difference a reimplementation gap.
     bool compound_moves = true;
-    // The exact Int jump (#208, #216), off as the engine's default is. Recorded on
-    // every row so the scorer refuses to average an on-arm with an off-arm.
-    bool exact_int_jump = false;
     // OR-Tools' near-value kick (#217), off as the engine's default is. Recorded
-    // on every row for the same reason.
+    // on every row so the scorer refuses to average an on-arm with an off-arm.
     bool perturb_near_value = false;
     // OR-Tools' objective tie-break/scan (#218), on as the engine's default is
     // since #226, and recorded on every row likewise.
@@ -154,7 +151,7 @@ void print_usage() {
         "                    [--budget SECONDS] [--seed N] [--feas-tol T]\n"
         "                    [--inf-clamp B] [--no-propagate-bounds]\n"
         "                    [--max-propagation-passes N]\n"
-        "                    [--no-compound-moves] [--exact-int-jump]\n"
+        "                    [--no-compound-moves]\n"
         "                    [--perturb-near-value] [--no-objective-tie-break]\n"
         "                    [--restart-randomization] [--luby-restart-unit N]\n"
         "                    [--no-lns] [--lns-interval N] [--novelty-prob P]\n"
@@ -220,8 +217,6 @@ bool parse_search_flag(cbls::bench::ArgCursor& c, Args& a) {
         a.compound_moves = true;
     } else if (s == "--no-compound-moves") {
         a.compound_moves = false;
-    } else if (s == "--exact-int-jump") {
-        a.exact_int_jump = true;
     } else if (s == "--perturb-near-value") {
         a.perturb_near_value = true;
     } else if (s == "--objective-tie-break") {
@@ -444,7 +439,6 @@ void write_result(const Args& args, const nlohmann::json& extra) {
     j["seed"] = args.seed;
     j["feasibility_tolerance"] = args.feas_tol;
     j["compound_moves"] = args.compound_moves;
-    j["exact_int_jump"] = args.exact_int_jump;
     j["perturb_near_value"] = args.perturb_near_value;
     j["objective_tie_break"] = args.objective_tie_break;
     j["restart_randomization"] = args.restart_randomization;
@@ -771,7 +765,6 @@ int run_benchmark(int argc, char** argv) {
     cbls::SearchConfig cfg;
     cfg.feasibility_tolerance = args.feas_tol;
     cfg.use_compound_moves = args.compound_moves;
-    cfg.fj_exact_int_jump = args.exact_int_jump;
     cfg.perturb_near_value = args.perturb_near_value;
     cfg.fj_objective_tie_break = args.objective_tie_break;
     cfg.restart_randomization = args.restart_randomization;

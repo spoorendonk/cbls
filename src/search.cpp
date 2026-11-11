@@ -105,7 +105,7 @@ const char* termination_reason_name(TerminationReason reason) {
 // the model's current assignment toward feasibility. Delegates to
 // FeasibilityJump; see src/feasibility_jump.cpp.
 int64_t fj_nl_initialize(Model& model, ViolationManager& vm, int max_iterations, RNG* rng_ptr,
-                         double time_limit, double tolerance, bool exact_int_jump) {
+                         double time_limit, double tolerance) {
     RNG local_rng(42);
     RNG& rng = rng_ptr != nullptr ? *rng_ptr : local_rng;
 
@@ -114,7 +114,6 @@ int64_t fj_nl_initialize(Model& model, ViolationManager& vm, int max_iterations,
     config.time_limit = time_limit;
     config.set_initial_x = false;  // refine the current (already-initialised) assignment
     config.tolerance = tolerance;
-    config.exact_int_jump = exact_int_jump;
     // As an SA/LNS warm-start (not the full solver), the two-phase linear-first
     // pass over-commits the linear submodel to cost-pessimal feasibility-boundary
     // values; single-phase gives a better start. Two-phase stays the default for
@@ -1560,7 +1559,6 @@ void ViolationLSLoop::diversify(bool allow_lns) {
         // separate measurement, not a tidy-up.
         trace_kick(KickKind::LNS);
         lns_->set_feasibility_tolerance(config_.feasibility_tolerance);
-        lns_->set_exact_int_jump(config_.fj_exact_int_jump);
         lns_->set_neighbours(config_.structural_neighbours);
         const bool accepted = lns_->destroy_repair(model_, vm_, rng_, repair_limit);
         ++lns_repairs_;
@@ -2213,7 +2211,6 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
     gfj.max_iterations = 0;
     gfj.unproductive_iterations = config.unproductive_iterations;
     gfj.tolerance = config.feasibility_tolerance;  // one meaning of "satisfied" (#211)
-    gfj.exact_int_jump = config.fj_exact_int_jump;
     gfj.perturb_near_value = config.perturb_near_value;
     gfj.objective_tie_break = config.fj_objective_tie_break;
     FeasibilityJump fj(model, vm, rng, gfj);

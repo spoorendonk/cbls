@@ -34,12 +34,12 @@ TEST_CASE("the objective tie-break picks among exact ties only (#218)", "[fj][ob
     // Prefer larger x (minimise -x): of the tied 0..3 the tie-break takes 3, and
     // it never reaches 6..10, which would cost violation for objective.
     const double prefer_up = -1.0;
-    const JumpResult up = compute_var_jump(m, w, vid(x), false, nullptr,
-                                           kDefaultFeasibilityTolerance, false, &prefer_up);
+    const JumpResult up =
+        compute_var_jump(m, w, vid(x), false, nullptr, kDefaultFeasibilityTolerance, &prefer_up);
     // Prefer smaller x: 0.
     const double prefer_down = 1.0;
-    const JumpResult down = compute_var_jump(m, w, vid(x), false, nullptr,
-                                             kDefaultFeasibilityTolerance, false, &prefer_down);
+    const JumpResult down =
+        compute_var_jump(m, w, vid(x), false, nullptr, kDefaultFeasibilityTolerance, &prefer_down);
     CAPTURE(plain.jump_value, up.jump_value, down.jump_value);
     REQUIRE(up.jump_value == 3.0);
     REQUIRE(down.jump_value == 0.0);
@@ -65,7 +65,7 @@ TEST_CASE("the objective tie-break never overrides a violation decrease (#218)",
     const std::vector<double> w(m.constraint_ids().size(), 1e-300);
     const double coef = 1e300;
     const JumpResult r =
-        compute_var_jump(m, w, vid(x), false, nullptr, kDefaultFeasibilityTolerance, false, &coef);
+        compute_var_jump(m, w, vid(x), false, nullptr, kDefaultFeasibilityTolerance, &coef);
     CAPTURE(r.jump_value, r.score);
     REQUIRE(r.jump_value == 6.0);
     REQUIRE(r.score == 1e-300);
@@ -87,14 +87,14 @@ TEST_CASE("an objective-only jump scores kObjectiveTieScore (#218)", "[fj][objec
     REQUIRE(plain.score <= 0.0);
     const double coef = 1.0;
     const JumpResult tied =
-        compute_var_jump(m, w, vid(x), false, nullptr, kDefaultFeasibilityTolerance, false, &coef);
+        compute_var_jump(m, w, vid(x), false, nullptr, kDefaultFeasibilityTolerance, &coef);
     REQUIRE(tied.jump_value == 0.0);
     REQUIRE(tied.score == kObjectiveTieScore);
     REQUIRE(tied.score > 0.0);
     // Toward the worse side the same tie does not move it.
     const double up = -1.0;
     const JumpResult capped =
-        compute_var_jump(m, w, vid(x), false, nullptr, kDefaultFeasibilityTolerance, false, &up);
+        compute_var_jump(m, w, vid(x), false, nullptr, kDefaultFeasibilityTolerance, &up);
     REQUIRE(capped.jump_value == 7.0);
     REQUIRE(capped.score == kObjectiveTieScore);
 }
@@ -194,7 +194,7 @@ TEST_CASE("objective-only columns stay scannable across weight folds (#218)",
                 continue;
             }
             const JumpResult fresh = compute_var_jump(m, vm.weights, vid(z), false, nullptr,
-                                                      kDefaultFeasibilityTolerance, false, &coef);
+                                                      kDefaultFeasibilityTolerance, &coef);
             if (fresh.score == kObjectiveTieScore) {
                 ++checked;
                 CAPTURE(b, vid(z));

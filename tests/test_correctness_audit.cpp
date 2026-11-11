@@ -346,7 +346,7 @@ std::unique_ptr<Instance> linear_instance(uint64_t seed) {
 
 // A larger pure-integer model: 15-30 Bool/Int columns, longer rows with
 // integer data, equalities and ranges common -- where incremental Sums
-// and the exact Int jump engage.
+// engage.
 std::unique_ptr<Instance> mip_instance(uint64_t seed) {
     auto inst = std::make_unique<Instance>();
     inst->family = "mip";
@@ -633,14 +633,12 @@ struct Arm {
 const std::vector<Arm>& arms() {
     static const std::vector<Arm> kArms = {
         {"default", [](SearchConfig&) {}},
-        {"fj_exact_int_jump", [](SearchConfig& c) { c.fj_exact_int_jump = true; }},
         {"perturb_near_value", [](SearchConfig& c) { c.perturb_near_value = true; }},
         {"no_fj_objective_tie_break", [](SearchConfig& c) { c.fj_objective_tie_break = false; }},
         {"restart_randomization", [](SearchConfig& c) { c.restart_randomization = true; }},
         {"luby_restart_unit", [](SearchConfig& c) { c.luby_restart_unit = 1; }},
         {"all_opt_in",
          [](SearchConfig& c) {
-             c.fj_exact_int_jump = true;
              c.perturb_near_value = true;
              c.fj_objective_tie_break = true;
              c.restart_randomization = true;

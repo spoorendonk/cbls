@@ -308,7 +308,6 @@ def build_run_record(
             "force": args.force,
             "inf_clamp": args.inf_clamp,
             "compound_moves": args.compound_moves,
-            "exact_int_jump": args.exact_int_jump,
             "perturb_near_value": args.perturb_near_value,
             "objective_tie_break": args.objective_tie_break,
             "propagate_bounds": args.propagate_bounds,
@@ -426,7 +425,6 @@ def build_command(job: Job, args: argparse.Namespace, results_dir: Path) -> list
             "--inf-clamp",
             str(args.inf_clamp),
             "--compound-moves" if args.compound_moves else "--no-compound-moves",
-            *(["--exact-int-jump"] if args.exact_int_jump else []),
             *(["--perturb-near-value"] if args.perturb_near_value else []),
             *([] if args.objective_tie_break else ["--no-objective-tie-break"]),
             "--threads",
@@ -469,7 +467,6 @@ def arm_keys(engine: str, args: argparse.Namespace) -> dict[str, object]:
     keys: dict[str, object] = {
         "threads": args.cbls_threads,
         "compound_moves": args.compound_moves,
-        "exact_int_jump": args.exact_int_jump,
         "perturb_near_value": args.perturb_near_value,
         "objective_tie_break": args.objective_tie_break,
     }
@@ -960,9 +957,8 @@ def check_resume_configuration(
     scorer then sees a UNIFORM `threads=1` table -- no mixture, nothing for
     `check_uniform_configuration` to refuse, and an operator who believes they
     measured 4 threads. The row is truthful; the person reading it is not. The
-    same holds for CBLS's two search-arm flags, `compound_moves` and
-    `exact_int_jump` (#216): an on-arm re-run over an off-arm directory would
-    score a uniform off table.
+    same holds for CBLS's search-arm flags, `compound_moves` among them: an
+    on-arm re-run over an off-arm directory would score a uniform off table.
 
     Checked here rather than at scoring time because by then the run has been
     paid for. `--force` is the documented way through, and it clears the old
@@ -970,12 +966,11 @@ def check_resume_configuration(
 
     Returns the exit code to fail with, or None to proceed.
     """
-    # What a row without a key ran: `exact_int_jump`, `perturb_near_value` and
+    # What a row without a key ran: `perturb_near_value` and
     # `objective_tie_break` are back-read as off, since
     # every row from before a flag ran its off arm; any other missing key is
     # unknown and left alone.
     back_read_off = {
-        "exact_int_jump",
         "perturb_near_value",
         "objective_tie_break",
     }
@@ -1324,12 +1319,6 @@ def main() -> int:
         action="store_false",
         help="disable CBLS Novelty Jump; on by default here because roughly half of "
         "CP-SAT's incumbents on this roster come from its compound-move subsolvers",
-    )
-    parser.add_argument(
-        "--exact-int-jump",
-        action="store_true",
-        help="CBLS FJ takes the exact Int jump over linear columns (#208, #216); off by "
-        "default, as in the engine. Not a configuration to publish until #208's A/B",
     )
     parser.add_argument(
         "--perturb-near-value",

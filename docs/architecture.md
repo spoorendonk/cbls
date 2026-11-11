@@ -898,11 +898,21 @@ candidate set, plus its score:
 | Type  | Candidates |
 |-------|-----------|
 | Bool  | the flip `1 - x` |
-| Int whose weighted rows of G_v are all linear (`LinearJumpScorer::prepare` succeeded), **only with `SearchConfig::fj_exact_int_jump` on** (`GFJConfig::exact_int_jump`; default off, #216 — off, every Int takes the two rows below) | no candidate set: the **exact argmin** (#208), `LinearJumpScorer::int_argmin`, a port of OR-Tools' `ComputeLinearJump`. The weighted violation over a linear column is convex piecewise-linear, so it scores `x ± 1` and searches that side's ends plus every kink's floor and ceil (`SlopeBreakpoints`) by `RangeConvexMinimum`; O(\|G_v\| log \|G_v\|). Two differences from OR-Tools: a non-improving column returns `{x, 0}` ("no move"), and masked rows' kinks are omitted, so a plateau tie can land elsewhere. It declines (the rows below apply) for a window of width 1, an `x` outside the window or non-integral, a bound past ±2^53, or a residual that could reach the `kInfPenalty` clamp. **Known regression** on #208's repro (`x + y == T`, `x − y ≤ 1`, `y − x ≤ 1` over `[0, 1e7]`): exact jumps land on the kinks and the pair oscillates about `T/2` until the GLS weights break it, where the grid below solves it in tens of iterations |
-| Int (window width <= 256), any other column (every Int column by default) | every integer in the sampling window — `domain_window(var)`, which is `[lb, ub]` verbatim whenever both bounds are finite and the width does not overflow (a domain as wide as `[-DBL_MAX, DBL_MAX]` is narrowed to the clamp). Taken only when both endpoints are within ±2^53; past that `v += 1.0` does not advance and the enumeration would not terminate |
+| Int (window width <= 256) | every integer in the sampling window — `domain_window(var)`, which is `[lb, ub]` verbatim whenever both bounds are finite and the width does not overflow (a domain as wide as `[-DBL_MAX, DBL_MAX]` is narrowed to the clamp). Taken only when both endpoints are within ±2^53; past that `v += 1.0` does not advance and the enumeration would not terminate |
 | Int (otherwise) | window endpoints, neighbours `x±1` (clamped to the *declared* bounds, so a value that has drifted outside the window keeps a local move), and a 32-point rounded grid across the window |
 | Float | Newton step toward the root of each violated constraint containing `v` (`x - residual/grad`, gradient from a forward up-cone pass, reverse-mode AD past its budget (#249); up to 4), then midpoint and endpoints. Once the search has stagnated, a Float at a *stationary* point of every violated constraint containing it additionally gets a two-sided local probe at `x ± {1e-6, 1e-2}·(|x|+1)` — see below |
 | Int (otherwise) and Float, on a model with an `Element`/`Ceil`/`Floor`/`Round` node, for a variable `close()` marked as reaching one | additionally, the **breakpoints** (#186) of every such node — where `Ceil`/`Floor` change (the integers), where `Round` changes (the half-integers), and an `Element`'s index values — mapped back to `v` through the argument's slope at the current point (carried forward over the cone part `close()` marked, `breakpoint_flags`, through every op that `carries_slope`), or the exact reciprocal when the argument is `N / D` with `v` in `D` only. **Limitation:** any other nonlinearity is linearised, so a candidate can miss its edge, and a path through a stopping op (structural, user code, a breakpoint op) contributes nothing; candidates are still scored exactly. Each edge yields the values of `v` just either side of it: for an Int rounded outward, plus the edge itself when it maps to an integer; for a Float `nextafter`-stepped, plus the edge when it lies in its own plateau. An `Element` index gets `k` itself (Int) or the middle of index `k`'s plateau intersected with the range `u` covers (Float). A `Ceil`/`Floor`/`Round` argument offers every breakpoint while there are at most 32, an `Element` every index while there are no more than its capped path would offer; above that, the ones either side of the current argument, for an `Element` up to 32 representatives of the currently selected line, and a 31-point grid shared by every capped argument — **a deviation** from #186's "all index values", for cost (`kExhaustiveBreakpoints`). Candidates are deduplicated, and come after the Float's Newton candidates, so those still win a tie. Every other variable gets exactly the candidates above |
+
+An exact Int jump over all-linear columns (#208, #216: `int_argmin`, a port of
+OR-Tools' `ComputeLinearJump`, scoring `x ± 1` and a `RangeConvexMinimum` over
+the side's kinks) replaced these candidates when `SearchConfig::fj_exact_int_jump`
+was on. It was opt-in and off by default, and off was the candidate path bit for
+bit, because it regressed #208's own repro (`x + y == 1e7 − 1`, `|x − y| ≤ 1` as
+two rows, over `[0, 1e7]`): exact jumps land on the kinks and the pair
+oscillates about the midpoint until the GLS weights break it, 261k-836k iterations to
+feasible against 19-72 on the grid. #208 was closed as not planned and #381
+removed the arm; the code, its tests and the `--exact-int-jump` runner flag are
+in git history at `1330cd2c`.
 
 Each candidate is scored with one `weighted_violation_delta` probe — or, when
 every weighted row of `G_v` is a comparison (`Leq`/`Geq`/`Lt`/`Gt`/`Eq`) whose
@@ -916,9 +926,7 @@ residual is not affine), in closed form by `LinearJumpScorer`
 table laid out parallel to `G_v` (a row's build writes each of its variables'
 slots, so `prepare` reads the k-th row's slope at a fixed position, #176), and the candidate costs `Σ_c w_c·(clamped(cmp(p + rΔ, q)) − clamped(old))` — O(|G_v|)
 instead of two `delta_evaluate`s over every row in the column. Same candidates,
-same first-seen rule (except an Int over such rows with `fj_exact_int_jump` on,
-which takes the exact argmin instead -- the same minimum score, not always the
-same point on a plateau), same per-row differencing (#100); the scores agree with
+same first-seen rule, same per-row differencing (#100); the scores agree with
 the probe to rounding, not to the bit -- so the chosen jump is guaranteed the
 probe's only on integral data, and an ulp can flip a near-tie on fractional
 data -- and a committed jump still goes
@@ -1089,8 +1097,8 @@ sweep; on any other objective it does nothing.
   `apply_jump`'s best-of-N (larger objective gain wins). A weight rescale leaves
   `kObjectiveTieScore` unscaled, since scaling the smallest double would round
   it to 0 and drop the column from Q. FJ batches
-  only, throughout the run; Novelty batches, the exact Int argmin and the LNS
-  repair keep their own rules.
+  only, throughout the run; Novelty batches and the LNS repair keep their own
+  rules.
 - `set_rho(rho)` — re-randomise the GLS decay between batches.
 
 ### Propagation inside compound moves (removed, #380)
@@ -2492,7 +2500,6 @@ solve(model, time_limit, seed, use_fj, hook, lns, lns_interval, callback, config
 | `structural_neighbours` | null | `SearchConfig` | k-nearest neighbour list for the built-in generators; setting it makes `Auto` `GranularBest` (#203) |
 | `cone_cache_bytes` | 256 MiB (`Model::kDefaultConeCacheBytes`) | `SearchConfig` | cap on the frozen model's cone cache (#271) |
 | `unproductive_iterations` | 300 | `SearchConfig` → `GFJConfig` | end an FJ batch after this many GLS iterations without a new real-violation low, and take the kick as due (#102); `<= 0` = fixed cadence |
-| `fj_exact_int_jump` | false | `SearchConfig` | exact Int argmin over all-linear rows (OR-Tools' `ComputeLinearJump`, #216) |
 | `perturb_near_value` | false | `SearchConfig` | OR-Tools' near-value diversification kick (#217) |
 | `fj_objective_tie_break` | true | `SearchConfig` | OR-Tools' affine-objective tie-break before the first feasible point (#218, #226) |
 | `restart_randomization` | false | `SearchConfig` | CP-SAT's restart randomisation as an arm (#239) |

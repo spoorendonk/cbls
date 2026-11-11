@@ -375,7 +375,6 @@ def test_a_row_without_the_shared_bound_key_scores_only_where_it_is_equivalent(
 @pytest.mark.parametrize(
     ("key", "off_value", "on_value"),
     [
-        ("exact_int_jump", False, True),
         ("perturb_near_value", False, True),
         ("objective_tie_break", False, True),
         ("restart_randomization", False, True),
@@ -388,7 +387,6 @@ def test_a_row_without_the_shared_bound_key_scores_only_where_it_is_equivalent(
         ("perturbation_period", 100, 50),
     ],
     ids=[
-        "exact_int_jump",
         "perturb_near_value",
         "objective_tie_break",
         "restart_randomization",
@@ -402,7 +400,7 @@ def test_a_row_without_the_shared_bound_key_scores_only_where_it_is_equivalent(
 )
 @pytest.mark.parametrize(
     ("on", "match"),
-    # Before the flag (#216, #217, #218, #239, #267) every CBLS row ran its off arm.
+    # Before the flag (#217, #218, #239, #267) every CBLS row ran its off arm.
     [(False, None), (True, "span 2 configurations")],
     ids=["old-row-is-the-off-arm", "on-arm-refused"],
 )

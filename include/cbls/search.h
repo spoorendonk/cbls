@@ -246,12 +246,6 @@ struct SearchConfig {
     //
     int64_t unproductive_iterations = 300;
 
-    // The exact Int jump (#208, #216), off by default: forwarded to
-    // GFJConfig::exact_int_jump for the batch FJ and to LNS's repair FJ. Off is
-    // today's candidate path, bit for bit; GFJConfig's comment says why it is
-    // off and what decided it.
-    bool fj_exact_int_jump = false;
-
     // OR-Tools' diversification kick (#217), off by default: forwarded to
     // GFJConfig::perturb_near_value. Each scalar is redrawn with probability
     // 0.05 to a value near its current one (log-uniform within 20% of the side
@@ -701,8 +695,7 @@ void initialize_structured_random(Model& model, RNG& rng);
 /// difference (#104).
 int64_t fj_nl_initialize(Model& model, ViolationManager& vm, int max_iterations = 10000,
                          RNG* rng = nullptr, double time_limit = 2.0,
-                         double tolerance = kDefaultFeasibilityTolerance,
-                         bool exact_int_jump = false);
+                         double tolerance = kDefaultFeasibilityTolerance);
 
 /// The i-th term (1-based) of the Luby sequence 1, 1, 2, 1, 1, 2, 4, 1, 1, 2,
 /// ... -- OR-Tools' `SUniv`, the schedule `SearchConfig::luby_restart_unit`

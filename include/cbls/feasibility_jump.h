@@ -88,9 +88,7 @@ struct JumpResult {
 };
 
 // Compute the best jump for `var_id` under the per-constraint `weights`: the
-// value minimising the weighted violation delta over a small candidate set (or,
-// for an Int over linear rows given `linear` and `exact_int`, exactly; see
-// below), and
+// value minimising the weighted violation delta over a small candidate set, and
 // score = −delta (>0 improving). For Float variables the candidates are
 // gradient-informed — a Newton step toward each violated constraint's root
 // (reverse-mode AD) plus the domain midpoint and endpoints. A single call is not
@@ -107,12 +105,7 @@ struct JumpResult {
 // otherwise. Same candidates and the
 // same first-seen-minimum rule; the scores agree to rounding, not to the bit, so
 // the selected jump is guaranteed identical only on integral data (where both
-// are exact) -- on fractional data an ulp can flip a near-tie. EXCEPT, when
-// `exact_int` is set (GFJConfig::exact_int_jump, default off), an Int column
-// whose weighted rows are all linear (#208): with `linear` it takes the
-// exact argmin (`LinearJumpScorer::int_argmin`) instead of the candidates, so it
-// reaches the same minimum score but, on a plateau, not necessarily the same
-// point as the candidate path without `linear`.
+// are exact) -- on fractional data an ulp can flip a near-tie.
 // It also supplies the Float Newton candidates' row partials where its cached
 // slope is bit-identical to `compute_partial`, so those candidates do not move.
 // `tol` is the residual a row may keep and still count as satisfied (FJ passes
@@ -126,13 +119,12 @@ struct JumpResult {
 // in doubles can outweigh a small violation decrease. A jump that wins on the
 // objective alone (f = 0) scores kObjectiveTieScore: positive, so the scan
 // keeps and applies it, and below every score a violation decrease can earn
-// short of a denormal one. The exact Int argmin (`exact_int`) keeps its own tie
-// rule and ignores it. Between variables, apply_jump breaks an exact score tie
+// short of a denormal one. Between variables, apply_jump breaks an exact score tie
 // on the same objective gain, so of several objective-only jumps the largest
 // gain wins, as OR-Tools' score term would order them.
 JumpResult compute_var_jump(Model& model, const std::vector<double>& weights, int32_t var_id,
                             bool allow_escape_probe = false, LinearJumpScorer* linear = nullptr,
-                            double tol = kDefaultFeasibilityTolerance, bool exact_int = false,
+                            double tol = kDefaultFeasibilityTolerance,
                             const double* objective_coef = nullptr);
 
 // Guided Local Search weight update (paper Algorithm 3, lines 8-10): decay all
@@ -249,15 +241,6 @@ struct GFJConfig {
     // SearchConfig::feasibility_tolerance, so FJ's "feasible" and the search's
     // agree (#211); it was a fixed 1e-9 before.
     double tolerance = kDefaultFeasibilityTolerance;
-    // Opt-in exact Int jump (#208, #216): an Int column whose weighted rows are
-    // all linear takes the exact argmin of its weighted violation
-    // (`LinearJumpScorer::int_argmin`, OR-Tools' ComputeLinearJump) instead of
-    // the enumeration / grid candidates. Off by default, which is today's path
-    // bit for bit. Off because it regresses #208's own repro (x + y == 1e7 - 1,
-    // |x - y| <= 1 as two rows: 261k-836k iterations to feasible against 19-72);
-    // decided off by #208 (closed not planned) and #216, and kept as a
-    // CP-SAT-faithful arm. solve() sets it from SearchConfig::fj_exact_int_jump.
-    bool exact_int_jump = false;
     // Opt-in OR-Tools-style kick (#217), off by default: perturb() redraws each
     // jumpable variable with probability `perturb_near_value_probability`
     // (OR-Tools' feasibility_jump_var_randomization_probability, 0.05) to a

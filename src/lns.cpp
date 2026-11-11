@@ -441,7 +441,7 @@ bool LNS::destroy_repair(Model& model, ViolationManager& vm, RNG& rng, double re
             repair_time_limit > 0.0 && !partitions.empty()
                 ? std::max(1e-9, std::chrono::duration<double>(deadline - Clock::now()).count())
                 : repair_time_limit;
-        fj_nl_initialize(model, vm, 2000, &rng, fj_limit, feasibility_tolerance_, exact_int_jump_);
+        fj_nl_initialize(model, vm, 2000, &rng, fj_limit, feasibility_tolerance_);
     } else {
         full_evaluate(model);
     }
