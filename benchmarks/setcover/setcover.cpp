@@ -11,9 +11,7 @@
 //   cbls_setcover --encoding set --structural-selection violation_guided
 //                 --structural-sample-size 8
 //
-// The A/B of the last of those (the `Set` encoding under two
-// structural-selection policies) ran through ab_selection.sh, now in git
-// history at 047f2d4c.
+// The last one's A/B ran through ab_selection.sh (git history, 047f2d4c).
 
 #include "data.h"
 #include "setcover_model.h"
@@ -57,9 +55,8 @@ struct Options {
     int seeds = 1;
     uint64_t first_seed = 42;
     double struct_prob = -1.0;  // the default, engine auto; a typed value is in [0, 1]
-    // Structural-selection arm (#165). The default is the engine's own, which
-    // is the pre-#165 rule, so an unflagged run is the configuration the README
-    // reports.
+    // Structural-selection arm (#165). Default is the engine's, so an
+    // unflagged run is the configuration the README reports.
     cbls::StructuralSelection selection = cbls::StructuralSelection::FirstImprovingSample;
     // 0 = leave SearchConfig's own default alone. Inert under the default
     // selection, which scores exactly one sample.
@@ -72,10 +69,8 @@ struct Options {
 struct Run {
     std::string instance;
     cbls::setcover::Encoding encoding;
-    // The selection policy read back off the SearchConfig the solve actually
-    // ran with, not off the parsed flag: a row has to record what the engine
-    // was given, or a flag that parsed and was never applied would publish
-    // under the arm it did not run.
+    // Read back off the SearchConfig the solve ran with, not the parsed flag,
+    // so a row records what the engine was given.
     const char* selection = "";
     uint64_t seed;
     double objective;
@@ -95,36 +90,17 @@ void print_usage() {
         "                     [--structural-sample-size K] [--csv OUT]\n");
 }
 
-// Flag values are read through this rather than through
-// benchmarks/common/runner_args.h, and the difference is policy rather than an
-// oversight. That header reports a bad integer and calls std::exit(2), and
-// hands a bad double back as NaN for a later `!(x > 0.0)` guard in the runner
-// to turn into exit 2. This runner has no such guard -- it has no `> 0` double
-// to guard, and a NaN would sail through -- so it rejects a malformed value
-// where it reads it, records the failure, and lets run_benchmark return 1. Unsigned rather than
-// signed integers, NaN rejected rather than passed on, and a failure flag rather than an exit:
-// three differences, so the two policies stay apart instead of being parameterised into one helper
-// that carries both.
+// Not runner_args.h, by policy: this runner has no `!(x > 0.0)` guard to catch
+// a NaN, so it rejects a malformed value where it reads it and run_benchmark
+// returns 1. Unsigned integers, NaN rejected, a failure flag instead of an
+// exit: too different to share one helper. The strict parse names the flag
+// (strtoull would turn `--seed abc` into 0 silently); NaN is a well-formed
+// double that yields a solve that never searched.
 //
-// Numeric flags go through the strict parse rule rather than std::stod /
-// std::strtoull. strtoull in particular has no error path: `--seed abc`
-// silently yielded 0 and the roster ran to completion, publishing a CSV
-// row that looks like a result and names a seed nobody asked for. The
-// bare stod calls were only marginally better -- caught by main's try,
-// they reported `Error: stod` without naming the flag. NaN is rejected
-// for the same reason the CLI rejects it: it is a well-formed double
-// that yields a solve which never searched.
-//
-// WHY NOT benchmarks/common/search_config_flags.h EITHER (#198). The three
-// structural flags here take that table's SPELLINGS and value rules
-// (`--structural-prob` in [0, 1], `--structural-sample-size` >= 1 and refused
-// under first_improving), so one flag has one name and one meaning across
-// runners. The table itself does not fit: one invocation of this runner solves
-// BOTH encodings by default, and the Bool encoding is a scalar model on which
-// the structural flags are read by nothing -- the case the table's
-// per-runner applicability mask refuses. A mask is per runner, not per row, so
-// it cannot describe a run that spans both. The flags stay here, applied to
-// the Set rows and recorded on every row as before.
+// Not search_config_flags.h either (#198): the structural flags take its
+// spellings and value rules, but its applicability mask is per runner, and one
+// run here spans both encodings, the Bool one scalar. They apply to Set rows
+// and are recorded on every row.
 struct FlagValues {
     int argc = 0;
     char** argv = nullptr;
@@ -180,9 +156,8 @@ int seed_count(FlagValues& v) {
     return static_cast<int>(seeds);
 }
 
-/// The structural-selection arm's two flags (#165), split out of parse_args so
-/// that function stays one dispatch rather than a dispatch plus two validators.
-/// Returns false when `arg` is not one of them.
+/// The structural-selection arm's two flags (#165). Returns false when `arg`
+/// is not one of them.
 bool parse_selection_flag(const std::string& arg, FlagValues& v, Options& opt) {
     if (arg == "--structural-selection") {
         const std::string name = v.next("first_improving|best_of_sample|violation_guided");
@@ -207,9 +182,8 @@ bool parse_selection_flag(const std::string& arg, FlagValues& v, Options& opt) {
             fprintf(stderr, "--structural-sample-size must be a positive int\n");
             v.ok = false;
         }
-        // Validate, THEN narrow -- seed_count's shape. Narrowing an out-of-range
-        // uint64_t first is implementation-defined, and the value would be read
-        // by anything that ran before the caller acted on `v.ok`.
+        // Validate, then narrow: narrowing an out-of-range uint64_t is
+        // implementation-defined (as seed_count).
         if (v.ok) {
             opt.sample_size = static_cast<int>(k);
         }
@@ -229,14 +203,10 @@ void parse_encoding_flag(FlagValues& v, Options& opt) {
     }
 }
 
-/// The structural flags' cross-flag rules, taken from the shared table
-/// (benchmarks/common/search_config_flags.h): a combination in which a typed
-/// flag is read by nothing is refused, so a row never records an arm that did
-/// not run. Checked after the loop because the flags may come in any order.
+/// The structural flags' cross-flag rules, from search_config_flags.h: a typed
+/// flag read by nothing is refused. After the loop: flags come in any order.
 bool structural_arm_is_read(const Options& opt) {
-    // The shared table's no-effect rule: first_improving scores exactly one
-    // sample, so a sample size other than the engine's would be recorded on
-    // nothing the run read.
+    // first_improving scores one sample, so a non-default size is read by nothing.
     if (opt.selection == cbls::StructuralSelection::FirstImprovingSample && opt.sample_size > 0 &&
         opt.sample_size != cbls::SearchConfig{}.structural_sample_size) {
         fprintf(stderr,
@@ -244,8 +214,7 @@ bool structural_arm_is_read(const Options& opt) {
                 "first_improving\n");
         return false;
     }
-    // ...and at an explicit probability of 0 no structural batch runs, so the
-    // policy and the sample size are read by nothing.
+    // At probability 0 no structural batch runs: policy and size are unread.
     if (opt.struct_prob == 0.0 &&
         (opt.selection != cbls::StructuralSelection::FirstImprovingSample || opt.sample_size > 0)) {
         fprintf(stderr,
@@ -274,8 +243,7 @@ Options parse_args(int argc, char** argv, bool* ok) {
         } else if (arg == "--structural-prob") {
             // `+ 0.0` folds -0 onto 0, so one arm has one recorded value.
             opt.struct_prob = v.number("--structural-prob", "probability") + 0.0;
-            // The shared table's rule: "automatic" is the default and is
-            // spelled by omitting the flag.
+            // "Automatic" is the default, spelled by omitting the flag.
             if (v.ok && (opt.struct_prob < 0.0 || opt.struct_prob > 1.0)) {
                 fprintf(stderr, "--structural-prob must be in [0, 1]\n");
                 v.ok = false;
@@ -406,10 +374,8 @@ void print_table_header() {
            "-------", "----", "----", "-------", "--------");
 }
 
-/// One console row. The last column reports the verifier's verdict rather than
-/// the search's own: an infeasible run is "NO" whatever the verifier said, and
-/// a feasible one that failed verification is called out as UNVERIFIED rather
-/// than shown as a result.
+/// One console row. The last column is the verifier's verdict: "NO" when the
+/// search is infeasible, UNVERIFIED when feasible but failing verification.
 void print_run_row(const Run& run) {
     auto it = published_optima().find(run.instance);
     double optimum = (it == published_optima().end()) ? -1.0 : it->second;
@@ -475,9 +441,8 @@ int run_benchmark(int argc, char** argv) {
 }  // namespace
 
 int main(int argc, char** argv) {
-    // A benchmark run is long, and an exception escaping main is std::terminate
-    // -- an abort with no message, indistinguishable from a crash. Say what
-    // failed and exit non-zero instead (bugprone-exception-escape).
+    // An escaping exception is a silent std::terminate; report it and exit
+    // non-zero instead (bugprone-exception-escape).
     try {
         return run_benchmark(argc, argv);
     } catch (const std::exception& e) {

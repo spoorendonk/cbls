@@ -27,10 +27,8 @@ struct PublishedTarget {
 /// the run writes, or nullopt when it writes none. A runner adds its own
 /// further conditions on the returned target.
 ///
-/// The guards compare the FILES (`same_file`), not which flags were typed:
-/// the documented command passes `--out <the published table>` explicitly,
-/// and an emptiness test let it rewrite the table from a one-instance run.
-/// Both names are reserved whether or not a file exists there yet.
+/// The guards compare files (`same_file`), not typed flags. Both names are
+/// reserved whether or not a file exists there yet.
 inline std::optional<PublishedTarget> check_published_write(const std::string& out,
                                                             const std::string& trace,
                                                             const std::string& inst_dir,
@@ -55,10 +53,8 @@ inline std::optional<PublishedTarget> check_published_write(const std::string& o
                      trace.c_str());
         std::exit(2);
     }
-    // A CROSSED artifact is refused for every run, ahead of any question of
-    // protocol: only `--out` writes the table and only `--trace` the trace.
-    // `--trace` truncates on open, so `--trace <the table>` on a legitimate
-    // published run would empty the table before any solve.
+    // A crossed artifact is refused for every run, protocol or not: `--trace`
+    // truncates on open, so `--trace <the table>` would empty it before a solve.
     if (trace_set && same_file(trace, published)) {
         std::fprintf(stderr, "--trace cannot write the published table %s (only --out writes it)\n",
                      published.c_str());

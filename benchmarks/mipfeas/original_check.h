@@ -2,12 +2,10 @@
 
 // The runner's check of a point against the MPS problem as read (#325).
 //
-// The model's own verdict (assess_result) judges the model built from the
-// file, not the file, so before the point is written it is checked here against
-// the `MpsProblem` itself: declared column bounds, integrality, every row with a
-// compensated sum, and `c·x + offset` against the reported objective. Nothing is
-// shared with the model build but the parsed file; in particular no second Model
-// is built, which the driver's address-space cap would count.
+// assess_result judges the built model, not the file; this checks the point
+// against the `MpsProblem` itself: bounds, integrality, every row (compensated
+// sum), and `c·x + offset` against the reported objective. Shares only the
+// parsed file with the build; no second Model, which the driver's cap would count.
 //
 // Tolerances follow verify_solution.py with the runner's `--feas-tol` as the
 // absolute term: rows `feas_tol + 1e-9 * scale` (scale: the larger of the finite

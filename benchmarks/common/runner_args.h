@@ -12,19 +12,11 @@
 
 namespace cbls::bench {
 
-// Flag-value parsing for the benchmark runners: `cbls::try_parse_*` supplies the
-// rule, this header supplies the runners' reporting policy. It lives on the
-// benchmark side rather than in `include/cbls/` precisely because it is policy
-// -- writing to stderr and calling `std::exit` -- and because the drivers' tests
-// pin it (`tests/python/test_run_benchmark.py`), so it belongs next to the
-// programs those tests run.
-//
-// A bad double yields NaN rather than exiting here, deliberately: every double
-// flag already has a `!(x > 0.0)` guard in the runner that reports it and exits
-// 2, and NaN fails that guard, so the parse layer adds a diagnostic without
-// moving where the failure is reported or changing the runner's exit code.
-// Integer flags have no such guard, so those report and exit 2 directly --
-// which is what parse_args already does for an unknown option.
+// The runners' flag-value reporting policy over `cbls::try_parse_*`: stderr and
+// `std::exit`, so it stays out of `include/cbls/`; pinned by
+// tests/python/test_run_benchmark.py. A bad double returns NaN, which the
+// runner's own guard reports with exit 2; a bad integer has no such guard, so
+// parse_int64 exits 2 itself, as for an unknown option.
 
 inline double parse_double(const char* flag, const std::string& text) {
     double value = 0.0;
@@ -35,16 +27,10 @@ inline double parse_double(const char* flag, const std::string& text) {
     return value;
 }
 
-// The other half of the runners' shared argument handling: a flag that takes a
-// value matches only when a value actually follows it. Written out per branch as
-// `s == "--budget" && i + 1 < argc`, that rule was repeated some two dozen times
-// across the runners with nothing naming it, and it is load-bearing in each one:
-// `--budget` as the last argument on the command line must fall through to the
-// runner's unknown-argument path -- which reports and exits 2 -- rather than
-// read past argv's end or silently keep the default. A published results table
-// is what a silently-kept default costs.
-//
-// The cursor drives the loop so that consuming a value is part of matching it:
+// A value flag matches only when a value follows it: a trailing `--budget` must
+// fall through to the runner's unknown-argument path (exit 2), not read past
+// argv or silently keep the default a published table would then carry.
+// Consuming the value is part of matching it:
 //
 //   ArgCursor c(argc, argv);
 //   const char* v = nullptr;
@@ -63,10 +49,8 @@ public:
     /// The argument under the cursor.
     [[nodiscard]] std::string arg() const { return argv_[i_]; }
 
-    /// True when the argument under the cursor is `flag` AND a value follows it,
-    /// in which case the value is consumed: the cursor moves onto it, so the
-    /// next advance() lands on the argument after. A trailing `flag` with no
-    /// value does not match, leaving the caller's chain to reject it.
+    /// True when the argument is `flag` AND a value follows; the value is then
+    /// consumed. A trailing `flag` does not match, so the caller rejects it.
     bool value_flag(const char* flag, const char*& value) {
         if (i_ + 1 >= argc_ || std::strcmp(argv_[i_], flag) != 0) {
             return false;
@@ -81,25 +65,13 @@ private:
     int i_ = 0;
 };
 
-/// Whether two paths name the same file. Canonicalised when both exist, so that
-/// `./benchmarks/x` and an absolute path to it compare equal; a path that does
-/// not exist yet cannot be an existing published table, so falling back to the
-/// lexical form is safe rather than merely convenient.
-///
-/// Shared because every runner that publishes a table needs the same guard, and
-/// the guard is only worth anything if it compares the FILE rather than which
-/// flags were typed: testing `--out` for emptiness instead let the documented
-/// command -- which spells `--out <the published table>` out -- satisfy the
-/// guard while doing exactly the damage it exists to stop.
+/// Whether two paths name the same file, for the published-table guard, which
+/// must compare the file, not which flags were typed (the documented command
+/// spells `--out <published table>`). A path that does not exist yet cannot be
+/// a published table, so the lexical fallback is safe.
 inline bool same_file(const std::string& a, const std::string& b) {
-    // A HARDLINK is the same file under two names that no path comparison can
-    // equate: `weakly_canonical` resolves symlinks, but a hardlink is not an
-    // indirection to resolve -- both names are the file. Measured: `ln
-    // comparison.csv alias.csv` then `--out alias.csv` rewrote the published
-    // inode at exit 0 with every path-based guard satisfied. `equivalent`
-    // compares the inode, which is the question actually being asked, so it is
-    // tried first and the path compare stays as the answer for a file that
-    // does not exist yet (which cannot be an existing published table).
+    // Inode first: a hardlink is the same file under a name no path compare
+    // (even `weakly_canonical`) equates. The path compare covers new files.
     std::error_code ec;
     if (std::filesystem::equivalent(a, b, ec)) {
         return true;
@@ -124,20 +96,15 @@ inline int64_t parse_int64(const char* flag, const std::string& text) {
     return value;
 }
 
-/// Upper bound on `--threads`. Not a hardware limit: a portfolio worker shares
-/// the model's DAG but owns its own variables, node values and search tables
-/// (#157), so memory still grows with this number -- 0.34-0.39 GiB per worker on
-/// MIPfeas's `neos-5114902-kasavu` at `06eb3e5`, against 0.75-0.86 GiB when the
-/// DAG was copied too, and more on an instance with more columns. A typo'd 1000
-/// would be an out-of-memory kill rather than an error message.
+/// Upper bound on `--threads`, a memory limit: each worker owns its variables,
+/// values and search tables (#157), 0.34-0.39 GiB on MIPfeas's
+/// `neos-5114902-kasavu` at `06eb3e5`. A typo'd 1000 would be an OOM kill.
 inline constexpr int kMaxThreads = 256;
 
-/// `--threads N`, range-checked rather than cast; reports and exits 2 outside
-/// [1, kMaxThreads]. 0 is refused rather than read as "one per core": a
-/// machine-dependent default would make two runs of one command incomparable.
-/// `mipfeas` and `cvrp` record the count on every row; `minlplib` and `uc-chped`
-/// record it in `search_config` off 1, and refuse any count above 1 onto their
-/// published tables.
+/// `--threads N`; exits 2 outside [1, kMaxThreads]. 0 is not "one per core":
+/// a machine-dependent default makes runs incomparable. `mipfeas` and `cvrp`
+/// record the count per row; `minlplib` and `uc-chped` in `search_config` off
+/// 1, and refuse a count above 1 onto their published tables.
 inline int parse_thread_count(const std::string& text) {
     const int64_t threads = parse_int64("--threads", text);
     if (threads < 1 || threads > kMaxThreads) {

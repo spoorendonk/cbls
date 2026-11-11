@@ -4,16 +4,12 @@
 //
 //   min  sum_j c_j x_j   s.t. every row is covered by at least one chosen column
 //
-// `Encoding::Set` is the model this benchmark exists for (issue #93): the choice
-// of columns is ONE collection-typed `Set` variable over the column universe,
-// each row's coverage is a `lambda_sum` over the chosen columns, and the search
-// moves through the Set add/remove/swap generators in the STRUCTURAL batch.
-//
-// `Encoding::Bool` is the control: the same instance as one Bool per column,
-// which is the ordinary linear encoding CP-SAT's violation-based LS worker also
-// accepts. It goes through Generalised Feasibility Jump like any scalar model.
-// Running both on the same instance is what turns "the engine supports Set
-// variables" into a measurement — see benchmarks/instances/setcover/README.md.
+// `Encoding::Set` (#93): ONE `Set` variable over the columns, each row's
+// coverage a `lambda_sum` over the chosen ones, searched by the Set
+// add/remove/swap generators in the structural batch.
+// `Encoding::Bool` is the control: one Bool per column, the linear encoding
+// CP-SAT's LS also takes, searched by GFJ. Both on one instance make Set support
+// a measurement (benchmarks/instances/setcover/README.md).
 //
 // LIFETIME: the model's lambdas hold pointers into the instance. The instance
 // must outlive the model.
@@ -62,16 +58,11 @@ struct SetCoverModel {
 
 // One `Set` variable over the columns; one Lambda coverage row per row.
 //
-// The cardinality upper bound is `min(cols, rows)`, which is valid rather than
-// tuned: every row needs one column, so no *minimal* cover holds more columns
-// than there are rows, and any cover with more is dominated by one of its
-// subsets. That domination step assumes costs are non-negative — with a negative
-// cost, dropping a redundant column can raise the objective and an optimum need
-// not be minimal. OR-Library set-covering costs are positive integers, so the
-// bound preserves an optimum here; a reader porting this to a signed-cost
-// instance needs to drop it. It matters because `initialize_structured_random` draws the initial
-// size uniformly from [min_size, max_size] — without the bound the search starts
-// from ~cols/2 columns and spends its budget shedding them.
+// Cardinality bound `min(cols, rows)`, valid not tuned: a minimal cover has at
+// most one column per row, and with non-negative costs (OR-Library's are
+// positive) some optimum is minimal. Drop it for signed costs. It matters:
+// `initialize_structured_random` draws the size uniformly from [min, max], so
+// without it the search starts near cols/2 and spends its budget shedding.
 inline SetCoverModel build_set_model(const SetCoverInstance& inst) {
     SetCoverModel scm;
     scm.encoding = Encoding::Set;

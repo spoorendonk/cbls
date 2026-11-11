@@ -19,45 +19,23 @@
 namespace cbls::bench {
 
 // One ablation arm of the search configuration, as typed on the command line.
+// Flag table, parse, validation, application onto `SearchConfig`/`solve()` and
+// the `search_config` cell all live here, so the row and `--help` cannot drift
+// from what the solve received (#136).
 //
-// Why this is shared rather than written twice: an arm is only an experiment if
-// the row it produced says which arm it was, and the row and `--help` cannot be
-// allowed to drift from what the solve actually received. So the flag table,
-// the parse, the validation, the application onto `SearchConfig`/`solve()`'s
-// arguments and the canonical `search_config` cell all live here, and the
-// runners hold none of it (#136).
+// A flag must be read by the engine, else its arm measures nothing while
+// looking rigorous. Hence no flag for GLS rho (`solve()` resamples it; no
+// `SearchConfig` field, #136) nor for `use_fj` (`solve()` ignores it,
+// src/search.cpp; `ParallelSearch` only forwards it, src/pool.cpp). A new flag
+// needs src/search.cpp or src/feasibility_jump.cpp to read its field and a
+// test showing two values give two runs (tests/test_bench_flags.cpp).
 //
-// WHAT IS DELIBERATELY ABSENT. A flag that is accepted, recorded on the row and
-// then ignored by the engine is worse than no flag: it produces an ablation that
-// measures nothing while looking rigorous. Two such knobs were considered and
-// left out, each verified against the engine rather than against its
-// documentation:
-//
-//   * the GLS weight-decay parameter rho -- `solve()` resamples it at loop
-//     entry, at every stagnation and on every new best, and `SearchConfig` has
-//     no field for it at all (the case #136 is named after).
-//   * `use_fj` -- both `solve()`'s argument and `SearchConfig::use_fj`. The
-//     first line of `solve()` in src/search.cpp is `(void)use_fj;` with the
-//     comment "GFJ is always the engine now; the flag is vestigial", and
-//     `config.use_fj` is read only by `ParallelSearch`, which hands it to that
-//     same `solve()` (src/pool.cpp). `--fj`/`--no-fj` would therefore have been
-//     exactly the rho trap: the two runners already pass opposite values
-//     (minlplib true, uc-chped false) and get the same engine.
-//
-// Adding a flag here means checking the same thing: that src/search.cpp or
-// src/feasibility_jump.cpp actually reads the field, and that a test can show
-// two values of it producing two different runs (tests/test_bench_flags.cpp).
-//
-// PER-RUNNER APPLICABILITY (#198). "Read by the engine" is a property of the
-// flag AND the model. The structural flags are read by nothing on a scalar
-// model (`effective_structural_probability` resolves the batch to 0.0 when no
-// List/Set generator exists), and the FJ-side flags are read by nothing on a
-// pure-List model, which runs no FJ batch at all. So every flag belongs to a
-// family below, every runner declares the families its models can use, and a
-// flag outside that set is REFUSED by validate_search_flags() -- not accepted,
-// recorded and ignored. The cell and the usage line carry only the declared
-// families, which is also what keeps a scalar runner's cell byte-identical to
-// the one its committed tables already hold.
+// Whether a flag is read depends on the model too (#198): structural flags are
+// dead on a scalar model (`effective_structural_probability` is 0.0 without a
+// List/Set generator), FJ-side flags on a pure-List one. So each flag has a
+// family, each runner declares its families, and validate_search_flags()
+// refuses the rest. The cell and usage line carry only declared families,
+// which keeps a scalar runner's cell byte-identical to its committed tables.
 //
 // The families, by what reads them:
 //   * common     -- the diversification loop every model runs: LNS, the kick
@@ -95,44 +73,37 @@ inline const char* search_flag_family_name(std::size_t family_index) {
 }
 
 struct SearchFlags {
-    // Defaults are taken from the engine rather than restated, so that a change
-    // to `SearchConfig`'s defaults cannot silently make "default" on the row
-    // mean something the engine no longer does. The two booleans that are not
-    // `SearchConfig` fields (the hook and LNS are `solve()` pointer arguments)
-    // default to what every runner passes today: on.
+    // Defaults come from `SearchConfig{}`, so "default" on the row tracks the
+    // engine. The hook and LNS are `solve()` pointer arguments, not fields:
+    // they default to on, as every runner passes.
     bool float_hook = true;
     bool lns = true;
-    // Held as int64_t even where the engine field is `int`: parse_int64 is the
-    // shared integer policy, and range-checking once in validate_search_flags()
-    // is what keeps a narrowing conversion out of the apply step.
+    // int64_t even where the engine field is `int`: validate_search_flags()
+    // range-checks once, so the apply step never narrows unchecked.
     int64_t lns_interval = SearchConfig{}.lns_interval;
     bool compound_moves = SearchConfig{}.use_compound_moves;
     double novelty_prob = SearchConfig{}.novelty_jump_probability;
     int64_t unproductive_iters = SearchConfig{}.unproductive_iterations;
     int64_t perturbation_period = SearchConfig{}.perturbation_period;
     int64_t max_iterations = SearchConfig{}.max_iterations;
-    // Not a `SearchConfig` field: `solve()` disables its wall clock when handed
-    // `time_limit <= 0`, and minlplib and uc-chped guard their `--time-limit` as
-    // strictly positive. This is the way to ask for the iteration-budgeted,
-    // clock-free arm without loosening that guard.
+    // Not a `SearchConfig` field: passes `time_limit <= 0` (no wall clock) to
+    // `solve()` for the iteration-budgeted arm, without loosening the runners'
+    // strictly positive `--time-limit` guard.
     bool no_time_limit = false;
-    // The structural batch (#198). A negative probability is the engine's
-    // "automatic" and has no spelling on the command line: it is the default,
-    // and the cell writes it as `auto`.
+    // The structural batch (#198). Negative is the engine's "automatic": the
+    // default, not typeable, written `auto` in the cell.
     double structural_prob = SearchConfig{}.structural_batch_probability;
     StructuralSelection structural_selection = SearchConfig{}.structural_selection;
     int64_t structural_sample_size = SearchConfig{}.structural_sample_size;
     // 0 = no neighbour list, the engine's default (a null
     // `structural_neighbours`). Typed values must be >= 1.
     int64_t neighbours = 0;
-    // The objective tie-break (#218), on by default since #226. The flag turns
-    // it off; recorded in the cell only when off, so a default row's cell is
-    // the one rows from before #226 carry -- tell those apart by commit.
+    // Objective tie-break (#218), on by default since #226; the cell records it
+    // only when off, so default rows before and after #226 differ only by commit.
     bool objective_tie_break = SearchConfig{}.fj_objective_tie_break;
-    // The first flag typed from each family, indexed by the family's bit, or
-    // nullptr. Set by match_search_flag() whatever the value, so that a flag
-    // restated at its default is refused on a runner that cannot read it too:
-    // that is still a flag the runner would accept and ignore.
+    // First flag typed per family (indexed by family bit), or nullptr. Set
+    // whatever the value, so a flag restated at its default is still refused
+    // on a runner that cannot read it.
     std::array<const char*, kSearchFlagFamilyCount> typed{};
 };
 
@@ -142,20 +113,16 @@ struct SearchFlagSpec {
     const char* key;
     const char* usage;
     unsigned family;
-    // An opt-in flag is written into the cell only when its value differs from
-    // the default. That is what lets a flag join a family whose runners already
-    // have committed tables: their default cell stays byte-identical, and an
-    // arm that turns the flag on is still named by it (#226).
+    // Opt-in: written to the cell only when non-default, so a flag can join a
+    // family with committed tables and keep their default cell byte-identical
+    // (#226).
     bool opt_in = false;
 };
 
-/// The flag table. Order is the canonical order of the `search_config` cell and
-/// of the usage line; both are generated from this array, so a flag cannot be
-/// documented and unrecorded (or the reverse), and the cell's key order is
-/// deterministic by construction rather than by convention.
-///
-/// New flags go at the END: a runner's cell is the table filtered by its
-/// families, so appending keeps every existing runner's cell byte-identical.
+/// The flag table, in the canonical order of the cell and the usage line; both
+/// are generated from it, so no flag is documented but unrecorded or reverse.
+/// New flags go at the END: a cell is this table filtered by family, so
+/// appending keeps every existing runner's cell byte-identical.
 inline constexpr std::array<SearchFlagSpec, 14> kSearchFlagSpecs = {{
     {"float_hook", "[--no-float-hook]", kScalarSearchFlags},
     {"lns", "[--no-lns]", kCommonSearchFlags},
@@ -193,10 +160,8 @@ inline std::size_t search_flag_family_index(unsigned family) {
 inline const char* match_structural_search_flag(ArgCursor& c, SearchFlags& f, unsigned& family) {
     const char* v = nullptr;
     if (c.value_flag("--structural-prob", v)) {
-        // Out of [0, 1] -- a negative included, since "automatic" is spelled by
-        // omitting the flag -- becomes NaN, the value validation refuses. A
-        // NaN from a non-number already is one.
-        // `+ 0.0` folds a typed -0 onto 0, as for --novelty-prob.
+        // Outside [0, 1] (negative too: "automatic" is the omitted flag) becomes
+        // NaN, which validation refuses. `+ 0.0` folds a typed -0 onto 0.
         const double p = parse_double("--structural-prob", v) + 0.0;
         f.structural_prob = p >= 0.0 && p <= 1.0 ? p : std::numeric_limits<double>::quiet_NaN();
         family = kStructuralSearchFlags;
@@ -228,19 +193,12 @@ inline const char* match_structural_search_flag(ArgCursor& c, SearchFlags& f, un
 
 /// Matches and consumes one search-configuration flag under the cursor.
 ///
-/// Returns false when the argument is not one of ours, leaving the cursor where
-/// it was, so a runner chains this into its own `else if` ladder ahead of the
-/// unknown-option branch. Value flags go through `ArgCursor::value_flag`, which
-/// means a trailing `--lns-interval` with no value does NOT match here and falls
-/// through to that branch -- the rule runner_args.h exists to state.
-///
-/// Bad values follow the runners' shared policy unchanged: a non-integer reports
-/// and exits 2 inside parse_int64, a non-number double becomes NaN and is caught
-/// by validate_search_flags() below. An unknown `--structural-selection` word
-/// has no NaN to become, so it reports and exits 2 here, as a bad integer does.
-///
-/// Every flag is matched whatever the runner declares; whether the runner may
-/// take it is validate_search_flags()' call, made on `typed`.
+/// Returns false, cursor unmoved, when the argument is not ours, so a runner
+/// chains it ahead of its unknown-option branch. A value flag with no value
+/// (trailing `--lns-interval`) does not match and falls through there
+/// (runner_args.h). A bad integer or `--structural-selection` word exits 2
+/// here; a bad double becomes NaN for validate_search_flags(). Every flag
+/// matches whatever the runner declares; validation refuses on `typed`.
 inline bool match_search_flag(ArgCursor& c, const std::string& s, SearchFlags& f) {
     const char* v = nullptr;
     const char* flag = nullptr;
@@ -260,8 +218,7 @@ inline bool match_search_flag(ArgCursor& c, const std::string& s, SearchFlags& f
         flag = f.compound_moves ? "--compound-moves" : "--no-compound-moves";
         family = kScalarSearchFlags;
     } else if (c.value_flag("--novelty-prob", v)) {
-        // `+ 0.0` folds a typed -0 onto 0: the same run must not be recorded
-        // under two cells (`novelty_prob=-0` and `novelty_prob=0`).
+        // `+ 0.0` folds -0 onto 0, else one run has two cells.
         f.novelty_prob = parse_double("--novelty-prob", v) + 0.0;
         flag = "--novelty-prob";
         family = kScalarSearchFlags;
@@ -295,11 +252,9 @@ inline bool match_search_flag(ArgCursor& c, const std::string& s, SearchFlags& f
     return true;
 }
 
-/// The selection policy the run executes (#203): `auto` resolved against
-/// whether `--neighbours` supplies a list. One run, one name: the cell, the
-/// published-table guard and the no-effect rules all compare this, so `auto`
-/// and the explicit policy it resolves to are the same arm, as they are the
-/// same trajectory.
+/// The policy the run executes (#203): `auto` resolved against whether
+/// `--neighbours` supplies a list. The cell, the published-table guard and the
+/// no-effect rules compare this, so `auto` and its resolution are one arm.
 inline StructuralSelection effective_structural_selection(const SearchFlags& f) {
     return resolve_structural_selection(f.structural_selection, f.neighbours != 0);
 }
@@ -309,14 +264,13 @@ inline StructuralSelection default_structural_selection(const SearchFlags& f) {
     return resolve_structural_selection(SearchConfig{}.structural_selection, f.neighbours != 0);
 }
 
-/// The structural half of validate_search_flags(), split out because it is a
-/// separate family with its own no-effect rules. Every default passes.
+/// The structural half of validate_search_flags(): its own family and
+/// no-effect rules. Every default passes.
 inline bool validate_structural_flags(const SearchFlags& f, std::string& error) {
     constexpr int64_t kIntMax = std::numeric_limits<int>::max();
     const SearchFlags defaults;
-    // match_search_flag() turns every typed value outside [0, 1] into NaN,
-    // a negative included: the engine's "automatic" is the default and is
-    // spelled by leaving the flag out, so `auto` has one spelling.
+    // match_search_flag() maps any typed value outside [0, 1] to NaN, so
+    // `auto` has one spelling: the omitted flag.
     if (std::isnan(f.structural_prob)) {
         error = "--structural-prob must be in [0, 1] (omit it for the engine's automatic value)";
         return false;
@@ -328,18 +282,14 @@ inline bool validate_structural_flags(const SearchFlags& f, std::string& error) 
     if (f.neighbours < 0 || f.neighbours > kIntMax ||
         (f.neighbours == 0 &&
          f.typed[search_flag_family_index(kNeighbourSearchFlags)] != nullptr)) {
-        // 0 is the default "no list"; typing it would be a second spelling of
-        // the default arm, so the typed flag must ask for an actual list.
+        // A typed 0 would be a second spelling of the default "no list".
         error = "--neighbours must be >= 1 (omit it for no neighbour list)";
         return false;
     }
-    // No-effect combinations, refused for the census reason the scalar pairs
-    // are. The engine reads the sample size only under BestOfSample and
-    // ViolationGuided (FirstImprovingSample "takes exactly one generate()
-    // call"), and at an explicit probability of 0 it never runs a structural
-    // batch, so neither the policy, the sample size nor the neighbour list is
-    // read.
-    // GranularBest without a neighbour list is ViolationGuided by another name.
+    // No-effect combinations, refused as the scalar pairs are: the engine
+    // reads the sample size only under BestOfSample and ViolationGuided, and
+    // at probability 0 reads no structural flag. GranularBest without a list
+    // is ViolationGuided by another name.
     if (f.structural_selection == StructuralSelection::GranularBest && f.neighbours == 0) {
         error = "--structural-selection granular_best needs --neighbours K";
         return false;
@@ -363,17 +313,11 @@ inline bool validate_structural_flags(const SearchFlags& f, std::string& error) 
     return true;
 }
 
-/// Range and coherence checks over the parsed flags.
-///
-/// Returns false with a one-line reason for the runner to report; the runner
-/// owns the exit, as it does for every other flag value (runner_args.h). Kept
-/// out of the parse so that it is callable from a test without ending the
-/// process.
-///
-/// `applicable` is the runner's declared families (#198); a flag typed from
-/// any other family is refused, naming the flag. `time_limit_set` says whether
-/// the runner also saw an explicit `--time-limit`, which only this layer can
-/// turn into the conflict it is.
+/// Range and coherence checks. Returns false with a one-line reason; the
+/// runner owns the exit (runner_args.h), so a test can call this.
+/// `applicable` is the runner's families (#198): a flag from any other is
+/// refused by name. `time_limit_set`: the runner saw an explicit
+/// `--time-limit`, which conflicts with `--no-time-limit`.
 inline bool validate_search_flags(const SearchFlags& f, unsigned applicable, bool time_limit_set,
                                   std::string& error) {
     for (std::size_t i = 0; i < kSearchFlagFamilyCount; ++i) {
@@ -386,30 +330,21 @@ inline bool validate_search_flags(const SearchFlags& f, unsigned applicable, boo
     }
     constexpr int64_t kIntMax = std::numeric_limits<int>::max();
     if (f.lns_interval < 1 || f.lns_interval > kIntMax) {
-        // 0 would disable LNS through a second, undocumented route (solve()
-        // skips the repair when lns_interval <= 0), which would make two
-        // different `search_config` cells mean the same run. `--no-lns` is the
-        // one spelling for that arm.
+        // solve() skips LNS when lns_interval <= 0: refused so `--no-lns` is
+        // that arm's one spelling (one run, one cell).
         error = "--lns-interval must be >= 1 (use --no-lns to switch LNS off)";
         return false;
     }
-    // NaN is tested first and by name. parse_double returns NaN for a value
-    // that is not a number, and NaN compares false against every bound, so a
-    // range test alone would ACCEPT the typo it is meant to catch. (Written as
-    // `!(p >= 0 && p <= 1)` instead, the NaN case is covered but
-    // readability-simplify-boolean-expr asks for a DeMorgan rewrite that
-    // silently loses it -- so the check is right about the form and wrong about
-    // the meaning, and this spelling satisfies both.)
+    // NaN (parse_double's non-number) must be tested by name: it passes every
+    // range test. `!(p >= 0 && p <= 1)` would catch it, but
+    // readability-simplify-boolean-expr's DeMorgan rewrite would lose it.
     if (std::isnan(f.novelty_prob) || f.novelty_prob < 0.0 || f.novelty_prob > 1.0) {
         error = "--novelty-prob must be in [0, 1]";
         return false;
     }
-    // A negative and a zero are THE SAME RUN -- the engine arms the
-    // unproductive-batch exit only on `> 0` -- so accepting both would put two
-    // different `search_config` cells on one configuration, breaking the
-    // invariant search_config_string() states and that the no-effect
-    // refusals below are justified by. 0 is the documented spelling for the
-    // fixed-cadence arm; a negative is a typo.
+    // The engine arms the unproductive-batch exit only on `> 0`, so negative
+    // and 0 are one run; 0 is that fixed-cadence arm's (#102 control) one
+    // spelling, keeping one run, one cell.
     if (f.unproductive_iters < 0) {
         error = "--unproductive-iters must be >= 0 (0 restores the fixed kick cadence)";
         return false;
@@ -422,18 +357,10 @@ inline bool validate_search_flags(const SearchFlags& f, unsigned applicable, boo
         error = "--max-iterations must be >= 0 (0 = unlimited)";
         return false;
     }
-    // Combinations in which a flag the caller typed would be READ BY
-    // NOTHING, and so must be refused rather than accepted, recorded and
-    // silently ignored -- the failure this whole header exists to prevent, and
-    // the same standard the rho and use_fj rejections are held to.
-    //
-    // They are short-circuits in the engine, not opinions:
-    // `src/search.cpp`'s kick site tests `lns_ != nullptr` before
-    // `lns_interval_`, and its batch picker tests `config_.use_compound_moves`
-    // before drawing against `novelty_jump_probability`. Refusing them also
-    // keeps the recorded cell a census of RUNS rather than of typing: with
-    // these out, no two accepted command lines that produce the same run can
-    // produce two different `search_config` strings.
+    // A typed flag the engine would not read is refused. Engine short-circuits
+    // (src/search.cpp): the kick tests `lns_ != nullptr` before
+    // `lns_interval_`; the batch picker tests `use_compound_moves` before
+    // `novelty_jump_probability`. This also keeps the cell a census of runs.
     const SearchFlags defaults;
     if (!f.lns && f.lns_interval != defaults.lns_interval) {
         error = "--lns-interval has no effect with --no-lns";
@@ -443,34 +370,23 @@ inline bool validate_search_flags(const SearchFlags& f, unsigned applicable, boo
         error = "--novelty-prob has no effect without --compound-moves";
         return false;
     }
-    // No positivity guard on --unproductive-iters, deliberately: SearchConfig
-    // documents `<= 0` as "restore the old fixed cadence", which is a
-    // legitimate arm and the control case for the #102 exit. Only a
-    // non-integer is rejected, and parse_int64 has already done that.
     if (f.no_time_limit && time_limit_set) {
         error = "--no-time-limit and --time-limit contradict each other";
         return false;
     }
     if (f.no_time_limit && f.max_iterations <= 0) {
-        // solve() with neither budget returns immediately (TerminationReason::
-        // NoBudget), so this combination would publish a full-looking table of
-        // empty results -- the same hazard the runners' `--time-limit > 0`
-        // guards exist for.
+        // With neither budget solve() returns at once (NoBudget): a
+        // full-looking table of empty results, as `--time-limit > 0` guards.
         error = "--no-time-limit requires --max-iterations N with N > 0";
         return false;
     }
     return validate_structural_flags(f, error);
 }
 
-/// The first flag whose value is not the runner's default, or nullptr when the
-/// arm is the default configuration. `d` is the runner's published protocol:
-/// the engine's defaults unless the runner pins a field away from them, as
-/// uc-chped does for compound moves.
-///
-/// This is what lets a runner's published-table guard treat an ablation arm the
-/// way it treats a shortened budget or a partial roster: a table generated under
-/// a non-default search configuration is not the published measurement, whatever
-/// else was passed.
+/// The first flag whose value differs from `d`, or nullptr for the default arm.
+/// `d` is the runner's published protocol (engine defaults unless pinned, as
+/// uc-chped pins compound moves). Lets the published-table guard refuse a
+/// non-default arm as it refuses a short budget or partial roster.
 inline const char* first_non_default_search_flag(const SearchFlags& f,
                                                  const SearchFlags& d = SearchFlags{}) {
     if (f.float_hook != d.float_hook) {
@@ -521,22 +437,17 @@ inline const char* first_non_default_search_flag(const SearchFlags& f,
 
 /// A double as the `search_config` cell spells it.
 ///
-/// `%.17g`, not `%g`. The cell exists so a results file states the
-/// configuration it was produced under, and `%g`'s six significant digits
-/// cannot: `--novelty-prob 0.1234567` and `--novelty-prob 0.1234568` are two
-/// different runs that both recorded `novelty_prob=0.123457`. Seventeen digits
-/// is what round-trips an IEEE double exactly, so the cell names the value the
-/// search actually received. Stable across runs -- nothing here calls
-/// setlocale -- and the trailing digits only appear for a value that has them.
+/// `%.17g` round-trips a double, so the cell names the value the search
+/// received; `%g`'s six digits would merge 0.1234567 and 0.1234568. Stable:
+/// nothing here calls setlocale.
 inline std::string search_flag_number(double v) {
     std::array<char, 32> buf{};
     std::snprintf(buf.data(), buf.size(), "%.17g", v);
     return {buf.data()};
 }
 
-/// The flags' values in `kSearchFlagSpecs` order. Held apart from the string so
-/// that the keys and the values are zipped from one array rather than written
-/// out twice in the same order and hoped over.
+/// The flags' values in `kSearchFlagSpecs` order, so keys and values zip from
+/// one array.
 inline std::array<std::string, kSearchFlagCount> search_config_values(const SearchFlags& f) {
     const char* const on = "on";
     const char* const off = "off";
@@ -561,12 +472,9 @@ inline std::array<std::string, kSearchFlagCount> search_config_values(const Sear
 /// The canonical `key=value;key=value` cell recorded on every row, over the
 /// runner's declared families only (`applicable`).
 ///
-/// Deterministic, comma-free (so it needs no CSV quoting) and emitted in one
-/// fixed order for every runner, so two rows produced by the same arm compare
-/// equal as strings and `sort | uniq -c` over a results file is a census of the
-/// arms it holds. That last claim is what validate_search_flags'
-/// no-effect-in-this-combination rules protect: without them `--no-lns` and
-/// `--no-lns --lns-interval 5` would be one run under two different cells.
+/// Deterministic, comma-free (no CSV quoting), fixed order: rows of one arm
+/// compare equal, so `sort | uniq -c` is a census of arms. validate_search_flags'
+/// no-effect rules keep it one cell per run.
 inline std::string search_config_string(const SearchFlags& f, unsigned applicable) {
     const auto values = search_config_values(f);
     const auto defaults = search_config_values(SearchFlags{});
@@ -604,12 +512,9 @@ inline std::string search_flags_usage(unsigned applicable) {
     return out;
 }
 
-/// Writes the flags onto the search configuration. Call validate_search_flags()
-/// first: the narrowing casts here are safe only because it has range-checked
-/// the fields the engine holds as `int`.
-///
-/// `--neighbours` is not applied here: it needs the runner's cost, so it goes
-/// through neighbours_argument() below.
+/// Writes the flags onto the config. Call validate_search_flags() first: the
+/// `int` casts are safe only after its range checks. `--neighbours` needs the
+/// runner's cost, so it goes through neighbours_argument().
 inline void apply_search_flags(const SearchFlags& f, SearchConfig& cfg) {
     cfg.use_compound_moves = f.compound_moves;
     cfg.novelty_jump_probability = f.novelty_prob;
@@ -622,9 +527,9 @@ inline void apply_search_flags(const SearchFlags& f, SearchConfig& cfg) {
     cfg.fj_objective_tie_break = f.objective_tie_break;
 }
 
-/// The neighbour flag's check against the instance, which only the runner can
-/// make: `nearest_neighbours` clamps K to `universe - 1`, so every K from there
-/// up is one run under several cells. Call it before neighbours_argument().
+/// `--neighbours` against the instance: `nearest_neighbours` clamps K to
+/// `universe - 1`, so a larger K is one run under another cell. Call before
+/// neighbours_argument().
 inline bool validate_neighbours(const SearchFlags& f, int universe, std::string& error) {
     if (f.neighbours > 0 && f.neighbours > static_cast<int64_t>(universe) - 1) {
         error = "--neighbours " + std::to_string(f.neighbours) + " exceeds the " +
@@ -635,10 +540,9 @@ inline bool validate_neighbours(const SearchFlags& f, int universe, std::string&
     return true;
 }
 
-/// The K-nearest neighbour list `--neighbours K` asks for, ranked by the
-/// runner's `cost` over its universe of `universe` elements, or null when the
-/// flag was not given (the engine's default). Only a runner that declares
-/// `kNeighbourSearchFlags` calls this; it is what supplies the cost.
+/// The K-nearest list for `--neighbours K`, ranked by the runner's `cost` over
+/// `universe` elements, or null without the flag (engine default). Only a
+/// runner declaring `kNeighbourSearchFlags` calls this.
 inline std::shared_ptr<const NeighbourList> neighbours_argument(
     const SearchFlags& f, int universe, const std::function<double(int, int)>& cost) {
     if (f.neighbours == 0) {
