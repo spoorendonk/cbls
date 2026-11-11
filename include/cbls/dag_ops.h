@@ -53,8 +53,10 @@ constexpr uint32_t kIncSumPeriod = 64;
 /// each, rather than re-summing (#177, #188): O(|G_v|) instead of
 /// O(sum of |row| over G_v) per MIP move.
 ///
-/// Each update is TwoSum-tested: an exact one matches the re-sum bitwise; an
-/// inexact one adds its exact roundings to `IncSumState::drift_bound`. After
+/// Each update is TwoSum-tested: an exact one adds no rounding and no drift (on
+/// integral data within 2^53 every update is exact, so values equal the
+/// re-sum's bit for bit); an inexact one adds its exact roundings to
+/// `IncSumState::drift_bound`. After
 /// `kIncSumPeriod - 1` (63) inexact updates the next inexact one re-sums, as
 /// do a non-finite value and the first commit after a `full_evaluate` or
 /// plain `delta_evaluate` over the Sum (which re-sum unchecked).
@@ -138,7 +140,7 @@ inline double delta_evaluate(Model& model, std::initializer_list<int32_t> change
 // the sort would not pay; bit-identical either way (cutover at `reverse_sweep`
 // in src/dag_ops.cpp). All three share one thread_local scratch, so none may
 // be called from inside another on one thread. `expr_id` must be a node id of
-// `model`; unchecked here (hot path), checked by the Python binding.
+// `model` (not a variable handle); unchecked here (hot path), checked by the Python binding.
 
 /// One chain-rule step: `acc += edge * carried`, `edge` the local derivative,
 /// `carried` the adjoint or forward slope. Every propagation pass uses it

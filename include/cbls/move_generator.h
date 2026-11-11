@@ -22,8 +22,9 @@ class ViolationManager;
 /// CSR: `of(e)` is `ids[offsets[e] .. offsets[e+1])`. Invariants (offsets
 /// non-decreasing from 0 to `ids.size()`, ids in the universe) are checked
 /// ONCE at construction, since `of()` is on the hot path. `of()` is still
-/// total: an out-of-range `e` gives an empty span, not a heap read (#156; this
-/// type is reachable from Python).
+/// total: an out-of-range `e` gives an empty span, not a heap read, so a list
+/// built for another variable degrades to no neighbours (#156; this type is
+/// reachable from Python).
 class NeighbourList {
 public:
     NeighbourList() = default;

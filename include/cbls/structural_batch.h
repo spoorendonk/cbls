@@ -17,7 +17,8 @@ struct SearchConfig;
 
 /// A STRUCTURAL batch, the List/Set peer of paper Algorithm 6's FJ/NJ.
 /// Sweeps the registered `MoveGenerator`s and greedily commits candidates with
-/// negative weighted delta_G under the current GLS weights W. `FeasibilityJump`
+/// negative weighted delta_G under the current GLS weights W
+/// (`total_violation()` is W-weighted). `FeasibilityJump`
 /// jumps only scalars, so List/Set assignments improve only here. `run`
 /// returns true if anything was committed: the caller owes `fj.resync()`.
 ///

@@ -91,7 +91,8 @@ struct SearchCounters {
     /// `ParallelConfig::share_objective_bound` on or off: the global best is
     /// read either way, and with sharing off only these counters depend on it.
     /// "Global" is the pool's, so after a restart it includes this worker's
-    /// earlier solve (all four fields).
+    /// earlier solve (all four fields): a restarted solve reopens its bound at
+    /// +inf and the first sync re-tightens it, with no peer involved.
     ///
     /// Times the global best tightened this worker's bound (batch boundary, or
     /// record_best after a peer improved). Always 0 with sharing off. Excludes
