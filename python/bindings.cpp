@@ -19,11 +19,8 @@
 namespace nb = nanobind;
 using namespace cbls;
 
-// Shared by both ParallelSearch.solve overloads: the concurrency contract is
-// the same for either, and it is not obvious from the signature. Releasing the
-// GIL is what makes the methods callable at all (see the call guards below),
-// and the direct consequence is that the factory runs on several threads at
-// once.
+// Shared by both ParallelSearch.solve overloads: the GIL release that makes
+// them callable (call guards below) runs the factory on several threads at once.
 constexpr const char* kParallelSolveDoc =
     "Run the parallel search and return the best result the workers found.\n"
     "\n"
@@ -125,25 +122,17 @@ constexpr const char* kSolveMasterDoc =
     "While this runs, structural writes to `model` from Python -- builders,\n"
     "close, freeze -- raise RuntimeError, as under cbls.solve.";
 
-// A Python on_progress that raises leaves this override as an nb::python_error,
-// which owns a strong reference to the Python exception object. ParallelSearch
-// parks such exceptions in std::exception_ptr slots (src/pool.cpp,
-// solve_portfolio and run_worker) and releases them wherever the last copy dies:
-// on a worker thread, or on the calling thread while the call guard below has
-// the GIL released. That is safe because python_error's destructor and copy
-// constructor acquire the GIL themselves (gil_scoped_acquire, i.e.
-// PyGILState_Ensure, which is legal on a thread that released the GIL and on a
-// thread Python has never seen). They have since nanobind v0.1.0 -- v0.0.1's
-// held nb::object members released WITHOUT the GIL -- so the whole
-// `nanobind>=2.0` range pyproject.toml admits is covered (src/error.cpp at tags
-// v0.1.0, v1.8.0 and v2.13.0). Converting the exception at this boundary would
-// therefore buy no safety and would cost the caller the original exception
-// object (#159).
+// A raising on_progress leaves as an nb::python_error, which owns a reference
+// to the Python exception. ParallelSearch parks it in std::exception_ptr slots
+// (src/pool.cpp) and its last copy may die on a worker thread or with the GIL
+// released. Safe: python_error's destructor and copy constructor take the GIL
+// themselves (PyGILState_Ensure) in every nanobind >= 0.1.0, so all of
+// pyproject.toml's `nanobind>=2.0`. Hence not converted here, which would lose
+// the original exception object (#159).
 
 struct PySolveCallback : SolveCallback {
-    // nanobind 3 dropped the slot count and deprecates passing it; clang reports
-    // that at this expansion site even with nanobind on -isystem (#355). The
-    // floor (pyproject.toml) is still 2.x, where it is required.
+    // nanobind 3 deprecates the slot count (clang warns here even with -isystem,
+    // #355); the 2.x floor in pyproject.toml requires it.
 #if NB_VERSION_MAJOR >= 3
     NB_TRAMPOLINE(SolveCallback);
 #else
@@ -163,14 +152,11 @@ constexpr const char* kModelNodeDoc =
     "exists, so the copy cannot go stale. Its current value is\n"
     "Model.node_value(id).";
 
-// The models a bound `cbls.solve` is currently running on. `solve` releases the
-// GIL and calls a SolveCallback on the search thread, so Python can reach the
-// model mid-search -- from the callback or from another thread -- and the
-// search reads its structure without a lock. See refuse_if_solving for what
-// consults this. The two single-model entry points register: `solve` and
-// `ParallelSearch.solve_master`. The factory forms do not: their workers solve
-// frozen copies. A multiset only so that remove() pairs with add() whatever
-// happens; a duplicate add is refused by the callers' refuse_if_solving first.
+// The models a bound solve is running on, consulted by refuse_if_solving:
+// Python can reach a model mid-search (GIL released, SolveCallback) while the
+// search reads its structure without a lock. Registered by `solve` and
+// `ParallelSearch.solve_master`; the factory forms solve frozen copies. A
+// multiset so remove() always pairs with add(); callers refuse a duplicate first.
 class SolvingModels {
 public:
     static SolvingModels& instance() {
@@ -196,41 +182,30 @@ private:
 };
 
 // What `Model.var()` / `Model.var_mut()` return: a (model, id) pair resolved
-// through the model on EVERY attribute access, never a pointer into `vars_`.
+// through the model on EVERY attribute access. Must never be a
+// `reference_internal` into `vars_`, which a builder before close() reallocates,
+// leaving a held handle writing freed heap (#167). Costs one bounds-checked
+// index per access, on a path that crosses the Python boundary anyway.
 //
-// They used to return `reference_internal` into that vector, and anything that
-// appends a variable -- a builder before close() -- can reallocate it. Writing
-// `.value` through one held across such a call was a write into freed heap
-// (found in #167's review), which is the segfault class CLAUDE.md
-// says to close at the hand-over rather than document. Resolving per access
-// costs one bounds-checked index per attribute read, on a path that crosses the
-// Python boundary anyway.
-//
-// OWNERSHIP: returned by value, with keep_alive<0, 1> tying the model's
-// lifetime to the handle's, so `model` cannot dangle. The Python class keeps the
-// name `Variable` and every attribute the direct binding had, so callers do not
-// change -- with one visible difference, and it is the fix: a handle now always
-// reads the model's CURRENT variable rather than whatever the storage it pointed
-// at happens to hold.
+// OWNERSHIP: by value, keep_alive<0, 1> keeps the model alive, so `model`
+// cannot dangle. Bound as `Variable`, with the direct binding's attributes.
 struct VariableRef {
     Model* model;
     int32_t id;
     [[nodiscard]] Variable& get() const { return model->var_mut(id); }
 };
 
-// Checked once here so that `m.var(999)` still raises at the call, as it did.
-// A variable is never removed, so an id valid now stays valid.
+// Checked here so `m.var(999)` raises at the call; a variable is never
+// removed, so an id valid now stays valid.
 VariableRef variable_ref(Model& model, int32_t id) {
     static_cast<void>(model.var(id));
     return VariableRef{&model, id};
 }
 
-// The `Variable.value` setter's check (#211). Several components rely on every
-// scalar value lying in its box -- and `SearchConfig.skip_init`, the documented
-// way to keep a caller's assignment, hands this value to the search as it is.
-// So a value the engine could never have produced is REFUSED (ValueError), not
-// clamped: NaN or an infinity, a value outside [lb, ub], or a non-integer on a
-// Bool/Int. Clamping would change the caller's assignment without a word.
+// The `Variable.value` setter's check (#211): components rely on every scalar
+// lying in its box, and `SearchConfig.skip_init` hands it to the search as is.
+// So NaN/inf, a value outside [lb, ub], or a non-integer on a Bool/Int raises
+// ValueError; never clamped, which would silently change the assignment.
 void set_checked_value(Variable& var, double value) {
     if (!std::isfinite(value)) {
         throw nb::value_error(
@@ -265,23 +240,18 @@ private:
 // ---------------------------------------------------------------------------
 // Structural writes from Python while a bound solve runs on the model.
 //
-// A bound solve releases the GIL and writes the model's structure under it: the
-// first solve of a model freezes it -- closing it if open, adding the objective
-// row and building the cone cache (#271) -- as `solve_master` does. A Python
-// builder call from a
-// SolveCallback or from a second thread -- close, freeze, a second solve, any
-// Model builder -- would race that write, and the running search reads the node
-// array, the CSR indices and the topological order without a lock.
+// A bound solve, with the GIL released, freezes the model on first solve
+// (close, objective row, cone cache #271), and the search reads the node array,
+// CSR indices and topological order without a lock. A structural write from a
+// SolveCallback or another thread would race it.
 //
-// So every structural write Python can reach consults the same registry: the
-// Model builders and close/freeze, and the Expr operators and free functions
-// (each of which calls a Model builder). Each check runs holding the GIL, and a
-// bound solve registers holding the GIL before releasing it, so a check and a
-// registration cannot interleave. The engine's own write -- the freeze -- is a
-// C++ call that never passes through here, so it is unaffected.
+// So every structural write Python can reach consults the registry: Model
+// builders, close/freeze, and the Expr operators and free functions. Checks and
+// registration both run holding the GIL, so they cannot interleave. The
+// engine's own freeze never passes through here.
 //
-// Value writes (Variable.value, restore_state) are NOT structural and are not
-// refused: they are the data race the `solve` docstring already warns about.
+// Value writes (Variable.value, restore_state) are not refused: they are the
+// data race the `solve` docstring warns about.
 // ---------------------------------------------------------------------------
 
 void refuse_if_solving(const Model& m, const char* what) {
@@ -294,9 +264,9 @@ void refuse_if_solving(const Model& m, const char* what) {
     }
 }
 
-// A Model builder bound through the registry check. `A...` is spelled out
-// rather than deduced from a forwarding pack so that nanobind sees the member's
-// own parameter types (and its nb::arg names line up with them).
+// A Model builder bound through the registry check. `A...` is the member's own
+// parameter list, not a forwarding pack, so nanobind sees its types and nb::arg
+// names line up.
 template <typename R, typename... A>
 auto guarded(R (Model::*method)(A...), const char* what) {
     return [method, what](Model& self, A... args) -> R {
@@ -305,23 +275,15 @@ auto guarded(R (Model::*method)(A...), const char* what) {
     };
 }
 
-// An Expr as a Python object that keeps its model alive.
+// An Expr as a Python object that keeps its model alive: `Expr` holds a raw
+// `Model*`, else `x = cbls.Model().Float(0, 1)` reads freed heap. The patient is
+// the MODEL's Python object, found by pointer, not the operand a
+// `keep_alive<0, 1>` would name, which would chain every intermediate of
+// `s = s + x` alive. Called directly because the policy names only call
+// arguments: `nb::detail::keep_alive` up to 2.x, `nb::keep_alive_obj` from 3.1;
+// 3.0.x has neither, so `pyproject.toml` excludes it.
 //
-// `Expr` carries a raw `Model*`, and nothing tied the Python Model's lifetime to
-// it: `x = cbls.Model().Float(0, 1)` dropped the model at the end of the
-// statement and left `x.model`, and every operator on `x`, reading freed heap.
-// The patient is the MODEL's own Python object, found by pointer, rather than
-// the operand Expr a `keep_alive<0, 1>` policy would name: that would chain every
-// intermediate of `s = s + x` in a loop to the next, keeping the whole chain
-// alive for as long as the last one. Here each Expr pins the model and nothing
-// else. The function the public keep_alive call policy is implemented with is
-// called directly, since the policy itself can only name call arguments: it is
-// `nb::detail::keep_alive` up to nanobind 2.x and the public
-// `nb::keep_alive_obj` from 3.1. 3.0.x has neither (3.0 removed the first, 3.1
-// added the second), so `pyproject.toml` excludes it; a fresh venv resolves 3.1.
-//
-// A model with no Python object (none is reachable from Python today) is left
-// untied, which is what the plain binding did.
+// A model with no Python object (none is reachable from Python) stays untied.
 nb::object expr_object(const Expr& e) {
     const nb::object owner = nb::find(*e.model);
     nb::object out = nb::cast(e, nb::rv_policy::copy);
@@ -376,28 +338,21 @@ SearchResult solve_master_bound(
 // ---------------------------------------------------------------------------
 // Table-backed lambda_sum / pair_lambda_sum (#163).
 //
-// A Python functor handed to lambda_sum is called once per element per node
-// evaluation, each call re-acquiring the GIL -- which serialises every
-// portfolio worker on the interpreter. For a distance matrix, which is the
-// common case, the table is copied into C++ once at node creation and the
-// search then never calls back into Python at all.
-//
-// The copy is deliberate. Holding a reference to the caller's array would let
-// Python resize or free it under a running search, and `nb::ndarray` conversion
-// may hand back a temporary anyway.
+// A Python functor costs a GIL acquire per element per evaluation, serialising
+// every portfolio worker. A table is copied into C++ once at node creation, so
+// the search never calls into Python. Must be a copy: Python could resize or
+// free a referenced array under a running search, and `nb::ndarray` conversion
+// may hand back a temporary.
 
 namespace {
 
-// A float64, C-contiguous, CPU array of the given rank. Anything else nanobind
-// either converts (via the array library's own routines) or rejects with a
-// TypeError -- neither of which can reach the engine as a wrong-typed read.
+// A float64, C-contiguous, CPU array of the given rank; nanobind converts or
+// rejects (TypeError) anything else, so no wrong-typed read reaches the engine.
 using Table1D = nb::ndarray<const double, nb::ndim<1>, nb::c_contig, nb::device::cpu>;
 using Table2D = nb::ndarray<const double, nb::ndim<2>, nb::c_contig, nb::device::cpu>;
 
-// The universe a table must cover, and the check that the handle names a
-// structured variable at all. Both structured types draw their elements from
-// [0, universe_size) (#164) -- for a permutation List that is the same number
-// `max_size` gave, which is why this used to read the latter.
+// The universe a table must cover, after checking the handle names a
+// structured variable: List and Set elements lie in [0, universe_size) (#164).
 int32_t table_universe(const Model& model, int32_t list_var_id, const char* what) {
     if (list_var_id >= 0) {
         throw std::invalid_argument(std::string(what) +
@@ -428,13 +383,10 @@ std::vector<double> copy_matrix(const Table2D& a, int32_t n, const char* what) {
     return {a.data(), a.data() + (static_cast<size_t>(n) * static_cast<size_t>(n))};
 }
 
-// The element index is range-checked even though the table was sized against
-// the variable's universe at creation. `Variable.elements` is writable from
-// Python and `Model.restore_state` copies element vectors in wholesale, so an
-// out-of-universe element can reach here without passing any creation-time
-// check -- and an unchecked `tbl[e]` on that path is a heap read past the
-// vector, i.e. a segfault rather than an exception. One predictable compare
-// against an indirect call through std::function is not what this path costs.
+// The element must be range-checked despite the creation-time sizing:
+// `Variable.elements` is writable from Python and `Model.restore_state` copies
+// element vectors wholesale, so an unchecked `tbl[e]` can segfault. One
+// predictable compare is negligible beside the std::function call.
 std::function<double(int)> table_lookup(std::vector<double> tbl, int32_t n, std::string what) {
     return [tbl = std::move(tbl), n, what = std::move(what)](int e) -> double {
         if (e < 0 || e >= n) {
@@ -458,9 +410,8 @@ std::function<double(int, int)> matrix_lookup(std::vector<double> tbl, int32_t n
     };
 }
 
-// The extra-reading lambdas (#186) take their extras as a Python list. The
-// engine hands a view that is valid for the call only, so it is copied into the
-// list the Python callable receives -- a few doubles, next to a GIL acquire.
+// The extra-reading lambdas (#186) take their extras as a Python list, copied
+// from the engine's call-scoped view: a few doubles, beside a GIL acquire.
 using ExtraCallable1 = std::function<double(int, const std::vector<double>&)>;
 using ExtraCallable2 = std::function<double(int, int, const std::vector<double>&)>;
 
@@ -476,10 +427,9 @@ PairLambdaExtraFunc adapt_extra(ExtraCallable2 f) {
     };
 }
 
-// The two extra-lambda bindings, kept out of NB_MODULE's body. The null test is
-// the binding's: `adapt_extra` wraps an empty callable into a non-empty one, so
-// the builder's own test could not see it. nanobind refuses a Python `None`
-// before it gets here; this covers anything it would pass as empty.
+// The two extra-lambda bindings. The null test must be here: `adapt_extra`
+// wraps an empty callable into a non-empty one, hiding it from the builder's
+// test. Covers whatever nanobind passes as empty (it refuses `None` itself).
 int32_t lambda_sum_extra(Model& model, int32_t list_var, ExtraCallable1 func,
                          const std::vector<int32_t>& extra) {
     refuse_if_solving(model, "Model.lambda_sum");
@@ -499,8 +449,8 @@ int32_t pair_lambda_sum_extra(Model& model, int32_t list_var, ExtraCallable2 fun
     return model.pair_lambda_sum(list_var, adapt_extra(std::move(func)), mode, extra);
 }
 
-// `round(x)`. `round(x, n)` asks for decimal places, which the op does not
-// have, so it is refused rather than silently rounded to an integer.
+// `round(x)`. `round(x, n)` (decimal places, which the op lacks) is refused,
+// not silently rounded to an integer.
 nb::object round_dunder(const Expr& a, std::optional<int> ndigits) {
     if (ndigits.has_value()) {
         throw std::invalid_argument(
@@ -509,23 +459,19 @@ nb::object round_dunder(const Expr& a, std::optional<int> ndigits) {
     return build_expr(a, "Expr.__round__", [&] { return cbls::round(a); });
 }
 
-// `None` detaches; a token attaches a NON-OWNING view of it. The keep_alive on
-// each setter is what keeps the token alive for as long as the config naming it,
-// so this cannot hand the engine a dangling view (the #156 hazard class).
+// `None` detaches; a token attaches a NON-OWNING view. Each setter's
+// keep_alive must keep the token alive as long as the config, else the engine
+// reads a dangling view (#156).
 StopRef stop_ref_or_none(StopToken* token) {
     return token != nullptr ? StopRef(*token) : StopRef();
 }
 
-// Refuse a ViolationManager that is out of step with the model BEFORE LNS runs.
-// The engine refuses it too -- the FeasibilityJump the repair builds checks the
-// weight count -- but LNS destroys (moves a random share of the variables) before
-// it builds one, so the engine's refusal arrives after the assignment has
-// changed. fj_nl_initialize needs no such guard: it builds its FeasibilityJump
-// before it moves anything. The reachable case is a manager built before the
-// model gained its objective row (freeze(), or the first solve of a model with an
-// objective, appends it). The weights setter keeps `weights` the size of the
-// manager's own cache, so this one compare is the whole of what the engine's
-// check would find.
+// Refuse a ViolationManager out of step with the model BEFORE LNS runs: the
+// engine's check (in the repair's FeasibilityJump) comes after LNS has already
+// moved variables. fj_nl_initialize needs none (it builds its FJ first). The
+// reachable case is a manager built before the objective row (freeze() or
+// first solve). The weights setter keeps `weights` the cache's size, so this
+// compare is all the engine's check would find.
 void require_vm_in_step(const Model& model, const ViolationManager& vm, const char* what) {
     if (vm.weights.size() != model.constraint_ids().size()) {
         throw std::logic_error(std::string(what) +
@@ -616,8 +562,7 @@ void require_node_id(const Model& model, int32_t expr_id, const char* entry) {
     }
 }
 
-// `Move::changes` is an InlineVector (#274); Python sees a list of copies, as it
-// did through the std::vector caster before.
+// `Move::changes` is an InlineVector (#274); Python sees a list of copies.
 std::vector<Move::Change> move_changes(const Move& move) {
     return {move.changes.begin(), move.changes.end()};
 }
@@ -689,10 +634,8 @@ NB_MODULE(_cbls_core, m) {
         .value("LambdaExtra", NodeOp::LambdaExtra)
         .value("PairLambdaExtra", NodeOp::PairLambdaExtra);
 
-    // Variable (read-only access)
-    //
-    // Bound over `VariableRef`, not `Variable`: see the note there. Same
-    // attributes, same writability, each resolved through the model per access.
+    // Variable: bound over `VariableRef` (see there), each attribute resolved
+    // through the model per access; `value` and `elements` are writable.
     nb::class_<VariableRef>(m, "Variable")
         .def_prop_ro("id", [](const VariableRef& v) { return v.get().id; })
         .def_prop_ro("type", [](const VariableRef& v) { return v.get().type; })
@@ -713,9 +656,8 @@ NB_MODULE(_cbls_core, m) {
         .def_prop_ro("list_init", [](const VariableRef& v) { return v.get().list_init; })
         .def_prop_ro("partitioned", [](const VariableRef& v) { return v.get().partitioned; });
 
-    // ListInit — how initialisation fills a List (#164). Identity is the
-    // permutation `list_var(n)` builds and is the only one a fixed-length List
-    // may carry.
+    // ListInit — how initialisation fills a List (#164). Identity is what
+    // `list_var(n)` builds, the only one a fixed-length List may carry.
     nb::enum_<ListInit>(m, "ListInit")
         .value("Identity", ListInit::Identity)
         .value("Empty", ListInit::Empty)
@@ -726,20 +668,16 @@ NB_MODULE(_cbls_core, m) {
         .value("Exact", Cover::Exact)
         .value("AtMostOnce", Cover::AtMostOnce);
 
-    // ListPartition — read-only. Built by Model.add_list_partition, which is
-    // where every invariant is checked; handing Python a writable `list_ids`
-    // would let it name a variable that is not a List, or one already in another
-    // partition, with the engine indexing on it unchecked afterwards (#156).
+    // ListPartition — must stay read-only: Model.add_list_partition checks every
+    // invariant, and a writable `list_ids` could name a non-List or an already
+    // partitioned one, which the engine then indexes unchecked (#156).
     nb::class_<ListPartition>(m, "ListPartition")
         .def_ro("list_ids", &ListPartition::list_ids)
         .def_ro("cover", &ListPartition::cover)
         .def_ro("universe_size", &ListPartition::universe_size);
 
-    // ExprNode (read-only access)
-    //
-    // No `value`: a node's current value is per-model state that lives in the
-    // model, not in the node (#157). Read it with `Model.node_value(id)`, which
-    // is range-checked; the unchecked writer is deliberately not exposed.
+    // ExprNode (read-only). No `value`: it is per-model state (#157), read with
+    // the range-checked `Model.node_value(id)`; the unchecked writer is not bound.
     nb::class_<ExprNode>(m, "ExprNode").def_ro("id", &ExprNode::id).def_ro("op", &ExprNode::op);
 
     // TerminationReason — which budget ended the run.
@@ -749,18 +687,13 @@ NB_MODULE(_cbls_core, m) {
         .value("Feasible", TerminationReason::Feasible)
         .value("NoBudget", TerminationReason::NoBudget)
         .value("Stopped", TerminationReason::Stopped)
-        // The HOST cancelled through a StopToken, as against Stopped, which is a
-        // peer worker ending the run from inside the portfolio (#169).
+        // The host cancelled via a StopToken; Stopped is a peer worker (#169).
         .value("Cancelled", TerminationReason::Cancelled);
 
-    // StopToken -- cancellation from another Python thread.
-    //
-    // Bound before SearchConfig, which takes one. Held by the Python caller:
-    // SearchConfig.stop is a NON-OWNING view, so the binding below keeps the
-    // token alive for as long as the config that names it (nb::keep_alive), and
-    // a token that outlives neither is a dangling read rather than a Python
-    // error -- the #156 hazard class, which is why the lifetime is enforced here
-    // rather than documented and hoped for.
+    // StopToken -- cancellation from another Python thread. Bound before
+    // SearchConfig, which takes one. SearchConfig.stop is a NON-OWNING view, so
+    // its binding must keep the token alive with the config (nb::keep_alive),
+    // else the engine reads a dangling pointer (#156).
     nb::class_<StopToken>(m, "StopToken")
         .def(nb::init<>())
         .def("request", &StopToken::request,
@@ -773,11 +706,10 @@ NB_MODULE(_cbls_core, m) {
              "handing the same raised token to the next solve cancels that one too.")
         .def("requested", &StopToken::requested);
 
-    // StructuralSelection — how the structural batch turns a generator's
-    // candidates into a commit (#165). Auto is the default: GranularBest with a
-    // NeighbourList on the config, otherwise FirstImprovingSample, bit-for-bit
-    // the pre-#165 rule (#203). The others are opt-in. GranularBest needs a
-    // NeighbourList to differ from ViolationGuided.
+    // StructuralSelection — how the structural batch turns candidates into a
+    // commit (#165). Auto (default): GranularBest with a NeighbourList on the
+    // config, else FirstImprovingSample, the pre-#165 rule (#203). GranularBest
+    // needs a NeighbourList to differ from ViolationGuided.
     nb::enum_<StructuralSelection>(m, "StructuralSelection")
         .value("FirstImprovingSample", StructuralSelection::FirstImprovingSample)
         .value("BestOfSample", StructuralSelection::BestOfSample)
@@ -788,13 +720,10 @@ NB_MODULE(_cbls_core, m) {
     // NeighbourList — a granular neighbourhood (Toth & Vigo 2003) for the
     // built-in structural generators.
     //
-    // READ-ONLY from Python, deliberately. The engine indexes this list on the
-    // move-generation hot path without re-validating it, so a writable `offsets`
-    // or `ids` would be exactly the unguarded-index segfault class of #156. It
-    // is built once, validated once in the constructor, and then immutable.
-    // `MoveGenerator` itself is not bound at all: a Python-subclassable
-    // generator needs the trampoline/GIL machinery of #132 and would sit on the
-    // hot path, so it is deliberately a follow-up.
+    // Must stay READ-ONLY: validated once in the constructor, then indexed
+    // unchecked on the hot path, so a writable `offsets`/`ids` is a segfault
+    // (#156). `MoveGenerator` is not bound: a Python subclass needs #132's
+    // trampoline/GIL machinery and would sit on the hot path.
     nb::class_<NeighbourList>(m, "NeighbourList")
         .def(nb::init<>())
         .def(nb::init<const std::vector<std::vector<int32_t>>&>(), nb::arg("rows"),
@@ -822,17 +751,15 @@ NB_MODULE(_cbls_core, m) {
           "this is a setup-time convenience for a universe of a few thousand. Build the rows "
           "yourself and use NeighbourList(rows) for anything larger.");
 
-    // BatchKind -- which kind of batch the outer loop ran. Bound so a Python
-    // reader of SearchCounters can name the buckets it is reading.
+    // BatchKind -- which kind of batch the outer loop ran; names
+    // SearchCounters' buckets.
     nb::enum_<BatchKind>(m, "BatchKind")
         .value("FeasibilityJump", BatchKind::FeasibilityJump)
         .value("NoveltyJump", BatchKind::NoveltyJump)
         .value("Structural", BatchKind::Structural);
 
-    // SearchCounters and its per-generator rows (#169). Read-only throughout:
-    // these are a report about a finished run, and a writable field would be a
-    // way to falsify it rather than a feature. Registered before SearchResult,
-    // which exposes one.
+    // SearchCounters and its per-generator rows (#169): read-only, a report on
+    // a finished run. Registered before SearchResult, which exposes one.
     nb::class_<GeneratorCounters>(m, "GeneratorCounters")
         .def_ro("name", &GeneratorCounters::name)
         .def_ro("moves_tried", &GeneratorCounters::moves_tried)
@@ -850,8 +777,8 @@ NB_MODULE(_cbls_core, m) {
         .def_ro("structural_moves_accepted", &SearchCounters::structural_moves_accepted)
         .def_ro("by_generator", &SearchCounters::by_generator)
         .def_ro("inner_solver_calls", &SearchCounters::inner_solver_calls)
-        // 0.0 on a run with no wall-clock budget, by design -- see
-        // include/cbls/counters.h. The call count above is always filled.
+        // 0.0 without a wall-clock budget (include/cbls/counters.h); the call
+        // count above is always filled.
         .def_ro("inner_solver_seconds", &SearchCounters::inner_solver_seconds)
         .def_ro("portfolio_restarts", &SearchCounters::portfolio_restarts)
         .def_ro("cone_cache_walks", &SearchCounters::cone_cache_walks)
@@ -877,16 +804,12 @@ NB_MODULE(_cbls_core, m) {
         .def_ro("time_seconds", &SearchResult::time_seconds)
         .def_ro("termination", &SearchResult::termination)
         // Portfolio worker accounting (#170); see SearchResult::workers_completed.
-        // `worker_failures` is a fresh list on each read, but its ELEMENTS are
-        // references into this result (`def_ro` is reference_internal), so
-        // `r.worker_failures[0] is r.worker_failures[0]`. Safe: the result keeps
-        // the vector alive, and nothing reachable from Python can grow it.
+        // `worker_failures` elements are reference_internal into this result
+        // (`def_ro`): safe only because nothing reachable from Python grows it.
         .def_ro("workers_launched", &SearchResult::workers_launched)
         .def_ro("workers_completed", &SearchResult::workers_completed)
         .def_ro("worker_failures", &SearchResult::worker_failures)
-        // By reference to the result that owns it: a SearchCounters is a plain
-        // aggregate with a vector in it, and copying it per attribute read would
-        // be a surprise on a field a caller reads several times.
+        // By reference, not copied per read: an aggregate holding a vector.
         .def_ro("counters", &SearchResult::counters, nb::rv_policy::reference_internal);
 
     // Model
@@ -898,9 +821,8 @@ NB_MODULE(_cbls_core, m) {
              nb::arg("name") = "")
         .def("float_var", guarded(&Model::float_var, "Model.float_var"), nb::arg("lb"),
              nb::arg("ub"), nb::arg("name") = "")
-        // Two overloads, tried in order: the permutation form first, so
-        // `list_var(n)` and `list_var(n, "name")` keep resolving to it exactly as
-        // they did before #164.
+        // Overloads are tried in order: the permutation form must come first so
+        // `list_var(n)` and `list_var(n, "name")` resolve to it (#164).
         .def(
             "list_var",
             guarded(nb::overload_cast<int, const std::string&>(&Model::list_var), "Model.list_var"),
@@ -959,10 +881,9 @@ NB_MODULE(_cbls_core, m) {
         .def("if_then_else", guarded(&Model::if_then_else, "Model.if_then_else"))
         .def("at", guarded(&Model::at, "Model.at"))
         .def("count", guarded(&Model::count, "Model.count"))
-        // #186. The C++ builders validate everything a Python caller can get
-        // wrong -- an empty or ragged table, a bogus handle, a List/Set where a
-        // scalar is read -- before a node exists, so nothing reaches the engine
-        // that it would index past. The table is copied into the model.
+        // #186. The C++ builders refuse an empty or ragged table, a bogus handle
+        // or a List/Set index before a node exists, so the engine never indexes
+        // past. The table is copied into the model.
         .def("element",
              guarded(nb::overload_cast<const std::vector<double>&, int32_t>(&Model::element),
                      "Model.element"),
@@ -987,11 +908,9 @@ NB_MODULE(_cbls_core, m) {
             "lambda_sum",
             [](Model& model, int32_t list_var, std::function<double(int)> func) {
                 refuse_if_solving(model, "Model.lambda_sum");
-                // Held to the same handle rule as lambda_table_sum and the pair
-                // forms: `wrap()` alone accepts a node handle or a scalar
-                // variable and builds a node that evaluates to 0.0 for ever,
-                // which from Python -- where the handle is a bare int -- reads
-                // as the model silently ignoring the term.
+                // Must check the handle like lambda_table_sum: `wrap()` accepts
+                // a node or scalar handle and builds a node stuck at 0.0, which
+                // silently drops the term.
                 (void)table_universe(model, list_var, "lambda_sum");
                 return model.lambda_sum(list_var, std::move(func));
             },
@@ -1017,11 +936,7 @@ NB_MODULE(_cbls_core, m) {
                std::optional<std::function<double(int)>> head,
                std::optional<std::function<double(int)>> tail) {
                 refuse_if_solving(model, "Model.pair_lambda_sum");
-                // Held to the same handle rule as pair_table_sum. `wrap()`
-                // alone accepts a node handle or a scalar variable and builds
-                // a node that then evaluates to 0.0 for ever, which from
-                // Python -- where the handle is a bare int -- reads as the
-                // model silently ignoring the term.
+                // Same handle check as lambda_sum, for the same reason.
                 (void)table_universe(model, list_var, "pair_lambda_sum");
                 return model.pair_lambda_sum(
                     list_var, std::move(func), head ? std::move(*head) : nullptr,
@@ -1044,8 +959,8 @@ NB_MODULE(_cbls_core, m) {
                     }
                     return table_lookup(copy_vector(*t, n, what), n, what);
                 };
-                // Both endpoints are validated BEFORE the node is made, so a
-                // bad `tail` cannot leave a half-registered node behind.
+                // Both endpoints validated BEFORE the node is made, so a bad
+                // `tail` cannot leave a half-registered node.
                 auto head_func = endpoint(head, "pair_table_sum head");
                 auto tail_func = endpoint(tail, "pair_table_sum tail");
                 return model.pair_lambda_sum(
@@ -1056,12 +971,9 @@ NB_MODULE(_cbls_core, m) {
             },
             nb::arg("list_var"), nb::arg("dist"), nb::arg("cyclic") = false,
             nb::arg("head") = nb::none(), nb::arg("tail") = nb::none(), kPairTableSumDoc)
-        // Constraint and objective, both overload sets. nb::overload_cast picks
-        // the member by parameter list; a static_cast to the member-pointer type
-        // does the same job but reads to readability-redundant-casting as a cast
-        // to the type the expression already has -- the check resolves the
-        // overload *using* the cast and then calls it redundant. Say which
-        // overload is wanted instead of casting to say it.
+        // Constraint and objective, both overload sets: nb::overload_cast, since
+        // a static_cast to the member-pointer type trips
+        // readability-redundant-casting.
         .def("add_constraint",
              guarded(nb::overload_cast<int32_t>(&Model::add_constraint), "Model.add_constraint"))
         .def("minimize", guarded(nb::overload_cast<int32_t>(&Model::minimize), "Model.minimize"))
@@ -1076,25 +988,19 @@ NB_MODULE(_cbls_core, m) {
              nb::arg("var_ids"), nb::arg("min_block_on") = 1, nb::arg("min_block_off") = 1)
         .def("var_sequence_for", &Model::var_sequence_for)
         .def("close", guarded(&Model::close, "Model.close"))
-        // Freezing makes the structure immutable and shareable. It is what lets a
-        // model_factory hand the SAME model to every worker without duplicating
-        // the DAG: nanobind copies the returned object, and copying a frozen model
-        // shares its structure (#157). A structural call on a frozen model raises
-        // RuntimeError rather than corrupting a peer: the refusal is a
-        // std::logic_error, which nanobind has no mapping for and so translates to
-        // RuntimeError -- see tests/python/test_model_freeze.py.
+        // Freezing makes the structure immutable and shareable: a model_factory
+        // can return the SAME model to every worker, since nanobind copies it and
+        // a frozen copy shares structure (#157). A structural call on it then
+        // raises RuntimeError (unmapped std::logic_error; test_model_freeze.py).
         .def("freeze", guarded(&Model::freeze, "Model.freeze"),
              nb::arg("cone_cache_bytes") = Model::kDefaultConeCacheBytes)
         .def("is_frozen", &Model::is_frozen)
         // The cone cache's size (#271): read-only counts, no handle into it.
         .def("num_cached_cones", &Model::num_cached_cones)
         .def("cone_cache_bytes", &Model::cone_cache_bytes)
-        // Accessors
-        // NOT by reference into the model's arrays, which a builder before
-        // close() reallocates (#167's review found a held var_mut() writing into
-        // freed heap). var()/var_mut() return a
-        // VariableRef -- see there -- and node() returns a copy of an ExprNode,
-        // whose two exposed fields are immutable once the node exists.
+        // Accessors: never by reference into the model's arrays, which a builder
+        // before close() reallocates (#167). var()/var_mut() return a
+        // VariableRef; node() a copy, whose two exposed fields never change.
         .def("var", &variable_ref, nb::keep_alive<0, 1>(), kModelVarDoc)
         .def("var_mut", &variable_ref, nb::keep_alive<0, 1>(), kModelVarDoc)
         .def("node", &Model::node, nb::rv_policy::copy, kModelNodeDoc)
@@ -1106,8 +1012,7 @@ NB_MODULE(_cbls_core, m) {
         .def("num_user_constraints", &Model::num_user_constraints)
         .def("num_domain_rows", &Model::num_domain_rows)
         .def("is_domain_node", &Model::is_domain_node, nb::arg("id"))
-        // A view into the model's flat G_v array; copied out to a list, so the
-        // Python side holds nothing that a later rebuild could invalidate.
+        // Copied out of the flat G_v view, so a later rebuild cannot invalidate it.
         .def(
             "constraints_of_var",
             [](const Model& m, int32_t var_id) {
@@ -1141,10 +1046,8 @@ NB_MODULE(_cbls_core, m) {
              nb::arg("max_size") = -1, nb::arg("name") = "")
         .def("Constant", guarded_expr(&Model::Constant, "Model.Constant"));
 
-    // Expr
-    // Every Expr-returning entry point below goes through build_expr: refused while
-    // its model is being solved (each calls a Model builder), and tied to that
-    // model on the way out so the Expr cannot outlive it (see expr_object).
+    // Expr. Every Expr-returning entry point goes through build_expr: refused
+    // while its model is solved, and tied to the model (see expr_object).
     nb::class_<Expr>(m, "Expr")
         .def_ro("model", &Expr::model)
         .def_ro("handle", &Expr::handle)
@@ -1330,9 +1233,8 @@ NB_MODULE(_cbls_core, m) {
 
     // ViolationManager
     nb::class_<ViolationManager>(m, "ViolationManager")
-        // keep_alive<1, 2>: the manager holds a Model& and reads its arrays on
-        // every call, so it must not outlive the Python Model -- the Expr.model
-        // hazard, on a sibling class.
+        // keep_alive<1, 2>: the manager holds a Model& and reads it on every
+        // call, so it must not outlive the Python Model.
         .def(nb::init<Model&>(), nb::keep_alive<1, 2>())
         .def("constraint_violation", &ViolationManager::constraint_violation)
         .def("total_violation", &ViolationManager::total_violation)
@@ -1345,12 +1247,10 @@ NB_MODULE(_cbls_core, m) {
         .def("weighted_violation_delta", &ViolationManager::weighted_violation_delta,
              nb::arg("var_id"), nb::arg("j"))
         .def("invalidate_cache", &ViolationManager::invalidate_cache)
-        // `weights` is indexed by constraint index with no bounds check on the
-        // hot path (weighted_violation_delta, total_violation), so a short list
-        // assigned from Python read past its end. The length rule is enforced here
-        // rather than per read, against the manager's OWN size. A manager out of
-        // step with its MODEL (built before the objective row) is refused by the
-        // manager's own reads instead.
+        // `weights` is indexed unchecked on the hot path (weighted_violation_delta,
+        // total_violation), so the setter must enforce the manager's OWN length,
+        // else a short list reads past its end. A manager out of step with its
+        // MODEL is refused by its own reads instead.
         .def_prop_rw(
             "weights", [](ViolationManager& self) -> std::vector<double>& { return self.weights; },
             [](ViolationManager& self, std::vector<double> w) {
@@ -1371,12 +1271,9 @@ NB_MODULE(_cbls_core, m) {
         .def("random", &RNG::random)
         .def("seed", &RNG::seed);
 
-    // ElementEdit — a structured change as POSITIONS rather than as the whole
-    // element vector (#164). Read-only: an edit is applied to a variable's
-    // elements unchecked-by-any-type-system from here, and a hand-built one with
-    // a nonsense position would be the #156 hazard again. Build a change with
-    // the `Move` the generators hand out, or with `replacement`, which is
-    // length-checked nowhere but also indexes nothing.
+    // ElementEdit — a structured change as POSITIONS, not the whole element
+    // vector (#164). Must stay read-only: edits are applied unchecked, so a
+    // hand-built bad position is a segfault (#156). Edits come from the engine.
     nb::enum_<EditKind>(m, "EditKind")
         .value("None_", EditKind::None)
         .value("Replace", EditKind::Replace)
@@ -1394,15 +1291,10 @@ NB_MODULE(_cbls_core, m) {
         .def_ro("length", &ElementEdit::length)
         .def_ro("element", &ElementEdit::element);
 
-    // Move::Change
-    // A structured change is READ-ONLY from Python, by design (#164). `main`
-    // bound `new_elements` as `def_rw`, which let Python hand the engine an
-    // arbitrary element vector -- the #156 class, since the hot paths index by
-    // element id without bounds tests. The positional form is exposed for
-    // reading and built by the engine; a scalar change is still constructible,
-    // because `var_id` and `new_value` index nothing. Nothing in the tree
-    // constructs a structured change from Python, and the way to propose one is
-    // a C++ `MoveGenerator`, not a hand-built edit.
+    // Move::Change. A structured change must stay READ-ONLY from Python (#164):
+    // the hot paths index by element id unchecked, so a writable element vector
+    // is a segfault (#156). A scalar change stays constructible (`var_id`,
+    // `new_value` index nothing); structured ones come from a C++ MoveGenerator.
     nb::class_<Move::Change>(m, "MoveChange")
         .def(nb::init<>())
         .def_rw("var_id", &Move::Change::var_id)
@@ -1430,8 +1322,8 @@ NB_MODULE(_cbls_core, m) {
     // Move
     nb::class_<Move>(m, "Move")
         .def(nb::init<>())
-        // `move_type` is a view onto a static name, so it is READ-ONLY: a
-        // string set from Python would not outlive the call that set it.
+        // `move_type` is a view onto a static name, so must stay READ-ONLY: a
+        // string set from Python would not outlive the call.
         .def_prop_rw("changes", &move_changes, &set_move_changes)
         .def_prop_ro("move_type", [](const Move& move) { return std::string(move.move_type); })
         .def_rw("delta_F", &Move::delta_F);
@@ -1488,8 +1380,8 @@ NB_MODULE(_cbls_core, m) {
         // #179: tighten every worker's objective bound to the portfolio's best at
         // each batch boundary. False is the A/B control arm.
         .def_rw("share_objective_bound", &ParallelConfig::share_objective_bound)
-        // Same non-owning-view rule, and the same keep_alive, as
-        // SearchConfig.stop below. OR-ed with that one rather than replacing it.
+        // Same non-owning view and keep_alive as SearchConfig.stop; OR-ed with
+        // it, not replacing it.
         .def_prop_rw(
             "stop", [](const ParallelConfig& pc) { return pc.stop.attached(); },
             [](ParallelConfig& pc, StopToken* token) { pc.stop = stop_ref_or_none(token); },
@@ -1499,9 +1391,8 @@ NB_MODULE(_cbls_core, m) {
             "side holds a view, not the object. Same accumulating keep-alive as\n"
             "SearchConfig.stop -- see its docstring.");
 
-    // SearchConfig — must be registered before ParallelSearch / solve, which
-    // use SearchConfig{} as a default argument (nanobind casts defaults to
-    // Python eagerly at .def() time; an unregistered type throws std::bad_cast).
+    // SearchConfig — must be registered before ParallelSearch / solve, whose
+    // SearchConfig{} default nanobind casts at .def() time (else std::bad_cast).
     nb::class_<SearchConfig>(m, "SearchConfig")
         .def(nb::init<>())
         .def_rw("skip_init", &SearchConfig::skip_init)
@@ -1509,17 +1400,15 @@ NB_MODULE(_cbls_core, m) {
         .def_rw("use_fj", &SearchConfig::use_fj)
         .def_rw("lns_interval", &SearchConfig::lns_interval)
         .def_rw("structural_batch_probability", &SearchConfig::structural_batch_probability)
-        // Novelty Jump batches (#209). Plain scalars, read once per draw of the
-        // batch kind, so a bad value cannot reach an unchecked index.
+        // Novelty Jump batches (#209): plain scalars, read once per batch-kind
+        // draw, so a bad value cannot reach an unchecked index.
         .def_rw("use_compound_moves", &SearchConfig::use_compound_moves)
         .def_rw("novelty_jump_probability", &SearchConfig::novelty_jump_probability)
         .def_rw("structural_selection", &SearchConfig::structural_selection)
         .def_rw("structural_sample_size", &SearchConfig::structural_sample_size)
-        // Copies in and out rather than sharing the C++ shared_ptr: a
-        // NeighbourList is immutable once built, so a copy is the same list, and
-        // handing Python a live handle to the object every worker reads is the
-        // aliasing this type's read-only binding exists to avoid. `None` clears
-        // it, which is the default and the pre-#165 uniform draw.
+        // Copied in and out, never the shared_ptr: Python must not alias the
+        // list every worker reads, and an immutable copy is the same list.
+        // `None` (default) clears it: the pre-#165 uniform draw.
         .def_prop_rw(
             "structural_neighbours",
             [](const SearchConfig& c) -> std::optional<NeighbourList> {
@@ -1535,17 +1424,12 @@ NB_MODULE(_cbls_core, m) {
         .def_rw("feasibility_tolerance", &SearchConfig::feasibility_tolerance)
         .def_rw("cone_cache_bytes", &SearchConfig::cone_cache_bytes)
         .def_rw("fj_objective_tie_break", &SearchConfig::fj_objective_tie_break)
-        // A NON-OWNING view of a StopToken the Python caller holds (#169). The
-        // keep_alive is what makes that safe: it ties the token's lifetime to
-        // this config, so `cbls.solve(m, cfg)` cannot be reading a token Python
-        // already collected. Reads back as a bool for the same reason
-        // ParallelConfig.stop does -- there is no object on the C++ side to hand
-        // back, only a pointer and a thunk.
+        // A NON-OWNING view of the caller's StopToken (#169); the keep_alive ties
+        // the token to this config so a solve never reads a collected one. Reads
+        // back as a bool: C++ holds only a pointer and a thunk.
         //
-        // Tracer is deliberately NOT bound: it is a C++ extension point whose
-        // events arrive per batch on a worker thread, so a Python subclass would
-        // need the trampoline-plus-GIL machinery of #132 and would serialise
-        // every portfolio worker on the interpreter. #169 scopes it to C++.
+        // Tracer is not bound (#169): its per-batch worker-thread events would
+        // need #132's trampoline-plus-GIL and serialise every worker.
         .def_prop_rw(
             "stop", [](const SearchConfig& c) { return c.stop.attached(); },
             [](SearchConfig& c, StopToken* token) { c.stop = stop_ref_or_none(token); },
@@ -1568,10 +1452,9 @@ NB_MODULE(_cbls_core, m) {
             static_cast<SearchResult (ParallelSearch::*)(std::function<Model()>, double, uint64_t)>(
                 &ParallelSearch::solve),
             nb::arg("model_factory"), nb::arg("time_limit") = 10.0, nb::arg("seed") = 42,
-            // Without this the caller keeps the GIL for the whole C++ call,
-            // including the worker join, while nanobind's std::function caster
-            // acquires the GIL inside every worker to invoke the factory --
-            // a deadlock that made this method uncallable from Python (#128).
+            // Must release the GIL: the std::function caster acquires it in
+            // every worker to call the factory, so holding it through the join
+            // deadlocks (#128).
             nb::call_guard<nb::gil_scoped_release>(), kParallelSolveDoc)
         .def("solve_parallel",
              static_cast<SearchResult (ParallelSearch::*)(
@@ -1583,15 +1466,13 @@ NB_MODULE(_cbls_core, m) {
              nb::arg("config") = SearchConfig{}, nb::arg("hook_factory") = nb::none(),
              nb::arg("lns_factory") = nb::none(), nb::arg("callback") = nullptr,
              nb::arg("par_config") = ParallelConfig{},
-             // Same reason as `solve` above, plus two more callables that
-             // acquire the GIL from a worker thread: the hook and LNS
-             // factories. A None default reaches the std::function caster as an
-             // empty function, which src/pool.cpp skips.
+             // As `solve` above; the hook and LNS factories also take the GIL
+             // on workers. A None default arrives as an empty function, which
+             // src/pool.cpp skips.
              nb::call_guard<nb::gil_scoped_release>(), kParallelSolveDoc)
-        // The `Model& master` overload (#157). Bound through a wrapper rather than a
-        // member pointer for the same reason `solve` is: the master is registered
-        // in SolvingModels WHILE THE GIL IS HELD and only then released, so no
-        // other Python thread can slip a structural write in between.
+        // The `Model& master` overload (#157), wrapped like `solve`: the master
+        // must be registered WHILE THE GIL IS HELD, then released, so no
+        // structural write slips in between.
         .def(
             "solve_master",
             [](ParallelSearch& self, Model& master, double time_limit, uint64_t seed,
@@ -1609,8 +1490,8 @@ NB_MODULE(_cbls_core, m) {
             nb::arg("par_config") = ParallelConfig{}, kSolveMasterDoc);
 
     // Free functions
-    // Exposed so the "adjacent base seeds do not share worker streams" property
-    // can be checked directly rather than inferred from two search trajectories.
+    // Exposed so "adjacent base seeds do not share worker streams" is testable
+    // directly.
     m.def("portfolio_worker_seed", &portfolio_worker_seed, nb::arg("base_seed"), nb::arg("worker"),
           nb::arg("restart"),
           "RNG seed for one portfolio worker's one run: a splitmix64 finalizer over "
@@ -1621,9 +1502,9 @@ NB_MODULE(_cbls_core, m) {
     m.def("delta_evaluate", [](Model& model, const std::set<int32_t>& changed) {
         return delta_evaluate(model, changed);
     });
-    // The engine indexes its adjoint and cone buffers by `expr_id` unchecked (a
-    // hot path), so a variable handle or a stale id from Python would write out
-    // of bounds. Checked here, where the value is handed over (#156's rule).
+    // The engine indexes its adjoint and cone buffers by `expr_id` unchecked, so
+    // it must be checked at the hand-over, else a bad id writes out of bounds
+    // (#156).
     m.def("compute_partial", [](const Model& model, int32_t expr_id, int32_t var_id) {
         require_node_id(model, expr_id, "compute_partial");
         return compute_partial(model, expr_id, var_id);
@@ -1632,20 +1513,16 @@ NB_MODULE(_cbls_core, m) {
         require_node_id(model, expr_id, "compute_all_partials");
         return compute_all_partials(model, expr_id);
     });
-    // The vector-returning overload, explicitly: #165 added an appending one
-    // that also takes a NeighbourList, and an unqualified address-of is then
-    // ambiguous. Python keeps the simple form.
+    // A lambda selecting the vector-returning overload: #165's appending one
+    // makes `&generate_standard_moves` ambiguous.
     m.def("generate_standard_moves",
           [](const VariableRef& var, RNG& rng) { return generate_standard_moves(var.get(), rng); });
     m.def("apply_move", &apply_move);
     m.def("save_move_values", &save_move_values);
     m.def("undo_move", &undo_move);
-    // InnerSolverHook + FloatIntensifyHook
-    // Named rather than a discarded temporary: nb::class_ registers the type
-    // in its constructor, so the object exists only for that side effect and
-    // an unnamed one reads as a mistake (bugprone-unused-raii). The base has
-    // no members or methods to expose -- FloatIntensifyHook below is what
-    // Python instantiates; this exists so nanobind knows the inheritance.
+    // InnerSolverHook + FloatIntensifyHook. The base is registered only so
+    // nanobind knows the inheritance; named, not a discarded temporary, which
+    // bugprone-unused-raii flags.
     nb::class_<InnerSolverHook> inner_solver_hook(m, "InnerSolverHook");
 
     nb::class_<FloatIntensifyHook, InnerSolverHook>(m, "FloatIntensifyHook")
@@ -1672,30 +1549,18 @@ NB_MODULE(_cbls_core, m) {
         .def("on_progress",
              [](SolveCallback& self, const SolveProgress& p) { self.on_progress(p); });
 
-    // `hook` and `lns` take the same narrowing as solve_parallel's factories:
-    // neither InnerSolverHook nor LNS has a trampoline, so a Python subclass's
-    // override of `solve` or `destroy_repair` is never dispatched to from the
-    // search. Passing a configured FloatIntensifyHook or LNS works; passing a
-    // Python implementation of either silently runs the base. Tracked as #132 --
-    // this docstring is the note a caller of `solve` sees, since the fuller
-    // explanation lives on solve_parallel.
-    // Wrapped rather than bound directly: cbls::solve takes a trailing
-    // SearchCoordination*, which is ParallelSearch's private cross-worker
-    // channel and has no meaning to a Python caller. Dropping it here keeps the
-    // Python signature what it was.
+    // `hook` and `lns` have no trampoline (#132): a Python subclass's `solve` /
+    // `destroy_repair` override is never dispatched; the base runs. Wrapped to
+    // drop cbls::solve's trailing SearchCoordination*, ParallelSearch's private
+    // cross-worker channel.
     m.def(
         "solve",
         [](Model& model, double time_limit, uint64_t seed, bool use_fj, InnerSolverHook* hook,
            LNS* lns, int lns_interval, SolveCallback* callback, const SearchConfig& config) {
-            // Registered WHILE THE GIL IS HELD, and only then released. Released
-            // first (as a call_guard did), there was a window in which this solve
-            // was already running on the model but not yet registered, and a
-            // builder call from another thread could pass the check inside it.
-            // refuse_if_solving runs holding the GIL, so with registration under
-            // it too the check and the registration cannot interleave.
-            // A solve is itself a structural writer (the objective row), so a
-            // second one on the same model -- nested from a callback, or from
-            // another thread -- is refused like any other.
+            // Must register WHILE THE GIL IS HELD, then release (not a
+            // call_guard), else a builder on another thread can pass the check
+            // before registration. A solve is a structural writer (objective
+            // row), so a second, nested or concurrent, is refused too.
             refuse_if_solving(model, "cbls.solve");
             const SolvingScope solving(model);  // refuses structural writes until this returns
             const nb::gil_scoped_release release;
@@ -1706,35 +1571,13 @@ NB_MODULE(_cbls_core, m) {
         nb::arg("use_fj") = true, nb::arg("hook") = nullptr, nb::arg("lns") = nullptr,
         nb::arg("lns_interval") = 3, nb::arg("callback") = nullptr,
         nb::arg("config") = SearchConfig{},
-        // THE GIL IS RELEASED FOR THE WHOLE SEARCH (#128's fix, extended to this
-        // entry point by #169) -- by the gil_scoped_release in the body, just
-        // after the SolvingScope registers, not by a call_guard (see there). Without it
-        // `config.stop` is unusable: a Python thread that wants to call StopToken.request()
-        // mid-solve cannot run at all while this one holds the interpreter, so the only reachable
-        // stop would be one raised before the call.
-        //
-        // Everything this call can reach back into Python re-acquires the GIL
-        // for itself: a SolveCallback subclass through nanobind's trampoline,
-        // and a lambda_sum/pair_lambda_sum functor through the std::function
-        // caster. Both did so already -- they had to, being callable from
-        // portfolio worker threads -- so releasing here adds no new requirement.
-        // A raising on_progress still propagates out of this call unchanged;
-        // nb::python_error re-acquires the GIL in its own destructor (see the
-        // note above PySolveCallback).
-        //
-        // TWO CONSEQUENCES, both stated in the docstring below rather than left to
-        // be rediscovered:
-        //
-        //  - another Python thread can now reach the `model` WHILE the search is
-        //    running. It writes variables and node values throughout and locks
-        //    nothing, so reading `m.var(i).value` or `m.copy_state()` from another
-        //    thread is a data race -- the same hazard solve_parallel's docstring
-        //    already carries for its master model.
-        //  - a raw Python callable handed to lambda_sum/pair_lambda_sum now pays a
-        //    real gil_scoped_acquire per evaluation, where it used to re-enter a
-        //    GIL the caller already held. tests/python/test_pair_lambda.py already
-        //    says to use the *_table_sum forms for anything hot; this makes that
-        //    advice cost more to ignore.
+        // THE GIL IS RELEASED FOR THE WHOLE SEARCH (#128, #169), in the body after
+        // registration; else no thread could call StopToken.request() mid-solve.
+        // Every path back into Python re-acquires it (SolveCallback trampoline,
+        // the lambda functors' std::function caster, python_error's destructor;
+        // see PySolveCallback). Consequences, in the docstring: reading the model
+        // from another thread mid-search is a data race, and a raw Python lambda
+        // pays a GIL acquire per evaluation.
         "Single-threaded solve.\n"
         "\n"
         "The GIL is RELEASED for the whole C++ call (#169). That is what lets another "

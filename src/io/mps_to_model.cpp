@@ -17,12 +17,9 @@ namespace cbls {
 
 namespace {
 
-// Supply a finite bound where the column has none, so the engine has a box to
-// search. This is the *fallback*, reached only where propagation derived no
-// implied bound: unlike an implied bound it is not entailed by the constraints,
-// so it can cut off feasible points. A bound that is finite — declared in the
-// file or derived by propagation — is therefore honoured as written, however
-// wide; only "no bound" is replaced.
+// Supply a finite bound only where the column has none (NaN or infinite), so
+// the engine has a box. Not entailed by the constraints, so it can cut off
+// feasible points: any finite bound, declared or propagated, is kept as is.
 double clamp_lo(double lb, double inf_clamp) {
     return (std::isnan(lb) || is_unbounded_below(lb)) ? -inf_clamp : lb;
 }
@@ -30,10 +27,8 @@ double clamp_hi(double ub, double inf_clamp) {
     return (std::isnan(ub) || is_unbounded_above(ub)) ? inf_clamp : ub;
 }
 
-/// A row body's two-sided bounds. Returned as a pair rather than written
-/// through two `double&` out-parameters: `lo` and `hi` have the same type, so a
-/// transposed argument list is silently accepted by the compiler and inverts the
-/// constraint's sense. Named fields make that transposition unrepresentable.
+/// A row body's two-sided bounds, as named fields rather than two `double&`
+/// out-parameters, whose silent transposition would invert the row's sense.
 struct RowBounds {
     double lo = -kMpsInf;
     double hi = kMpsInf;
@@ -62,9 +57,8 @@ RowBounds row_bounds(const MpsRow& r) {
 }
 
 /// The constraint matrix in CSR form, plus the objective row's nonzero indices.
-/// The objective row (`row_idx == -1`) is deliberately outside the CSR: it
-/// carries no bounds, so propagation must not see it, and its terms are gathered
-/// separately when the objective expression is built.
+/// The objective row (`row_idx == -1`) stays outside the CSR: it has no bounds,
+/// so propagation must not see it.
 struct RowMatrix {
     std::vector<int32_t> row_start;  ///< n_rows + 1 offsets into cols/coefs
     std::vector<int32_t> cols;
@@ -72,10 +66,8 @@ struct RowMatrix {
     std::vector<int> obj_nz;  ///< indices into prob.nonzeros of the objective row
 };
 
-/// Group the flat MPS nonzero triplets by row. One flat CSR rather than a
-/// vector-per-row: it is the single structure both the expression builder and
-/// bound propagation read, so the matrix is laid out once instead of being
-/// grouped once and copied again.
+/// Group the flat MPS nonzero triplets by row into one flat CSR, the single
+/// layout both the expression builder and bound propagation read (no copy).
 RowMatrix build_row_matrix(const MpsProblem& prob, int n_rows) {
     RowMatrix mat;
     mat.row_start.assign(static_cast<std::size_t>(n_rows) + 1, 0);
@@ -104,9 +96,8 @@ RowMatrix build_row_matrix(const MpsProblem& prob, int n_rows) {
     return mat;
 }
 
-/// Derive implied column bounds from the rows. The rows are handed to
-/// propagation as *views* into the caller's CSR arrays: the constraint matrix of
-/// a large MIP runs to hundreds of megabytes and must not be duplicated here.
+/// Derive implied column bounds from the rows, passed as *views* into the CSR:
+/// a large MIP's matrix runs to hundreds of megabytes and must not be copied.
 BoundPropagationStats tighten_column_bounds(const MpsProblem& prob, const RowMatrix& mat,
                                             const MpsToModelOptions& opts, std::vector<double>& lb,
                                             std::vector<double>& ub,
@@ -146,11 +137,9 @@ ColumnBoxes column_boxes(const MpsProblem& prob, const RowMatrix& mat,
     box.ub.resize(n_cols);
     box.integral.resize(n_cols);
     for (std::size_t j = 0; j < n_cols; ++j) {
-        // A NaN bound is "no bound", which is how clamp_lo/clamp_hi already
-        // read it. Sanitising here keeps those guards reachable and keeps the two
-        // adapters symmetric — without it, `propagate_bounds` rejects the NaN and
-        // the same file would build under --no-propagate-bounds but not by
-        // default, a divergence that has nothing to do with propagation.
+        // NaN means "no bound", as clamp_lo/clamp_hi read it. Must be mapped
+        // here, else `propagate_bounds` rejects it and the file builds only
+        // under --no-propagate-bounds.
         box.lb[j] = std::isnan(prob.vars[j].lb) ? -kMpsInf : prob.vars[j].lb;
         box.ub[j] = std::isnan(prob.vars[j].ub) ? kMpsInf : prob.vars[j].ub;
         box.integral[j] = prob.vars[j].kind == MpsVarKind::Continuous ? 0 : 1;
@@ -162,14 +151,11 @@ ColumnBoxes column_boxes(const MpsProblem& prob, const RowMatrix& mat,
     const std::vector<double> raw_ub = box.ub;
     stats = tighten_column_bounds(prob, mat, opts, box.lb, box.ub, box.integral);
     if (stats.infeasible) {
-        // Propagation proved the linear relaxation empty. That is either a
-        // genuinely infeasible instance or numerical trouble; either way the
-        // honest thing is to hand the search the box the file declared and
-        // let it report what it finds, rather than a derived empty one.
+        // An empty relaxation (infeasible or numerical trouble): search the
+        // declared box rather than a derived empty one.
         box.lb = raw_lb;
         box.ub = raw_ub;
-        // Nothing was applied, so the counts must not say otherwise; only
-        // the verdict survives.
+        // Nothing was applied: only the verdict survives.
         stats = BoundPropagationStats{};
         stats.infeasible = true;
     }
@@ -177,8 +163,7 @@ ColumnBoxes column_boxes(const MpsProblem& prob, const RowMatrix& mat,
 }
 
 /// One CBLS variable built from one MPS column, and whether `inf_clamp` or the
-/// int32 clip had to narrow it. The flag travels with the handle because the
-/// caller counts *columns* that were narrowed, not narrowings.
+/// int32 clip narrowed it; the caller counts narrowed columns, not narrowings.
 struct ColumnVar {
     int32_t handle = 0;
     bool clamped = false;
@@ -192,18 +177,15 @@ ColumnVar add_column(Model& m, const MpsVar& v, double box_lb, double box_ub,
     ColumnVar out;
     const double lb = clamp_lo(box_lb, opts.inf_clamp);
     const double ub = clamp_hi(box_ub, opts.inf_clamp);
-    // One column, one count. The int32 clip below can narrow the *same*
-    // column again, and this is a count of columns, not of narrowings.
+    // A flag, not a count: the int32 clip below may narrow the same column.
     out.clamped = lb != box_lb || ub != box_ub;
     if (lb > ub) {
         throw std::runtime_error("MPS column " + v.name + " has lb > ub after clamping");
     }
-    // Note: bool_var / int_var / float_var return already-encoded
-    // negative variable handles, *not* raw var ids.
+    // bool_var / int_var / float_var return encoded negative handles, not ids.
     if (v.kind == MpsVarKind::Binary) {
-        // Binary: enforce {0,1}. CBLS' bool_var has fixed [0,1] bounds;
-        // use it whenever the MPS bounds align with {0,1}, otherwise
-        // fall back to int_var with the explicit bounds.
+        // bool_var (fixed [0,1]) when the clipped bounds are {0,1}, else
+        // int_var with them.
         const int ilb = static_cast<int>(std::lround(std::min(1.0, std::max(0.0, lb))));
         const int iub = static_cast<int>(std::lround(std::max(0.0, std::min(1.0, ub))));
         if (ilb > iub) {
@@ -214,21 +196,16 @@ ColumnVar add_column(Model& m, const MpsVar& v, double box_lb, double box_ub,
         return out;
     }
     if (v.kind == MpsVarKind::Integer) {
-        // Integer: round bounds inward to nearest integers. The rounding
-        // stays in double: a finite bound is honoured however wide now, and
-        // anything below the 1e20 sentinel can reach here — `long long`
-        // cannot represent all of that, and the conversion would be UB.
+        // Round inward in double: any finite bound below the 1e20 sentinel
+        // reaches here, and converting that to `long long` would be UB.
         const double dlb = std::ceil(lb);
         const double dub = std::floor(ub);
         if (dlb > dub) {
             throw std::runtime_error("MPS integer column " + v.name +
                                      " has empty integer domain after rounding");
         }
-        // CBLS int_var takes int — clip to the int32 range, on *both* sides
-        // of both bounds: a column bounded entirely above INT_MAX would
-        // otherwise keep an unclipped lower bound and invert. That is a
-        // representational limit, not an implied bound, so where it bites it
-        // narrows the column and counts as clamped.
+        // int_var takes int: clip both bounds on both sides, else a column
+        // entirely above INT_MAX inverts. A narrowing, so it counts as clamped.
         constexpr auto kIntLo = static_cast<double>(std::numeric_limits<int>::min());
         constexpr auto kIntHi = static_cast<double>(std::numeric_limits<int>::max());
         out.clamped = out.clamped || dlb < kIntLo || dub > kIntHi;
@@ -241,9 +218,8 @@ ColumnVar add_column(Model& m, const MpsVar& v, double box_lb, double box_ub,
     return out;
 }
 
-/// Build `sum_j coef_j * x_j` as a CBLS sum node, from parallel (col, coef)
-/// arrays. Constraint rows pass a slice of the CSR; the objective row, which the
-/// CSR excludes, passes arrays gathered from its own index list.
+/// Build `sum_j coef_j * x_j` from parallel (col, coef) arrays: a CSR slice for
+/// a row, gathered arrays for the objective. One term returns that term alone.
 int32_t build_lin_expr(Model& m, const std::vector<int32_t>& var_handles, const int32_t* cols,
                        const double* coefs, int32_t nnz) {
     std::vector<int32_t> terms;
@@ -295,8 +271,8 @@ int32_t add_row_constraints(Model& m, const MpsRow& r, int32_t lhs) {
             break;
         case MpsRowSense::E:
             if (rng > 0.0) {
-                // `hi` before the geq below, so the DAG node ids this row
-                // creates are unchanged from before the split.
+                // `hi` before the geq: keeps this row's node ids, which the
+                // published tables were measured on (see build_plain).
                 const int32_t hi = m.constant(r.rhs + rng);
                 m.add_constraint(m.geq(lhs, rhs_node));
                 cn = m.leq(lhs, hi);
@@ -336,8 +312,7 @@ int32_t add_objective(Model& m, const MpsProblem& prob, const RowMatrix& mat,
     if (prob.objective_offset != 0.0) {
         obj_node = m.sum({obj_node, m.constant(prob.objective_offset)});
     }
-    // `Model::minimize` rejects raw variable handles. If the linear
-    // objective collapsed to a single var, wrap it in a sum node.
+    // `Model::minimize` rejects a variable handle: wrap a lone var in a Sum.
     if (obj_node < 0) {
         obj_node = m.sum({obj_node});
     }
@@ -366,12 +341,9 @@ void reserve_model(Model& m, std::size_t n_cols, std::size_t n_rows,
         count_term(c);
     }
     obj_coefs(count_term);
-    // Per row: at most the Sum, two comparisons (two children each) and their
-    // two bound constants. Columns add no nodes -- `add_column` makes only the
-    // variable, its box is the variable's bounds -- so they reserve none. The
-    // slack covers the objective's offset constant and wrapping Sum, and the
-    // `obj <= bound` row solve() appends. All small constant factors on counts
-    // already known, so the total is close rather than lavish.
+    // Per row: at most the Sum, two comparisons (two children each) and two
+    // bound constants; columns add no nodes. The slack covers the objective's
+    // offset constant and wrapping Sum, and solve()'s `obj <= bound` row.
     m.reserve(n_cols, term_nodes + (5 * n_rows) + 16, term_child_refs + (4 * n_rows) + 16);
 }
 
@@ -385,21 +357,12 @@ void build_plain(const MpsProblem& prob, const RowMatrix& mat, const MpsToModelO
     const int n_cols = static_cast<int>(prob.vars.size());
     const int n_rows = static_cast<int>(prob.rows.size());
 
-    // Sized from the matrix rather than grown into, so the node array is never
-    // copied to grow it -- see Model::reserve for why that copy is the thing
-    // worth avoiding rather than the allocation count.
-    //
-    // Counted, not guessed at. `build_lin_expr` spends nodes per coefficient at
-    // three different rates (a 1.0 costs none, a -1.0 one Neg, anything else a
-    // Const and a Prod), and the mix is a property of the instance: across the
-    // MIPfeas roster the ratio runs from 0.88 nodes per nonzero to 1.87. A flat
-    // "two per nonzero" would therefore over-reserve by up to 2.3x, and
-    // over-reserving is not free here -- the benchmark driver caps ADDRESS
-    // SPACE (`--mem-limit-gb` is `ulimit -v`), which an untouched reservation
-    // counts against just as much as a used one.
-    //
-    // The DAG's edges are counted in the same pass: a coefficient's slot in its
-    // row's Sum, plus the Neg's one child or the Prod's two.
+    // Reserved up front so the node array is never copied to grow (see
+    // Model::reserve). Counted, not guessed: a 1.0 costs no node, a -1.0 one Neg,
+    // else a Const and a Prod, and MIPfeas runs 0.88-1.87 nodes per nonzero, so
+    // a flat "two per nonzero" over-reserves up to 2.3x against the driver's
+    // address-space cap (`--mem-limit-gb` is `ulimit -v`). Edges: a slot in the
+    // row's Sum plus the Neg's one child or the Prod's two.
     reserve_model(m, static_cast<std::size_t>(n_cols), static_cast<std::size_t>(n_rows), mat.coefs,
                   [&](const auto& count) {
                       for (const int k : mat.obj_nz) {
@@ -407,8 +370,7 @@ void build_plain(const MpsProblem& prob, const RowMatrix& mat, const MpsToModelO
                       }
                   });
 
-    // Implied bounds run before variable creation, so the derived box is what
-    // the engine sees.
+    // Before variable creation, so the engine sees the derived box.
     const ColumnBoxes box = column_boxes(prob, mat, opts, result.bound_stats);
 
     result.var_handles.reserve(n_cols);

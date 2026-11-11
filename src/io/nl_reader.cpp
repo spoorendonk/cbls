@@ -1,15 +1,13 @@
 // AMPL NL reader (text and binary formats).
 //
-// Original implementation from the public NL format specifications:
+// Written from the public specifications, no vendored source; opcode numbers
+// follow AMPL's `opcode.hd`:
 //   * David M. Gay, "Writing .nl Files" — https://ampl.github.io/nlwrite.pdf
 //   * David M. Gay, "Hooking Your Solver to AMPL" — https://ampl.com/REFS/hooking2.pdf
-// No third-party source was vendored; the opcode numbers below follow the AMPL
-// `opcode.hd` numbering documented in those references.
 //
-// Scope: both encodings, text (header 'g') and binary (header 'b'), the
-// latter in the host's byte order only. The reader records the raw
-// expression graph and linear parts; semantic mapping to CBLS ops (and the
-// decision of which opcodes are supported) lives in nl_to_model.cpp.
+// Text ('g') and binary ('b', host byte order only). Records the raw expression
+// graph and linear parts; mapping to CBLS ops, and which opcodes are
+// supported, lives in nl_to_model.cpp.
 
 #include "cbls/io_nl.h"
 
@@ -45,9 +43,9 @@ namespace {
 //   bound-record type         a digit                   one ASCII digit byte
 //   name (suffix)             a token                   int32 length + bytes
 //
-// so the segment and expression grammar below is written once against this
-// interface. Binary numbers are in the writer's byte order, which the header's
-// `arith` field names; `parse_header` refuses one that is not the host's.
+// so the grammar below is written once against this interface. Binary numbers
+// are in the byte order the header's `arith` names; `parse_nl` refuses a
+// non-host one.
 class Tokenizer {
 public:
     explicit Tokenizer(std::string_view text) : text_(text) {}
@@ -75,8 +73,7 @@ public:
         return pos_ >= text_.size();
     }
 
-    // Read the rest of the current physical line (no leading skip). Used for
-    // header lines and to discard trailing comments after a segment marker.
+    // Read the rest of the current physical line (no leading skip).
     std::string read_line() {
         size_t start = pos_;
         while (pos_ < text_.size() && text_[pos_] != '\n') {
@@ -231,10 +228,8 @@ private:
         return v;
     }
 
-    // Skip whitespace and '#'-to-end-of-line comments. NL files annotate header
-    // and (sometimes) segment-marker lines with "# ..." comments; '#' never
-    // appears inside a numeric/opcode token, so treating it as comment-to-EOL is
-    // safe across the whole text stream. Never called on binary segments.
+    // Skip whitespace and '#'-to-EOL comments, safe because '#' never occurs
+    // inside a text token. Text only: never called on binary segments.
     void skip_ws() {
         while (pos_ < text_.size()) {
             char c = text_[pos_];
@@ -255,12 +250,10 @@ private:
     bool binary_ = false;
 };
 
-// AMPL opcode -> number of operands. Numbers are the authoritative values from
-// the ASL `opcode.hd` (ampl/asl, src/solvers/opcode.hd). We return:
-//   2  binary, 1 unary, 3 ternary, 0 nullary-ish constant ops.
-// n-ary opcodes (operand count read inline) are reported by is_nary() instead.
-// Opcodes whose arity we can't resolve return kUnknownArity; the parser then
-// throws NL_UNKNOWN_OPCODE so the adapter can skip the instance cleanly.
+// AMPL opcode -> operand count (ASL `opcode.hd`): 1, 2, 3, or 0 for nullary
+// constant ops; n-ary opcodes are is_nary()'s. Anything else returns
+// kUnknownArity and the parser throws an "NL_UNKNOWN_OPCODE" error, which the
+// MINLPLib runner buckets as unsupported (benchmarks/minlplib/nl_refusal.h).
 constexpr int kUnknownArity = -99;
 
 int op_arity(int opcode) {
@@ -397,16 +390,12 @@ int32_t parse_expr(Tokenizer& tok, NlExpr& expr) {
                     n.children.push_back(parse_expr(tok, expr));
                 }
             } else {
-                // Unknown opcode arity. We cannot know how many operands to
-                // consume, so we cannot safely continue parsing this stream.
-                // Record the opcode with no children and stop descending; the
-                // adapter will reject the instance on the unknown opcode. To
-                // keep the token stream consistent we throw a typed marker.
+                // Unknown arity: the operand count is unknowable, so the
+                // stream cannot be parsed further; throw the marker.
                 throw std::runtime_error("NL_UNKNOWN_OPCODE:" + std::to_string(opcode));
             }
-            // Children indices may have shifted as the vector grew during
-            // recursion; but we stored indices, not pointers, so they remain
-            // valid. Re-add the node now that children are known.
+            // Children are indices, not pointers, so they stay valid as
+            // `expr.nodes` grows during recursion.
             return add(std::move(n));
         }
         default:
@@ -415,7 +404,6 @@ int32_t parse_expr(Tokenizer& tok, NlExpr& expr) {
 }
 
 // Parse a (possibly nonlinear) segment expression into `expr`, setting its root.
-// Catches the unknown-opcode marker and rethrows it tagged with context.
 void parse_segment_expr(Tokenizer& tok, NlExpr& expr) {
     expr.root = parse_expr(tok, expr);
 }
@@ -456,13 +444,11 @@ std::vector<int64_t> read_ints(const std::string& line, int count) {
 }
 
 // Refuse header counts the input cannot back, before anything is sized from
-// them (#289). Each declared item owns at least one byte of segment payload of
-// its own: a variable its `b` record, a constraint its `C` segment, an
-// objective its `O` segment, a defined variable its `V` segment. So their sum
-// cannot exceed the bytes left after the header, and a header claiming 2e9 of
-// anything in a small file is refused here instead of asking `resize` for
-// tens of GB. Every count is non-negative and within int32 by now, so the
-// int64 sum cannot overflow.
+// them (#289): each variable, constraint, objective and defined variable owns
+// at least one payload byte (its `b` record, `C`, `O`, `V` segment), so their
+// sum cannot exceed the bytes left, else `resize` could ask for tens of GB.
+// Each count is int32 and, once checked, non-negative: the int64 sum cannot
+// overflow.
 void check_counts_backed(const NlProblem& prob, size_t remaining) {
     if (prob.n_vars < 0 || prob.n_cons < 0 || prob.n_objs < 0) {
         throw std::runtime_error(
@@ -505,8 +491,7 @@ NlHeaderCounts parse_header(Tokenizer& tok, NlProblem& prob) {
         throw std::runtime_error(std::string("NL: unrecognised header char '") + fmt +
                                  "' (expected 'g' for text or 'b' for binary format)");
     }
-    // Advance past the whole first header line. The text is not needed, but the
-    // cursor must move or the counts read below lands on line 1.
+    // Must consume line 1, else the counts below are read from it.
     tok.read_line();
 
     // Line 2: " nvar ncon nobj nranges neqn ..." (counts). We need the first 3.
@@ -519,23 +504,13 @@ NlHeaderCounts parse_header(Tokenizer& tok, NlProblem& prob) {
         }
     }
 
-    // Header continues with several more lines describing nonlinear counts,
-    // network structure, etc. The number of header lines is not fixed across
-    // versions, but every header line in the text format is a line of integers;
-    // the first segment marker is a single letter optionally followed by an
-    // index. We consume header lines until we hit a segment marker.
-    //
-    // Peek ahead: the remaining header lines all start with a digit, '-', or
-    // space. Consume them until a segment marker letter appears. While doing so,
-    // capture the two lines needed to place the discrete variables and the
-    // common-expression line that counts the defined variables. In the `g`
-    // format the header layout is fixed; lines 1 (`g...`) and 2 (counts) are
-    // already consumed, so of the lines skipped here:
+    // The header-line count varies by version, so consume lines (each starts
+    // with a digit, '-' or space) until a segment marker letter. Kept, counting
+    // from line 3:
     //   #3 -> header line 5: "nlvc nlvo nlvb"          (nonlinear var counts)
-    //   #4 -> header line 6: "nwv nfunc arith flags"; only `arith` is kept,
-    //    for a binary file's byte order. (Arc and other-linear variables are
-    //    always continuous and always precede the trailing nbv+niv block, so
-    //    they never shift a discrete position.)
+    //   #4 -> header line 6: "nwv nfunc arith flags"; only `arith` (binary
+    //    byte order). Arc and other-linear columns are continuous and precede
+    //    the nbv+niv block, so they never shift a discrete position.
     //   #5 -> header line 7: "nbv niv nlvbi nlvci nlvoi"  (discrete counts)
     //   #8 -> header line 10: "comb comc como comc1 como1" (defined variables)
     NlHeaderCounts h;
@@ -569,8 +544,7 @@ NlHeaderCounts parse_header(Tokenizer& tok, NlProblem& prob) {
             // counts are range-checked: summed here unchecked it could wrap.
         } else if (header_line_after_counts == 8) {
             const auto v = read_ints(hline, 5);
-            // Range-check each count before summing: five values within
-            // [0, INT32_MAX] cannot overflow int64, but unchecked ones can.
+            // Each within [0, INT32_MAX] first, so the int64 sum cannot wrap.
             constexpr int64_t kMax = std::numeric_limits<int32_t>::max();
             if (std::any_of(v.begin(), v.end(), [](int64_t n) { return n < 0 || n > kMax; })) {
                 throw std::runtime_error("NL: malformed common-expression line: '" + hline + "'");
@@ -586,13 +560,11 @@ NlHeaderCounts parse_header(Tokenizer& tok, NlProblem& prob) {
 }
 
 // Refuse placement counts (header lines 5 and 7) outside [0, n_vars] and return
-// the declared discrete count (#290). Unchecked, a 4e18 block length hung
-// `mark_tail`, and the block-offset and discrete sums below could wrap int64.
-// Each count is a number of columns, or (nlvc, nlvo) an index bound one past a
-// column, so none can exceed n_vars in a valid file. `n_vars` is an int32_t
-// (a larger header value fails extraction) that `check_counts_backed` has
-// found non-negative, so once every count is within [0, n_vars], any sum of
-// at most five of them fits int64 and the discrete total fits int32.
+// the declared discrete count (#290), else a huge block length hangs
+// `mark_tail` and the sums below wrap int64. None exceeds n_vars in a valid
+// file (column counts, or for nlvc/nlvo an index bound). `n_vars` is a
+// non-negative int32, so after the check any sum of five fits int64 and the
+// discrete total fits int32.
 int32_t checked_discrete_count(const NlProblem& prob, const NlHeaderCounts& h) {
     const int64_t n = prob.n_vars;
     const std::array<std::pair<const char*, int64_t>, 8> counts = {{{"nlvc", h.nlvc},
@@ -619,13 +591,10 @@ int32_t checked_discrete_count(const NlProblem& prob, const NlHeaderCounts& h) {
     return static_cast<int32_t>(discrete);
 }
 
-// Refuse block counts that no valid layout produces (#291). The range check
-// above bounds each count alone; these are the relations Gay's variable
-// ordering (see `mark_discrete_vars`) implies between them. Without them a
-// header such as nlvc=2, nlvb=3, nlvbi=1 still places exactly the declared
-// number of integer columns, so the placement self-check passes and a guessed
-// column becomes integer. Called after `checked_discrete_count`, so every
-// count is within [0, n_vars] and no sum or difference here overflows.
+// Refuse block counts violating the relations Gay's ordering implies (#291;
+// see `mark_discrete_vars`), else e.g. nlvc=2, nlvb=3, nlvbi=1 passes the
+// placement self-check with a guessed integer column. Must follow
+// `checked_discrete_count`, so no sum or difference here overflows.
 void check_block_relations(const NlProblem& prob, const NlHeaderCounts& h) {
     const auto refuse = [](const std::string& what) {
         throw std::runtime_error("NL: malformed header: " + what +
@@ -657,10 +626,8 @@ void check_block_relations(const NlProblem& prob, const NlHeaderCounts& h) {
 }
 
 // The last `n_int` columns of [block_start, block_start + block_len) are integer.
-// The arguments are range-checked by `checked_discrete_count`, which keeps the
-// sums below from overflowing and the range inside [0, n_vars). The clip to
-// [0, n_vars) is a backstop: it bounds the loop by the column count itself
-// should a caller ever skip that check.
+// `checked_discrete_count` keeps the sums from overflowing; the clip to
+// [0, n_vars) bounds the loop should a caller skip it.
 void mark_tail(NlProblem& prob, int64_t block_start, int64_t block_len, int64_t n_int) {
     const int64_t end = std::min<int64_t>(block_start + block_len, prob.n_vars);
     const int64_t begin = std::max({block_start + block_len - n_int, block_start, int64_t{0}});
@@ -680,20 +647,17 @@ void mark_tail(NlProblem& prob, int64_t block_start, int64_t block_len, int64_t 
 //   6. binary                                         nbv
 //   7. other integer                                  niv
 //
-// i.e. within each nonlinear block the integer columns are the trailing ones,
-// and the purely-linear discrete columns are the last nbv+niv of the file.
+// so each nonlinear block's integers trail it, and the linear discrete columns
+// are the last nbv+niv.
 void mark_discrete_vars(NlProblem& prob, const NlHeaderCounts& h) {
     prob.n_discrete_vars = checked_discrete_count(prob, h);  // refuses before any loop
     check_block_relations(prob, h);
     prob.var_is_discrete.assign(static_cast<size_t>(prob.n_vars), 0);
     const int64_t cat1 = h.nlvb;                                 // nonlinear in both
     const int64_t cat2 = std::max<int64_t>(h.nlvc - h.nlvb, 0);  // nonlinear in constraints only
-    // Objective-only block. `nlvo` is an index bound *past* the constraint-only
-    // block, not nlvb + (#objective-only) — the total nonlinear column count is
-    // max(nlvc, nlvo) — so this block is [nlvc, nlvo) and is empty when
-    // nlvo <= nlvc. Using `nlvo - nlvb` overshoots by nlvc - nlvb: on windfac
-    // (nlvc=11, nlvo=13, 14 columns) the blocks would span 24 columns, either
-    // mis-placing the nlvoi integers or pushing them past n_vars.
+    // Objective-only block [nlvc, nlvo), empty when nlvo <= nlvc: `nlvo` is an
+    // index bound (nonlinear columns total max(nlvc, nlvo)). Must not be
+    // `nlvo - nlvb`, which overshoots by nlvc - nlvb (windfac: 24 of 14 columns).
     const int64_t cat3 = std::max<int64_t>(h.nlvo - (cat1 + cat2), 0);
     mark_tail(prob, 0, cat1, h.nlvbi);
     mark_tail(prob, cat1, cat2, h.nlvci);
@@ -701,11 +665,8 @@ void mark_discrete_vars(NlProblem& prob, const NlHeaderCounts& h) {
     // Trailing linear discrete block: the final nbv + niv columns.
     mark_tail(prob, 0, prob.n_vars, h.nbv + h.niv);
 
-    // Self-check: the positions we just derived must account for exactly the
-    // count the header declares. `check_block_relations` already refuses the
-    // headers known to break this (overlapping or overfull blocks); the check
-    // stays as a backstop for a layout assumption above that does not hold —
-    // fail loudly rather than build a model whose integrality is quietly wrong.
+    // Backstop to `check_block_relations`: placed positions must equal the
+    // header's count, else refuse rather than build wrong integrality.
     int32_t marked = 0;
     for (uint8_t f : prob.var_is_discrete) {
         marked += f;
@@ -726,9 +687,7 @@ struct BoundRecord {
     double upper = kNlInf;
 };
 
-// Segment payload readers. Each owns one segment's grammar so the dispatch
-// below stays a table of "which segment", not a mixture of that and "how to
-// read one".
+// Segment payload readers, one grammar each, so the dispatch below is a table.
 
 // `x`: initial primal guess — `count` pairs of <varidx> <value>.
 void read_initial_guess(Tokenizer& tok, NlProblem& prob, int64_t count) {
@@ -741,8 +700,8 @@ void read_initial_guess(Tokenizer& tok, NlProblem& prob, int64_t count) {
     }
 }
 
-// `k`: Jacobian column-count header. Not needed — we store sparse J terms
-// directly — but the ints must be consumed to keep the cursor aligned.
+// `k`: Jacobian column counts. Unused (J terms are stored sparse), but must be
+// consumed to keep the cursor aligned.
 void skip_ints(Tokenizer& tok, int64_t count) {
     for (int64_t k = 0; k < count; ++k) {
         tok.next_int();
@@ -801,12 +760,10 @@ int64_t segment_index(Tokenizer& tok, char kind) {
 BoundRecord read_bound(Tokenizer& tok) {
     BoundRecord b;
     const int64_t code = tok.next_bound_type();
-    // Type 5 is a complementarity record (`5 k i`, two ints this struct has no
-    // place for), and nothing past 5 is defined. Cast unchecked, either one
-    // matched no case below, consumed none of its payload and left the cursor
-    // mid-record: the rest of the file was misparsed rather than refused
-    // (#211). Refused with the reader's "unsupported" wording, which the
-    // MINLPLib runner buckets as a coverage gap rather than a broken file.
+    // Type 5 (complementarity, `5 k i`) and anything outside 0..4 must be
+    // refused before the cast, else the cursor stops mid-record and the rest is
+    // misparsed (#211). "Unsupported" wording: the MINLPLib runner buckets it
+    // as a coverage gap, not a broken file.
     if (code < 0 || code > static_cast<int64_t>(NlBoundType::Equal)) {
         throw std::runtime_error("NL: bound type " + std::to_string(code) +
                                  (code == 5 ? " (complementarity)" : "") +
@@ -918,10 +875,9 @@ void parse_segment(Tokenizer& tok, NlProblem& prob, char kind) {
             read_defined_var(tok, prob, segment_index(tok, kind));
             break;
         case 'S': {  // suffix block: "S<kind> <n> <name>"
-            // Not skipped: a suffix can be model data. MINLPLib's only ones
-            // are `sosno`/`ref`, which declare SOS constraints, and dropping
-            // them would solve a relaxation. Named in the refusal so a
-            // coverage list can say which suffix stopped the file.
+            // Refused, not skipped: a suffix can be model data (MINLPLib's
+            // `sosno`/`ref` declare SOS; dropping them solves a relaxation).
+            // Named so a coverage list says which suffix stopped the file.
             segment_index(tok, kind);  // the suffix kind
             tok.next_int();            // its entry count
             const std::string suffix = tok.next_name();
@@ -956,15 +912,12 @@ NlProblem parse_nl(const std::string& text, const std::string& name) {
     // ---- Header ----
     const NlHeaderCounts header = parse_header(tok, prob);
 
-    // The byte-order refusal comes first: it is a coverage gap, and a foreign
-    // binary file is otherwise well formed, so it must not be reported as a
-    // malformed header. The size check then precedes every count-sized vector.
+    // Byte order first: a foreign-order file is well formed, so it must not be
+    // reported as a malformed header. The size check precedes every
+    // count-sized vector.
     if (header.binary) {
-        // Binary numbers are in the writer's byte order. Reading them in
-        // another would yield garbage that still parses, so a mismatch (or an
-        // undeclared order) is refused, worded as a coverage gap ("not
-        // supported by this reader") so the MINLPLib runner buckets it as
-        // skipped, not as a broken file.
+        // A foreign or undeclared order would parse as garbage, so refuse,
+        // worded as a coverage gap so the MINLPLib runner buckets it as skipped.
         const int64_t host = host_arith();
         if (header.arith != host) {
             throw std::runtime_error("NL: binary file's byte order (arith " +
@@ -984,12 +937,8 @@ NlProblem parse_nl(const std::string& text, const std::string& name) {
 
     // ---- Segments ----
     while (!tok.eof()) {
-        // Read the marker into a named local first. Passing `tok.next_tag()`
-        // as an argument while `tok` is also an argument leaves the cursor
-        // advance unsequenced against the other argument initialisations --
-        // well-defined only because parameter 1 binds a reference and so never
-        // reads `tok`. Make one of those two facts explicit rather than both
-        // implicit.
+        // A named local: `tok.next_tag()` as an argument beside `tok` would be
+        // unsequenced against the other arguments' initialisation.
         const char kind = tok.next_tag();
         parse_segment(tok, prob, kind);
     }

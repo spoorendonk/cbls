@@ -81,15 +81,9 @@ static std::string op_to_string(NodeOp op) {
         case NodeOp::Round:
             return "Round";
         case NodeOp::LambdaExtra:
-            // Never written to a file -- `save_model` refuses a model holding
-            // one before it opens the stream. Named here so a diagnostic that
-            // prints an op does not say "Unknown".
-            //
-            // This switch is `default:`-free so that -Wswitch names any op
-            // nobody handled: since #171 the build passes -Wall, and
-            // clang-tidy reports `clang-diagnostic-switch`. No hook blocks on
-            // either; both are checked by hand before a push. See the note
-            // on evaluate() in src/dag.cpp.
+            // Never written (`save_model` refuses it); named so a diagnostic
+            // does not say "Unknown". No `default:`, so -Wswitch flags a new
+            // op (#171; see evaluate() in src/dag.cpp).
             return "LambdaExtra";
         case NodeOp::PairLambdaExtra:
             return "PairLambdaExtra";
@@ -226,10 +220,8 @@ int32_t load_var_record(Model& m, const json& j, const std::string& name) {
             return m.float_var(j.value("lb", 0.0), j.value("ub", 1.0), name);
         case VarType::List: {
             const int n = j.at("n").get<int>();
-            // A permutation List carries `n` and nothing else -- which is what
-            // every file written before #164 holds, and what the writer still
-            // emits for one, byte for byte. The three optional keys appear
-            // together or not at all.
+            // None of the three optional keys means a permutation List, the
+            // form every pre-#164 file holds; a missing one defaults.
             if (!j.contains("min_len") && !j.contains("max_len") && !j.contains("init")) {
                 return m.list_var(n, name);
             }
@@ -270,14 +262,9 @@ PairMode parse_pair_mode(const json& j, int line_num) {
                                 mode + "'");
 }
 
-// One tabulated fixed-endpoint term, or an empty callable when the record
-// carries none -- which is what `pair_lambda_sum` reads as "no term", and what
-// every file written before these variants existed means.
-//
-// A present-but-empty table reads as absent too. The writer never emits one --
-// a zero-length universe has no element for the term to charge, and emitting
-// `[]` there is what would break save(load(save)) == save -- so this only
-// covers a hand-written file.
+// One tabulated fixed-endpoint term, or an empty callable ("no term" to
+// `pair_lambda_sum`) when the table is absent or empty. The writer never emits
+// `[]`, so save(load(save)) == save holds.
 std::function<double(int)> endpoint_func(const json& j, const char* field) {
     auto table = j.value(field, std::vector<double>{});
     if (table.empty()) {
@@ -301,9 +288,8 @@ int32_t build_element(Model& m, const json& j, const std::vector<int32_t>& child
                                 ": Element node requires one or two index children");
 }
 
-// The one child of a rounding record (#186). A second child would otherwise be
-// dropped without a word, so a malformed file is refused rather than read as a
-// different model.
+// The one child of a rounding record (#186): any other count is refused, not
+// silently read as a different model.
 int32_t only_child(const std::vector<int32_t>& children, const char* op_name, int line_num) {
     if (children.size() != 1) {
         throw std::invalid_argument("line " + std::to_string(line_num) + ": " + op_name +
@@ -312,9 +298,8 @@ int32_t only_child(const std::vector<int32_t>& children, const char* op_name, in
     return children[0];
 }
 
-// Rebuild one non-Const node from its op and its already-resolved children.
-// Kept apart from the record-level plumbing above it precisely because it is a
-// wide table: one line per NodeOp, no shared state between the lines.
+// Rebuild one non-Const node from its op and its already-resolved children:
+// one line per NodeOp, no shared state, hence apart from the plumbing above.
 int32_t build_node(Model& m, NodeOp op, const json& j, const std::vector<int32_t>& children,
                    int line_num) {
     switch (op) {
@@ -363,9 +348,8 @@ int32_t build_node(Model& m, NodeOp op, const json& j, const std::vector<int32_t
         case NodeOp::PairLambda: {
             auto table =
                 require_table(j, "PairLambda", line_num).get<std::vector<std::vector<double>>>();
-            // "mode" and the endpoint tables are absent from files written
-            // before the cyclic/endpoint forms existed; absent means the open
-            // chain with no endpoint terms, which is what those files meant.
+            // Absent "mode"/endpoint tables mean the open chain with no
+            // endpoint terms, what files predating those forms meant.
             const PairMode mode = parse_pair_mode(j, line_num);
             auto head = endpoint_func(j, "head");
             auto tail = endpoint_func(j, "tail");
@@ -397,12 +381,9 @@ int32_t build_node(Model& m, NodeOp op, const json& j, const std::vector<int32_t
             return m.round_expr(only_child(children, "Round", line_num));
         case NodeOp::LambdaExtra:
         case NodeOp::PairLambdaExtra:
-            // Unreachable: `string_to_op` has no entry for either, so a file
-            // naming one is rejected as an unknown op, with the line number
-            // attached, before it gets here, and the writer refuses a model
-            // holding one. Listed because this switch is `default:`-free, and a
-            // throw rather than a `break` so that a future reader-side entry
-            // cannot silently return -1.
+            // Unreachable: `string_to_op` has no entry for either, so the
+            // reader refuses them as unknown ops. A throw, not `break`, so a
+            // future reader-side entry cannot silently return -1.
             throw std::invalid_argument("line " + std::to_string(line_num) +
                                         ": lambdas over extra decisions hold user code and "
                                         "cannot be loaded");
@@ -444,7 +425,7 @@ json parse_record(const std::string& line, int line_num) {
 }
 
 // Dispatch one already-parsed record to the loader for its kind, recording any
-// name it defines. Every record is exactly one of the six kinds.
+// name it defines. The first kind key matched wins; none of the six is refused.
 void load_record(Model& m, const json& j, NameMap& name_to_handle, int line_num) {
     if (j.contains("var")) {
         std::string name = j["var"].get<std::string>();
@@ -456,20 +437,15 @@ void load_record(Model& m, const json& j, NameMap& name_to_handle, int line_num)
         int32_t node_id = load_node_record(m, j, name_to_handle, line_num);
         name_to_handle[name] = node_id;
     } else if (j.contains("partition")) {
-        // `{"partition": [<list names>], "cover": ...}` (#164). A structural
-        // declaration rather than a node, so it resolves names like a constraint
-        // does and adds nothing to the DAG.
+        // `{"partition": [<list names>], "cover": ...}` (#164): resolves names
+        // like a constraint and adds nothing to the DAG.
         std::vector<int32_t> lists;
         for (const auto& list_name : j["partition"]) {
             const int32_t handle = resolve(list_name.get<std::string>(), name_to_handle, line_num);
             if (handle >= 0) {
-                // A node id, not a variable handle. `add_list_partition` decodes
-                // a negative handle and leaves a non-negative value alone as a
-                // raw variable id -- a property of the encoding rather than a
-                // second calling convention -- so a file naming a node here
-                // would silently partition whichever VARIABLE happens to carry
-                // that id. In this format the two name spaces are already
-                // distinct, so refuse instead.
+                // A node id: `add_list_partition` reads a non-negative value as
+                // a raw variable id, so it must be refused here, else the
+                // variable carrying that id is silently partitioned.
                 throw std::invalid_argument("line " + std::to_string(line_num) +
                                             ": partition member '" + list_name.get<std::string>() +
                                             "' is a node, not a variable");
@@ -500,7 +476,6 @@ Model load_model(std::istream& input) {
 
     while (std::getline(input, line)) {
         line_num++;
-        // Skip empty lines and comments
         if (line.empty() || line[0] == '#') {
             continue;
         }
@@ -526,8 +501,8 @@ namespace {
 // id -> serialisation name, one table per handle space.
 using NameTable = std::unordered_map<int32_t, std::string>;
 
-// A variable keeps the name it was declared with; everything unnamed gets a
-// positional one. Nodes are always positional -- the DAG does not name them.
+// A variable keeps its declared name, else a positional one; nodes are always
+// positional (the DAG does not name them).
 void build_name_tables(const Model& model, NameTable& var_names, NameTable& node_names) {
     for (const auto& var : model.variables()) {
         if (!var.name.empty()) {
@@ -541,9 +516,8 @@ void build_name_tables(const Model& model, NameTable& var_names, NameTable& node
     }
 }
 
-// The tables are non-const and indexed with operator[] on purpose: that is what
-// the writer has always done, and it keeps an id that somehow escaped
-// build_name_tables writing an empty name rather than throwing mid-file.
+// operator[] on purpose: an id missing from build_name_tables writes an empty
+// name rather than throwing mid-file.
 std::string child_name(const ChildRef& ref, NameTable& var_names, NameTable& node_names) {
     if (ref.is_var) {
         return var_names[ref.id];
@@ -568,10 +542,8 @@ json var_record(const Variable& var, const std::string& name) {
             break;
         case VarType::List:
             j["n"] = var.universe_size;
-            // A permutation writes `n` alone -- the bytes it has always written,
-            // which is what keeps `save(load(save)) == save` on every file that
-            // predates #164. The three keys are emitted only when the List is
-            // something that form cannot express.
+            // A permutation writes `n` alone, so pre-#164 files keep
+            // save(load(save)) == save; otherwise all three keys are written.
             if (var.min_size != var.universe_size || var.max_size != var.universe_size ||
                 var.list_init != ListInit::Identity) {
                 j["min_len"] = var.min_size;
@@ -588,20 +560,17 @@ json var_record(const Variable& var, const std::string& name) {
     return j;
 }
 
-// A (Pair)Lambda node holds a std::function, which the format cannot express, so
-// it is written as the function tabulated over its child variable's universe:
-// [func(0) .. func(n-1)] for Lambda, and the n x n matrix for PairLambda. The
-// size caps are what keeps a quadratic table from being written at all.
+// A (Pair)Lambda's std::function is written tabulated over its child's
+// universe: [func(0) .. func(n-1)], or the n x n matrix for PairLambda. The size
+// caps refuse a table too large to write.
 void tabulate_lambda(const Model& model, const ExprNode& node, json& j) {
     const auto& child_ref = model.children(node)[0];
     if (!child_ref.is_var) {
         throw std::runtime_error("Lambda node child must be a variable");
     }
     const auto& var = model.var(child_ref.id);
-    // `universe_size` for BOTH structured types (#164): a List's elements range
-    // over its universe too, and `max_size` is only its length bound -- the same
-    // distinction the Set branch below has always made, and which a List had no
-    // way to express before variable-length Lists existed.
+    // `universe_size` for List and Set alike (#164): elements range over the
+    // universe; `max_size` is only the length/cardinality bound.
     int n = var.universe_size;
     if (n > 10000) {
         throw std::runtime_error("Lambda universe too large to tabulate (" + std::to_string(n) +
@@ -620,18 +589,9 @@ void tabulate_pair_lambda(const Model& model, const ExprNode& node, json& j) {
         throw std::runtime_error("PairLambda node child must be a variable");
     }
     const auto& var = model.var(child_ref.id);
-    // Same universe rule as tabulate_lambda above: a Set's elements range over
-    // universe_size, and max_size is only its cardinality bound. Sizing the
-    // matrix by max_size tabulated the wrong domain, and reloading then threw
-    // `table.at()` on any element past it.
-    //
-    // Two accepted consequences for a Set child, both louder than what they
-    // replace. A file written by the OLD writer carries a max_size x max_size
-    // matrix, so the functor rebuilt from it throws `table.at()` when re-saved
-    // over the wider universe -- but such a file could not be loaded-and-used
-    // correctly anyway, which is the bug being fixed. And a Set whose
-    // universe_size exceeds the cap below while its max_size did not now refuses
-    // to serialise instead of writing a matrix too narrow to read back.
+    // Sized by universe_size, as in tabulate_lambda: sizing by max_size makes
+    // a reload throw `table.at()` past it. A Set file sized by max_size thus
+    // throws on re-save, and a universe over the cap refuses to serialise.
     int n = var.universe_size;
     if (n > 1000) {
         throw std::runtime_error("PairLambda universe too large to tabulate (" + std::to_string(n) +
@@ -646,22 +606,16 @@ void tabulate_pair_lambda(const Model& model, const ExprNode& node, json& j) {
         }
         j["table"].push_back(row);
     }
-    // The closing rule and the endpoint terms are the rest of the node: a
-    // matrix alone round-trips a cyclic tour as an open chain, silently.
-    //
-    // Each key is written only when it says something. The format carries no
-    // version field, so an open chain with no endpoints -- everything this
-    // format could express before these variants existed -- must serialise to
-    // the bytes it always did; `tests/test_io.cpp`'s idempotency case compares
-    // save(load(save)) as text. The reader defaults each absent key to exactly
-    // that node.
+    // Mode and endpoint terms must be written, else a cyclic tour reloads as an
+    // open chain. Each key only when non-default: the format has no version
+    // field, so an open chain without endpoints keeps its old bytes
+    // (`tests/test_io.cpp` compares save(load(save)) as text).
     const PairLambdaSpec& spec = model.pair_lambda_spec(node.lambda_func_id);
     if (spec.mode == PairMode::Cyclic) {
         j["mode"] = "cyclic";
     }
-    // n == 0 writes nothing: an empty table is what the reader reads as "no
-    // term", so emitting one would break save(load(save)) == save. Lossless --
-    // a zero-length universe has no element for an endpoint term to charge.
+    // n == 0 writes nothing, lossless (no element to charge): the reader reads
+    // an empty table as "no term", so emitting one breaks save(load(save)).
     auto tabulate_endpoint = [&model, &j, n](const char* field, int32_t func_id) {
         if (func_id < 0 || n == 0) {
             return;
@@ -684,12 +638,9 @@ json node_record(const Model& model, const ExprNode& node, NameTable& var_names,
     j["op"] = op_to_string(node.op);
 
     if (node.op == NodeOp::Const) {
-        // The DAG's literal, which is what a model file records -- deliberately
-        // not `model.node_value(node.id)`. The two differ for exactly one node:
-        // the objective row's RHS, whose current value is the search's bound and
-        // whose literal is the +inf it was created with (#157). A reader re-adds
-        // that row itself, through `solve()`, so writing the bound would be
-        // writing search state into a model.
+        // The literal, not `model.node_value(node.id)`: they differ on the
+        // objective row's RHS, whose value is the search's bound and whose
+        // literal is +inf; `solve()` re-adds that row (#157).
         j["value"] = node.const_value;
         return j;
     }
@@ -706,8 +657,7 @@ json node_record(const Model& model, const ExprNode& node, NameTable& var_names,
         return j;
     }
     if (node.op == NodeOp::Element) {
-        // The table is data, written as the builder took it: a flat array for
-        // one index, rows for two.
+        // Written as the builder took it: a flat array for one index, rows for two.
         const ElementTable& tbl = model.element_table(node.lambda_func_id);
         if (model.children(node).size() == 1) {
             j["table"] = tbl.values;
@@ -729,7 +679,7 @@ json node_record(const Model& model, const ExprNode& node, NameTable& var_names,
 json objective_record(const Model& model, NameTable& var_names, NameTable& node_names) {
     json j;
     if (model.is_maximizing()) {
-        // Unwrap the auto-generated Neg node to get the original expression
+        // Unwrap the auto-generated Neg node.
         const auto& neg_node = model.node(model.objective_id());
         j["maximize"] = child_name(model.children(neg_node)[0], var_names, node_names);
     } else {
@@ -738,19 +688,12 @@ json objective_record(const Model& model, NameTable& var_names, NameTable& node_
     return j;
 }
 
-// A `.cbls` file is a model the format can rebuild, and it cannot rebuild a
-// `lambda_sum` / `pair_lambda_sum` over extra decisions (#186): its functor takes
-// continuous values, so there is no finite table to write where a plain `Lambda`
-// has one.
-//
-// Checked BEFORE a single line is written. `std::ofstream` truncates on open, so
-// throwing partway through would replace an existing file with a prefix of a
-// model -- the same failure the benchmark runners guard against for published
-// tables, and for the same reason: it looks like a file.
+// A `lambda_sum` / `pair_lambda_sum` over extra decisions (#186) has a functor of
+// continuous values, so no finite table: refused. Must run before any line is
+// written, else a throw leaves a truncated file that looks like a model.
 void refuse_user_code_nodes(const Model& model) {
-    // O(1) for every model that has no such node, which is every model any
-    // in-tree caller writes today -- and it is what makes calling this twice on
-    // the `path` overload free, rather than two walks of a 4.3M-node array.
+    // O(1) without such nodes (every in-tree model), so the `path` overload's
+    // second call costs nothing; with one, a walk of all nodes.
     if (!model.has_lambda_extra_nodes()) {
         return;
     }
@@ -776,9 +719,9 @@ void save_model(const Model& model, std::ostream& out) {
         out << var_record(var, var_names[var.id]).dump() << '\n';
     }
 
-    // Partitions follow the variables and precede the nodes: they name variables
-    // only, and `add_list_partition` requires every member to exist. A model with
-    // none writes nothing here, so files that predate #164 round-trip unchanged.
+    // After the variables, before the nodes: members are variables only and
+    // `add_list_partition` requires them to exist. None writes nothing, so
+    // pre-#164 files round-trip unchanged.
     for (const ListPartition& part : model.list_partitions()) {
         json j;
         auto names = json::array();
@@ -792,7 +735,7 @@ void save_model(const Model& model, std::ostream& out) {
 
     // Nodes in topological order, so a reader sees every child before its parent.
     for (int32_t nid : model.topo_order()) {
-        // Skip the auto-generated Neg wrapper when maximizing
+        // Skip the auto-generated Neg wrapper when maximizing.
         if (model.is_maximizing() && nid == model.objective_id()) {
             continue;
         }
@@ -818,9 +761,7 @@ void save_model(const Model& model, std::ostream& out) {
 }
 
 void save_model(const Model& model, const std::string& path) {
-    // Before the stream is opened, for the reason refuse_user_code_nodes gives:
-    // opening truncates, so a refusal after that point destroys whatever file
-    // was there.
+    // Before opening, which truncates: a later refusal destroys the old file.
     refuse_user_code_nodes(model);
     std::ofstream file(path);
     if (!file.is_open()) {

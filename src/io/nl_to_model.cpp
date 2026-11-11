@@ -1,16 +1,13 @@
 // Adapter: NlProblem -> closed CBLS Model.
 //
-// Maps AMPL NL operators (opcode.hd numbering) onto CBLS DAG ops. Operators
-// outside the supported set do not throw: the result is marked unsupported with
-// a human-readable reason, mirroring the "skip, don't crash" contract in
-// io_nl.h. The supported set is the MINLPLib op subset CBLS can express today
-// (+, -, *, /, pow, min, max, abs, floor, ceil, sin, cos, tan, exp, log,
-// log10, sqrt, tanh, unary minus) plus the linear J/G parts.
+// Maps AMPL NL operators (opcode.hd numbering) onto CBLS DAG ops. An operator
+// outside the supported set marks the result unsupported with a reason rather
+// than throwing (io_nl.h's "skip, don't crash"). Supported: +, -, *, /, pow,
+// min, max, abs, floor, ceil, sin, cos, tan, exp, log, log10, sqrt, tanh,
+// unary minus, plus the linear J/G parts.
 //
-// Not signpower, although the DAG has `SignPower`: AMPL has no opcode for it
-// and writes it as an imported-function call, whose `F` declaration segment
-// the reader refuses. `Model::signpower_expr` is reachable from the C++ and
-// Python APIs only.
+// Not signpower: AMPL writes it as an imported function, whose `F` segment the
+// reader refuses; `Model::signpower_expr` is C++/Python API only.
 
 #include "cbls/bound_propagation.h"
 #include "cbls/expr.h"
@@ -58,11 +55,9 @@ enum AmplOp : std::uint8_t {
     OPCPOW = 78,  // constant ^ exponent
 };
 
-// Whether a column side is "no bound": NaN or past the infinity convention. A
-// bound that is finite — declared in the file or derived by propagation — is
-// honoured as written, however wide; only "no bound" is replaced, because the
-// replacement is not entailed by the constraints and so can cut off feasible
-// points.
+// Whether a column side is "no bound": NaN or past the infinity convention.
+// Only these are replaced, since the replacement is not entailed and can cut
+// off feasible points; any finite bound is kept as is.
 bool lo_missing(double lb) {
     return std::isnan(lb) || is_unbounded_below(lb);
 }
@@ -70,13 +65,10 @@ bool hi_missing(double ub) {
     return std::isnan(ub) || is_unbounded_above(ub);
 }
 
-// The finite box edge that replaces a missing side, given the column's other,
-// finite side `other` (pass kNlInf / -kNlInf when that is missing too). It is
-// ±clamp, unless `other` is at or beyond that clamp: there ±clamp would land on
-// or past the real bound, so the box would exclude it or shrink to one point
-// (#357). The box then reaches `clamp` beyond `other` instead, so the bound
-// stays inside it with room on the open side. Columns whose finite side lies
-// inside the clamp get exactly the ±clamp they always did.
+// The finite box edge that replaces a missing side, given the other side
+// `other` (kNlInf / -kNlInf when missing too): ±clamp, unless `other` is at or
+// beyond it, where ±clamp would exclude the real bound or shrink the box to a
+// point (#357); then `clamp` beyond `other`.
 double fallback_lo(double other, double clamp) {
     return (std::isfinite(other) && other <= -clamp) ? other - clamp : -clamp;
 }
@@ -106,12 +98,10 @@ int32_t sum_of(Model& m, const std::vector<int32_t>& parts) {
     return m.sum(parts);
 }
 
-// Translate NL expression trees into CBLS expression node handles, for one
-// model. On the first unsupported opcode, sets `ok=false`, records a reason,
-// and returns a constant 0 (the caller bails out on !ok). `var_handles` maps an
-// NL column index to its CBLS handle; an index past the columns names a
-// defined variable (`V` segment), which is built on first use and its node
-// shared by every later one, so a common subexpression stays one DAG node.
+// Translate NL expression trees into CBLS node handles, for one model. On the
+// first failure, sets `ok=false`, records a reason and returns constant 0 (the
+// caller bails out on !ok). An index past the columns names a defined variable
+// (`V` segment), built on first use and shared, so it stays one DAG node.
 class ExprTranslator {
 public:
     ExprTranslator(Model& m, const NlProblem& prob, const std::vector<int32_t>& vh)
@@ -176,12 +166,10 @@ private:
         return "defined variable " + std::to_string(vh_.size() + slot);
     }
 
-    // Build defined variable `slot`, after every defined variable it depends
-    // on, deepest first. The walk keeps its own stack: a recursive AMPL
-    // definition (`s[t] = s[t-1] + x[t]`) writes one V segment per step, each
-    // naming the last, and recursing per link would overflow the native stack
-    // on a long horizon. Translating one definition then recurses only as deep
-    // as its own expression, since its defined-variable references are built.
+    // Build defined variable `slot` after its dependencies, deepest first, on
+    // an explicit stack: a chain like `s[t] = s[t-1] + x[t]` would overflow the
+    // native one on a long horizon. Each build then recurses only as deep as
+    // its own expression.
     int32_t defined_var(std::size_t slot) {
         if (def_state_[slot] == DefState::Built) {
             return def_handle_[slot];
@@ -369,18 +357,16 @@ int32_t combine_body(Model& m, int32_t nonlinear, bool has_nonlinear, int32_t li
     return m.constant(0.0);
 }
 
-/// A translated constraint/objective body, or the reason it could not be built.
-/// The NL contract is "skip, don't throw" on an operator CBLS cannot express, so
-/// the failure travels back as data rather than as an exception.
+/// A translated constraint/objective body, or the reason it could not be built:
+/// data, not an exception, per the NL "skip, don't throw" contract.
 struct BodyResult {
     int32_t node = 0;
     bool ok = true;
     std::string reason;
 };
 
-/// Translate the nonlinear part, build the linear part and combine them. This is
-/// the same three steps for a constraint and for the objective; only the label
-/// on the failure differs, and that belongs to the caller.
+/// Translate the nonlinear part, build the linear part and combine them, for a
+/// constraint or the objective; the caller labels the failure.
 BodyResult build_body(Model& m, ExprTranslator& tr, const NlExpr& nonlinear,
                       const std::vector<NlLinTerm>& linear,
                       const std::vector<int32_t>& var_handles) {
@@ -395,9 +381,8 @@ BodyResult build_body(Model& m, ExprTranslator& tr, const NlExpr& nonlinear,
             return out;
         }
     }
-    // A J/G term names a column (AMPL never writes a defined variable there).
-    // Dropping a bad one would relax the row, so refuse it, as a V segment's
-    // bad index is.
+    // A J/G term must name a column (AMPL never writes a defined variable
+    // there); refused, since dropping it would relax the row.
     for (const NlLinTerm& t : linear) {
         if (t.var < 0 || t.var >= static_cast<int32_t>(var_handles.size())) {
             out.ok = false;
@@ -444,20 +429,16 @@ int32_t add_bound_constraints(Model& m, const NlConBound& b, int32_t body) {
     return -1;
 }
 
-/// A row body's two-sided bounds. Returned as a pair rather than written
-/// through two `double&` out-parameters: `lo` and `hi` have the same type, so a
-/// transposed argument list is silently accepted by the compiler and inverts the
-/// constraint's sense. Named fields make that transposition unrepresentable.
+/// A row body's two-sided bounds, as named fields rather than two `double&`
+/// out-parameters, whose silent transposition would invert the row's sense.
 struct RowBounds {
     double lo = -kNlInf;
     double hi = kNlInf;
 };
 
-/// The row's body bounds `lo <= body <= hi`, read through the bound *type* so a
-/// stale value on the unused side cannot be mistaken for a real bound. The
-/// constraint builder is type-gated the same way; deriving a bound from a side
-/// no constraint enforces would be exactly the unsoundness #120 exists to
-/// remove. Returns nullopt for a Free row, which builds no constraint at all.
+/// The row's body bounds `lo <= body <= hi`, read through the bound *type*, as
+/// the constraint builder is, so a stale unused side never yields a bound no
+/// constraint enforces (#120). Nullopt for a Free row.
 std::optional<RowBounds> linear_row_bounds(const NlConBound& b) {
     RowBounds r;
     switch (b.type) {
@@ -482,11 +463,9 @@ std::optional<RowBounds> linear_row_bounds(const NlConBound& b) {
 }
 
 /// The bounds of a row's linear part, ignoring its nonlinear part, or nullopt
-/// when propagation must leave it alone: an empty or Free row, or one naming a
-/// column out of range. `propagate_bounds` rejects an out-of-range column
-/// outright, and io_nl.h promises "skip, don't throw" on
-/// a malformed file; omitting a row costs tightening, never validity, and
-/// `build_body` refuses the model for it.
+/// for an empty or Free row or one naming an out-of-range column, which
+/// `propagate_bounds` would throw on (io_nl.h: "skip, don't throw"); omitting
+/// it costs tightening, not validity, and `build_body` refuses the model.
 std::optional<RowBounds> linear_part_bounds(const NlConstraint& c, std::size_t n_cols) {
     if (c.linear.empty()) {
         return std::nullopt;
@@ -513,12 +492,9 @@ std::optional<double> constant_part(const NlExpr& e) {
     return std::nullopt;
 }
 
-/// The linear rows, which propagation reads:
-/// `linear_part_bounds` of a row with no nonlinear part, or one whose nonlinear
-/// part is a lone constant `k` (every linear row of an AMPL export, #342 review
-/// 2, #344), read as `lo - k <= linear <= hi - k`. Activity arithmetic does not
-/// apply to any other row. Propagation only reads them; the row itself is built
-/// verbatim.
+/// The rows propagation reads: `linear_part_bounds` of a row whose nonlinear
+/// part is empty or a lone constant `k` (every linear row of an AMPL export,
+/// #342, #344), as `lo - k <= linear <= hi - k`. The row is built verbatim.
 std::optional<RowBounds> linear_row(const NlConstraint& c, std::size_t n_cols) {
     const std::optional<double> k = constant_part(c.nonlinear);
     if (!k.has_value()) {
@@ -537,13 +513,9 @@ std::optional<RowBounds> linear_row(const NlConstraint& c, std::size_t n_cols) {
     return rb;
 }
 
-/// Derive implied column bounds from the linear rows (`linear_row`). A row
-/// with a non-constant nonlinear part is skipped: activity arithmetic does not
-/// apply to it, and omitting a row only costs tightening, never validity.
-/// Nonlinear propagation is deliberately out of scope here.
-///
-/// Terms are packed into two flat arrays the caller owns for the duration, and
-/// the rows are handed to propagation as views into them rather than as copies.
+/// Derive implied column bounds from the linear rows (`linear_row`); other rows
+/// are skipped (activity arithmetic does not apply; costs tightening, not
+/// validity). Rows are views into two flat local arrays, not copies.
 BoundPropagationStats tighten_column_bounds(const NlProblem& prob, const NlToModelOptions& opts,
                                             std::vector<double>& lb, std::vector<double>& ub,
                                             const std::vector<uint8_t>& integral) {
@@ -551,8 +523,8 @@ BoundPropagationStats tighten_column_bounds(const NlProblem& prob, const NlToMod
     std::vector<double> coefs;
     std::vector<LinearRow> rows;
     rows.reserve(prob.constraints.size());
-    // (start, nnz) per accepted row, resolved to pointers once `cols`/`coefs`
-    // have stopped growing — they reallocate as rows are appended.
+    // (start, nnz) per row, resolved to pointers only once `cols`/`coefs` stop
+    // growing, since they reallocate.
     std::vector<std::pair<std::size_t, int32_t>> spans;
     spans.reserve(prob.constraints.size());
     for (const NlConstraint& c : prob.constraints) {
@@ -590,10 +562,9 @@ struct ColumnBoxes {
     std::vector<uint8_t> integral;
 };
 
-/// The declared column boxes, tightened by propagation when it is enabled. Runs
-/// before variable creation so the derived box is what the engine sees; a bound
-/// propagation derives is entailed by the constraints, so from there on it is
-/// treated exactly like one the file declared.
+/// The declared column boxes, tightened by propagation when it is enabled.
+/// Runs before variable creation; a derived bound is entailed, so it is then
+/// treated like a declared one.
 ColumnBoxes column_boxes(const NlProblem& prob, const NlToModelOptions& opts,
                          BoundPropagationStats& stats) {
     const auto n_cols = static_cast<std::size_t>(prob.n_vars);
@@ -603,10 +574,8 @@ ColumnBoxes column_boxes(const NlProblem& prob, const NlToModelOptions& opts,
     box.integral.assign(n_cols, 0);
     for (std::size_t j = 0; j < n_cols; ++j) {
         if (j < prob.var_bounds.size()) {
-            // A NaN bound is "no bound" here, as lo_missing/hi_missing already read
-            // it. Handing one to propagate_bounds would throw, and io_nl.h
-            // promises to skip a malformed file rather than throw out of the
-            // adapter.
+            // NaN means "no bound", as lo_missing/hi_missing read it; must be
+            // mapped, else propagate_bounds throws (io_nl.h: skip, don't throw).
             const double declared_lb = prob.var_bounds[j].lower;
             const double declared_ub = prob.var_bounds[j].upper;
             box.lb[j] = std::isnan(declared_lb) ? -kNlInf : declared_lb;
@@ -621,33 +590,27 @@ ColumnBoxes column_boxes(const NlProblem& prob, const NlToModelOptions& opts,
     const std::vector<double> raw_ub = box.ub;
     stats = tighten_column_bounds(prob, opts, box.lb, box.ub, box.integral);
     if (stats.infeasible) {
-        // Propagation proved the linear part empty. That is either a
-        // genuinely infeasible instance or numerical trouble; either way the
-        // honest thing is to hand the search the box the file declared and
-        // let it report what it finds, rather than a derived empty one.
+        // An empty linear part (infeasible or numerical trouble): search the
+        // declared box rather than a derived empty one.
         box.lb = raw_lb;
         box.ub = raw_ub;
-        // Nothing was applied, so the counts must not say otherwise; only
-        // the verdict survives.
+        // Nothing was applied: only the verdict survives.
         stats = BoundPropagationStats{};
         stats.infeasible = true;
     }
     return box;
 }
 
-/// One CBLS variable built from one NL column, and whether a clamp had to narrow
-/// it. The flag travels with the handle because the caller counts *columns* that
-/// were narrowed, not narrowings: the int_inf_clamp fallback and the int32 clip
-/// can both bite on the same column.
+/// One CBLS variable built from one NL column, and whether a clamp narrowed it;
+/// the caller counts narrowed columns, not narrowings (the int_inf_clamp
+/// fallback and the int32 clip can both bite on one column).
 struct ColumnVar {
     int32_t handle = 0;
     bool clamped = false;
 };
 
-/// Map one NL column onto an Int (discrete) or Float variable. Integer/binary NL
-/// columns become Int so the search respects integrality; everything else is a
-/// Float. `discrete` comes from the NL header counts plus Gay's variable
-/// ordering (see nl_reader.cpp).
+/// Map one NL column onto an Int (discrete, from the header counts and Gay's
+/// ordering in nl_reader.cpp) or a Float variable.
 ColumnVar add_column(Model& m, int32_t j, bool discrete, double box_lb, double box_ub,
                      const NlToModelOptions& opts) {
     ColumnVar out;
@@ -665,31 +628,24 @@ ColumnVar add_column(Model& m, int32_t j, bool discrete, double box_lb, double b
         out.handle = m.float_var(lb, ub, name);
         return out;
     }
-    // Tighten to the integers inside [lb, ub]. A bound that exists —
-    // declared or derived — is always honoured; only a genuinely
-    // infinite one falls back to int_inf_clamp, since a ±1e9 integer box
-    // is not a searchable domain.
-    // Propagated, not as-declared: a derived bound is entailed, so it
-    // rightly suppresses the unsound int_inf_clamp fallback.
-    // The fallback is placed relative to the other side once it is rounded to
-    // the integers, as in the Float case (#357).
+    // Round inward to the integers. Only a missing side (after propagation,
+    // whose bounds are entailed) falls back to int_inf_clamp, since a ±1e9
+    // integer box is not searchable; placed relative to the rounded other
+    // side, as for Float (#357).
     const double fin_lb = std::ceil(lb - 1e-9);
     const double fin_ub = std::floor(ub + 1e-9);
     const double ilb = no_lb ? fallback_lo(no_ub ? kNlInf : fin_ub, opts.int_inf_clamp) : fin_lb;
     const double iub = no_ub ? fallback_hi(no_lb ? -kNlInf : fin_lb, opts.int_inf_clamp) : fin_ub;
     const bool int_clamped = no_lb || no_ub;
-    // A finite bound is honoured however wide, so one beyond the int
-    // range arrives here unclipped and would make the casts below UB.
-    // `Model::int_var` takes an int; that representational limit narrows
-    // the column, so it counts as clamped too.
+    // A finite bound may lie beyond the int range: clip, else the casts below
+    // are UB. A narrowing, so it counts as clamped.
     constexpr auto kIntLo = static_cast<double>(std::numeric_limits<int>::min());
     constexpr auto kIntHi = static_cast<double>(std::numeric_limits<int>::max());
     const double clipped_lb = std::min(std::max(ilb, kIntLo), kIntHi);
     double clipped_ub = std::min(std::max(iub, kIntLo), kIntHi);
     out.clamped = int_clamped || clipped_lb != ilb || clipped_ub != iub;
-    // Bounds that admit no integer (degenerate) collapse to the single
-    // point clipped_lb, so the model still closes; the row's constraints will
-    // register the violation rather than the reader silently dropping it.
+    // Bounds admitting no integer collapse to the point clipped_lb, so the
+    // model still closes; the rows register the violation, not the reader.
     clipped_ub = std::max(clipped_lb, clipped_ub);
     out.handle = m.int_var(static_cast<int>(clipped_lb), static_cast<int>(clipped_ub), name);
     return out;
