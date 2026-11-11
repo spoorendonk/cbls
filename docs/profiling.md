@@ -345,7 +345,7 @@ example.
   a clean run — grep the output for `runtime error`. Add
   `UBSAN_OPTIONS=halt_on_error=1` to turn findings into failures.
 - Use `-j4` and `-LE slow`, not `-j$(nproc)`: ASan multiplies both memory and
-  runtime, and the `[slow]` CHPED solves under ASan are how you exhaust a shared
+  runtime, and the `[slow]` UC-CHPED solves under ASan are how you exhaust a shared
   box.
 - Leave `CBLS_BUILD_PYTHON` off. Importing an ASan-instrumented extension module
   into a clean interpreter needs `LD_PRELOAD` of `libasan`, which is its own
@@ -359,7 +359,7 @@ At `f511b8d`, `-DCBLS_SANITIZE=address,undefined,float-cast-overflow` puts the
 flag on every translation unit — 155 of 155, `grep -c fsanitize
 build-asan/compile_commands.json` against `grep -c '"file"'` on the same file — and links both `libasan.so.8` and
 `libubsan.so.1`. `ctest --test-dir build-asan -LE slow -j3` (`-j3` rather than the recipe's
-`-j4`, because the box was shared) was **302/302 green in 84.5s** (the fast set was 302 tests at that commit; it is 796 now — this is a record of that run, not a current count), with zero `runtime error` lines, zero AddressSanitizer reports and
+`-j4`, because the box was shared) was **302/302 green in 84.5s** (the fast set was 302 tests at that commit; it is 791 now — this is a record of that run, not a current count), with zero `runtime error` lines, zero AddressSanitizer reports and
 no leaks — LeakSanitizer is on by default and would have said otherwise. Check
 the flags reached the compiler before trusting a green run: a mis-spelled
 `CBLS_SANITIZE` value fails at compile time, but an option that silently did not

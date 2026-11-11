@@ -102,7 +102,6 @@ A one-screen map of the pipeline, its files, the extension points, build targets
 | `cbls_cli` | `src/cli.cpp` | CLI executable (output name `cbls`) |
 | `cbls_tests` | `tests/*.cpp` | Catch2 test suite |
 | `cbls_simple` | `examples/simple.cpp` | Minimal modeling example |
-| `cbls_chped` | `examples/chped.cpp` | CHPED modeling example over `benchmarks/chped/` |
 | `cbls_uc_chped` | `benchmarks/uc-chped/` | UC-CHPED benchmark runner |
 | `cbls_mipfeas` | `benchmarks/mipfeas/` | MIPfeas runner (one instance per process) |
 | `cbls_minlplib` | `benchmarks/minlplib/` | MINLPLib benchmark runner |

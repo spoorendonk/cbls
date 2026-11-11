@@ -54,7 +54,7 @@ m.close();
 ```bash
 cmake -B build
 cmake --build build
-ctest --test-dir build    # 806 C++ tests, ~25s (add -LE slow for the fast 796, ~12s)
+ctest --test-dir build    # 799 C++ tests, ~25s (add -LE slow for the fast 791, ~12s)
 ```
 
 The build type defaults to `Release`; pass `-DCMAKE_BUILD_TYPE=Debug` to override
@@ -136,7 +136,6 @@ The other directories under `benchmarks/` are **not** comparative benchmarks:
 |-----------|--------|------------|
 | `benchmarks/cvrp/` | `cbls_cvrp` | the worked example for `List` variables: CVRPLIB X set, scored as gap to the best-known values, with PyVRP and OR-Tools as context. Unpublished until #204 |
 | `benchmarks/setcover/` | `cbls_setcover` | the worked example for `Set` variables: ten OR-Library instances under both a `Set` and a Bool encoding. Its result is a documented limitation, not a comparative claim |
-| `benchmarks/chped/` | none | CHPED dispatch model, data and SCIP reference. `examples/chped.cpp` uses the model; `reference_solve.py --uc` is UC-CHPED's SCIP reference |
 | `benchmarks/common/` | none | headers and Python helpers the runners share |
 | `benchmarks/instances/miplib-fj/` | none | a retired benchmark's instances, kept because tests read them |
 

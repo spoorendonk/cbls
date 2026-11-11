@@ -109,14 +109,13 @@ Because they block, `ruff` and `mypy` are **pinned exactly** in
 turns "these files are at zero" into "at zero on whichever version this checkout
 resolved".
 
-**Two naming waivers exist, scoped per file and per rule** in
-`pyproject.toml`'s `[tool.ruff.lint.per-file-ignores]`: `N803`/`N806` on
-`benchmarks/chped/reference_solve.py` and `N806` on
-`benchmarks/instances/uc-chped/data.py`. `P`, `A`, `T` and `base_T` are the
-published unit-commitment formulation's own symbols, and those solvers exist to
-be audited line-by-line against the paper whose numbers they reproduce. Same
-argument, and the same shape, as `src/io/.clang-tidy` waiving the naming check
-for the vendored readers. A third waiver needs the same standard. A directory
+**One naming waiver exists, scoped per file and per rule** in
+`pyproject.toml`'s `[tool.ruff.lint.per-file-ignores]`: `N806` on
+`benchmarks/instances/uc-chped/data.py`. `base_T` is the published
+unit-commitment formulation's own symbol, and that data exists to be audited
+line-by-line against the paper whose numbers it reproduces. Same argument, and
+the same shape, as `src/io/.clang-tidy` waiving the naming check for the
+vendored readers. A second waiver needs the same standard. A directory
 exclusion is no substitute: `mypy` follows imports, so an excluded module that a
 gated file imports is checked anyway (#154, #155).
 

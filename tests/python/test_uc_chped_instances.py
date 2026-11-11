@@ -3,7 +3,7 @@
 #148 settled it against the authors' GPL `ucp_data.py` (FIDELITY.md section
 7; its script, `instance_identity.py`, is in git history). #148 found ucp40's units 19-20 capped at
 500 MW where the source has 550, and relabelled its cited rows as bounds for a
-related system; #193 corrected the data in `benchmarks/chped/` and removed the
+related system; #193 corrected the data (now `benchmarks/uc-chped/chped_data.py`) and removed the
 relabel. What this pins is the corrected state: the committed instances carry
 the source's limits, and the runner scores ucp40 against its own Table 2 bounds
 exactly as it does ucp13. It also pins #194: no committed instance asks for

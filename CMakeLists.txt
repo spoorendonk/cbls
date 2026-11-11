@@ -361,11 +361,6 @@ if(CBLS_BUILD_EXAMPLES)
     add_executable(cbls_simple examples/simple.cpp)
     target_link_libraries(cbls_simple PRIVATE cbls_lib)
     cbls_enable_warnings(cbls_simple)
-
-    add_executable(cbls_chped examples/chped.cpp)
-    target_link_libraries(cbls_chped PRIVATE cbls_lib)
-    cbls_enable_warnings(cbls_chped)
-    target_include_directories(cbls_chped PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 endif()
 
 # Benchmarks

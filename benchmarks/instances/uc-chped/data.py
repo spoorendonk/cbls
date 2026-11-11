@@ -2,7 +2,7 @@
 
 The `ucp*.jsonl` files beside this module are DERIVED from it, by
 `gen_jsonl.py` in this directory -- a one-shot generator nothing imports, so
-grep will not connect the three. They are derived from `benchmarks/chped/data.py`
+grep will not connect the three. They are derived from `benchmarks/uc-chped/chped_data.py`
 as well, which this module loads BY PATH below for the 13- and 40-unit cost
 coefficients, so a change there goes stale here too. `benchmarks/uc-chped/data.h::load_jsonl` reads
 those files; regenerate them from the repo root with
@@ -22,13 +22,13 @@ benchmarks/uc-chped/FIDELITY.md section 7):
   table annotates each unit with its "corresp. in kazarlis").
 - ucp40 -- IDENTICAL to the authors' ucp40(). Until #193 it was not: P_max of
   units 19 and 20 (1-indexed) was 500 here against the source's 550, an error
-  in CHPED_40UNIT (benchmarks/chped/data.py), which this module loads for its
+  in CHPED_40UNIT (benchmarks/uc-chped/chped_data.py), which this module loads for its
   cost data. With it corrected, the exact 1-period optimum reproduces Table 2's
   55644.79 and Table 2's ucp40 bounds are bounds for this instance.
 - ucp100/ucp200 and extend_horizon() -- this repository's construction; the
   authors publish nothing for them and no bounds are claimed.
 
-Costs and limits reach this module sideways, from benchmarks/chped/data.py
+Costs and limits reach this module sideways, from benchmarks/uc-chped/chped_data.py
 (Sinha 13-unit, Taipower 40-unit), rather than from ucp_data.py itself; the UC
 parameters (min_on, min_off, t_cold, startup costs, initial state) are the
 Kazarlis 10-unit system's, assigned per unit as the authors assign them.
@@ -41,9 +41,9 @@ import importlib.util
 import os
 from typing import Any
 
-_chped_path = os.path.join(os.path.dirname(__file__), "..", "..", "chped", "data.py")
+_chped_path = os.path.join(os.path.dirname(__file__), "..", "..", "uc-chped", "chped_data.py")
 #: A UC-CHPED instance: a heterogeneous mapping of scalars and per-unit lists,
-#: the same shape `benchmarks/chped/data.py` defines.
+#: the same shape `benchmarks/uc-chped/chped_data.py` defines.
 Instance = dict[str, Any]
 
 _spec = importlib.util.spec_from_file_location("chped_data", _chped_path)

@@ -10,7 +10,7 @@ Each benchmark follows the same pattern:
 - `*.cpp` — runner executable
 - a reference solver script, per benchmark:
   - `minlplib`: `reference_solve.py` (SCIP/PySCIPOpt)
-  - `uc-chped`: `benchmarks/chped/reference_solve.py --uc` (SCIP/PySCIPOpt)
+  - `uc-chped`: `reference_solve.py` (SCIP/PySCIPOpt)
   - `mipfeas`: `cpsat_solve.py` (CP-SAT)
   - `cvrp`: `reference_solve.py` (PyVRP) and `ortools_solve.py` (OR-Tools)
   - `setcover`: none; its optima are proven and pinned
@@ -18,9 +18,9 @@ Each benchmark follows the same pattern:
 
 Not every benchmark carries every file: `minlplib` and `mipfeas` read instances
 from disk rather than from a `data.h`, and no benchmark ships a custom
-`InnerSolverHook`. `benchmarks/chped/` has no runner of its own: its model
-pattern is consumed by `examples/chped.cpp` and `tests/test_chped.cpp`, and its
-`reference_solve.py` is UC-CHPED's live SCIP reference.
+`InnerSolverHook`. The CHPED dispatch model, its 4-, 7- and 24-unit data, its
+example and tests were removed by #385 (in git history at `73ee2690`); the 13-
+and 40-unit data UC-CHPED builds on is `benchmarks/uc-chped/chped_data.py`.
 
 ## Benchmark priority
 
@@ -156,14 +156,14 @@ loop, review and pushing. The steps specific to a benchmark:
 
 2. **Find a reference solver.** Implement it in `benchmarks/{name}/`, using SCIP
    (PySCIPOpt), or another open-source solver if SCIP can't handle the
-   formulation. Follow `benchmarks/chped/reference_solve.py`.
+   formulation. Follow `benchmarks/uc-chped/reference_solve.py`.
 
 3. **Collect best-known results** from papers and competitions, and pin them per
    `docs/measuring.md`.
 
 4. **Implement the CBLS model.** `benchmarks/{name}/data.h` (structs and loaders),
    `benchmarks/{name}/{name}_model.h` (model builder, following
-   `benchmarks/chped/chped_model.h`), a runner `benchmarks/{name}/{name}.cpp` and
+   `benchmarks/uc-chped/uc_model.h`), a runner `benchmarks/{name}/{name}.cpp` and
    Catch2 tests `tests/test_{name}.cpp`, all registered per CLAUDE.md's **CMake**.
    New ops, moves or hooks go in `include/cbls/` and `src/` so every benchmark
    benefits, never as benchmark-specific hacks.

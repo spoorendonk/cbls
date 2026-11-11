@@ -1,30 +1,21 @@
-"""Compare off-the-shelf solvers on CHPED and UC-CHPED benchmark instances.
+"""SCIP reference solve of the UC-CHPED instances.
 
-Runs scipy differential_evolution and PySCIPOpt on dispatch-only CHPED and
-unit commitment UC-CHPED instances. Prints comparison tables with objective
-values, timings, and gaps vs known bounds.
+Runs PySCIPOpt on the 13- and 40-unit unit-commitment instances at 1-24
+periods and prints objective values, timings, and gaps vs the published bounds.
 
-Usage:
-    pip install scipy pyscipopt
-    cd benchmarks/chped
-    python reference_solve.py          # dispatch-only CHPED
-    python reference_solve.py --uc     # UC-CHPED instances
-    python reference_solve.py --all    # both
+Usage (PySCIPOpt is in the `benchmarks` extra):
+    .venv/bin/python benchmarks/uc-chped/reference_solve.py
 """
 
 from __future__ import annotations
 
-import argparse
 import importlib.util
 import math
 import os
-import time
 from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
-from data import CHPED_13UNIT, CHPED_40UNIT
-from scipy.optimize import LinearConstraint, differential_evolution
 
 #: A benchmark instance, as the data modules define it: a heterogeneous mapping
 #: of scalars and per-unit lists. `Any` rather than a TypedDict because the
@@ -63,102 +54,6 @@ _spec.loader.exec_module(_uc_data)
 UCP_13UNIT = _uc_data.UCP_13UNIT
 UCP_40UNIT = _uc_data.UCP_40UNIT
 make_subinstance = _uc_data.make_subinstance
-
-
-def cost_function(P: Any, inst: Instance) -> float:
-    """Total valve-point cost for dispatch vector P."""
-    total = 0.0
-    for i in range(inst["n_units"]):
-        p = P[i]
-        total += (
-            inst["a"][i]
-            + inst["b"][i] * p
-            + inst["c"][i] * p * p
-            + abs(inst["d"][i] * math.sin(inst["e"][i] * (inst["P_min"][i] - p)))
-        )
-    return total
-
-
-def solve_scipy(inst: Instance) -> tuple[float, float, bool]:
-    """Solve with scipy differential_evolution."""
-    n = inst["n_units"]
-    bounds = [(inst["P_min"][i], inst["P_max"][i]) for i in range(n)]
-    A = np.ones((1, n))
-    constraint = LinearConstraint(A, lb=inst["demand"][0], ub=np.inf)
-
-    t0 = time.time()
-    result = differential_evolution(
-        cost_function,
-        bounds,
-        args=(inst,),
-        constraints=constraint,
-        seed=42,
-        maxiter=1000,
-        tol=1e-12,
-        polish=True,
-    )
-    elapsed = time.time() - t0
-    return result.fun, elapsed, result.success
-
-
-def solve_scip(inst: Instance, time_limit: float) -> tuple[float, float, float]:
-    """Solve with PySCIPOpt (global optimizer)."""
-    from pyscipopt import Model, quicksum, sin  # noqa: E401
-
-    n = inst["n_units"]
-    m = Model(inst["name"])
-    m.setRealParam("limits/time", time_limit)
-    m.hideOutput()
-
-    P = [m.addVar(f"P_{i}", lb=inst["P_min"][i], ub=inst["P_max"][i]) for i in range(n)]
-
-    # Demand constraint
-    m.addCons(quicksum(P[i] for i in range(n)) >= inst["demand"][0])
-
-    # SCIP doesn't support nonlinear objectives directly.
-    # Model: min z  s.t.  z = sum(a_i + b_i*P_i + c_i*P_i^2 + t_i)
-    #         t_i >= d_i*sin(e_i*(Pmin_i - P_i)),  t_i >= -d_i*sin(...)
-    T = []
-    for i in range(n):
-        valve = inst["d"][i] * sin(inst["e"][i] * (inst["P_min"][i] - P[i]))
-        t = m.addVar(f"t_{i}", lb=0.0)
-        m.addCons(t >= valve)
-        m.addCons(t >= -valve)
-        T.append(t)
-
-    z = m.addVar("z", lb=-1e20, ub=1e20)
-    cost_expr = (
-        sum(inst["a"])
-        + quicksum(inst["b"][i] * P[i] for i in range(n))
-        + quicksum(inst["c"][i] * P[i] * P[i] for i in range(n))
-        + quicksum(T)
-    )
-    m.addCons(z >= cost_expr)
-    m.setObjective(z)
-    m.optimize()
-
-    status = m.getStatus()
-    if status in ("optimal", "bestsollimit", "timelimit") and m.getNSols() > 0:
-        obj = m.getObjVal()
-        gap = m.getGap()
-    else:
-        obj = float("inf")
-        gap = float("inf")
-    solve_time = m.getSolvingTime()
-    return obj, solve_time, gap
-
-
-# CBLS SA results from our solver (for comparison). Historical: the SA-era
-# engine, and the 40-unit row predates #193's P_max fix (units 19-20 at 500).
-CBLS_RESULTS = {
-    "13-unit": {"obj": 18727.0, "time": 5.0},
-    "40-unit": {"obj": 128391.0, "time": 15.0},
-}
-
-TIME_LIMITS = {
-    "13-unit": 30.0,
-    "40-unit": 120.0,
-}
 
 
 # ---------------------------------------------------------------------------
@@ -395,58 +290,6 @@ def solve_uc_scip(
 # ---------------------------------------------------------------------------
 
 
-def main_chped() -> None:
-    """Original dispatch-only CHPED benchmark."""
-    print(
-        f"{'Instance':<12} {'Solver':<12} {'Objective':>12} "
-        f"{'Time(s)':>9} {'Gap%':>8} {'vs BKS':>8}"
-    )
-    print("-" * 65)
-
-    for inst in [CHPED_13UNIT, CHPED_40UNIT]:
-        name = inst["name"]
-        bks = inst["known_optimum"]
-        time_limit = TIME_LIMITS[name]
-        rows = []
-
-        # scipy
-        try:
-            obj, elapsed, success = solve_scipy(inst)
-            pct = (obj - bks) / bks * 100
-            rows.append((name, "scipy DE", f"{obj:.2f}", f"{elapsed:.2f}", "-", f"+{pct:.2f}%"))
-        except Exception as e:
-            rows.append((name, "scipy DE", "FAILED", "-", "-", str(e)[:20]))
-
-        # SCIP
-        try:
-            obj, elapsed, gap = solve_scip(inst, time_limit)
-            pct = (obj - bks) / bks * 100
-            gap_str = f"{gap * 100:.2f}%" if gap < float("inf") else "-"
-            rows.append((name, "SCIP", f"{obj:.2f}", f"{elapsed:.2f}", gap_str, f"+{pct:.2f}%"))
-        except ImportError:
-            rows.append((name, "SCIP", "not installed", "-", "-", "-"))
-        except Exception as e:
-            rows.append((name, "SCIP", "FAILED", "-", "-", str(e)[:20]))
-
-        # CBLS SA
-        cbls = CBLS_RESULTS[name]
-        pct = (cbls["obj"] - bks) / bks * 100
-        rows.append(
-            (
-                name,
-                "CBLS SA (archived)",
-                f"{cbls['obj']:.2f}",
-                f"{cbls['time']:.2f}",
-                "-",
-                f"+{pct:.2f}%",
-            )
-        )
-
-        for row in rows:
-            print(f"{row[0]:<12} {row[1]:<12} {row[2]:>12} {row[3]:>9} {row[4]:>8} {row[5]:>8}")
-        print()
-
-
 UC_TIME_LIMITS = {
     1: 60.0,
     3: 120.0,
@@ -456,8 +299,8 @@ UC_TIME_LIMITS = {
 }
 
 
-def main_uc() -> None:
-    """UC-CHPED benchmark."""
+def main() -> None:
+    """Solve each 13- and 40-unit sub-instance with SCIP and print the table."""
     print("\n=== UC-CHPED (Unit Commitment with Valve-Point Effects) ===\n")
     print(
         f"{'Instance':<16} {'Periods':>7} {'SCIP Obj':>12} {'Time(s)':>9} "
@@ -504,21 +347,6 @@ def main_uc() -> None:
             lb, ub = base_inst["known_bounds"][n_periods]
             gap_pct = (ub - lb) / lb * 100 if lb > 0 else 0
             print(f"{base_inst['name']:<16} {n_periods:>7} {lb:>12,} {ub:>12,} {gap_pct:>7.2f}%")
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(description="CHPED/UC-CHPED reference solvers")
-    parser.add_argument("--uc", action="store_true", help="Run UC-CHPED instances")
-    parser.add_argument("--all", action="store_true", help="Run both CHPED and UC-CHPED")
-    args = parser.parse_args()
-
-    if args.all:
-        main_chped()
-        main_uc()
-    elif args.uc:
-        main_uc()
-    else:
-        main_chped()
 
 
 if __name__ == "__main__":

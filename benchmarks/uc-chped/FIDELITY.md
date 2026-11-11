@@ -58,7 +58,7 @@ The two valve-point terms `(e_i, f_i)` are stored in the instance as
 `(d, e)` in our codebase — i.e. our `d` is the *amplitude* and our `e` is
 the *frequency*. (See `benchmarks/instances/uc-chped/data.py`,
 docstring and column `[d, e]`, and the cost expression in
-`reference_solve.py:45` and in our `verify_uc_chped.h:176`.)
+`reference_solve.py`'s `_unit_breakpoints` and in our `verify_uc_chped.h:176`.)
 
 Total fuel = `Σ_t Σ_i y[i,t] · F_i(P[i,t])`.
 
@@ -165,7 +165,7 @@ and flags `was_on = max(y[τ] for τ in window) > 0.5`.
 
 **Deviation #1 — `t_cold = 0` semantics.**
 - Our model (line 102–104): empty window ⇒ always cold cost.
-- SCIP reference (`reference_solve.py:233–236`): empty window ⇒ always
+- SCIP reference (`reference_solve.py`'s `_add_startup_cost_constraints`): empty window ⇒ always
   hot cost.
 - Our verifier (`verify_uc_chped.h:184–193`): empty window ⇒ `was_on`
   defaults to false ⇒ cold cost (matches our model).
@@ -181,7 +181,7 @@ every startup cold (§7.4). On the proven `ucp13`-3p and `ucp40`-1p optima the
 difference is 90 and 240 (§5.1).
 
 **Deviation #2 — pre-horizon lookback for `y_prev = 0` units.**
-- SCIP reference (`reference_solve.py:251–255`): if a unit was OFF for
+- SCIP reference (`reference_solve.py`'s `_hot_start_lookback`): if a unit was OFF for
   `n_init` periods but `n_init + t < t_cold`, treats the unit as
   potentially hot-startable.
 - Our model and verifier ignore this and always treat
@@ -279,14 +279,14 @@ column in comparison output.
 
 ## 4. SCIP reference — what it actually solves
 
-Source: `benchmarks/chped/reference_solve.py:138–348` (`solve_uc_scip`).
+Source: `benchmarks/uc-chped/reference_solve.py` (`solve_uc_scip`).
 
 ### 4.1 Approximation level
 
 - Valve-point cost is approximated by a piecewise-linear envelope with
   `n_pwl_segments=50` breakpoints over `[P_min, P_max]` per
   (unit, period). Encoded as the incremental SOS2-like formulation
-  with binary indicators (`reference_solve.py:269–331`).
+  with binary indicators (`reference_solve.py`'s `_add_pwl_cost`).
 - Min up/down: same rolling-window form as our model.
 - Startup cost: hot/cold via auxiliary binary `w[u,t]`, with the
   pre-horizon lookback handling described in §2.3 (Deviation #1, #2).
@@ -437,9 +437,9 @@ each `ucp13`/`ucp40` unit with its "corresp. in kazarlis" unit, and our
 reserve profiles** are the authors' tables verbatim.
 
 `ucp40` takes its costs and limits from `CHPED_40UNIT` in
-`benchmarks/chped/data.py` (and its C++ twin `benchmarks/chped/data.h`), which
+`benchmarks/uc-chped/chped_data.py`, which
 had `P_max = 500` for units 19-20 until #193 set them to the source's 550. The
-authors' `eld40` optimum at 10500 MW (their Table 1, 121412.53, `chped`'s
+authors' `eld40` optimum at 10500 MW (their Table 1, 121412.53, `CHPED_40UNIT`'s
 `known_optimum`) dispatches those units at 511.28 MW each
 (`RESULTS/eld40-10500.txt`). `CHPED_40UNIT` is now field-identical to the
 authors' `eld40()` as well. `ucp100`/`ucp200` inherit the same values through
@@ -560,13 +560,14 @@ capacity-short period in any committed instance. The runner scores `ucp40`
 against its own bounds as it does `ucp13`; a `ucp40` result measured before
 #193 solved the old instance and has no gap against them.
 
-The same data is the `chped` 40-unit dispatch instance. Its `known_optimum`
+The same data was the `chped` 40-unit dispatch instance (removed by #385; in git
+history at `73ee2690`). Its `known_optimum`
 (121412, rounded down from the authors' 121412.53, whose `eld40` log closes
 LB/UB to 0.003) was not attainable on the old data, because its dispatch puts
 units 19-20 at 511.28 MW. That dispatch is now feasible here, so the value is
 attainable; it is the proven optimum of the authors' `=` instance, while our
-model's demand row is `>=`, a relaxation not certified to share it (§7.4). The `chped` 40-unit test's iteration-bounded run does not attain
-it (121635.52, +0.18 %); the test asserts only `objective >= known_optimum`
+model's demand row is `>=`, a relaxation not certified to share it (§7.4). The `chped` 40-unit test's iteration-bounded run did not attain
+it (121635.52, +0.18 %); the test asserted only `objective >= known_optimum`
 and `< 140000`.
 
 Reproduce (from the repository root; fetch the upstream files and restore the

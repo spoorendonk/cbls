@@ -91,7 +91,7 @@ instance code,
 | Field | `ucp13` | `ucp40` |
 |---|---|---|
 | Cost coefficients `a b c d e`, `P_min` | sourced — identical to the authors' | sourced — identical to the authors' |
-| `P_max` | sourced — identical | sourced — identical since #193 (units 19-20 were 500 here until then, against the source's 550: an error in `benchmarks/chped/data.py`) |
+| `P_max` | sourced — identical | sourced — identical since #193 (units 19-20 were 500 here until then, against the source's 550: an error in `benchmarks/chped/data.py`, now `benchmarks/uc-chped/chped_data.py`) |
 | Kazarlis mapping (min up/down, `t_cold`, startup costs, initial state) | sourced — the authors' own assignment | sourced — the authors' own `i % 10` |
 | Demand and reserve profile | sourced — the authors' table verbatim | sourced — the authors' table verbatim |
 
@@ -154,8 +154,8 @@ exact solve (11701.28 and 38849.84, §7 of `FIDELITY.md`).
 
 **The 40-unit rows describe this repository's `ucp40` since #193.** #148
 found that ours capped units 19-20 at 500 MW where the authors' instance has
-550; #193 corrected the two values (in `benchmarks/chped/data.py`, which
-`ucp40`, `ucp100` and `ucp200` all draw from, and its C++ twin `data.h`).
+550; #193 corrected the two values (in the 40-unit data `ucp40`, `ucp100` and
+`ucp200` all draw from, now `benchmarks/uc-chped/chped_data.py`).
 `ucp40` is now the authors' instance field for field, and an exact solve
 reproduces its proven 1-period optimum (55644.79). A `ucp40` result measured
 before #193, such as the budget-defence traces, ran the old instance and has
@@ -212,7 +212,7 @@ measurement, on the pre-#193 instances, is on #190.
 
 ## Reference Solver
 
-The reference solver (`benchmarks/chped/reference_solve.py --uc`) uses PySCIPOpt to solve a MIP formulation:
+The reference solver (`benchmarks/uc-chped/reference_solve.py`) uses PySCIPOpt to solve a MIP formulation:
 
 - Binary variables for commitment ($y$), startup ($su$), and shutdown ($sd$)
 - **Piecewise-linear approximation** of the valve-point cost function using 50 segments per unit with an incremental (SOS2-like) formulation
@@ -223,7 +223,7 @@ The PWL approximation is what makes the reference a MIP: a MIP cannot carry the 
 
 For an exact check, #148's `instance_identity.py` (in git history at `047f2d4c`; FIDELITY.md §7) solves the proven-optimum cases as a SCIP MINLP with the true `sin` term (no linearisation) and compares the instance data against the authors' code.
 
-See [`benchmarks/chped/reference_solve.py`](../../../benchmarks/chped/reference_solve.py) for the full implementation.
+See [`benchmarks/uc-chped/reference_solve.py`](../../../benchmarks/uc-chped/reference_solve.py) for the full implementation.
 
 ## Results
 
@@ -309,7 +309,7 @@ RESULTS/seed<N>/comparison.csv --seed N --commit SHA --verify`, and gives one li
 per (instance, horizon): the budget, the seeds that solved it, and the gap to
 Pedroso's lower bound and one-hour incumbent as median [min, max] over those
 seeds, beside Pedroso's own gap. Instances Pedroso did not publish show their
-objective and no gap. There is no SCIP column, because `reference_solve.py --uc`
+objective and no gap. There is no SCIP column, because `reference_solve.py`
 writes no table. The scorer refuses an incomplete roster, a row failing
 verification or never verified, mixed commits, search configurations (thread count
 included) or tolerances, and one horizon at two budgets; the module's docstring
@@ -466,5 +466,6 @@ The per-horizon table, the 600 s probe and the smoke objectives are on
 | [`benchmarks/uc-chped/data.h`](../../../benchmarks/uc-chped/data.h) | C++ data structures and JSONL loader |
 | [`benchmarks/uc-chped/uc_model.h`](../../../benchmarks/uc-chped/uc_model.h) | CBLS model builder |
 | [`benchmarks/uc-chped/uc_chped.cpp`](../../../benchmarks/uc-chped/uc_chped.cpp) | Benchmark runner executable |
-| [`benchmarks/chped/reference_solve.py`](../../../benchmarks/chped/reference_solve.py) | Reference solver (SCIP MIP + scipy) |
+| [`benchmarks/uc-chped/reference_solve.py`](../../../benchmarks/uc-chped/reference_solve.py) | Reference solver (SCIP MIP) |
+| [`benchmarks/uc-chped/chped_data.py`](../../../benchmarks/uc-chped/chped_data.py) | 13- and 40-unit cost and limit data |
 | [`tests/test_uc_chped.cpp`](../../../tests/test_uc_chped.cpp) | Catch2 unit tests |

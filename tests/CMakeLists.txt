@@ -26,7 +26,6 @@ add_executable(cbls_tests
     test_linear_jump.cpp
     test_perturb.cpp
     test_unbounded_domain.cpp
-    test_chped.cpp
     test_uc_chped.cpp
     test_uc_chped_trace.cpp
     test_inner_solver.cpp
@@ -69,9 +68,9 @@ include(Catch)
 # slow solves into one serial invocation would make the full suite far slower
 # than it is.
 #
-# Measured at Release: the 6 [slow]-tagged tests account for ~46s of the suite's
-# aggregate (summed per-test) time; with `-j$(nproc)` the full run is ~25s of
-# wall clock. The remaining 796 (789 discovered, plus the
+# Measured at Release: the 4 [slow]-tagged tests account for ~12s of the suite's
+# aggregate (summed per-test, at -j4) time; with `-j$(nproc)` the full run is ~25s of
+# wall clock. The remaining 791 (784 discovered, plus the
 # seven hand-registered tests that carry no slow label --
 # timing_structural_batch_deadline, hang_guard_iteration_only_portfolio,
 # hang_guard_novelty_zero_move_batch, hang_guard_nonpositive_batch_iterations
@@ -80,19 +79,17 @@ include(Catch)
 # finish in ~12s with `-j`, the `ctest -LE slow` loop to run before committing (no hook runs it).
 # pre-push still runs everything.
 #
-# Re-measured 2026-09-26 at 566 tests: only ONE of
-# the six still exceeds the
-# ~10s tagging threshold (CHPED 40-unit, 17.2s alone / 17.7s under -j12); the
-# other five are 2.9-6.6s on either basis. The split still buys ~13s, but most
-# of it is that one test. Re-derive before assuming the other five still earn
+# Re-measured 2026-09-26 at 566 tests: of the six then tagged, only CHPED
+# 40-unit (since removed, #385) exceeded the ~10s tagging threshold; the four
+# left were 2.9-6.6s on either basis. Re-derive before assuming they still earn
 # the tag -- "measure both ways before tagging" applies to KEEPING a tag as
 # much as to adding one.
 #
-# The roster is therefore 806 ctest tests: 795 discovered here, the 9
+# The roster is therefore 799 ctest tests: 788 discovered here, the 9
 # hand-registered ones below, and the 2 non-Catch2 shell gate tests the root
-# CMakeLists.txt registers. The 804 Catch2 ones are four more than the 800
+# CMakeLists.txt registers. The 797 Catch2 ones are four more than the 793
 # TEST_CASEs in tests/*.cpp, because the four hang_guard_* tests are both
-# discovered and hand-registered -- see their notes below. `ctest -N -L slow` reports 10, not 6 --
+# discovered and hand-registered -- see their notes below. `ctest -N -L slow` reports 8, not 4 --
 # the three #125 throughput floors and #191's hook deadline carry the slow
 # LABEL without the Catch2 [slow] TAG. Re-derive with `ctest -N`, never by incrementing.
 #
