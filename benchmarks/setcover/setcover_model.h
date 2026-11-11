@@ -58,10 +58,10 @@ struct SetCoverModel {
 
 // One `Set` variable over the columns; one Lambda coverage row per row.
 //
-// Cardinality bound `min(cols, rows)`, valid not tuned: a minimal cover has at
-// most one column per row, and with non-negative costs (OR-Library's are
-// positive) some optimum is minimal. Drop it for signed costs. It matters:
-// `initialize_structured_random` draws the size uniformly from [min, max], so
+// Cardinality bound `min(cols, rows)`, valid not tuned: in a minimal cover each
+// column is the only cover of some row, so it has at most `rows` columns, and
+// with non-negative costs (OR-Library's are positive) some optimum is minimal. Drop it for signed
+// costs. It matters: `initialize_structured_random` draws the size uniformly from [min, max], so
 // without it the search starts near cols/2 and spends its budget shedding.
 inline SetCoverModel build_set_model(const SetCoverInstance& inst) {
     SetCoverModel scm;

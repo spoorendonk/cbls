@@ -99,7 +99,8 @@ struct SearchFlags {
     // `structural_neighbours`). Typed values must be >= 1.
     int64_t neighbours = 0;
     // Objective tie-break (#218), on by default since #226; the cell records it
-    // only when off, so default rows before and after #226 differ only by commit.
+    // only when off, so a pre-#226 default row (tie-break off) has the same
+    // cell as a later one: tell them apart by commit.
     bool objective_tie_break = SearchConfig{}.fj_objective_tie_break;
     // First flag typed per family (indexed by family bit), or nullptr. Set
     // whatever the value, so a flag restated at its default is still refused

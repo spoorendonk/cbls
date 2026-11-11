@@ -5,7 +5,7 @@
 // `threads` is what was asked for (a scorer key); ParallelSearch absorbs a dead
 // worker (e.g. bad_alloc under the driver's cap) and returns the survivors'
 // result, which these columns let the scorer refuse. Single-threaded reports 1
-// of 1; a throw there is `solve_error`. Pure functions, as note_policy.h, so a
+// of 1; a throw there is `solve_error`. Pure functions, as benchmarks/minlplib/note_policy.h, so a
 // test can use a synthesised SearchResult without a production test seam.
 
 #include <cbls/search.h>
