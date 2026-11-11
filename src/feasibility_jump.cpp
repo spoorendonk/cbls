@@ -23,78 +23,39 @@ namespace {
 
 constexpr double kInf = std::numeric_limits<double>::infinity();
 
-// The jump-candidate budgets. `int_jump_candidates` enumerates an Int domain
-// whole up to `kExhaustiveJumpWidth` and otherwise offers a `kJumpGridPoints`
-// grid plus a few local values; the breakpoint candidates (#186) take the same
-// grid, and enumerate whole only up to `kExhaustiveBreakpoints`.
+// Jump-candidate budgets. `int_jump_candidates` enumerates an Int domain whole up to
+// `kExhaustiveJumpWidth`, else offers a `kJumpGridPoints` grid plus a few local values; the
+// breakpoint candidates (#186) take the same grid and enumerate whole only up to
+// `kExhaustiveBreakpoints`.
 //
-// Why the breakpoint cap is the grid's size and not the Int width. Measured
-// with a scratch harness timing compute_var_jump of one variable that sits
-// under the op(s) and in five linear rows `i*x + y <= i*W`, the op's row
-// violated so every candidate is probed; Release, AMD Ryzen 5 5600H (12
-// threads, simon-Legion-5-Pro-16ACH6H), load < 1.5 under an exclusive bench
-// lock, three runs agreeing within ~5%, engine at af0213a. Microseconds per
-// call:
-//
-//   Float under one ceil, edges in domain   32: 38   33 (capped): 38.7
-//                                            64: 41  256: 42  10^6: 43
-//   Int (domain 10^5) under ceil(x / s)      32: 42   33 (capped): 43
-//                                           256: 44  4096: 44
-//   Int index, Element table of n            32: 26   68: 41   69 (capped): 35
-//                                         1000: 40  10^4: 28
-//   K ceil nodes on one Float (shared grid)  K=1: 47  2: 57  4: 78  8: 141
-//   baselines: Int grid, no breakpoint node 12.4; Float reaching no breakpoint
-//   op in a model with one 1.10, same Float in a model without 1.09
-//
-// Every capped path costs ~35-45 us whatever the range, and enumerating 32
-// edges (up to three probes each) costs about the same, so 32 is where
-// enumerating whole stops being free. The earlier two-probes-per-edge form
-// measured 208 us at 256 edges (engine 9c587f1), ~7x the capped path. An
-// Element's own cap (enumerate while the indices are no more than its capped
-// path would offer) sits at the same crossover: 41 us at 68 against 35 capped.
-// K nodes cost ~13 us each beyond the first -- their near edges, which stay
-// per node -- with the grid shared, so no per-variable limit is needed on top.
-// The Int width stays 256 so that no existing model's trajectory moves.
+// The breakpoint cap is the grid's size, not the Int width, by measurement (compute_var_jump on
+// one variable under the op(s) and in five linear rows, all candidates probed; Release, Ryzen 5
+// 5600H, engine af0213a): every capped path costs ~35-45 us whatever the range, and enumerating
+// 32 edges costs about the same (38 us), so 32 is where enumerating whole stops being free. An
+// Element's own cap sits at the same crossover (41 us at 68 indices, 35 capped). K nodes on one
+// Float cost ~13 us each beyond the first with the grid shared, so no per-variable limit is
+// needed. The Int width stays 256 so that no existing model's trajectory moves.
 constexpr double kExhaustiveJumpWidth = 256.0;
 constexpr int kJumpGridPoints = 32;
 constexpr double kExhaustiveBreakpoints = kJumpGridPoints;
 
-// A constraint is violated if its residual exceeds the tolerance. Written so
-// that non-finite residuals (NaN from inf-inf, or +inf) count as violated:
-// !(x <= tol) is true for x > tol and for NaN. This prevents a NaN constraint
-// from being silently treated as satisfied (a false "feasible").
-//
-// `tol` is GFJConfig::tolerance, which solve() sets to the search's
-// feasibility_tolerance. It used to be a file constant of 1e-9, 1000x tighter
-// than the search's 1e-6 (#211): rows violated in (1e-9, 1e-6] stayed in V, were
-// bumped and blocked FJ's Feasible exit although the search already called them
-// satisfied, and an Eq row above ~1e7 in magnitude could never get |a - b| under
-// 1e-9 at all (the ulp is larger) and was bumped forever.
+// Violated iff the residual exceeds `tol`, written `!(x <= tol)` so a NaN (inf - inf) or +inf
+// residual counts as violated rather than as a false "feasible". `tol` is GFJConfig::tolerance,
+// which solve() sets to the search's feasibility_tolerance so FJ does not bump rows the search
+// already calls satisfied (#211); a fixed 1e-9 was below the ulp of an Eq row above ~1e7.
 bool is_violated(double residual, double tol) {
     return !(residual <= tol);
 }
 
-// A row's contribution to the unproductive-batch progress measure (see
-// FeasibilityJump::unweighted_violation_). Finite residuals of rows this engine
-// calls VIOLATED: NaN fails the comparison, and +inf is excluded explicitly so
-// that subtracting it out again in update_var cannot turn the running total into
-// a NaN it can never leave. Both callers -- the fresh recomputation and the
-// incremental update -- go through this, so the two definitions cannot drift
-// apart.
+// A row's contribution to the unproductive-batch progress measure
+// (FeasibilityJump::unweighted_violation_): finite residuals of rows is_violated calls violated.
+// NaN fails the comparison; +inf is excluded so subtracting it out again in update_var cannot
+// turn the running total into a NaN it never leaves. The fresh recomputation and the incremental
+// update both call this, so the two cannot drift apart.
 //
-// The threshold is is_violated's tolerance, not a bare `> 0.0`. A residual in
-// (0, tol] is a SATISFIED row everywhere else in this file, and counting it
-// here made the measure disagree with the engine's own predicate. That
-// disagreement is invisible on inequality rows over integers, where a satisfied
-// row's residual is a clean 0.0, and structural on EQUALITY rows over
-// continuous variables, where NodeOp::Eq's |lhs - rhs| lands a few ulp off zero
-// instead: the measure could then never reach its floor, and every test of the
-// form "the real rows are all satisfied, so this measure has nothing left to
-// say" was dead code on such a model (#102, MINLPLib ex8_6_1: 45 nonlinear
-// equalities over 75 continuous variables).
-//
-// Since #211 FJ's tolerance is the search's, so there is no longer a band of
-// rows FJ calls violated and the search calls satisfied.
+// The threshold is `tol`, not `> 0.0`: a satisfied EQUALITY row over continuous variables has an
+// |lhs - rhs| a few ulp off zero, and counting it kept the measure from ever reaching its floor
+// (#102, MINLPLib ex8_6_1).
 double progress_residual(double residual, double tol) {
     return (residual > tol && residual < std::numeric_limits<double>::infinity()) ? residual : 0.0;
 }
@@ -104,17 +65,13 @@ double clamp_to_domain(const Variable& var, double value) {
 }
 
 // --- perturbation helpers --------------------------------------------------
-// `random_in_domain` itself lives in randomize.h, shared with search.cpp's
-// initialisers and LNS's destroy step (#112), and so does `movable_domain`,
-// which the search also reads (#201). The one below is specific to the kick and
-// stays here; it reads the domain through the same `int_sample_window`, so the
-// values it considers in-domain are exactly the ones `random_in_domain` can draw.
+// `random_in_domain` and `movable_domain` live in randomize.h (#112, #201). The kick-specific
+// helper below reads the domain through the same `int_sample_window`, so its in-domain values are
+// exactly the ones `random_in_domain` can draw.
 //
-// Draw a random value from the domain that DIFFERS from the current one, for
-// the single variable a perturbation is guaranteed to move (#109). Plain
-// resampling is not enough: it redraws the current value with probability
-// 1/|domain|, which on a Bool is one kick in two. Returns the current value
-// unchanged only for a pinned domain, where no move exists.
+// A random domain value that DIFFERS from the current one, for the variable a perturbation is
+// guaranteed to move (#109): plain resampling redraws the current value with probability
+// 1/|domain|, one kick in two on a Bool. Returns the current value only for a pinned domain.
 double random_different_in_domain(const Variable& var, RNG& rng) {
     if (!movable_domain(var)) {
         return var.value;
@@ -156,44 +113,22 @@ double random_different_in_domain(const Variable& var, RNG& rng) {
 }
 
 // --- structural perturbation helpers ---------------------------------------
-// List and Set variables are not jumpable, so none of the above can reach them:
-// a kick on a model whose decisions live in structural variables randomised
-// nothing, burned the stagnation counter and left the search exactly where it
-// was (#111). They get their own pass, built out of the same typed move
-// generators the STRUCTURAL batch uses (moves.cpp) rather than fresh mutation
-// code — so the kick explores exactly the neighbourhood the search knows how to
-// evaluate, and every move it applies is legal by construction: a List keeps its
-// elements distinct and its length inside [min_size, max_size], a member of a
-// ListPartition keeps its cover, and a Set stays inside min_size/max_size.
+// List and Set variables are not jumpable, so the kick gives them their own pass (#111), built
+// from the STRUCTURAL batch's typed move generators (moves.cpp): it explores exactly the
+// neighbourhood the search can evaluate, and every move is legal by construction (a List keeps
+// its elements distinct and its length in [min_size, max_size], a ListPartition member keeps its
+// cover, a Set stays inside min_size/max_size).
 
-// How many random structural moves a kick applies to one variable.
-//
-// `perturbation_probability` has to keep governing how much of the model moves,
-// so scale with the variable's own size: k = round(p * |elements|) applies a p
-// fraction of the structure's size in MOVES. That is not the same as displacing
-// a p fraction of its slots, and the gap is large for a List: list_2opt
-// reverses a random sub-range (mean ~n/3), so k = 0.1n moves rewrite ~98% of
-// positions on n = 1000 while breaking ~26% of adjacent pairs. The adjacency
-// figure is the one that tracks p, so the scaling is right for a List read
-// pairwise (pair_lambda_sum) and much coarser than p suggests for one read
-// positionally (`at`).
-//
-// A structure has no "randomise the whole variable" analogue that is not a
-// restart, so the probability sets *how much* of each structure moves rather
-// than *which* structures move — which is also what keeps a structure smaller
-// than 1/p slots from never moving at all.
-//
-// The size is the CURRENT membership, which for a List is its whole decision
-// content but for a Set is not: a 3-of-1000 Set gets a kick sized on the 3, not
-// on the universe. That is deliberate — the kick then rewrites a p fraction of
-// the set's *state*, and p = 1 rewrites all of it — but it does mean a sparse
-// Set cannot grow far in a single kick. LNS, which resamples the cardinality
-// outright, is the mechanism for that.
-//
-// Clamped to at least one move, so a kick on a model whose decisions are all
-// structural is never a no-op (#111), and to at most one move per slot, which is
-// already a full scramble, so a misconfigured p > 1 cannot turn a kick into
-// unbounded work. The comparison is written to reject NaN.
+// How many random structural moves a kick applies to one variable: k = round(p * |elements|).
+// A structure has no whole-variable redraw short of a restart, so p sets how much of each
+// structure moves, not which structures move, and a structure smaller than 1/p still moves.
+// k moves is not k slots: list_2opt reverses ~n/3 positions, so k = 0.1n on n = 1000 rewrites
+// ~98% of positions while breaking ~26% of adjacent pairs; p tracks the pairwise reading
+// (pair_lambda_sum) and is much coarser than it suggests for the positional one (`at`).
+// The size is the CURRENT membership: a 3-of-1000 Set's kick is sized on the 3, so p = 1
+// rewrites all its state but a sparse Set cannot grow far in one kick (LNS resamples cardinality).
+// Clamped to >= 1 so an all-structural kick is never a no-op (#111), and to <= n (already a full
+// scramble) so p > 1 cannot mean unbounded work. The comparison rejects NaN.
 int32_t structural_kick_size(const Variable& var, double probability) {
     const auto n = static_cast<int32_t>(var.elements.size());
     const double scaled = std::round(probability * static_cast<double>(n));
@@ -205,18 +140,11 @@ int32_t structural_kick_size(const Variable& var, double probability) {
     return static_cast<int32_t>(std::min(scaled, static_cast<double>(n)));
 }
 
-// Did a run of structural moves leave `var` somewhere the search can tell apart
-// from `before`? "Somewhere else" is type-dependent, and comparing the raw
-// vectors gets a Set wrong.
-//
-// For a List, order IS the decision content: the DAG reads it positionally
-// (`at`) and pairwise (`pair_lambda_sum`), so vector inequality is exactly the
-// question. For a Set, `elements` is unordered membership — Count and Lambda
-// both read it order-insensitively — so a run that removes an element and adds
-// it back lands on a permuted vector holding the identical set. Calling that
-// "changed" hands back a kick that moved nothing and skips the never-a-no-op
-// fallback, which is the defect #111 exists to prevent, just arrived at
-// sideways. Measured at 0.5% of kicks on a universe-30 Set at the default p.
+// Whether structural moves left `var` somewhere the search can tell apart from `before`. A List
+// is read positionally (`at`) and pairwise (`pair_lambda_sum`), so vector inequality is the test.
+// A Set's `elements` is unordered membership (Count and Lambda read it order-insensitively), so a
+// remove-then-add that only permutes the vector is no move; calling it one would skip the
+// never-a-no-op fallback (#111). Seen on 0.5% of kicks on a universe-30 Set at the default p.
 bool structure_moved(const Variable& var, const std::vector<int32_t>& before) {
     if (var.type != VarType::Set) {
         return var.elements != before;
@@ -231,44 +159,25 @@ bool structure_moved(const Variable& var, const std::vector<int32_t>& before) {
     return a != b;
 }
 
-// Apply one uniformly chosen structural move to `var_id` and report whether the
-// variable's elements actually changed. False means this draw offered nothing
-// that moves the variable — in practice a structural dead end (a List shorter
-// than two elements, a Set with no legal add, remove or swap), so the caller
-// stops rather than redraw. That is a heuristic rather than a proof: the
-// generator picks its positions at random, so on a List holding duplicate
-// elements a later draw could in principle differ.
+// Apply one uniformly chosen structural move to `var_id`; false means no candidate moves it (in
+// practice a structural dead end: a List under two elements, a Set with no legal add, remove or
+// swap), so the caller stops rather than redraw. A heuristic, not a proof: positions are drawn at
+// random, so on a List holding duplicates a later draw could differ. Candidates that leave the
+// elements unchanged (a relocate to the adjacent position) are dropped before the draw, so a kick
+// cannot silently lose a move to one.
 //
-// Candidates that leave the elements as they are — a relocate to the adjacent
-// position reinserts the element where it was — are dropped before the draw, so
-// a kick cannot silently lose a move to one.
+// Not routed through SearchConfig::move_generators (#165): the kick shares the search's RNG, so
+// changing what it draws shifts every later draw and every structured model's trajectory, kick or
+// no kick; and a randomiser wants an arbitrary legal move, which generate_standard_moves gives,
+// not a cost-aware one.
 //
-// STILL NOT ROUTED THROUGH SearchConfig::move_generators (#165, unchanged by
-// #164). The diversification kick draws from the same RNG as the rest of the
-// search, so changing what it draws -- a registered generator proposing a
-// different number of candidates, or none -- shifts every later draw and changes
-// the trajectory of every model that has a structured variable, kick or no kick.
-// The kick is also a RANDOMISER rather than an optimiser: it wants an arbitrary
-// legal move, which is exactly what generate_standard_moves gives it, where a
-// cost-aware generator would give it the opposite.
-//
-// What #164 adds instead is a second SOURCE of moves, not a second source of
-// policy: a List in a partition also offers the partition's inter-list moves,
-// anchored on this variable. That is what makes the kick able to move an
-// ALL-EMPTY partition -- `structural_kick_size` asks for one move on a
-// zero-length list, the five intra-list moves need two elements to reorder and
-// `list_insert` is suppressed for a partition member, so before #164 the kick
-// found nothing and silently did nothing, which is the exact defect #109/#111
-// closed for the scalar case. `generate_partition_moves` appends at most one
-// candidate and draws nothing on a model with no partition, so the draw sequence
-// of every pre-#164 model is untouched.
-//
-// "All-empty partition" means an `AtMostOnce` one, which is the only kind that
-// can be empty: `partition_insert` is what moves it, and it is `AtMostOnce`-only
-// because under `Exact` an insert would double-serve. An all-empty `Exact`
-// partition is unreachable rather than repairable — both initialisers lay one
-// out complete, which they must, since no `Exact` move can repair an incomplete
-// cover.
+// A List in a partition also offers the partition's inter-list moves anchored on it (#164), the
+// only way to move an all-empty partition: the intra-list moves need two elements and
+// `list_insert` is suppressed for a partition member. generate_partition_moves appends at most
+// one candidate and draws nothing on a model with no partition, so those draw sequences are
+// unchanged. Only an `AtMostOnce` partition can be empty (`partition_insert` is AtMostOnce-only,
+// since under `Exact` an insert would double-serve); both initialisers lay an `Exact` one out
+// complete, which they must, since no `Exact` move repairs an incomplete cover.
 bool apply_random_structural_move(Model& model, int32_t var_id, RNG& rng) {
     std::vector<Move> moves = generate_standard_moves(model.var(var_id), rng);
     const int partition = model.partition_of_list(var_id);
@@ -276,13 +185,10 @@ bool apply_random_structural_move(Model& model, int32_t var_id, RNG& rng) {
         generate_partition_moves(model, partition, /*anchor=*/var_id, rng, moves,
                                  /*neighbours=*/nullptr);
     }
-    // Keep only the candidates that actually move THIS variable: the caller
-    // decides whether the kick did anything by comparing this variable's
-    // elements before and after, so a candidate that moved only a sibling list
-    // would be reported as a no-op kick and trigger the never-a-no-op fallback
-    // on top of a move that had in fact been made. On a non-partition variable
-    // every candidate is a single change to it, so this is the pre-#164
-    // predicate verbatim.
+    // Keep only candidates that move THIS variable: the caller detects a no-op kick from this
+    // variable's elements alone, so a candidate moving only a sibling list would trigger the
+    // never-a-no-op fallback on top of a move already made. Off a partition every candidate is a
+    // single change to this variable, so the filter is the pre-#164 one.
     const std::vector<int32_t>& current = model.var(var_id).elements;
     moves.erase(std::remove_if(moves.begin(), moves.end(),
                                [var_id, &current](const Move& m) {
@@ -301,27 +207,20 @@ bool apply_random_structural_move(Model& model, int32_t var_id, RNG& rng) {
     return true;
 }
 
-// Integer jump candidates: exhaustive over a small domain, else a coarse grid
-// plus neighbours/endpoints. Each consider() costs O(|G_v|) when every weighted
-// row of G_v is linear (LinearJumpScorer: an affine comparison or bare body),
-// else one weighted_violation_delta (two delta_evaluate passes); the JumpTable cache
-// amortises either across the GLS loop. Scoring is still per candidate: a
-// closed-form ARGMIN over a linear column would pick from a different candidate
-// set, which is a different algorithm rather than a cheaper evaluation of this
-// one (OR-Tools' ComputeLinearJump; docs/architecture.md).
+// Integer jump candidates: exhaustive over a small domain, else a coarse grid plus
+// neighbours/endpoints. Each consider() costs O(|G_v|) when every weighted row of G_v is linear
+// (LinearJumpScorer), else one weighted_violation_delta (two delta_evaluate passes); the JumpTable
+// cache amortises either across the GLS loop. Scoring stays per candidate: a closed-form argmin
+// over a linear column (OR-Tools' ComputeLinearJump) picks from a different candidate set, a
+// different algorithm rather than a cheaper evaluation of this one (docs/architecture.md).
 //
-// Bounds are read as doubles through `domain_window` (#114): no `long`, so
-// nothing overflows and an unbounded Int gets candidates instead of freezing in
-// the jump table. A finite, integral bound within +/-2^53 passes through
-// verbatim, so those candidates are bit-identical to the pre-#114 ones; a wider
-// finite domain is narrowed by the window and its candidates do change, which is
-// the point on `[-1e19, 1e19]`. Pinned by "finite Int jump candidates are
-// unchanged" and "an unbounded Int is offered jump candidates"
-// (tests/test_unbounded_domain.cpp, which carries the archaeology).
+// Bounds are read as doubles through `domain_window` (#114), so nothing overflows and an unbounded
+// Int gets candidates instead of freezing. A finite integral bound within +/-2^53 passes through
+// verbatim, so its candidates are unchanged; a wider finite domain is narrowed by the window
+// (pinned in tests/test_unbounded_domain.cpp).
 //
-// Returns whether it offered EVERY value a jump could reach -- the exhaustive
-// enumeration, or no jump at all -- so that the caller knows no further
-// candidate (#186's breakpoints) can add anything.
+// Returns whether it offered EVERY value a jump could reach (the exhaustive enumeration, or no
+// jump at all), so the caller knows no further candidate (#186's breakpoints) can add anything.
 template <class Consider>
 bool int_jump_candidates(const Variable& var, double x0, Consider&& consider) {
     if (!(var.lb < var.ub)) {
@@ -363,22 +262,17 @@ bool int_jump_candidates(const Variable& var, double x0, Consider&& consider) {
     return false;
 }
 
-// d(row)/dv for the violated rows `linear` cannot serve, from one forward pass
-// over v's up-cone, built on the first row that needs one and read for every
-// later one (#249). A reverse sweep per row costs that row's whole cone: on a
-// separable objective `obj <= bound` that is the model, read for ONE partial
-// (ucp200-168p: ~30 ms a sweep, 42% of a 60 s run). The forward pass gives up
-// past the reverse sweep's own sorted-cone threshold, n / (log2 n + 1), above
-// which a sweep walks all n nodes anyway; then each row takes the sweep. So a
-// call costs at most the sweeps it did before plus that bound, and where v's
-// up-cone is small (a generator's cost term) a handful of nodes instead of the
-// objective's cone. It loses only where v's up-cone nears the bound while its
-// violated rows are small: a variable in very many nonlinear rows, or in many
-// terms of one big row (a dense least-squares objective) while only a small row
-// is violated. The budget bounds that loss at one sweep's worth of nodes a call.
-// It counts nodes, not their cost: the pass differentiates satisfied rows too,
-// so a variable under many expensive edges pays for all of them where a sweep
-// paid for the violated rows' only. Unmeasured; no benchmark has that shape.
+// d(row)/dv for the violated rows `linear` cannot serve, from one forward pass over v's up-cone,
+// built on the first row that needs one and read for every later one (#249). A reverse sweep per
+// row costs that row's whole cone: on a separable `obj <= bound` that is the model, read for ONE
+// partial (ucp200-168p: ~30 ms a sweep, 42% of a 60 s run). The pass gives up past the sweep's own
+// sorted-cone threshold n / (log2 n + 1), above which a sweep walks all n nodes anyway, and each
+// row then takes the sweep; so a call costs at most the sweeps plus that bound, and a handful of
+// nodes where v's up-cone is small (a generator's cost term). It loses where v's up-cone nears the
+// bound while its violated rows are small (very many nonlinear rows, or many terms of one big row
+// while only a small row is violated), at most one sweep's worth of nodes a call. The budget
+// counts nodes, not cost: the pass differentiates satisfied rows too, so a variable under many
+// expensive edges pays for all of them. Unmeasured; no benchmark has that shape.
 class NewtonPartials {
 public:
     NewtonPartials(const Model& model, int32_t var_id) : model_(model), var_id_(var_id) {}
@@ -408,29 +302,21 @@ private:
     State state_ = State::kUnbuilt;
 };
 
-// Float jump candidates: cheap convex-ish descent — a Newton step toward the
-// root of each violated constraint containing v (forward-mode AD, #249), plus
-// midpoint/endpoints. The GLS loop iterates these to converge; the
-// InnerSolverHook does the heavy continuous objective polish. This replaces a
-// per-jump golden-section (~60 evals) with a handful — critical for throughput
-// on continuous-heavy models. Newton candidates come FIRST so that, on a tie in
-// violation delta (a feasible plateau), the gradient-informed point wins rather
-// than an arbitrary endpoint (`consider` keeps the first-seen minimum). The
-// objective enters here too: when `obj <= bound` is violated, chasing its root
-// pulls the objective down.
-// Returns whether the gradient carried usable direction here. False means this
-// variable takes part in at least one violated constraint yet none of them
-// yielded a Newton candidate — every gradient was ~0 (or non-finite, which
-// fails the same test), i.e. it sits at a
-// *stationary* point — so the three remaining candidates are box constants
-// unrelated to local geometry and the variable may have no move at all.
+// Float jump candidates: a Newton step toward the root of each violated constraint containing v
+// (forward-mode AD, #249), plus midpoint/endpoints. The GLS loop iterates these and the
+// InnerSolverHook does the heavy polish, so a jump costs a handful of evaluations instead of a
+// golden-section's ~60, which matters on continuous-heavy models. Newton candidates come FIRST so
+// that on a tie in violation delta (a feasible plateau) the gradient-informed point wins over an
+// endpoint (`consider` keeps the first-seen minimum). When `obj <= bound` is violated, chasing its
+// root pulls the objective down.
 //
-// A variable in no violated constraint reports true: nothing to escape.
+// False means v is in a violated constraint yet none yielded a Newton candidate (every gradient
+// ~0 or non-finite: a stationary point), so the box candidates ignore local geometry and v may
+// have no move. A variable in no violated constraint reports true: nothing to escape.
 //
-// `linear`, when given, supplies a violated row's partial from its cached slope
-// where that is bit-identical to compute_partial (LinearJumpScorer::
-// residual_partial_at), so those Newton candidates are exactly the ones a reverse sweep
-// would produce, without the sweep.
+// `linear`, when given, supplies a violated row's partial from its cached slope where that is
+// bit-identical to compute_partial (LinearJumpScorer::residual_partial_at), so those Newton
+// candidates are exactly a reverse sweep's, without the sweep.
 template <class Consider>
 bool float_jump_candidates(Model& model, int32_t var_id, const Variable& var, double x0,
                            LinearJumpScorer* linear, double tol, Consider&& consider) {
@@ -498,82 +384,41 @@ bool float_jump_candidates(Model& model, int32_t var_id, const Variable& var, do
 // Breakpoint candidates (#186)
 // ---------------------------------------------------------------------------
 //
-// Ceil, Floor, Round and Element are piecewise constant, so their local
-// derivative is 0 and neither a Newton step nor the Int grid knows where their
-// value changes. The op itself does: Ceil and Floor change at the integers,
-// Round at the half-integers, and an Element index takes the values 0..n-1.
-// Mapped back through the argument u(v), each of those values of u is a value
-// of v, and those are this variable's candidates.
+// Ceil, Floor, Round and Element are piecewise constant, so neither a Newton step nor the Int grid
+// knows where they change; their breakpoints (integers, half-integers, index values) mapped back
+// through the argument u(v) are v's candidates, as tabled in docs/architecture.md. A candidate is
+// only a PROPOSAL: `consider` scores each exactly, so the map decides where candidates land,
+// never whether a jump is scored right.
 //
-// A candidate is only a PROPOSAL: `consider` scores every one exactly, by the
-// same weighted violation delta as any other. The map decides where candidates
-// land, never whether a jump is scored right.
+// THE MAP: du/dv is carried forward once per call (`ConeSlopes`) over the cone above v through
+// every `carries_slope` op, pruned to the nodes `Model::close()` marked as reaching a breakpoint
+// op, each edge's factor the op's `local_derivative`: the exact derivative at the current point,
+// every path included (`ceil(v + exp(v))` gets 1 + exp(v)). Exact where u is linear in v; `u = N /
+// D` with v in D only is inverted exactly when that Div IS the node's argument and D is affine in
+// v; any other nonlinearity is linearised, so a miss costs a wasted probe. A path through a
+// stopping op contributes nothing (`ceil(v + floor(v))` counts the floor as constant). A Sum
+// naming a child more than once counts it that many times; `close()` marks such Sums
+// (`kRepeatedChild`) and only those pay a scan of their children.
 //
-// THE MAP. The walk collects the cone above v through every op that carries a
-// slope (`carries_slope`: all but the structural ops, user code, Const and the
-// breakpoint ops, which stop it), pruned to the nodes `Model::close()` marked as
-// reaching a breakpoint op, and carries du/dv forward along it once per call
-// (`ConeSlopes`), each edge's factor being the op's own `local_derivative`. So the
-// slope of an argument is the exact derivative at the current point, every path
-// from v included -- `ceil(v + exp(v))` gets 1 + exp(v). Where the argument is
-// linear in v (a sum of `c * v` terms with c fixed for a single-variable jump)
-// the map is exact. Two further cases:
+// Per breakpoint t, du is a small step in u (absolute, at least 4 ulp of t, at most 1/4). An Int
+// gets the floor and ceil of the v landing at t -+ du (plus the v at t when integral), so both
+// sides are offered even where float error puts the edge integer on the wrong one. A Float gets
+// those v nextafter-stepped strictly onto their own side, plus the v at t when the map puts it on
+// the edge's side (Ceil: below; Floor, and Round above zero: above), the plateau's extreme point
+// where a Ceil/Floor optimum sits. A Float Element index gets the middle of plateau k within u's
+// range, so a partial plateau still gets one (`trunc` makes plateau 0 the interval (-1, 1)).
 //
-//  - `u = N / D` with v in D only -- the epic's `ceil(cycle / headway)` with
-//    headway the decision -- is inverted exactly, v = x0 + (N/t - D0) / D',
-//    when that Div IS the breakpoint node's argument and D is affine in v.
-//  - Any other nonlinearity is LINEARISED at the current point, so its
-//    candidates can land off the edge they aim at. The candidate is still
-//    scored exactly, so the cost of a miss is a wasted probe. A path through a
-//    stopping op contributes nothing: a breakpoint op inside another's argument
-//    (`ceil(v + floor(v))`) counts as constant, since its slope is 0.
+// Above the caps (`kExhaustiveBreakpoints`; an Element's is its capped path's count), ONE grid of
+// `kJumpGridPoints - 1` points is shared by every capped argument, so K nodes do not cost K grids.
+// All candidates are deduplicated across nodes and against the Int/Float path's. The Element cap
+// deviates from #186's "the candidates are the index values" for cost: every index of a 10^4
+// table was 2x10^4 probes per jump-table refresh of that variable.
 //
-// A Sum that names a child more than once (`x + x`) counts it that many times:
-// `close()` marks such Sums (`kRepeatedChild`), and only those pay a scan of
-// their children.
-//
-// WHICH CANDIDATES, per breakpoint t (a value of u where the op changes), with
-// du a small step in u (absolute, at least 4 ulp of t, at most 1/4):
-//
-//  - Ceil/Floor/Round, Int variable: floor of the lower and ceil of the upper of
-//    the two values of v that land at t -+ du, plus the v at t itself when that
-//    is an integer. So both sides of the edge are offered even where float
-//    error puts the edge integer on the wrong one.
-//  - Ceil/Floor/Round, Float variable: those two values of v, each stepped by
-//    nextafter until the map puts it strictly on its own side of t, plus the v
-//    at t itself when the map puts it on the side the edge belongs to (Ceil:
-//    below; Floor, and Round above zero: above) -- a plateau's extreme point,
-//    where a Ceil/Floor optimum sits.
-//  - Element, Int variable: the index value k itself (floor and ceil of its v).
-//  - Element, Float variable: the middle of index k's plateau intersected with
-//    the range u covers, so a plateau only partly inside the range still gets a
-//    candidate. `trunc` makes plateau 0 the interval (-1, 1).
-//
-// HOW MANY, per argument. A Ceil/Floor/Round offers every breakpoint while
-// there are at most `kExhaustiveBreakpoints` (the measurement that sets it is at
-// the constant); an Element every index while there are no more than its capped
-// path would offer anyway (`kNearBreakpoints` + the grid + its representatives).
-// Above that: the breakpoints either side of the current argument, the Element
-// representatives of the line the other index currently selects
-// (`ElementTable::row_reps_by_col`), and a grid across the range. The grid is ONE
-// budget, `kJumpGridPoints - 1` points, shared by every capped argument the walk
-// reaches, so K breakpoint nodes do not cost K grids. Candidates are then
-// deduplicated across every node and against the ones the Int/Float path
-// already offered.
-//
-// That makes an Element over a table wider than its cap a DEVIATION from #186's
-// "the candidates are the index values": an index holding a value no
-// representative, grid point or near neighbour names is reachable only by the
-// search's other moves. The reason is cost -- every index of a 10^4 table was
-// 2x10^4 probes per jump-table refresh of that variable.
-//
-// COST when it runs: the gate (one flag test per dependent of v), then the
-// pruned cone and its sort, O(c log c) for a cone of c nodes, plus their parent
-// edges -- one pass, where a reverse AD sweep per breakpoint node made
-// `ceil(sum a_i x_i)` cost O(n) per variable. It runs only on a model that HAS a
-// breakpoint node, for a variable whose dependents reach one, and for an Int only
-// when its domain was not already enumerated whole; every other variable's
-// candidates, and every other model's, are unchanged.
+// COST: one flag test per dependent of v, then the pruned cone and its sort (O(c log c) for c
+// nodes) plus their parent edges, in one pass, where a reverse sweep per breakpoint node made
+// `ceil(sum a_i x_i)` O(n) per variable. It runs only for a variable whose dependents reach a
+// breakpoint node, and for an Int only when its domain was not enumerated whole; every other
+// variable's candidates are unchanged.
 
 constexpr double kNearBreakpoints = 5.0;  // ceil(x) - 2 .. floor(x) + 2
 
@@ -1031,13 +876,10 @@ void consider_unique(std::vector<double>& cands, std::vector<double>& seen, Cons
 // O(h^2) and a 1e-6 step alone makes the search crawl.
 constexpr std::array<double, 2> kEscapeRelSteps = {1e-6, 1e-2};
 
-// The local move Float otherwise lacks entirely. `int_jump_candidates` always
-// offers x0 +/- 1; Float had only a Newton step (length set by the target, and
-// vanishing with the gradient) plus three box constants, so a Float at an
-// interior stationary point had an empty neighbourhood and froze there.
-//
-// Two-sided because at a saddle the descent direction is exactly what a zero
-// gradient cannot supply — it has to be sampled.
+// Float's local move, the analogue of the Int path's x0 +/- 1: a Newton step vanishes with the
+// gradient and the box candidates ignore x0, so without these a Float at an interior stationary
+// point has an empty neighbourhood and freezes. Two-sided because at a saddle the descent
+// direction is exactly what a zero gradient cannot supply: it has to be sampled.
 template <class Consider>
 void float_escape_candidates(const Variable& var, double x0, Consider&& consider) {
     // Scaled on |x0|, deliberately NOT on box width: for an unbounded NL column
@@ -1138,12 +980,10 @@ void offer_jump_candidates(Model& model, int32_t var_id, const Variable& var, do
             consider_unique(extra, seen, consider);
         }
     } else if (var.type == VarType::Float) {
-        // The probe is a LAST RESORT and must stay one. Firing it whenever a
-        // variable is stationary and nothing improved — which is the steady
-        // state of local search — measured ~9x worse on shiporig across every
-        // seed: the drip of tiny improvements suppresses stagnation, so
-        // diversification never fires. Hence `allow_escape_probe`, which the
-        // search loop arms only once it is genuinely stuck.
+        // The probe is a LAST RESORT: firing it whenever a variable is stationary and nothing
+        // improved (local search's steady state) measured ~9x worse on shiporig across every
+        // seed, since the drip of tiny improvements suppresses stagnation and diversification
+        // never fires. Hence `allow_escape_probe`, which the search arms only once it is stuck.
         const bool gradient_usable =
             float_jump_candidates(model, var_id, var, x0, linear, tol, consider_seen);
         // After the Newton candidates, so those keep winning a tie (#186).
@@ -1226,22 +1066,17 @@ JumpResult compute_var_jump(Model& model, const std::vector<double>& weights, in
 
 namespace {
 
-// select_novelty_var's candidate (#272): the W'-argmin (`novelty`, as
-// compute_var_jump returns it) and the delta of that jump under W. That delta
-// is, to the bit, what scoring the jump afresh would give -- `linear` prepared
-// under W and its delta when the closed form applies, else the probe under W --
-// but it comes from the W' pass: the dual prepare weighs every term under both
-// vectors, and every probe the argmin took weighs under both. A second prepare
-// is needed only when W and W' differ in which rows of G_v they zero (W' is
-// W / 1024 on most rows, which is 0 for a positive W only below about 2^-1064).
-// A second probe is taken only for a jump the argmin never scored, x0 (no
-// candidate improved under W'), when the closed form is out; it stays a probe
-// rather than a literal 0, which would equal it only if re-evaluating the cone
-// at x0 reproduced every committed value. The probe restores the
-// assignment to the bit (#270), so a delta taken mid-argmin equals one taken
-// after it. The cost: each dual probe adds one multiply-add per row of G_v,
-// paid on every candidate, winners or not, against the second pass over G_v
-// (closed form) or the second probe (DAG) it saves per sampled var.
+// select_novelty_var's candidate (#272): the W'-argmin (`novelty`) and that jump's delta under
+// W, to the bit what scoring it afresh would give (`linear` prepared under W when the closed form
+// applies, else the probe under W), but taken from the W' pass: the dual prepare and every probe
+// the argmin took weigh under both vectors. A second prepare is needed only when W and W' zero
+// different rows of G_v (W' is W / 1024 on most rows, 0 for a positive W only below about
+// 2^-1064). A second probe is taken only for a jump the argmin never scored, x0 (no candidate
+// improved under W'), when the closed form is out; a probe, not a literal 0, which would equal it
+// only if re-evaluating the cone at x0 reproduced every committed value. The probe restores the
+// assignment to the bit (#270), so a delta taken mid-argmin equals one taken after it. Cost: each
+// dual probe adds one multiply-add per row of G_v on every candidate, against the second pass
+// over G_v (closed form) or second probe (DAG) it saves per sampled var.
 struct NoveltyJump {
     JumpResult novelty;
     double delta_w = 0.0;
@@ -1810,17 +1645,13 @@ void FeasibilityJump::compute_linear_constraints() {
     }
 }
 
-// Every per-row and per-variable table here is sized once, at construction, and
-// never grown. The model can still gain a row afterwards: the objective row, which
-// `add_objective_soft_constraint` appends -- and `freeze()` and the first `solve()`
-// of a model with an objective both run it. So can the ViolationManager's weights
-// fall out of step, if the manager was built before that row. After either,
-// `violated_[ci]`, `is_linear_[ci]`, `vars_of_constraint_[ci]` and `active(ci)` are
-// indexed by the NEW row count, unchecked -- so the mismatch is refused here rather
-// than read past; build the ViolationManager and this object after the row exists.
-//
-// Checked at the entry points a driver calls once per batch or kick, never per row:
-// eight size compares against a body that then runs thousands of iterations.
+// Every per-row and per-variable table here is sized once, at construction, and never grown. The
+// model can still gain a row afterwards (the objective row `add_objective_soft_constraint`
+// appends, run by `freeze()` and by the first `solve()` of a model with an objective), and the
+// ViolationManager's weights fall out of step if it was built before that row. The tables are
+// then indexed by the NEW row count unchecked, so the mismatch is refused here rather than read
+// past. Checked at the entry points a driver calls once per batch or kick, never per row: eight
+// size compares against a body that then runs thousands of iterations.
 void FeasibilityJump::require_tables_in_step() const {
     const size_t nc = model_.constraint_ids().size();
     const size_t nv = model_.num_vars();
@@ -1939,13 +1770,11 @@ void FeasibilityJump::update_var(int32_t var_id) {
     commit_scalar_move(model_, var_id, old_value);
     jumps_.invalidate(var_id);
 
-    // Every row of gv is settled (in V or not, counted or not) before any
-    // neighbour is tested below, so a neighbour sharing several rows with var_id
-    // sees all of them -- as the O(|G_vp|) rescan this count replaced did. A
-    // row whose verdict its Sum's drift now leaves undecided is noted for the
-    // local-minimum gate (#188): one row-to-slot load per row, and for a row
-    // over an incremental Sum one load of its state, which ends the test while
-    // the Sum is not drifting.
+    // Every row of gv is settled (in V or not, counted or not) before any neighbour is tested
+    // below, so a neighbour sharing several rows with var_id sees all of them. A row whose verdict
+    // its Sum's drift now leaves undecided is noted for the local-minimum gate (#188): one
+    // row-to-slot load per row, plus for a row over an incremental Sum one load of its state,
+    // which ends the test while the Sum is not drifting.
     for (int32_t c : gv) {
         const double after = model_.node_value(cids[c]);
         if (c != objective_ci_ && active(c)) {
@@ -1955,12 +1784,10 @@ void FeasibilityJump::update_var(int32_t var_id) {
         note_row_certainty(c, after);
     }
     unweighted_violation_ += violation_delta;
-    // A vp sharing several rows with var_id is visited once per shared row. Not
-    // deduplicated (#174 proposed a stamp): with the participation test now O(1),
-    // a repeat visit costs an idempotent invalidate on a line the first visit
-    // already touched, a byte load and at most one 4-byte count load -- no more
-    // than a stamp check-and-set, which would also charge every FIRST visit and
-    // 4 B per variable.
+    // A vp sharing several rows with var_id is visited once per shared row, not deduplicated by a
+    // stamp (#174): with the O(1) participation test a repeat visit costs an idempotent invalidate
+    // on a line already touched, a byte load and at most one 4-byte count load, no more than a
+    // stamp check-and-set, which would also charge every FIRST visit and 4 B per variable.
     //
     // The objective row is skipped whole while it is inert (#210): no jump of
     // any of its variables can see it, so no cached entry is stale on its
@@ -1984,104 +1811,63 @@ void FeasibilityJump::update_var(int32_t var_id) {
     }
 }
 
-// ---- The inert objective row (#210) ----
+// ---- The inert objective row (#210); overview in docs/architecture.md ----
 //
-// The folded `obj <= bound` row spans every objective column, which on a MIP is
-// most of them, and it is in vars_of_constraint_ like any row. So every move of
-// an objective variable walked the whole row: an invalidate per column in
-// update_var, and on a Novelty move or undo a re-queue of every column into Q'.
-// At c339b47 that walk was 20-40% of MIPfeas time (binkar10_1: update_var 21.7%,
-// JumpTable::invalidate 19.9%), and before the first feasible solution, while
-// the bound is +inf, it can change nothing.
+// The folded `obj <= bound` row spans every objective column, so walking it on each move of an
+// objective variable (an invalidate per column in update_var, a Q' re-queue per column on a
+// Novelty move or undo) was 20-40% of MIPfeas time at c339b47 (binkar10_1), and while the bound
+// is +inf it can change nothing. OR-Tools skips a row in this upkeep when no one-variable move
+// can take its activity out of its domain (UpdateScoreOnActivityChange,
+// ortools/sat/constraint_violation.cc); this is that test, for the objective row only, in two
+// forms:
 //
-// OR-Tools skips a row in this upkeep when its activity cannot leave its domain
-// under any one-variable move: UpdateScoreOnActivityChange
-// (ortools/sat/constraint_violation.cc) returns early unless the row's activity
-// is within row_max_variations_ of a domain bound, and with no objective bound
-// yet the domain is AllValues, so the objective row is always skipped. This is
-// that test, for the objective row only, in two forms:
+//  - bound +inf: inert iff the objective VALUE is finite before and after the move. A finite
+//    affine objective has every term finite, so a one-variable jump (to a finite value or to an
+//    infinite box bound) leaves it finite or makes it +/-inf: the residual is -inf, or the
+//    sentinel's 0 at obj = +inf, and the row contributes exactly 0 to every candidate's delta in
+//    both states. The residual alone cannot tell this apart: it is -inf for obj = -inf too, where
+//    a candidate at +inf gives -inf + inf = NaN, read as violated (kInfPenalty), a contribution
+//    that depends on where the OTHER variables sit.
+//  - finite bound: a jump of v inside its declared box moves the residual by at most
+//    M = max_v |a_v| (ub_v - lb_v) (row_max_variation). If r + M < 0 before and after the move,
+//    every candidate of every variable leaves the row satisfied, so its contribution is 0 in both
+//    states. The guard 2^-40 x (|bound| + |r| + M) covers the rounding of r' itself; a sum
+//    cancelling worse can leave a cached score off by W times that rounding error, the same order
+//    as the closed-form-vs-probe difference the engine already accepts (linear_jump.h).
 //
-//  - bound +inf. Inert iff the objective VALUE is finite before and after
-//    the move. A finite affine objective has every term finite, so a jump of
-//    one variable -- to a finite value, or to an infinite box bound -- leaves
-//    it finite or makes it +/-inf: the residual is -inf, or the sentinel's 0
-//    at obj = +inf, and the row contributes exactly 0 to every candidate's
-//    delta in both states. The residual alone cannot tell this apart: it is
-//    -inf for obj = -inf too, and there a candidate at +inf gives
-//    -inf + inf = NaN, which reads as violated (kInfPenalty) -- a contribution
-//    that depends on where the OTHER variables sit (#210 review).
-//  - finite bound. A jump of v inside its declared box moves the residual by at
-//    most M = max_v |a_v| (ub_v - lb_v) (row_max_variation). If r + M < 0 both
-//    before and after the move, every candidate of every variable leaves the
-//    row satisfied, so its contribution max(0, r') - max(0, r) is 0 in both
-//    states. The test carries a guard of 2^-40 x (|bound| + |r| + M) for the
-//    rounding of r' itself; a sum cancelling worse than that can put a
-//    candidate's computed r' a rounding error above 0 while the exact one is
-//    below, which leaves a cached score off by W times that rounding error --
-//    the same order as the difference between the closed-form score and the
-//    probe's, which the engine already accepts (linear_jump.h).
+// A row inert on both sides changes no cached jump and no Novelty verdict: its contribution is 0
+// in both states and it feeds no candidate (a Newton candidate needs a violated row; an affine row
+// reaches no breakpoint op), and being satisfied on both sides it moves no V membership or
+// participation count. So the skip is exact for the jump table up to the guard's rounding, not a
+// heuristic. What it changes is Q, on purpose: the walk re-queued every objective column in some
+// active violated row whether or not it had changed, so a column apply_jump had dropped came back
+// after every objective move. Now, as in OR-Tools, only a changed score re-queues, so
+// trajectories on models with an objective move.
 //
-// A row inert on both sides changes no cached jump and no Novelty verdict: the
-// contribution is zero in both states, and the row feeds no candidate (a Newton
-// candidate needs a violated row; an affine row reaches no breakpoint op). It is
-// satisfied on both sides, so it moves no V membership or participation count.
-// That makes the skip exact for the jump table up to the rounding the
-// closed-form scorer already accepts (the guard above), not a heuristic.
+// WINS on every move of an objective variable while the row is inert (before the first feasible
+// solution always, after it whenever the bound leaves more room than one variable can take):
+// O(objective support) per move, close to O(#columns) on a MIP. LOSES on a tight row (r + M >= 0,
+// the usual state right after a bound tightening), a non-affine objective (no slope, so no M, and
+// a jump can turn it NaN, so it keeps the walk even at +inf), or a column with an unbounded box
+// (M = +inf: only the +inf form applies). Those pay two residual loads and two compares per move
+// on top of the walk, plus one row_max_variation, O(support x log |G_v|), on the first call.
+// OR-Tools applies the test to EVERY row; here only to the one whose support is the whole model.
 //
-// What it changes is Q, on purpose. The walk re-queued every objective column
-// that sat in some active violated row, whether or not anything about it had
-// changed -- so a column apply_jump had dropped for a non-positive score came
-// back after every move of any objective variable, to be drawn, found
-// unchanged and dropped again. OR-Tools re-queues on a changed score only, and
-// so does this now; the draws that used to land on such a column land
-// elsewhere, so trajectories on models with an objective move.
+// MEASURED (MIPfeas, 20 s, seed 42, one thread, serial, engine 713bbf2 vs 8905532, Ryzen 5 5600H),
+// GLS iterations with compound moves on / off: binkar10_1 1.10x / 0.99x, neos-662469 1.50x /
+// 1.01x. A counting build saw the walk skipped on 0.12% of binkar10_1's update_var visits (all
+// before the first feasible point; Novelty 0%) and 20% of neos-662469's (Novelty 13%). So
+// binkar10_1's 1.10x is NOT this mechanism (its M is 9e6 from 2128 wide continuous boxes, and the
+// slack test never passes) but the changed Q moving the trajectory; read both compound-on ratios
+// as single-seed and trajectory-confounded. Skipping the row unconditionally gained more (#206's
+// probe: neos-662469 6.6k -> 37k), but that is the price of a stale jump table, not a saving.
 //
-// WHERE IT WINS: every move of an objective variable while the row is inert --
-// before the first feasible solution always, after it whenever the incumbent
-// bound leaves more room than one variable can take. It saves O(objective
-// support) per move, which on a MIP is close to O(#columns).
-// WHERE IT LOSES: a tight row (r + M >= 0, the usual state right after a bound
-// tightening), a non-affine objective (MINLPLib: no slope, so no M, and a jump
-// can turn a nonlinear objective NaN, which reads as violated -- so it keeps
-// the walk even at +inf), or an objective column with an unbounded box (M =
-// +inf: only the +inf form applies). Those pay two residual loads and two
-// compares per move on top of the walk they always paid, plus one
-// row_max_variation, O(support x log |G_v|), on the first call. OR-Tools
-// applies the same test to EVERY row; here only the objective row has it, the
-// one row whose support is the whole model.
-//
-// MEASURED, and smaller than the issue's probes: MIPfeas, 20s, seed 42, one
-// thread, serial under the wall-clock lock at 1-minute load 1.46-1.49, engine
-// 713bbf2 against 8905532 (AMD Ryzen 5 5600H). GLS iterations, compound moves
-// on (the runner's default) / off:
-//   binkar10_1   795k -> 876k (1.10x)    1.85M -> 1.83M (0.99x)
-//   neos-662469  6.9k -> 10.4k (1.50x)   129k -> 131k (1.01x)
-// #206's attribution probe skipped the row UNCONDITIONALLY (neos-662469 6.6k
-// -> 37k), and the probe behind the issue's 1.26x did too. Both instances find
-// a first feasible point inside 0.5s, after which the bound is finite and the
-// row is mostly tight. A counting build (engine 05d872d + counters, 20s, seed
-// 42, compound moves on, serial, load 1.46-1.48; counts include LNS repairs)
-// saw the walk skipped on:
-//   binkar10_1   update_var 694 of 598,688 visits (0.12%, all before the
-//                first feasible point), Novelty 0 of 319,044
-//   neos-662469  update_var 1,891 of 9,428 (20%), Novelty 973 of 7,491 (13%)
-// So binkar10_1's 1.10x is NOT this mechanism: its M is 9e6 (2128 continuous
-// columns that propagation gave finite but wide boxes), the slack test never
-// passes, and the difference is the changed Q moving the trajectory. Read both
-// compound-on ratios as single-seed and trajectory-confounded; neos-662469's
-// is at most partly the skip. Without compound moves the counts were 0.25% and
-// 5% and the ratios ~1.0x. The skip-always gain is the price of a stale jump
-// table, not a faithful saving.
-//
-// The finite-bound form needs each column's value inside its declared box,
-// since M bounds a jump only from inside it. FJ's own moves keep it there
-// (clamp_to_domain, random_in_domain), but the API does not: a Python
-// `Variable.value` write followed by `skip_init` hands FJ an assignment outside
-// it. So rebuild_violated_and_scan_set -- which every entry that takes an
-// assignment from outside runs (begin, resync, reset_weights, perturb, gls) --
-// checks the objective's columns, and while any is outside its box only the
-// +inf form applies. O(objective support) per rebuild, beside the rebuild's own
-// O(#rows).
+// The finite-bound form needs each column inside its declared box, since M bounds a jump only from
+// inside it. FJ's own moves keep it there (clamp_to_domain, random_in_domain), but the API does
+// not: a Python `Variable.value` write followed by `skip_init`. So rebuild_violated_and_scan_set,
+// which every entry taking an assignment from outside runs (begin, resync, reset_weights,
+// perturb, gls), checks the objective's columns, and while any is outside its box only the +inf
+// form applies. O(objective support) per rebuild, beside the rebuild's own O(#rows).
 double FeasibilityJump::objective_value() const {
     if (objective_ci_ < 0) {
         return 0.0;
@@ -2131,32 +1917,19 @@ bool FeasibilityJump::objective_row_inert(double before, double after) {
     return clear(before) && clear(after);
 }
 
-// ---- The incremental Sums' drift (#188) ----
+// ---- The incremental Sums' drift (#188); the design is in docs/architecture.md ----
 //
-// A committed move updates each incremental Sum in its cone by its term's
-// change (commit_scalar_move), and an inexact update leaves the Sum off the
-// real sum of its terms by at most its drift bound. A row reads its Sum
-// directly (classify_incremental_sums), so the row's residual is off by at most
-// that bound too. FJ acts on residuals in three places, and each must not act
-// on drift:
-//
-//   - the GLS bump at a local minimum raises the weight of every row in V. A
-//     row in V only by drift would get a weight the reference algorithm never
-//     gives it -- and weights persist across batches, so the bias would too.
-//     The mirror case is a row really violated but out of V by drift, which the
-//     bump would skip.
-//   - "Feasible", read off an empty V.
-//   - the batch end, and anything that reads the model after it.
-//
-// The gate (settle_undecided_rows) handles the first two at O(1) in the common
-// case: update_var notes every row whose verdict -- residual against tol --
-// the bound leaves undecided, in either direction, and at a local minimum only
-// those rows' Sums are re-summed. A row whose residual clears tol by more
-// than its bound has the same verdict on the real sum; on integral data no
-// update is inexact, no row is ever noted, and the gate costs one empty-list
-// test. The re-groundings (reground_drifted_rows) re-sum every drifted Sum
-// before a Feasible verdict and at the end of every batch, so the verdict is
-// the re-sums' own and nothing outside a batch sees drift.
+// An inexact commit (commit_scalar_move) leaves an incremental Sum, and a row reading it directly
+// (classify_incremental_sums), off the real sum of its terms by at most its drift bound. FJ must
+// not act on drift where it acts on residuals: the GLS bump (a row in V only by drift would get a
+// weight the reference algorithm never gives it, and weights persist across batches; a row out of
+// V only by drift would be skipped), "Feasible" read off an empty V, and the batch end with
+// anything that reads the model after it. The gate (settle_undecided_rows) handles the first two:
+// update_var notes every row whose verdict the bound leaves undecided, either side of tol, and at
+// a local minimum only those rows' Sums are re-summed; on integral data no update is inexact,
+// nothing is noted, and the gate costs one empty-list test. The re-groundings
+// (reground_drifted_rows) re-sum every drifted Sum before a Feasible verdict and at the end of
+// every batch, so the verdict is the re-sums' own and nothing outside a batch sees drift.
 
 bool FeasibilityJump::verdict_undecided(int32_t c, double residual) const {
     const int32_t slot = row_slot_[static_cast<size_t>(c)];
@@ -2348,32 +2121,23 @@ void FeasibilityJump::build_row_slots() {
 }
 
 bool FeasibilityJump::apply_jump(int sample_size) {
-    // Sample up to `sample_size` DISTINCT positive-score variables from the scan
-    // set Q and apply the best one's jump (ViolationLS, Davies et al. CPAIOR
-    // 2024, Algorithm 2; OR-Tools' ScanRelevantVariables). A variable with a
-    // non-positive score is removed from Q permanently (swap-remove) and does
+    // Sample up to `sample_size` DISTINCT positive-score variables from the scan set Q and apply
+    // the best one's jump (ViolationLS, Davies et al. CPAIOR 2024, Algorithm 2; OR-Tools'
+    // ScanRelevantVariables). A non-positive variable is swap-removed from Q permanently and does
     // not count toward the sample; positive ones stay in Q.
     //
-    // There is no draw cap, and returning false therefore MEANS that Q holds no
-    // positive-score variable -- the local minimum the GLS loop answers with a
-    // weight bump. A cap on draws (#206: `sample_size * 8 + 16`, counting the
-    // removals too) gave up while improving variables were still in Q whenever
-    // they were rare in it, so a long violated row of non-improving variables
-    // read as a false minimum, the bump re-queued the whole row, and the false
-    // minimum repeated -- inflating every long row's weight far faster than the
-    // reference allows.
+    // No draw cap, so returning false MEANS Q holds no positive-score variable: the local minimum
+    // the GLS loop answers with a bump. A cap on draws (#206) gave up while improving variables
+    // were rare in Q, so a long violated row of non-improving variables read as a false minimum,
+    // the bump re-queued the row and the false minimum repeated, inflating long rows' weights far
+    // faster than the reference allows.
     //
-    // Distinctness without redraws: Q's prefix [0, n) holds the positives
-    // sampled so far this call, and each draw is uniform over the unsampled
-    // suffix [n, |Q|). A positive is swapped into the prefix; a non-positive is
-    // swap-removed from the suffix (Q's back is in the suffix, so the prefix is
-    // undisturbed). Every draw either grows the prefix or shrinks Q, so the loop
-    // ends after at most |Q| draws and needs no backstop. Each removal is paid
-    // for by the enqueue that put the variable there, so the uncapped scan
-    // costs no more amortised than the capped one did.
-    //
-    // Reordering Q is harmless: in_queue_ is a flag, nothing reads Q's order
-    // except this draw, and the draw is uniform over a set, so the sample's
+    // Distinctness without redraws: Q's prefix [0, n) holds this call's sampled positives, and
+    // each draw is uniform over the suffix [n, |Q|). A positive is swapped into the prefix; a
+    // non-positive is swap-removed from the suffix (Q's back is in it, so the prefix is
+    // undisturbed). Every draw grows the prefix or shrinks Q, so the loop ends within |Q| draws,
+    // and each removal is paid for by the enqueue that put the variable there. Reordering Q is
+    // harmless: in_queue_ is a flag and the draw is uniform over a set, so the sample's
     // distribution does not depend on where in Q a variable sits.
     int32_t best_v = -1;
     double best_score = 0.0;
@@ -2431,24 +2195,14 @@ bool FeasibilityJump::any_active_violated() const {
                        [this](int32_t c) { return active(c); });
 }
 
-// Next deadline-check stride, given how long the last one actually took.
-//
-// Growth is capped at kStrideGrowth so the stride ramps up through
-// progressively longer — and therefore more accurate — measurements instead of
-// extrapolating the whole way from one short one. The cap never weakens the
-// bound: an x8 growth is only taken when 8 x elapsed is still inside the
-// target, so the predicted duration of the next stride is <= target either way.
-//
-// Shrinking is deliberately NOT capped: iterations that got more expensive must
-// be caught on the very next check.
-//
-// An uncapped shrink is NOT, on its own, what stops the stride ratcheting upward
-// and going silent — the failure mode that got an earlier self-tuning stride
-// removed from this engine. It cannot be, because a shrink is only APPLIED at a
-// check and the next check is a whole stride away: a stride grown while
-// iterations were cheap is spent in full on the first expensive one, and the
-// tuner learns nothing until after the damage. What bounds that is
-// kMaxDeadlineStride, the hard iteration cap; see its comment.
+// Next deadline-check stride, given how long the last one actually took. Growth is capped at
+// kStrideGrowth so the stride ramps up through progressively longer, more accurate measurements
+// instead of extrapolating from one short one; the cap never weakens the bound (an x8 growth is
+// taken only when 8 x elapsed is still inside the target). Shrinking is NOT capped, so costlier
+// iterations are caught on the very next check. That alone cannot stop the stride ratcheting up
+// and going silent: a shrink applies only at a check a whole stride away, so a stride grown while
+// iterations were cheap is spent in full on the first expensive one. kMaxDeadlineStride, the hard
+// iteration cap, bounds that.
 int64_t FeasibilityJump::next_deadline_stride(int64_t stride, double elapsed_seconds,
                                               double target_seconds) {
     // A non-finite measurement carries no information; take the floor rather
@@ -2487,95 +2241,47 @@ void FeasibilityJump::arm_deadline() {
     deadline_ = now + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
                           std::chrono::duration<double>(config_.time_limit));
     last_deadline_check_ = now;
-    // Start at one iteration and let the tuner grow it. The first stride is the
-    // one no measurement has bounded yet, and starting it at 64 on a model whose
-    // iterations cost 100ms is the whole of #113.
+    // Start at one iteration and let the tuner grow it: the first stride is the one no
+    // measurement has bounded yet, and 64 of them on a model whose iterations cost 100 ms
+    // overrun by seconds (#113).
     deadline_stride_ = 1;
     deadline_countdown_ = 1;
 }
 
-// The GLS inner loop (ApplyJump + stagnation weight bump), reusing the current
-// state (Q, weights, jump table). Returns Feasible as soon as no active
-// constraint is violated; Unsolved when the batch / global iteration budget or
-// the deadline is hit. batch_iter_limit <= 0 means "no per-call limit".
+// No improving jump anywhere in the scan set: bump the GLS weights, then invalidate and re-queue
+// every variable of every active violated row, so the next iteration re-scores them against the
+// new penalty landscape.
 //
-// ---- How the deadline is observed (#113) ----
-//
-// Reading the clock is not free: steady_clock::now() measures 1408 ns/call on
-// this project's reference machine, whose clocksource is HPET (it is ~20-25 ns
-// through the vDSO on a TSC clocksource), against GLS iterations that can be a
-// few microseconds. Checking every iteration measured 2996 -> 5228 ns per
-// iteration, a 1.75x throughput loss, on a small Bool model — so the loop
-// cannot simply check every time.
-//
-// It used to check on a fixed stride of 64 iterations, which is not a time
-// bound at all: one GLS iteration is O(sampled vars x candidate values x
-// constraints touched), so 64 of them are microseconds on a small model and
-// seconds on a large one. Measured on 400 Int vars with 20 000 rows of 8: every
-// budget from 0.05s to 3s took ~7s, always after exactly 64 iterations.
-//
-// So the stride is sized in *time* instead. Each check measures how long the
-// previous stride took, which is the current cost of an iteration, and sizes
-// the next stride to kStrideBudgetFraction of the total budget. The guarantee:
-//
-//   a batch returns at most one stride past the deadline, and a stride costs at
-//   most 1/64 of the budget -- or one GLS iteration, whichever is larger,
-//   because an iteration is atomic and cannot be pre-empted from the inside.
-//
-// Sizing the stride in time also bounds the clock overhead without having to
-// measure the clock at all: one read per stride, against a stride costing
-// budget/64, is 1.4us / (budget/64) even on the expensive clocksource — 0.45%
-// of a 20ms budget, 0.009% of a 1s one. It degrades only for budgets so small
-// (well under a millisecond) that the run is over before throughput matters.
-//
-// Two honest caveats. The prediction is a measurement, so an iteration whose
-// cost jumps mid-stride overruns the target and is corrected only at the next
-// check. And the interval between checks can span a batch boundary, so work the
-// *outer* loop does between batches (hook, LNS, structural sweep) is charged to
-// the stride, which shrinks it; that is conservative, never the reverse.
-// No improving jump anywhere in the scan set. Bump the GLS weights, then
-// invalidate and re-queue every variable of every active violated constraint, so
-// the next iteration re-scores them against the new penalty landscape.
-//
-// The weight update is gls_update_weights' -- decay every row by rho, add 1 to
-// every active violated row -- in LazyWeightDecay's representation (#175): the
-// decay is O(1) on the global scale, and only the rows in V are touched, so the
-// bump is O(|V|) plus the requeue below (the nonzeros of V's counted rows)
-// rather than O(#rows). The algorithm's weights are unchanged (ViolationLS, Davies et al. CPAIOR
-// 2024, Algorithm 3); only their storage is. The violated rows are V's, which is the eager form's
-// `constraint_violation(c) > tol` row for row: is_violated is the same tol test and a NaN or +inf
-// clamps to kInfPenalty there. That holds only while V is current -- update_var keeps it so inside
-// the loop, and a caller that mutates the assignment outside FJ must resync() before the next batch
-// (solve() does). A stale V now mis-weights rows, not just mis-queues them.
+// The update is gls_update_weights' (decay every row by rho, add 1 to every active violated row;
+// ViolationLS, Davies et al. CPAIOR 2024, Algorithm 3) in LazyWeightDecay's representation
+// (#175): the decay is O(1) on the global scale and only V's rows are touched, so the bump is
+// O(|V|) plus the requeue (the nonzeros of V's counted rows) rather than O(#rows). Only the
+// storage differs from the algorithm's weights. V matches the eager form's
+// `constraint_violation(c) > tol` row for row (the same tol test; a NaN or +inf clamps to
+// kInfPenalty there) only while V is current: update_var keeps it so inside the loop, and a
+// caller that mutates the assignment outside FJ must resync() before the next batch (solve()
+// does). A stale V mis-weights rows, not just mis-queues them.
 void FeasibilityJump::bump_weights_and_requeue() {
     const double folded = weight_decay_.decay(vm_.weights, config_.rho);
     if (folded != 1.0) {
-        // Cached scores live in the scaled space too, and this rescale is
-        // REQUIRED, not cosmetic. A valid entry that survives a bump has no
-        // counted violated row, so its score is <= 0 -- except in the (0, tol]
-        // residual band, where it is positive, and an objective-only jump under
-        // objective_tie_break (#218), whose kObjectiveTieScore the rescale
-        // leaves alone (see scale_scores). Such an entry left in Q
-        // unrescaled would be up to 1 / folded (~1e30) times too large against
-        // every score computed after the fold, and apply_jump's argmax would take
-        // it over any real improving jump. Reachable wherever one gls_loop makes
-        // more than 1347 decays at rho = 0.95 -- run()/gls(), or LNS repair's
-        // fj_nl_initialize on continuous equality rows (#102) -- but only for an
-        // entry sampling happened to miss, which is why no test pins this site;
-        // the batch-API fence pins the rescale in materialise_weights.
+        // Cached scores live in the scaled space too, and this rescale is REQUIRED: a valid entry
+        // surviving a bump has no counted violated row, so its score is <= 0, except in the
+        // (0, tol] residual band, where it is positive, and an objective-only jump (#218), whose
+        // kObjectiveTieScore scale_scores leaves alone. Left in Q unrescaled, such an entry would
+        // be up to 1 / folded (~1e30) times too large against every later score and win
+        // apply_jump's argmax over any real improving jump. Reachable when one gls_loop makes more
+        // than 1347 decays at rho = 0.95 (run()/gls(), or LNS repair's fj_nl_initialize on
+        // continuous equality rows, #102), but only for an entry sampling missed, so no test pins
+        // this site; the batch-API fence pins the rescale in materialise_weights.
         jumps_.scale_scores(folded, config_.objective_tie_break);
     }
     vm_.invalidate_cache();
-    // V in its list order. The order variables enter Q is the order apply_jump's
-    // draw indexes, so it matters for the trajectory, but only that it is
-    // deterministic: the list order is a function of the flip history alone
-    // (appends and swap-removes), so a seeded run reproduces. It is NOT
-    // ascending, and keeping it ascending would cost a sort per bump (#174 did,
-    // for bit-identity with the whole-row sweep; the lazy decay gave that up).
-    // Each row's counted bit is re-read against its bumped weight on the way
-    // past (a fold by rho = 0 deactivates every row), which is also the only
-    // weight read the bump's own bookkeeping needs -- rows outside V are never
-    // looked at.
+    // V in its list order. The order variables enter Q is the order apply_jump's draw indexes, so
+    // it must be deterministic, and is: the list order is a function of the flip history alone
+    // (appends and swap-removes), so a seeded run reproduces. It is NOT ascending; keeping it so
+    // would cost a sort per bump. Each row's counted bit is re-read against its bumped weight on
+    // the way past (a fold by rho = 0 deactivates every row), the only weight read the bump's
+    // bookkeeping needs: rows outside V are never looked at.
     for (const int32_t c : violated_rows_) {
         weight_decay_.bump(vm_.weights, static_cast<size_t>(c));
         reconcile_counted(c);
@@ -2623,31 +2329,17 @@ bool FeasibilityJump::track_batch_progress(double& batch_best_violation, bool wa
         return false;
     }
     if (unweighted_violation_ <= 0.0) {
-        // The measure has no usable signal, which covers TWO states and
-        // deliberately treats them alike. Either every real row is
-        // satisfied (progress_residual counts only residuals > tol, the
-        // same threshold is_violated uses, so a zero sum means exactly
-        // that for finite rows) -- or every violated real row is +inf or
-        // NaN, which progress_residual also contributes 0 for. Both are
-        // "nothing to measure", and neither is evidence of a stall.
-        //
-        // Testing "is any real row violated" instead was tried and is
-        // WRONG: on a non-convex body that has gone non-finite it is
-        // permanently true while the measure is permanently pinned, so
-        // improves() can never fire and the batch reports stuck at every
-        // streak limit for the rest of the run -- pre-feasibility, where
-        // the kick still draws LNS. That trades a silently inert exit for
-        // a budget-burning one on exactly the elec-class instances.
-        //
-        // The measure then sums to zero and can never improve on itself,
-        // so every batch in the objective-descent phase would
-        // report stuck at exactly unproductive_iterations, turning a
-        // stall detector into an unconditional one. The search is not
-        // stalled there; it is descending against the artificial
-        // objective row, which this measure deliberately cannot see.
-        // Having no signal is not evidence of being stuck, so hand the
-        // batch back to its own limit and let perturbation_period keep
-        // owning that regime.
+        // No usable signal, two states treated alike: every real row satisfied (progress_residual
+        // counts only residuals > tol, is_violated's threshold, so a zero sum means exactly that
+        // for finite rows), or every violated real row +inf or NaN, which also contributes 0.
+        // Neither is evidence of a stall. Testing "is any real row violated" instead is WRONG: on
+        // a non-convex body gone non-finite it stays true while the measure stays pinned, so the
+        // batch reports stuck at every streak limit for the rest of the run (pre-feasibility,
+        // where the kick still draws LNS), a budget-burning exit on the elec-class instances.
+        // And in the objective-descent phase the zero sum can never improve on itself, so every
+        // batch would report stuck at exactly unproductive_iterations although the search is
+        // descending against the objective row, which this measure cannot see. So hand the batch
+        // back to its own limit and let perturbation_period own that regime.
         unproductive_streak_ = 0;
         return false;
     }
@@ -2687,6 +2379,25 @@ void FeasibilityJump::materialise_weights() {
     }
 }
 
+// The GLS inner loop (ApplyJump + stagnation weight bump), reusing the current state (Q, weights,
+// jump table). Returns Feasible as soon as no active constraint is violated; Unsolved when the
+// batch / global iteration budget or the deadline is hit. batch_iter_limit <= 0: no per-call limit.
+//
+// ---- How the deadline is observed (#113) ----
+//
+// steady_clock::now() costs 1408 ns/call on the reference machine (HPET clocksource; ~20-25 ns
+// through the vDSO on TSC) against GLS iterations of a few microseconds: checking every iteration
+// measured 2996 -> 5228 ns per iteration (1.75x) on a small Bool model. A fixed stride is no time
+// bound, since one iteration is O(sampled vars x candidate values x constraints touched): a
+// stride of 64 on 400 Int vars with 20 000 rows of 8 took ~7 s for every budget from 0.05 s to
+// 3 s. So each check measures the previous stride and sizes the next to kStrideBudgetFraction of
+// the budget. The guarantee: a batch returns at most one stride past the deadline, and a stride
+// costs at most 1/64 of the budget or one GLS iteration, whichever is larger, because an
+// iteration cannot be pre-empted from the inside. Clock overhead is then one read per budget/64,
+// 0.45% of a 20 ms budget and 0.009% of a 1 s one on the expensive clocksource, degrading only
+// for budgets well under a millisecond. Caveats: an iteration whose cost jumps mid-stride
+// overruns until the next check; and work the outer loop does between batches (hook, LNS,
+// structural sweep) is charged to the stride, which shrinks it: conservative, never the reverse.
 GFJStatus FeasibilityJump::gls_loop(int sample_size, int64_t batch_iter_limit) {
     // The lazy decay's scale is local to the loop: whatever way the loop is left,
     // vm_.weights are effective weights again afterwards (#175).
@@ -2780,10 +2491,9 @@ GFJStatus FeasibilityJump::gls(int sample_size) {
 void FeasibilityJump::begin(bool set_initial_x) {
     require_tables_in_step();
     iterations_ = 0;
-    // A fresh run starts with the escape probe disarmed, alongside the iteration
-    // count and the deadline. solve() constructs a FeasibilityJump per call so
-    // this cannot matter today; it is here so a caller that reuses one instance
-    // does not inherit the previous run's stagnation state (#117).
+    // A fresh run starts with the escape probe disarmed, alongside the iteration count and the
+    // deadline, so a caller that reuses one instance does not inherit the previous run's
+    // stagnation state (#117).
     escape_probe_ = false;
     unproductive_streak_ = 0;
     batch_stuck_ = false;
@@ -2857,55 +2567,33 @@ void FeasibilityJump::arm_structural_kick() {
     }
 }
 
-// Stop the structural pass? Checked between MOVES, which is what makes the
-// bound mean anything on a model with one large structure (#115).
+// Stop the structural pass? Checked between MOVES, which is what makes the bound mean anything on
+// a model with one large structure (#115). The unit is one structural move (one move-set
+// generation plus one apply, O(|elements| + universe) element copies), the same unit the
+// STRUCTURAL batch's sweep caps its overrun at (#105). A variable costs k = round(p * |elements|)
+// moves, quadratic in its size, so a check between variables caps nothing on a model whose
+// structure is one List or Set (2.3 s for one kick on a 41k-element Set, with
+// solve(time_limit=1.0) returning in 1.29 s).
 //
-// The unit here is one structural move — one move-set generation plus one apply,
-// O(|elements| + universe) element copies — which is the same unit the STRUCTURAL
-// batch's sweep caps its overrun at (#105). Checking between *variables*, as this
-// pass used to, capped nothing: a variable costs k = round(p * |elements|) of
-// those moves, quadratic in its size, so a model whose structure lives in one
-// List or Set ran the whole quadratic pass and then consulted the clock on its
-// way to a variable that did not exist. Measured at 2.3 s for one kick on a
-// 41k-element Set, with solve(time_limit=1.0) returning in 1.29 s.
+// A move is too cheap to read the clock before each one (~1.5 us on a 100-element List against
+// 1408 ns for steady_clock::now() on the HPET reference machine), so the check strides with the
+// GLS loop's tuner, next_deadline_stride. That shares its lesson (#113): a stride sized in time
+// ALONE, grown over many cheap small structures, is spent in full on the first move of a large
+// one; the hard cap kMaxDeadlineStride bounds that. Bounding k against the remaining budget
+// instead (#115's other direction) was not taken: k is chosen once, before the run, so a per-move
+// cost rising inside the run is never re-observed.
 //
-// A move is not cheap enough to check the clock before every one of them: the
-// shape this pass already handles well is many small structures, where a move on
-// a 100-element List is ~1.5us against 1408 ns for steady_clock::now() on this
-// project's HPET reference machine. So the check strides, and the stride is the
-// one the GLS loop already uses — FeasibilityJump::next_deadline_stride, sized in
-// time from the last measurement, growth capped at 8x, shrink uncapped, and hard
-// capped at kMaxDeadlineStride moves.
+//   Guarantee: perturb()'s structural pass applies at most kMaxDeadlineStride (64) further moves
+//   after the deadline passes, and a stride costs at most 1/64 of the remaining budget in
+//   predicted time, or one move if larger (a move cannot be pre-empted from the inside). A move
+//   whose cost jumps mid-stride is absorbed by the 64-move half of the bound, not the time half.
 //
-// Sharing that tuner shares the lesson it encodes (#113): a stride sized in time
-// ALONE goes silent exactly when it is needed, because the shrink can only be
-// applied at a check and the next check is a whole stride away, so a stride grown
-// over many cheap small structures would be spent in full on the first move of a
-// large one. The hard cap is what bounds that, and it is why bounding k against
-// the remaining budget instead — the other direction #115 named — was not taken:
-// k is chosen once, before the run, so a per-move cost that rises inside the run
-// is never re-observed at all.
-//
-//   Guarantee: perturb()'s structural pass applies at most kMaxDeadlineStride
-//   (64) further moves after the deadline passes, and a stride costs at most
-//   1/64 of the remaining budget in predicted time — or one move, whichever is
-//   larger, since a move is atomic and cannot be pre-empted from the inside.
-//
-// The prediction is a measurement, so a move whose cost jumps mid-stride is
-// absorbed by the 64-move half of the bound, not the time half.
-//
-// One honest gap, PRE-EXISTING and deliberately not closed here. The guarantee is
-// stated in moves, and the cost model behind it assumes cost is proportional to
-// moves — but a move that is never applied is not free. generate_standard_moves
-// on a Set allocates a vector<bool> over the universe, copies the membership and
-// builds the complement, O(|elements| + universe), before discovering there is no
-// legal move; the pass then breaks out of that variable having applied nothing.
-// Since the check short-circuits on kick_moves_ == 0 without decrementing, a
-// model of M saturated Sets (min_size == max_size == universe_size) does O(M * U)
-// work with zero clock reads. The old between-variables check was gated on
-// `changed` and was equally blind to it, so this is not a regression, and the
-// cost is linear in the model rather than quadratic in one variable — the shape
-// #115 is about. Closing it means bounding failed ATTEMPTS as well as moves.
+// Known gap, deliberately not closed here: the bound is in moves, but a move never applied is not
+// free. generate_standard_moves on a Set costs O(|elements| + universe) before finding no legal
+// move, and the check short-circuits on kick_moves_ == 0 without decrementing, so a model of M
+// saturated Sets (min_size == max_size == universe_size) does O(M * U) work with no clock read.
+// That is linear in the model, not quadratic in one variable (the shape #115 is about); closing
+// it means bounding failed ATTEMPTS as well as moves.
 bool FeasibilityJump::kick_past_deadline() {
     // Short-circuited on has_deadline_, so a run with no wall clock neither reads
     // the clock nor touches any tuner state: iteration-budgeted runs stay
@@ -2920,13 +2608,10 @@ bool FeasibilityJump::kick_past_deadline() {
         return false;
     }
     const auto now = std::chrono::steady_clock::now();
-    // Counted before the deadline test — as the GLS loop also does — so the read
-    // that stops the pass is included rather than dropped. The count is every
-    // read made by THIS check, not by the kick as a whole: arm_structural_kick()
-    // takes one more, uncounted. So `structural_kick_checks() == 0` states
-    // exactly that the strided check never consulted the clock, and it is the
-    // pairing with `has_deadline_ == false` — which also silences the arm — that
-    // makes a no-wall-clock run read no clock at all.
+    // Counted before the deadline test, as in the GLS loop, so the read that stops the pass is
+    // included. It counts THIS check's reads only (arm_structural_kick() takes one more,
+    // uncounted), so `structural_kick_checks() == 0` means the strided check never read the
+    // clock; `has_deadline_ == false`, which also silences the arm, makes a run read none at all.
     ++kick_checks_;
     if (now >= deadline_) {
         return true;
@@ -2943,17 +2628,11 @@ bool FeasibilityJump::kick_past_deadline() {
 }
 
 bool FeasibilityJump::perturb_structural(double probability) {
-    // Cost per structural variable is O(k * (|elements| + universe)),
-    // k = round(p * |elements|). Since #164 a candidate is a POSITIONAL EDIT
-    // rather than a whole element vector, so the per-candidate term is the
-    // MEMBERSHIP SCAN the length-changing moves need — a Set's complement, a
-    // variable-length List's absent-element sweep, a partition's unassigned pool
-    // — rather than an O(|elements|) copy. Still superlinear in a single
-    // structure's size, which is why the deadline is checked between moves rather
-    // than between variables — see kick_past_deadline() for the bound that buys
-    // and what it costs. The at-least-ninefold drop it brought is what forced
-    // tests/test_perturb.cpp's mid-kick deadline case onto a ten-times-longer
-    // List to keep outrunning its budget.
+    // Cost per structural variable is O(k * (|elements| + universe)), k = round(p * |elements|):
+    // a candidate is a POSITIONAL EDIT (#164), so the per-candidate term is the membership scan
+    // the length-changing moves need (a Set's complement, a variable-length List's absent-element
+    // sweep, a partition's unassigned pool), not an O(|elements|) copy. Still superlinear in one
+    // structure's size, hence the between-moves deadline check (kick_past_deadline()).
     arm_structural_kick();
     bool changed = false;
     for (int32_t v = 0; v < static_cast<int32_t>(model_.num_vars()); ++v) {
@@ -3014,20 +2693,13 @@ bool FeasibilityJump::force_structural_move() {
 
 void FeasibilityJump::perturb(double probability) {
     require_tables_in_step();
-    // Randomise each jumpable variable independently, then make sure the kick
-    // actually moved something. Independent draws alone leave the assignment
-    // untouched with probability (1-p)^n, which at the default p = 0.1 is 81% on
-    // a two-variable model — exactly the small models most likely to be stuck in
-    // one basin, where the kick then burned the stagnation counter and the
-    // search resumed where it was (#109).
-    //
-    // The guarantee is a FALLBACK, not a variable forced on every kick. That
-    // matters for fidelity: on a model big enough for the per-variable
-    // probability to do its job a no-op kick is vanishingly rare, so the scan
-    // below never runs, no extra RNG draw is taken, and the kick keeps exactly
-    // the distribution — and the exact draw sequence — it had before. Forcing a
-    // variable unconditionally instead would shift the draw sequence on every
-    // model.
+    // Randomise each jumpable variable independently, then make sure the kick actually moved
+    // something: independent draws alone leave the assignment untouched with probability
+    // (1-p)^n, 81% on a two-variable model at the default p = 0.1 (#109). The guarantee is a
+    // FALLBACK, not a variable forced on every kick: where the per-variable probability does its
+    // job a no-op kick is vanishingly rare, the fallback never runs and takes no extra RNG draw,
+    // so the kick keeps its distribution and exact draw sequence. Forcing a variable
+    // unconditionally would shift the draw sequence on every model.
     bool changed = false;
     for (int32_t v = 0; v < static_cast<int32_t>(model_.num_vars()); ++v) {
         if (!jumpable(v) || rng_.random() >= probability) {
@@ -3038,22 +2710,16 @@ void FeasibilityJump::perturb(double probability) {
         var.value = random_in_domain(var, rng_);
         changed = changed || var.value != previous;
     }
-    // The loop above only reaches jumpable (scalar) variables. List and Set
-    // variables get their own pass, so a kick on a model whose decision
-    // structure is structural is a real kick rather than a no-op (#111). The
-    // pass draws no random numbers on a model without List/Set variables, so
-    // scalar-only models keep the exact draw sequence — and hence the exact
-    // runs — they had before.
+    // List and Set variables get their own pass, so a kick on a structural model is a real kick
+    // (#111). It draws no random numbers on a model without List/Set variables, so scalar-only
+    // models keep their exact draw sequence.
     const bool structural_changed = perturb_structural(probability);
     changed = changed || structural_changed;
     if (!changed) {
-        // Nothing moved: pick one variable that CAN move and move it. Scalars
-        // first, because that is the cheap answer and the common one; if every
-        // scalar is pinned (-1), force a structure instead — the structural pass
-        // reaching here means either that every structure is a dead end, in
-        // which case this fails too and a kick that changes nothing is the
-        // correct outcome, or that a run of moves cancelled itself out, which a
-        // single further move undoes.
+        // Nothing moved: move one variable that CAN move, scalars first (the cheap and common
+        // answer). If every scalar is pinned (-1), force a structure: reaching here means every
+        // structure is a dead end (this fails too, and a kick that changes nothing is correct) or
+        // a run of moves cancelled itself out, which a single further move undoes.
         const int32_t forced = pick_forced_perturb_var();
         if (forced >= 0) {
             Variable& var = model_.var_mut(forced);
@@ -3076,40 +2742,30 @@ bool FeasibilityJump::all_satisfied() const {
 //
 // ---- What is incremental, and what a batch still pays (#209) ----
 //
-// A Novelty batch is GLS with ApplyNoveltyJump as its move (novelty_batch). It
-// sets W' up over every row and seeds Q' from V's rows ONCE, in
-// begin_novelty_run, and from there keeps both incrementally across every
-// committed compound move, every discrepancy level, every ApplyNoveltyJump
-// call and every weight bump of the batch, as OR-Tools keeps its compound
-// weights and its scan set (ortools/sat/feasibility_jump.cc,
-// DoSomeGeneralIterations, ResetChangedCompoundWeights, AddVarToScan):
+// A Novelty batch is GLS with ApplyNoveltyJump as its move (novelty_batch). It sets W' up over
+// every row and seeds Q' from V's rows ONCE, in begin_novelty_run, then keeps both incrementally
+// across every committed compound move, discrepancy level, ApplyNoveltyJump call and weight bump
+// of the batch, as OR-Tools keeps its compound weights and scan set
+// (ortools/sat/feasibility_jump.cc, DoSomeGeneralIterations, ResetChangedCompoundWeights,
+// AddVarToScan):
 //
-//  - Q'. A commit leaves Q' as the search left it. The moves that made it up
-//    re-queued their row-neighbours as they went (nj_requeue_neighbours), so
-//    every var whose novelty score, W score or F verdict can have moved is
-//    already in it; Algorithm 5 never reseeds either (only line 16 adds to Q).
-//    A W' reset re-queues the rows whose W' it changes, and a bump the rows it
-//    bumps. Before #209 Q' was cleared and reseeded with every var of every
-//    active violated row after every commit and at every level, O(nnz(V))
-//    each -- 33.6% of a binkar10_1 run at c339b47.
-//  - W'. Algorithm 4 re-initialises W' at the start of every level (lines
-//    3-5): kCompoundDiscount * W everywhere, W on the rows in V. Only a row on
-//    nw_changed_ can differ from that, so reset_changed_novelty_weights redoes
-//    just those, O(|changed|) instead of O(#rows) per level. See it for why.
+//  - Q'. A commit leaves Q' as the search left it: the moves re-queued their row-neighbours as
+//    they went (nj_requeue_neighbours), so every var whose novelty score, W score or F verdict
+//    can have moved is already in it; Algorithm 5 never reseeds either (only line 16 adds to Q).
+//    A W' reset re-queues the rows whose W' it changes, and a bump the rows it bumps.
+//  - W'. Algorithm 4 re-initialises W' at the start of every level (lines 3-5): kCompoundDiscount
+//    * W everywhere, W on the rows in V. Only a row on nw_changed_ can differ from that, so
+//    reset_changed_novelty_weights redoes just those, O(|changed|) instead of O(#rows) per level.
 //
-// WHERE IT WINS: many violated rows, long rows, and short compound moves --
-// the reseed was paid per commit whatever the commit cost, so a search
-// committing one- or two-move compounds over a large V paid O(nnz(V)) for each.
-// That is MIPfeas before its first feasible point. WHERE IT LOSES: a forward
-// move pays a compare per row of G_v and a push per row whose status flips (to
-// note it on nw_changed_), and every committed compound move draws from a Q'
-// that holds only what the search re-queued rather than all of V's vars. The
-// second is a change of search, not of cost: a level can now run dry where a
-// reseed would have offered vars nothing had touched, and the GLS bump that
-// follows is what refills Q' then, as in OR-Tools. What each batch still pays
-// is one O(#rows) W' init, one O(nnz(V)) seed and the O(#rows + #vars) resync
-// that hands V, Q and the jump table back to FJ -- per batch_iterations moves,
-// against per commit and per level before.
+// WHERE IT WINS: many violated rows, long rows and short compound moves (MIPfeas before its first
+// feasible point), where clearing and reseeding Q' after every commit and at every level cost
+// O(nnz(V)) each (33.6% of a binkar10_1 run at c339b47). WHERE IT LOSES: a forward move pays a
+// compare per row of G_v and a push per row whose status flips, and every commit draws from a Q'
+// holding only what the search re-queued rather than all of V's vars. The second is a change of
+// search, not of cost: a level can run dry where a reseed would have offered vars nothing had
+// touched, and the GLS bump that follows refills Q', as in OR-Tools. Each batch still pays one
+// O(#rows) W' init, one O(nnz(V)) seed and the O(#rows + #vars) resync that hands V, Q and the
+// jump table back to FJ, per batch_iterations moves.
 
 void FeasibilityJump::init_novelty_weights() {
     // W'[c] = W[c] for constraints violated at entry, else kCompoundDiscount*W[c]
@@ -3170,9 +2826,8 @@ void FeasibilityJump::nj_enqueue(int32_t var_id) {
 // exactly for the v in nj_queue_ (nj_enqueue sets it with the push,
 // select_novelty_var clears it with the swap-remove), so clearing it through the
 // queue is the same as clearing the whole vector. The rows are visited in V's
-// list order (deterministic; see bump_weights_and_requeue) with a live weight
-// read. That order feeds select_novelty_var's draw, so it is part of the
-// trajectory, but no longer ascending. Once per Novelty run since #209.
+// list order (deterministic, not ascending; see bump_weights_and_requeue) with a live weight
+// read; that order feeds select_novelty_var's draw. Runs once per Novelty run (#209).
 void FeasibilityJump::seed_novelty_scan_set() {
     ++novelty_seeds_;
     for (const int32_t v : nj_queue_) {
@@ -3330,11 +2985,9 @@ void FeasibilityJump::novelty_bump_weights() {
 // ResetChangedCompoundWeights) or a weight bump. So a var failing F is scored
 // once per change of its neighbourhood, not once per call.
 //
-// #206 first kept F-failers in Q and excluded them per call only, on the
-// argument that F depends on s_m and s_c; that re-scored the whole of Q on every
-// call with fewer than 3 passers, and halved FJ throughput on MIPfeas. The cap
-// it replaced (32 draws, counting filtered ones toward the 3) declared dead
-// ends while passing vars were still in Q.
+// Not kept in Q and excluded per call (F does depend on s_m and s_c): that re-scored all of Q on
+// every call with fewer than 3 passers and halved FJ throughput on MIPfeas; and a draw cap
+// declared dead ends while passing vars were still in Q (#206).
 //
 // Passing vars stay in Q and are kept distinct by the same prefix trick as
 // apply_jump: [0, n) holds the passers sampled this call, each draw is uniform
@@ -3403,11 +3056,9 @@ FeasibilityJump::NoveltyPick FeasibilityJump::select_novelty_var(double s_m, dou
 // tiny positive score and is not admitted. Otherwise nothing is lost: a var all
 // of whose rows hold (residual <= 0) can only break rows, so its score and
 // novelty score are both <= 0, and s_m <= 0 on the stack and s_c >= 0 make it
-// fail both arms of F. Before #209 Q' admitted every neighbour, which
-// the per-commit reseed then threw away; without the reseed, Q' filled with
-// such vars and select_novelty_var scored each once per re-queue -- 88% of a
-// binkar10_1 run at c8fc6bf. The counts are current here: v's rows were
-// re-evaluated (set_violated) before this is called.
+// fail both arms of F. Admitting every neighbour instead fills Q' with such vars, each scored by
+// select_novelty_var once per re-queue (88% of a binkar10_1 run at c8fc6bf, #209). The counts are
+// current here: v's rows were re-evaluated (set_violated) before this is called.
 void FeasibilityJump::nj_requeue_neighbours(int32_t v, double objective_before) {
     for (const int32_t c : model_.constraints_of_var(v)) {
         if (c == objective_ci_ && objective_row_inert(objective_before, objective_value())) {
@@ -3443,12 +3094,10 @@ bool FeasibilityJump::novelty_jump_search(double s_m, int budget) {
         return false;
     }
     double s_c = 0.0;  // best explored child score at this level
-    // Both bounds are re-checked before every sibling, not only on entry, as
-    // OR-Tools checks its discrepancy bound at every ScanRelevantVariables call.
-    // An undo re-queues the reverted var and its row-neighbours, so Q' no
-    // longer shrinks monotonically and cannot be what ends this loop: checked
-    // on entry only, a level kept trying siblings with its budget and the work
-    // cap long gone -- mas76 spent minutes of a 20s budget in one call (#206).
+    // Both bounds are re-checked before every sibling, not only on entry, as OR-Tools checks its
+    // discrepancy bound at every ScanRelevantVariables call: an undo re-queues the reverted var
+    // and its row-neighbours, so Q' does not shrink monotonically and cannot be what ends this
+    // loop (checked on entry only, mas76 spent minutes of a 20 s budget in one call, #206).
     while (budget >= 0 && nj_work_remaining_ > 0) {
         NoveltyPick pick = select_novelty_var(s_m, s_c);
         if (pick.var < 0) {
@@ -3564,10 +3213,9 @@ bool FeasibilityJump::apply_novelty_jump() {
     return novelty_descent() == NoveltyOutcome::Feasible;
 }
 
-// ViolationLS Algorithm 6 line 22: GLS(G, X, W, ApplyNoveltyJump, rho). Before
-// #209 a Novelty batch was a single ApplyNoveltyJump whose failure was ignored,
-// so it never bumped a weight; now a failure is Algorithm 3's local minimum,
-// answered with the bump, and the batch goes on until its work bound.
+// ViolationLS Algorithm 6 line 22: GLS(G, X, W, ApplyNoveltyJump, rho). A failed
+// ApplyNoveltyJump is Algorithm 3's local minimum, answered with the bump, and the batch goes on
+// until its work bound (#209).
 bool FeasibilityJump::novelty_batch(int64_t batch_iterations) {
     require_tables_in_step();
     batch_stuck_ = false;
@@ -3576,20 +3224,16 @@ bool FeasibilityJump::novelty_batch(int64_t batch_iterations) {
     // row in V before the bump trusts the counted bits. O(|V|).
     reconcile_all_counted();
     begin_novelty_run();
-    // The batch is bounded in GLS iterations, the unit batch() and
-    // SearchConfig::max_iterations count: each Novelty move is charged
-    // kNoveltySample of them and each weight bump one (#209). An FJ iteration
-    // applies the best of its sample from CACHED jumps and re-scores only the
-    // vars a move invalidated; a Novelty move scores its whole sample -- at
-    // least kNoveltySample vars -- afresh, under W' and again under W, since no
-    // jump is cached under W'. So per applied move Novelty scores at least
-    // kNoveltySample times what FJ does, and charging that many is the closest
-    // an iteration count gets to the equal per-batch effort Algorithm 6 assumes
-    // (its batches, like OR-Tools', are bounded by the same deterministic time
-    // whichever algorithm runs). Derived from the sample size, not fitted; what
-    // it measured to on MIPfeas is in #209. <= 0 is "no
-    // per-batch limit", as for batch(): the deadline, or GFJConfig::
-    // max_iterations, then ends it.
+    // The batch is bounded in GLS iterations, the unit batch() and SearchConfig::max_iterations
+    // count: each Novelty move is charged kNoveltySample and each weight bump one (#209). An FJ
+    // iteration applies the best of its sample from CACHED jumps and re-scores only the vars a
+    // move invalidated; a Novelty move scores its whole sample (at least kNoveltySample vars)
+    // afresh, under W' and again under W, since no jump is cached under W'. So charging
+    // kNoveltySample is the closest an iteration count gets to the equal per-batch effort
+    // Algorithm 6 assumes (its batches, like OR-Tools', are bounded by the same deterministic
+    // time whichever algorithm runs). Derived from the sample size, not fitted; the MIPfeas
+    // measurement is in #209. <= 0 is "no per-batch limit", as for batch(): the deadline, or
+    // GFJConfig::max_iterations, then ends it.
     nj_work_remaining_ =
         batch_iterations > 0 ? batch_iterations : std::numeric_limits<int64_t>::max();
     if (config_.max_iterations > 0) {
@@ -3624,10 +3268,9 @@ bool FeasibilityJump::novelty_batch(int64_t batch_iterations) {
             }
             novelty_bump_weights();
             ++iterations_;  // a bump is one GLS iteration, as in gls_loop
-            // A search that applies no move -- every var in Q' failing F at
-            // the root -- would otherwise never reach nj_apply's deadline poll,
-            // and with no per-batch limit it bumps forever. So the bump polls
-            // the deadline too, on the same stride (#209 review).
+            // A search that applies no move (every var in Q' failing F at the root) never reaches
+            // nj_apply's deadline poll, and with no per-batch limit would bump forever, so the
+            // bump polls the deadline too, on the same stride (#209).
             if (--nj_work_remaining_ <= 0 ||
                 (has_deadline_ && --deadline_countdown_ <= 0 && deadline_passed_and_retune())) {
                 break;
@@ -3668,11 +3311,9 @@ GFJStatus FeasibilityJump::run() {
         }
         vm_.invalidate_cache();
         gls(config_.sample_size_linear);
-        // Phase 2 continues from the weights phase 1 learned: ViolationLS's
-        // Algorithm 6 (lines 18-19) passes the same W to both GLS calls. Only
-        // the mask comes off -- a non-linear row enters at weight 1. This used
-        // to refill every weight to 1, under a comment claiming the paper does
-        // (#211).
+        // Phase 2 continues from the weights phase 1 learned: ViolationLS's Algorithm 6 (lines
+        // 18-19) passes the same W to both GLS calls. Only the mask comes off: a non-linear row
+        // enters at weight 1 (#211).
         for (size_t c = 0; c < nc; ++c) {
             if (is_linear_[c] == 0) {
                 vm_.weights[c] = 1.0;
