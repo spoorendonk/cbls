@@ -400,19 +400,21 @@ bool float_jump_candidates(Model& model, int32_t var_id, const Variable& var, do
 // naming a child more than once counts it that many times; `close()` marks such Sums
 // (`kRepeatedChild`) and only those pay a scan of their children.
 //
-// Per breakpoint t, du is a small step in u (absolute, at least 4 ulp of t, at most 1/4). An Int
-// gets the floor and ceil of the v landing at t -+ du (plus the v at t when integral), so both
-// sides are offered even where float error puts the edge integer on the wrong one. A Float gets
-// those v nextafter-stepped strictly onto their own side, plus the v at t when the map puts it on
-// the edge's side (Ceil: below; Floor, and Round above zero: above), the plateau's extreme point
-// where a Ceil/Floor optimum sits. A Float Element index gets the middle of plateau k within u's
-// range, so a partial plateau still gets one (`trunc` makes plateau 0 the interval (-1, 1)).
+// Per breakpoint t, du is a small step in u (absolute, at least 4 ulp of t, at most 1/4). For
+// Ceil/Floor/Round, an Int gets the floor and ceil of the v landing at t -+ du (plus the v at t
+// when integral), so both sides are offered even where float error puts the edge integer on the
+// wrong one. A Float gets those v nextafter-stepped strictly onto their own side, plus the v at t
+// when the map puts it on the edge's side (Ceil: below; Floor, and Round above zero: above), the
+// plateau's extreme point where a Ceil/Floor optimum sits. An Int Element index gets k itself
+// (floor and ceil of its v); a Float one gets the middle of plateau k within u's range, so a
+// partial plateau still gets one (`trunc` makes plateau 0 the interval (-1, 1)).
 //
 // Above the caps (`kExhaustiveBreakpoints`; an Element's is its capped path's count), ONE grid of
 // `kJumpGridPoints - 1` points is shared by every capped argument, so K nodes do not cost K grids.
 // All candidates are deduplicated across nodes and against the Int/Float path's. The Element cap
 // deviates from #186's "the candidates are the index values" for cost: every index of a 10^4
-// table was 2x10^4 probes per jump-table refresh of that variable.
+// table was 2x10^4 probes per jump-table refresh of that variable. An index no representative,
+// grid point or near neighbour names is reachable only by the search's other moves.
 //
 // COST: one flag test per dependent of v, then the pruned cone and its sort (O(c log c) for c
 // nodes) plus their parent edges, in one pass, where a reverse sweep per breakpoint node made
@@ -1651,7 +1653,8 @@ void FeasibilityJump::compute_linear_constraints() {
 // ViolationManager's weights fall out of step if it was built before that row. The tables are
 // then indexed by the NEW row count unchecked, so the mismatch is refused here rather than read
 // past. Checked at the entry points a driver calls once per batch or kick, never per row: eight
-// size compares against a body that then runs thousands of iterations.
+// size compares against a body that then runs thousands of iterations. Remedy: build the
+// ViolationManager and this object after the objective row exists.
 void FeasibilityJump::require_tables_in_step() const {
     const size_t nc = model_.constraint_ids().size();
     const size_t nv = model_.num_vars();
@@ -2137,8 +2140,8 @@ bool FeasibilityJump::apply_jump(int sample_size) {
     // non-positive is swap-removed from the suffix (Q's back is in it, so the prefix is
     // undisturbed). Every draw grows the prefix or shrinks Q, so the loop ends within |Q| draws,
     // and each removal is paid for by the enqueue that put the variable there. Reordering Q is
-    // harmless: in_queue_ is a flag and the draw is uniform over a set, so the sample's
-    // distribution does not depend on where in Q a variable sits.
+    // harmless: in_queue_ is a flag, nothing but this draw reads Q's order, and the draw is uniform
+    // over a set, so the sample's distribution does not depend on where in Q a variable sits.
     int32_t best_v = -1;
     double best_score = 0.0;
     // objective_tie_break (#218): an exact score tie goes to the larger
@@ -2242,8 +2245,8 @@ void FeasibilityJump::arm_deadline() {
                           std::chrono::duration<double>(config_.time_limit));
     last_deadline_check_ = now;
     // Start at one iteration and let the tuner grow it: the first stride is the one no
-    // measurement has bounded yet, and 64 of them on a model whose iterations cost 100 ms
-    // overrun by seconds (#113).
+    // measurement has bounded yet: 64 iterations at 100 ms each read no clock for 6.4 s, past any
+    // shorter budget (#113).
     deadline_stride_ = 1;
     deadline_countdown_ = 1;
 }
@@ -2391,8 +2394,8 @@ void FeasibilityJump::materialise_weights() {
 // bound, since one iteration is O(sampled vars x candidate values x constraints touched): a
 // stride of 64 on 400 Int vars with 20 000 rows of 8 took ~7 s for every budget from 0.05 s to
 // 3 s. So each check measures the previous stride and sizes the next to kStrideBudgetFraction of
-// the budget. The guarantee: a batch returns at most one stride past the deadline, and a stride
-// costs at most 1/64 of the budget or one GLS iteration, whichever is larger, because an
+// the remaining budget. The guarantee: a batch returns at most one stride past the deadline, and a
+// stride costs at most 1/64 of the budget or one GLS iteration, whichever is larger, because an
 // iteration cannot be pre-empted from the inside. Clock overhead is then one read per budget/64,
 // 0.45% of a 20 ms budget and 0.009% of a 1 s one on the expensive clocksource, degrading only
 // for budgets well under a millisecond. Caveats: an iteration whose cost jumps mid-stride
@@ -2632,7 +2635,8 @@ bool FeasibilityJump::perturb_structural(double probability) {
     // a candidate is a POSITIONAL EDIT (#164), so the per-candidate term is the membership scan
     // the length-changing moves need (a Set's complement, a variable-length List's absent-element
     // sweep, a partition's unassigned pool), not an O(|elements|) copy. Still superlinear in one
-    // structure's size, hence the between-moves deadline check (kick_past_deadline()).
+    // structure's size, hence the between-moves deadline check (kick_past_deadline());
+    // tests/test_perturb.cpp's mid-kick deadline case sizes its List on this cost.
     arm_structural_kick();
     bool changed = false;
     for (int32_t v = 0; v < static_cast<int32_t>(model_.num_vars()); ++v) {
