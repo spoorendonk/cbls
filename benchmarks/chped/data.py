@@ -1,8 +1,11 @@
 """CHPED (Combined Heat and Power Economic Dispatch) instance data.
 
-The 13- and 40-unit systems, which `benchmarks/instances/uc-chped/data.py` and
-`reference_solve.py --uc` read. The 4-, 7- and 24-unit dispatch instances live
-in `data.h` only; their Python copies had no reader and went with #373.
+The 13- and 40-unit systems. `reference_solve.py` imports them directly for its
+default dispatch mode; `benchmarks/instances/uc-chped/data.py` loads them by
+path, which is how `reference_solve.py --uc` reaches them. The 4-, 7- and
+24-unit dispatch instances live in `data.h` only; their Python definitions (the
+24-unit one an RNG-scaled draw, not `data.h`'s table) had no reader and went
+with #373.
 Cost function: F_i(P_i) = a_i + b_i*P_i + c_i*P_i^2 + |d_i*sin(e_i*(P_min_i - P_i))|
 """
 
