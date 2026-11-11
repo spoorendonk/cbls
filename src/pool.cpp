@@ -168,8 +168,10 @@ SearchResult ParallelSearch::solve(
 
 // Breaks ties among workers' reasons. Feasible first: the one exit that answers
 // the question. Cancelled next, so a host reads back its cancel whatever budgets
-// did, and its `time_seconds` is not read as an expired budget. Stopped (a raised
-// flag with no Feasible worker) is reported as a peer's stop, not a budget exit.
+// did, and its `time_seconds` is not read as an expired budget. Stopped is
+// defensive: every flag raiser ends Feasible itself, so it shows only when a
+// raiser's result is lost (a throw after adopt_from_pool raised it); it is
+// reported as a peer's stop, not a budget exit.
 // TimeLimit over IterationLimit: one worker running out the shared clock makes
 // the answer clock-limited. NoBudget last: a worker that threw leaves it too.
 static TerminationReason aggregate_termination(const std::vector<SearchResult>& results) {

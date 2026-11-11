@@ -201,9 +201,10 @@ double effective_structural_probability(bool has_structural, double configured, 
 
 // Second arming condition for the Float escape probe (#117): this fraction of
 // the wall-clock budget with no new best. Batches can cost seconds (elec25:
-// ~1.2 s, 52 batches in 60 s), so the batch count alone would never arm it. Only
-// with a deadline: an iteration-budgeted run must not read the clock, to stay
-// bit-reproducible. The kick cadence stays batch-counted (see
+// ~1.2 s, 52 batches in 60 s), so there the batch count (perturbation_period =
+// 100) never arms it. Only with a deadline: an iteration-budgeted run must not
+// read the clock, to stay bit-reproducible. The kick cadence stays batch-counted
+// (tuned; making it time-aware needs its own measurement; see
 // maybe_arm_escape_probe).
 constexpr double kEscapeArmFraction = 0.25;
 
@@ -212,7 +213,9 @@ constexpr double kEscapeArmFraction = 0.25;
 // "always armed"). FJ's measure ignores the objective row, so after feasibility
 // it reports stuck on a search still improving (ex8_6_1: 152 of 162 batches).
 // The kick then comes 20x sooner than perturbation_period at the default, not
-// ~300x; below perturbation_period 20 the window is 1 batch and the ratio breaks.
+// ~300x. A fraction, not a new knob, so the two windows keep their ratio when
+// perturbation_period is retuned; integer division, so below 40 the window is 1
+// batch and the ratio breaks.
 // Tuned over windows of {5, 10, 20} batches on MINLPLib (10 s, four paired
 // seeds): all fix ex8_6_1; st_e40 reaches its BKS on 4/4 seeds at 5, on 2/4 at 10
 // or 20, so 5 (divisor 20) is chosen. Not shown to transfer off MINLPLib.
@@ -913,7 +916,8 @@ bool ViolationLSLoop::adopt_from_pool() {
         // point, or the next kick restores our incumbent and discards the draw
         // (#158, #135). The same feasible-and-finite rule is load-bearing: the
         // pool holds infeasible closest-approach states and #100's witness,
-        // which would anchor most later kicks to a point with no objective.
+        // which would anchor most later kicks to an infeasible point or one with
+        // no objective.
         adopted_origin_ = std::move(sol->state);  // moved, as above
         has_adopted_origin_ = true;
     } else {
@@ -1171,7 +1175,9 @@ void ViolationLSLoop::maybe_arm_escape_probe() {
     // skipped while armed. It carries no kick and is not gated on a projected
     // batch shortfall: a new best disarms the probe and restarts the clock, so it
     // arms at most 1/kEscapeArmFraction times per run, unlike #107's always-on
-    // probe (9x regression). #117's roster numbers describe this ungated form.
+    // probe (9x regression). #117's roster numbers describe this ungated form;
+    // the removed gate was measured to cost objective quality while preventing
+    // nothing.
     if (has_deadline_ && !fj_.escape_probe()) {
         const auto now = std::chrono::steady_clock::now();
         if (now < deadline_ && std::chrono::duration<double>(now - last_improvement_).count() >=
@@ -1384,7 +1390,10 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
     // One path per variable (#108): FJ's begin() sets the scalars to their
     // closest-to-zero value (published Feasibility Jump), so only List/Set are
     // randomised here. The initial scalar point is thus seed-independent; for a
-    // random one, call initialize_random and pass skip_init = true.
+    // random one, call initialize_random and pass skip_init = true. Don't
+    // randomise scalars here: begin() overwrites them, the draws would still
+    // shift the RNG stream, and rng.uniform/integers misbehave on infinite
+    // domains.
     if (!config.skip_init) {
         initialize_structured_random(model, rng);
     }
