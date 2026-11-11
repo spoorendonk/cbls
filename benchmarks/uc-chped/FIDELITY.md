@@ -570,8 +570,10 @@ model's demand row is `>=`, a relaxation not certified to share it (§7.4). The 
 it (121635.52, +0.18 %); the test asserted only `objective >= known_optimum`
 and `< 140000`.
 
-Reproduce (from the repository root; fetch the upstream files and restore the
-script from git history first):
+Reproduce from the root of a checkout of `73ee2690`: the script loads the
+reference solver from its old `benchmarks/chped/` path, removed in #385 (the
+instance data is byte-identical at HEAD). Fetch the upstream files and restore
+the script from git history first:
 
 ```
 git show 047f2d4c:benchmarks/uc-chped/instance_identity.py > benchmarks/uc-chped/instance_identity.py
@@ -583,7 +585,7 @@ for c in ucp13-1 ucp13-3 ucp40-1; do curl -sL -o RESULTS/$c.txt https://www.dcc.
 
 `--skip-solves` runs checks 7.2 and 7.3(1) alone, in about a second.
 
-At HEAD the first command (600 s cap) reproduces the objectives of the `ours
+There, the first command (600 s cap) reproduces the objectives of the `ours
 after #193` row of §7.3; the row itself, including the `=` bound 55638.420,
 which depends on the cap, needs `--time-limit 300 --cases ucp40-1`. The `ours
-before #193` row needs `benchmarks/chped/data.py` as of `79ae972^`.
+before #193` row needs a checkout of `79ae972^`.

@@ -68,9 +68,7 @@ include(Catch)
 # slow solves into one serial invocation would make the full suite far slower
 # than it is.
 #
-# Measured at Release: the 4 [slow]-tagged tests account for ~12s of the suite's
-# aggregate (summed per-test, at -j4) time; with `-j$(nproc)` the full run is ~25s of
-# wall clock. The remaining 791 (784 discovered, plus the
+# The 4 [slow]-tagged tests are the UC-CHPED benchmark solves. The remaining 791 (784 discovered, plus the
 # seven hand-registered tests that carry no slow label --
 # timing_structural_batch_deadline, hang_guard_iteration_only_portfolio,
 # hang_guard_novelty_zero_move_batch, hang_guard_nonpositive_batch_iterations
@@ -79,9 +77,8 @@ include(Catch)
 # finish in ~12s with `-j`, the `ctest -LE slow` loop to run before committing (no hook runs it).
 # pre-push still runs everything.
 #
-# Re-measured 2026-09-26 at 566 tests: of the six then tagged, only CHPED
-# 40-unit (since removed, #385) exceeded the ~10s tagging threshold; the four
-# left were 2.9-6.6s on either basis. Re-derive before assuming they still earn
+# Measured 2026-09-26 at 566 tests: these four took 2.9-6.6s each, under the
+# ~10s tagging threshold on either basis. Re-derive before assuming they still earn
 # the tag -- "measure both ways before tagging" applies to KEEPING a tag as
 # much as to adding one.
 #

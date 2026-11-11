@@ -97,9 +97,7 @@ ctest tests — plus **2 shell tests that are not Catch2 at all**,
 `clang_tidy_gate_probe` and `gate_lib_shell_test`, registered in the root
 `CMakeLists.txt` (they pin the clang-tidy gate and the hook filters, #171). Of the 788,
 **4 carry the
-Catch2 `[slow]` tag** — the UC-CHPED benchmark solves, ~12s of
-aggregate (summed per-test, at `-j4`) time, which `-j$(nproc)` compresses to a ~25s
-wall-clock full run. `tests/CMakeLists.txt` discovers them in a second
+Catch2 `[slow]` tag** — the UC-CHPED benchmark solves. `tests/CMakeLists.txt` discovers them in a second
 `catch_discover_tests` call with `LABELS "slow"`, so:
 
 - `ctest -LE slow` — the other 791 tests, ~12s with `-j`. The fast inner loop; run it yourself before committing (the hook no longer does).
