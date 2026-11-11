@@ -205,14 +205,6 @@ def test_the_runner_rejects_a_nonpositive_budget(tmp_path: Path) -> None:
             ["--no-compound-moves", "--novelty-prob", "0.2"],
             "--novelty-prob has no effect without --compound-moves",
         ),
-        (
-            ["--no-compound-moves", "--compound-propagation"],
-            "--compound-propagation has no effect without --compound-moves",
-        ),
-        (
-            ["--novelty-prob", "0", "--compound-propagation"],
-            "--compound-propagation has no effect with --novelty-prob 0",
-        ),
         (["--unproductive-iters", "-1"], "--unproductive-iters must be >= 0"),
         (["--unproductive-iters", "1.5"], "--unproductive-iters"),
         (["--perturbation-period", "0"], "--perturbation-period must be >= 1"),
@@ -231,8 +223,6 @@ def test_the_runner_rejects_a_nonpositive_budget(tmp_path: Path) -> None:
         "novelty-prob-above-one",
         "novelty-prob-nan",
         "novelty-prob-without-compound-moves",
-        "compound-propagation-without-compound-moves",
-        "compound-propagation-at-novelty-prob-zero",
         "unproductive-iters-negative",
         "unproductive-iters-not-an-integer",
         "perturbation-period-zero",
@@ -338,17 +328,6 @@ def test_each_tuning_flag_reaches_the_search(tmp_path: Path, threads: int) -> No
     assert fixed["unproductive_iters"] == 0
     assert _count(eager, "perturbations") > 3 * max(_count(fixed, "perturbations"), 1)
 
-    # Propagated Novelty legs (#340), under Novelty only: on narrows boxes and
-    # off never does, so the tightening counter tells the arms apart.
-    novelty = ["--novelty-prob", "1"]
-    propagated = run("propagation", [*novelty, "--compound-propagation"])
-    plain = run("no-propagation", novelty)
-    assert propagated["compound_propagation"] is True
-    assert plain["compound_propagation"] is False
-    assert _count(propagated, "novelty_propagation_tightenings") > 0
-    assert _count(plain, "novelty_propagation_tightenings") == 0
-    assert _count(plain, "novelty_propagation_conflicts") == 0
-
 
 def test_a_default_row_records_the_tuning_flags_at_the_pre_267_values(tmp_path: Path) -> None:
     """The default arm's row carries #267's keys at the values every older row
@@ -374,7 +353,6 @@ def _driver_args(**overrides: object) -> argparse.Namespace:
         "inf_clamp": 1.0e7,
         "compound_moves": True,
         "exact_int_jump": False,
-        "compound_propagation": False,
         "perturb_near_value": False,
         "objective_tie_break": True,
         "propagate_bounds": True,
@@ -413,8 +391,6 @@ def _driver_args(**overrides: object) -> argparse.Namespace:
         ("cbls", {"compound_moves": False}, {"--no-compound-moves": None}, ["--compound-moves"]),
         ("cbls", {}, {}, ["--exact-int-jump"]),
         ("cbls", {"exact_int_jump": True}, {"--exact-int-jump": None}, []),
-        ("cbls", {}, {}, ["--compound-propagation"]),
-        ("cbls", {"compound_propagation": True}, {"--compound-propagation": None}, []),
         ("cbls", {}, {}, ["--perturb-near-value"]),
         ("cbls", {"perturb_near_value": True}, {"--perturb-near-value": None}, []),
         ("cbls", {}, {}, ["--no-objective-tie-break", "--objective-tie-break"]),
@@ -433,8 +409,6 @@ def _driver_args(**overrides: object) -> argparse.Namespace:
         "no-compound-moves",
         "exact-int-jump-off-by-default",
         "exact-int-jump",
-        "compound-propagation-off-by-default",
-        "compound-propagation",
         "perturb-near-value-off-by-default",
         "perturb-near-value",
         "objective-tie-break-on-by-default",
@@ -502,19 +476,12 @@ def _main_with(argv: list[str]) -> int:
             "!= --cpsat-workers",
         ),
         (["--cpsat-workers", "-1"], "--cpsat-workers >= 0", None),
-        # Every runner job would refuse the pair at its start (#340).
-        (
-            ["--no-compound-moves", "--compound-propagation"],
-            "--compound-propagation has no effect without --compound-moves",
-            None,
-        ),
     ],
     ids=[
         "asymmetric-cpu-refused",
         "asymmetric-cpu-opted-into",
         "cpsat-defaults-not-asymmetric",
         "negative-workers-refused",
-        "compound-propagation-without-compound-moves",
     ],
 )
 def test_the_driver_refuses_a_run_whose_flags_cannot_be_read(
@@ -576,13 +543,6 @@ def test_resuming_under_a_different_search_arm_is_refused(tmp_path: Path) -> Non
     result.write_text(json.dumps({"instance": "a", "threads": 1, **tie}))
     assert check() is None
     assert check(exact_int_jump=True) == 2
-    # The same for propagated Novelty legs (#340): a row without the key ran off.
-    assert check(compound_propagation=True) == 2
-    result.write_text(
-        json.dumps({"instance": "a", "threads": 1, "compound_propagation": True, **tie})
-    )
-    assert check() == 2
-    assert check(compound_propagation=True) is None
     # The same for the near-value kick (#217).
     result.write_text(
         json.dumps({"instance": "a", "threads": 1, "perturb_near_value": False, **tie})
@@ -1438,8 +1398,6 @@ def test_the_runner_publishes_the_batch_split_and_novelty_counters(
         "novelty_moves",
         "novelty_commits",
         "novelty_weight_bumps",
-        "novelty_propagation_tightenings",
-        "novelty_propagation_conflicts",
     )
     for key in keys:
         assert isinstance(row[key], int), key

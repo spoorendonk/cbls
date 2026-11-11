@@ -309,7 +309,6 @@ def build_run_record(
             "inf_clamp": args.inf_clamp,
             "compound_moves": args.compound_moves,
             "exact_int_jump": args.exact_int_jump,
-            "compound_propagation": args.compound_propagation,
             "perturb_near_value": args.perturb_near_value,
             "objective_tie_break": args.objective_tie_break,
             "propagate_bounds": args.propagate_bounds,
@@ -428,7 +427,6 @@ def build_command(job: Job, args: argparse.Namespace, results_dir: Path) -> list
             str(args.inf_clamp),
             "--compound-moves" if args.compound_moves else "--no-compound-moves",
             *(["--exact-int-jump"] if args.exact_int_jump else []),
-            *(["--compound-propagation"] if args.compound_propagation else []),
             *(["--perturb-near-value"] if args.perturb_near_value else []),
             *([] if args.objective_tie_break else ["--no-objective-tie-break"]),
             "--threads",
@@ -472,7 +470,6 @@ def arm_keys(engine: str, args: argparse.Namespace) -> dict[str, object]:
         "threads": args.cbls_threads,
         "compound_moves": args.compound_moves,
         "exact_int_jump": args.exact_int_jump,
-        "compound_propagation": args.compound_propagation,
         "perturb_near_value": args.perturb_near_value,
         "objective_tie_break": args.objective_tie_break,
     }
@@ -973,13 +970,12 @@ def check_resume_configuration(
 
     Returns the exit code to fail with, or None to proceed.
     """
-    # What a row without a key ran: `exact_int_jump`, `compound_propagation`,
-    # `perturb_near_value` and `objective_tie_break` are back-read as off, since
+    # What a row without a key ran: `exact_int_jump`, `perturb_near_value` and
+    # `objective_tie_break` are back-read as off, since
     # every row from before a flag ran its off arm; any other missing key is
     # unknown and left alone.
     back_read_off = {
         "exact_int_jump",
-        "compound_propagation",
         "perturb_near_value",
         "objective_tie_break",
     }
@@ -1151,14 +1147,6 @@ def check_arguments(args: argparse.Namespace) -> int | None:
         # "no_solution" result, which resume then treats as work completed.
         print(
             f"--budget must be > 0 and --jobs >= 1 (got {args.budget}, {args.jobs}).",
-            file=sys.stderr,
-        )
-        return 2
-    if args.compound_propagation and not args.compound_moves:
-        # The runner refuses the pair (propagation is read only by Novelty
-        # batches), so every CBLS job of the run would fail at its start.
-        print(
-            "--compound-propagation has no effect without --compound-moves.",
             file=sys.stderr,
         )
         return 2
@@ -1342,14 +1330,6 @@ def main() -> int:
         action="store_true",
         help="CBLS FJ takes the exact Int jump over linear columns (#208, #216); off by "
         "default, as in the engine. Not a configuration to publish until #208's A/B",
-    )
-    parser.add_argument(
-        "--compound-propagation",
-        action="store_true",
-        help="CBLS Novelty Jump propagates each compound-move leg over the linear rows "
-        "and draws the next leg inside the narrowed box (#339, #340); off by default, "
-        "as in the engine. Needs compound moves. Not a configuration to publish "
-        "before #341's A/B",
     )
     parser.add_argument(
         "--perturb-near-value",

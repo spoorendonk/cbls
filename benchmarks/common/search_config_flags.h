@@ -132,9 +132,6 @@ struct SearchFlags {
     // it off; recorded in the cell only when off, so a default row's cell is
     // the one rows from before #226 carry -- tell those apart by commit.
     bool objective_tie_break = SearchConfig{}.fj_objective_tie_break;
-    // Propagated Novelty legs (#339, #340); off by default. Recorded in the
-    // cell only when on (opt-in), so every committed table's cell is unchanged.
-    bool compound_propagation = SearchConfig{}.compound_move_propagation;
     // The first flag typed from each family, indexed by the family's bit, or
     // nullptr. Set by match_search_flag() whatever the value, so that a flag
     // restated at its default is refused on a runner that cannot read it too:
@@ -162,7 +159,7 @@ struct SearchFlagSpec {
 ///
 /// New flags go at the END: a runner's cell is the table filtered by its
 /// families, so appending keeps every existing runner's cell byte-identical.
-inline constexpr std::array<SearchFlagSpec, 16> kSearchFlagSpecs = {{
+inline constexpr std::array<SearchFlagSpec, 15> kSearchFlagSpecs = {{
     {"float_hook", "[--no-float-hook]", kScalarSearchFlags},
     {"lns", "[--no-lns]", kCommonSearchFlags},
     {"lns_interval", "[--lns-interval N]", kCommonSearchFlags},
@@ -180,7 +177,6 @@ inline constexpr std::array<SearchFlagSpec, 16> kSearchFlagSpecs = {{
     {"neighbours", "[--neighbours K]", kNeighbourSearchFlags},
     {"perturb_near_value", "[--perturb-near-value]", kScalarSearchFlags, true},
     {"objective_tie_break", "[--no-objective-tie-break]", kScalarSearchFlags, true},
-    {"compound_propagation", "[--compound-propagation]", kScalarSearchFlags, true},
 }};
 
 inline constexpr std::size_t kSearchFlagCount = kSearchFlagSpecs.size();
@@ -296,10 +292,6 @@ inline bool match_search_flag(ArgCursor& c, const std::string& s, SearchFlags& f
     } else if (s == "--no-objective-tie-break") {
         f.objective_tie_break = false;
         flag = "--no-objective-tie-break";
-        family = kScalarSearchFlags;
-    } else if (s == "--compound-propagation") {
-        f.compound_propagation = true;
-        flag = "--compound-propagation";
         family = kScalarSearchFlags;
     } else {
         return false;
@@ -459,16 +451,6 @@ inline bool validate_search_flags(const SearchFlags& f, unsigned applicable, boo
         error = "--novelty-prob has no effect without --compound-moves";
         return false;
     }
-    // Propagation is read only by Novelty batches, and the batch picker never
-    // draws one without compound moves or at probability 0 (`random() < 0`).
-    if (f.compound_propagation && !f.compound_moves) {
-        error = "--compound-propagation has no effect without --compound-moves";
-        return false;
-    }
-    if (f.compound_propagation && f.novelty_prob == 0.0) {
-        error = "--compound-propagation has no effect with --novelty-prob 0";
-        return false;
-    }
     // No positivity guard on --unproductive-iters, deliberately: SearchConfig
     // documents `<= 0` as "restore the old fixed cadence", which is a
     // legitimate arm and the control case for the #102 exit. Only a
@@ -545,9 +527,6 @@ inline const char* first_non_default_search_flag(const SearchFlags& f,
     if (f.objective_tie_break != d.objective_tie_break) {
         return "--no-objective-tie-break";
     }
-    if (f.compound_propagation != d.compound_propagation) {
-        return "--compound-propagation";
-    }
     return nullptr;
 }
 
@@ -588,7 +567,6 @@ inline std::array<std::string, kSearchFlagCount> search_config_values(const Sear
         f.neighbours == 0 ? std::string(off) : std::to_string(f.neighbours),
         f.perturb_near_value ? on : off,
         f.objective_tie_break ? on : off,
-        f.compound_propagation ? on : off,
     }};
 }
 
@@ -655,7 +633,6 @@ inline void apply_search_flags(const SearchFlags& f, SearchConfig& cfg) {
     cfg.structural_sample_size = static_cast<int>(f.structural_sample_size);
     cfg.perturb_near_value = f.perturb_near_value;
     cfg.fj_objective_tie_break = f.objective_tie_break;
-    cfg.compound_move_propagation = f.compound_propagation;
 }
 
 /// The neighbour flag's check against the instance, which only the runner can

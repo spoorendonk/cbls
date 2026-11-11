@@ -81,7 +81,7 @@ A one-screen map of the pipeline, its files, the extension points, build targets
 1. **Model building** (`include/cbls/model.h`, `include/cbls/expr.h`) — typed variables (Bool, Int, Float, List, Set), expressions by operator overloading, constraints, an objective; `close()` sorts the DAG topologically.
 2. **Expression DAG** (`include/cbls/dag.h`, `src/dag.cpp`, `src/dag_ops.cpp`) — variables have negative handles `-(id+1)`, nodes non-negative ids; 35 `NodeOp` types. `full_evaluate` evaluates everything; `delta_evaluate` recomputes only the nodes a move reaches (see [Evaluation Modes](#evaluation-modes), including the incremental Sum's drift bound). Slopes for the continuous jump values come from a forward up-cone pass (`UpConePartials`), or reverse-mode AD (`compute_all_partials`) for a large cone.
 3. **Search** (`src/search.cpp`) — the ViolationLS batch outer loop (Davies et al. CPAIOR 2024, Algorithm 6): each batch is Feasibility Jump, Novelty Jump or Structural, chosen by config probabilities; the `obj <= bound` row tightens on each new real-feasible solution; stagnation perturbs or runs LNS.
-4. **Feasibility Jump** (`src/feasibility_jump.cpp`, `src/linear_jump.cpp`) — a `JumpTable` of cached best jumps (score `-W·δ_G`), best-of-N sampling, GLS weight dynamics, and Novelty Jump compound moves (Algorithms 4–5). Float candidates come from Newton steps toward violated roots; a variable that reaches a `Ceil`/`Floor`/`Round`/`Element` node also gets its breakpoints; all-linear columns are scored in closed form by `LinearJumpScorer`, others by `weighted_violation_delta`. The default-off arms are listed in the [Parameters Table](#parameters-table). Undoable domain propagation over the linear rows, for compound moves: `src/domain_propagation.cpp` (see [Domain propagation over linear rows](#domain-propagation-over-linear-rows-329)).
+4. **Feasibility Jump** (`src/feasibility_jump.cpp`, `src/linear_jump.cpp`) — a `JumpTable` of cached best jumps (score `-W·δ_G`), best-of-N sampling, GLS weight dynamics, and Novelty Jump compound moves (Algorithms 4–5). Float candidates come from Newton steps toward violated roots; a variable that reaches a `Ceil`/`Floor`/`Round`/`Element` node also gets its breakpoints; all-linear columns are scored in closed form by `LinearJumpScorer`, others by `weighted_violation_delta`. The default-off arms are listed in the [Parameters Table](#parameters-table).
 5. **Moves** (`src/moves.cpp`) — typed move generators (bool flip, int ±1/rand, float perturb, list and set moves, the inter-list moves of a `ListPartition`). Scalar moves are subsumed by FJ; list/set moves feed the Structural batch as positional `ElementEdit`s. See [Structural Batch](#structural-batch).
 6. **Inner solver** (`src/inner_solver.cpp`) — `FloatIntensifyHook`: coordinate descent over floats (Newton on violated rows, line search on the objective), run on each new feasible solution.
 7. **LNS** (`src/lns.cpp`) — every N-th diversification kick: SISR ruin-and-recreate on each `ListPartition`, destroy 30% and repair by FJ elsewhere; accepted on a lexicographic (real violation, objective) key.
@@ -1093,42 +1093,21 @@ sweep; on any other objective it does nothing.
   repair keep their own rules.
 - `set_rho(rho)` — re-randomise the GLS decay between batches.
 
-### Domain propagation over linear rows (#329)
+### Propagation inside compound moves (removed, #380)
 
-**Files:** `include/cbls/domain_propagation.h`, `src/domain_propagation.cpp`,
-`src/activity_bounds.h` (the row-activity arithmetic it shares with
-[Implied variable bounds](#implied-variable-bounds)).
-
-Implied domains depend on bounds, not on current values. A plain FJ jump
-changes no bound, so it gains nothing from propagation; plain jumps already
-get the load-time implied domains. The one place where
-variables are held fixed for a while is the Novelty compound-move stack
-(`nj_apply`/`nj_undo`, `move_stack_`, the backtracking in
-`novelty_jump_search`), which is where propagation with a trail fits (#330): see
-[Propagated legs](#propagated-legs-compound_propagation-339). Propagating the objective
-cutoff on a new incumbent would make the soft objective row hard, so the
-objective row is not stored.
-
-- `LinearRowStore` is built once from a closed, evaluated model: every row
-  `affine_row_terms` accepts, over scalar variables, as residual CSR with
-  `lo <= sum a_k x_k <= hi` (`-inf`/`-c` for an inequality, `-c`/`-c` for
-  Eq), plus a column → row index. About 24 B per nonzero. It classifies rows
-  with `affine_row_terms` itself, not with FJ's `is_linear_`: that flag is 0
-  for every Eq row, which would drop `x + y + z = 1`.
-- `DomainPropagator` keeps each row's min and max activity as a finite sum
-  plus an infinite count (`Activity`). `fix`/`tighten` update the rows of the
-  changed variable in O(1) each, and scan those whose slack is below the
-  row's max variation (`max_k |a_k| (hi_k - lo_k)` at the starting bounds)
-  plus a bound on the incremental sum's rounding drift; other rows cost
-  O(1). A scanned row's activities are summed afresh from the current
-  bounds: removing a large contribution from a running sum leaves its
-  rounding behind (`0.3 + 1e15 - 1e15` is 0.25), which would derive bounds
-  that cut off feasible points. Depth 1 by default; `cascade` queues derived
-  bounds' rows too, a row again if a later bound touches it, up to
-  `max_cascade_terms`. Derived bounds follow `propagate_bounds`: relaxed by
-  `max(safety, #211 roundoff)`, rounded inward on Bool/Int.
-- `checkpoint`/`backtrack` use a trail of old values (bounds and whole
-  activities), never differences, so a backtrack restores bit for bit.
+Implied domains depend on bounds, not on current values, so a plain FJ jump
+gains nothing from propagation beyond the load-time implied domains
+([Implied variable bounds](#implied-variable-bounds)). The one place where
+variables are held fixed for a while is the Novelty compound-move stack, and
+#329/#339/#340 propagated each leg there over the linear rows (a
+`DomainPropagator` with a trail; later legs drew their candidates inside the
+narrowed box; a leg in conflict was not extended). It was opt-in, off by
+default, and off was the Novelty path bit for bit. #331 measured it at
+`ef1bbad` and kept it off: the MIPfeas dev roster's pooled PI ratio was 1.142,
+and the MINLPLib dev sample's GM(gap+1) ratio 1.052, both worse and both
+inside the control's noise floor. #380 removed it; the code, its counters
+(`novelty_propagation_tightenings`, `novelty_propagation_conflicts`) and the
+`--compound-propagation` runner flag are in git history at `57cdbfba`.
 
 ---
 
@@ -1209,52 +1188,6 @@ record its work apart from FJ's. The MIPfeas measurements (cost per move,
 profile, smoke roster) and the pre-registered A/B that settled when Algorithm
 6's `A` is redrawn — every batch, a deviation from §5 that `pick_batch_kind`
 documents — are in #209.
-
-### Propagated legs (`compound_propagation`, #339)
-
-`GFJConfig::compound_propagation` (default off; off is the Novelty path bit
-for bit) runs each leg through a `DomainPropagator` over the model's linear
-rows ([above](#domain-propagation-over-linear-rows-329)), built on the first
-Novelty run: variable bounds never change after construction, so once.
-#331 measured it at `ef1bbad` and kept it off. The MIPfeas dev roster's pooled
-PI ratio was 1.142, and the MINLPLib dev sample's GM(gap+1) ratio 1.052, both
-worse and both inside the control's noise floor.
-
-- `nj_apply` takes a `checkpoint()` and `fix(v, jump)`; `nj_undo` backtracks
-  to it; a commit (`clear_novelty_stack`) backtracks to the first leg's
-  checkpoint, so between Novelty calls every domain is the declared box.
-- While the stack is non-empty, `select_novelty_var` scores each sampled var
-  over its implied domain: `compute_var_jump`'s `box`, handed to every
-  candidate path as a narrowed copy of the `Variable` (the clamp, lb/ub and
-  midpoint candidates, the Int window and grid, Newton, breakpoints, the
-  escape steps, `exact_int_jump`'s `int_argmin` window). A box with fewer
-  than two values offers that value, which matters because the var's current
-  value may lie outside it. `Variable::lb/ub` are never written: box checks,
-  FJ batches, perturbation, LNS and `LinearJumpScorer`'s max-variation filter
-  keep the declared box (the last is conservative on a narrower one).
-- A var whose domain a leg narrowed, or a backtrack widened, is re-queued
-  into `Q'` under the usual admission test (`nj_requeue_narrowed`). At depth
-  1 these are the leg's row-neighbours, which the leg already re-queues; with
-  `cascade` they need not be. Novelty caches no jump, so nothing else is
-  stale; FJ's jump table is rebuilt at batch end as before.
-- **Conflict** (`fix` empties a domain): the commit test stays first, so an
-  improving compound move is taken whatever its domains say; otherwise the
-  leg is not extended and is reverted as a failed sibling (budget − 1). This
-  is a deliberate departure from Algorithm 5, which would recurse.
-- Cost per leg: the propagator's `fix` (O(rows of v) plus scanned rows, see
-  its header), O(narrowed vars) for the re-queue, and per sampled var two
-  bound reads; a backtrack is O(trail undone). Off, one null test per sampled
-  var and per leg.
-
-`SearchCounters::novelty_propagation_tightenings` (bounds derived) and
-`novelty_propagation_conflicts` (legs in conflict) record it; Python reads
-both, and `cbls_mipfeas` publishes both per row.
-
-`SearchConfig::compound_move_propagation` turns it on for the batch FJ
-(#340); the LNS repair FJ runs no Novelty. The shared runner flag is
-`--compound-propagation` (scalar family, opt-in in the `search_config` cell),
-refused without compound moves or at `--novelty-prob 0`, where no batch reads
-it; `run_benchmark.py --compound-propagation` forwards it to `cbls_mipfeas`.
 
 `apply_novelty_jump()` is one stand-alone ApplyNoveltyJump from a fresh `W'` and
 `Q'`, capped at `kNoveltyWorkBudget = 256` applied moves; the caller must
@@ -2560,7 +2493,6 @@ solve(model, time_limit, seed, use_fj, hook, lns, lns_interval, callback, config
 | `cone_cache_bytes` | 256 MiB (`Model::kDefaultConeCacheBytes`) | `SearchConfig` | cap on the frozen model's cone cache (#271) |
 | `unproductive_iterations` | 300 | `SearchConfig` → `GFJConfig` | end an FJ batch after this many GLS iterations without a new real-violation low, and take the kick as due (#102); `<= 0` = fixed cadence |
 | `fj_exact_int_jump` | false | `SearchConfig` | exact Int argmin over all-linear rows (OR-Tools' `ComputeLinearJump`, #216) |
-| `compound_move_propagation` | false | `SearchConfig` | propagate each Novelty leg over the linear rows; next leg drawn inside the narrowed box (#339, #340); kept off by #331's measurement |
 | `perturb_near_value` | false | `SearchConfig` | OR-Tools' near-value diversification kick (#217) |
 | `fj_objective_tie_break` | true | `SearchConfig` | OR-Tools' affine-objective tie-break before the first feasible point (#218, #226) |
 | `restart_randomization` | false | `SearchConfig` | CP-SAT's restart randomisation as an arm (#239) |

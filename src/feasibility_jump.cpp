@@ -1,7 +1,6 @@
 #include "cbls/feasibility_jump.h"
 
 #include "cbls/dag_ops.h"
-#include "cbls/domain_propagation.h"
 #include "cbls/moves.h"
 #include "cbls/randomize.h"
 
@@ -13,7 +12,6 @@
 #include <cstdio>
 #include <cstring>
 #include <limits>
-#include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -1204,50 +1202,14 @@ struct SecondWeighting {
     double winner_delta = 0.0;   // ...and this is its delta under `weights`
 };
 
-// compute_var_jump's `box` (#339): when narrower than `declared`'s box, a copy
-// whose lb/ub are the intersection, handed to every candidate path in place of
-// the declared Variable -- they read the box through it only. Only the fields
-// they read are copied (no name, no elements).
-std::optional<Variable> narrow_to_box(const Variable& declared, const JumpBox* box) {
-    if (box == nullptr || (box->lo <= declared.lb && box->hi >= declared.ub)) {
-        return std::nullopt;
-    }
-    std::optional<Variable> out;
-    Variable& n = out.emplace();
-    n.id = declared.id;
-    n.type = declared.type;
-    n.value = declared.value;
-    n.lb = std::max(declared.lb, box->lo);
-    n.ub = std::min(declared.ub, box->hi);
-    return out;
-}
-
-// Whether `var`'s box holds fewer than two values (integers, for Bool/Int);
-// then `point` is the one it holds, or NaN for none.
-bool pinned_box(const Variable& var, double& point) {
-    double lo = var.lb;
-    double hi = var.ub;
-    if (var.type != VarType::Float) {
-        lo = std::ceil(lo);
-        hi = std::floor(hi);
-    }
-    if (lo < hi) {
-        return false;
-    }
-    point = lo == hi ? lo : std::numeric_limits<double>::quiet_NaN();
-    return true;
-}
-
 // compute_var_jump, and with `second` non-null its prepare and its probes also
 // weigh under second->weights, in the same pass.
 JumpResult compute_var_jump_core(Model& model, const std::vector<double>& weights, int32_t var_id,
                                  bool allow_escape_probe, LinearJumpScorer* linear, double tol,
                                  bool exact_int, const double* objective_coef,
-                                 SecondWeighting* second, const JumpBox* box) {
-    const Variable& declared = model.var(var_id);
-    const double x0 = declared.value;
-    const std::optional<Variable> narrowed = narrow_to_box(declared, box);
-    const Variable& var = narrowed.has_value() ? *narrowed : declared;
+                                 SecondWeighting* second) {
+    const Variable& var = model.var(var_id);
+    const double x0 = var.value;
 
     // f(j) = weighted violation delta of moving var_id to j (0 at the current
     // value). The best jump minimises f; score is the reduction -min f.
@@ -1289,16 +1251,6 @@ JumpResult compute_var_jump_core(Model& model, const std::vector<double>& weight
             second->winner_delta = probed2;
         }
     };
-    // Fewer than two values left in a narrowed box: the candidate paths treat
-    // a pinned box as "no jump exists", which is wrong when x0 lies outside
-    // it, so the one value left (if any) is offered here. exact_int_jump
-    // declines on such a box, so nothing above took it.
-    if (double point = 0.0; narrowed.has_value() && pinned_box(var, point)) {
-        if (!std::isnan(point)) {
-            consider(point);
-        }
-        return best.result();
-    }
     offer_jump_candidates(model, var_id, var, x0, allow_escape_probe, linear, tol, best, consider);
     return best.result();
 }
@@ -1307,9 +1259,9 @@ JumpResult compute_var_jump_core(Model& model, const std::vector<double>& weight
 
 JumpResult compute_var_jump(Model& model, const std::vector<double>& weights, int32_t var_id,
                             bool allow_escape_probe, LinearJumpScorer* linear, double tol,
-                            bool exact_int, const double* objective_coef, const JumpBox* box) {
+                            bool exact_int, const double* objective_coef) {
     return compute_var_jump_core(model, weights, var_id, allow_escape_probe, linear, tol, exact_int,
-                                 objective_coef, nullptr, box);
+                                 objective_coef, nullptr);
 }
 
 namespace {
@@ -1338,13 +1290,12 @@ struct NoveltyJump {
 
 NoveltyJump compute_novelty_jump(Model& model, const std::vector<double>& novelty_weights,
                                  const std::vector<double>& weights, int32_t var_id,
-                                 LinearJumpScorer& linear, double tol, bool exact_int,
-                                 const JumpBox* box) {
+                                 LinearJumpScorer& linear, double tol, bool exact_int) {
     SecondWeighting second;
     second.weights = &weights;
     NoveltyJump out;
     out.novelty = compute_var_jump_core(model, novelty_weights, var_id, false, &linear, tol,
-                                        exact_int, nullptr, &second, box);
+                                        exact_int, nullptr, &second);
     const double j = out.novelty.jump_value;
     const bool finite_step = std::isfinite(j - model.var(var_id).value);
     if (!linear.second_ready()) {
@@ -1416,8 +1367,6 @@ double LazyWeightDecay::fold(std::vector<double>& w, double factor) {
 // ---------------------------------------------------------------------------
 // FeasibilityJump
 // ---------------------------------------------------------------------------
-
-FeasibilityJump::~FeasibilityJump() = default;
 
 FeasibilityJump::FeasibilityJump(Model& model, ViolationManager& vm, RNG& rng, GFJConfig config)
     : model_(model), vm_(vm), rng_(rng), config_(config), jumps_(model.num_vars()), linear_(model) {
@@ -3299,48 +3248,11 @@ void FeasibilityJump::seed_novelty_scan_set() {
 // on_stack_[v] is set exactly for the v on move_stack_ (pushed together,
 // popped together, and select_novelty_var never picks a var already on it),
 // so clearing through the stack is the whole-vector clear at O(|T|) (#174).
-//
-// Under compound_propagation the stack's domains are backtracked to the root
-// with it, and the vars they had narrowed re-queued (nj_backtrack_domains).
 void FeasibilityJump::clear_novelty_stack() {
-    // Backtracked while the legs are still on T, so the re-queue skips them:
-    // each leg's fix changed its own bounds, and a committed leg is not
-    // re-queued with the flag off either.
-    if (!move_stack_.empty() && move_stack_.front().level >= 0) {
-        nj_backtrack_domains(move_stack_.front().level);
-    }
     for (const StackMove& m : move_stack_) {
         on_stack_[static_cast<size_t>(m.var)] = 0;
     }
     move_stack_.clear();
-}
-
-// compound_propagation (#339): the domains are back as of `level`'s
-// checkpoint. A var they had narrowed scored its candidates on the narrowed
-// box, so it is re-queued -- under nj_requeue_neighbours' admission test --
-// to be scored on the wider one. At depth 1 (DomainPropagationOptions::cascade
-// off) every such var is a row-neighbour of the leg, which the leg's own
-// re-queue already covers; with cascade on it need not be. The re-queue is
-// O(t log t) for t bound-trail entries since `level`
-// (DomainPropagator::changed_since); the backtrack O(trail entries undone).
-void FeasibilityJump::nj_backtrack_domains(int32_t level) {
-    nj_requeue_narrowed(level);
-    nj_domains_->backtrack(level);
-}
-
-// Re-queue the vars whose domains changed since `level`, as
-// nj_requeue_neighbours admits them.
-void FeasibilityJump::nj_requeue_narrowed(int32_t level) {
-    nj_domains_->changed_since(level, nj_narrowed_);
-    for (const int32_t vp : nj_narrowed_) {
-        if (on_stack_[static_cast<size_t>(vp)] == 0 && participates_in_active_violated(vp)) {
-            nj_enqueue(vp);
-        }
-    }
-}
-
-int64_t FeasibilityJump::novelty_propagation_tightenings() const {
-    return nj_domains_ ? nj_domains_->stats().bounds_derived : 0;
 }
 
 void FeasibilityJump::begin_novelty_run() {
@@ -3355,17 +3267,6 @@ void FeasibilityJump::begin_novelty_run() {
     }
     nw_changed_.clear();
     clear_novelty_stack();
-    if (nj_domains_ && nj_domains_->depth() > 0) {
-        // Only after an exception: an undo that threw between popping its leg
-        // and backtracking leaves a checkpoint the stack no longer names.
-        nj_domains_->backtrack(0);
-    }
-    if (config_.compound_propagation && !nj_domains_) {
-        // Variable bounds are fixed once the model is built, so one build
-        // serves every later run.
-        nj_rows_ = std::make_unique<LinearRowStore>(model_);
-        nj_domains_ = std::make_unique<DomainPropagator>(*nj_rows_, model_);
-    }
     init_novelty_weights();
     seed_novelty_scan_set();
 }
@@ -3517,16 +3418,9 @@ FeasibilityJump::NoveltyPick FeasibilityJump::select_novelty_var(double s_m, dou
         // W'-argmin, then its score under W. Both in closed form where the rows
         // allow it, exactly as apply_jump scores, and both from one pass over
         // v's rows (#272; compute_novelty_jump).
-        // Under compound_propagation, mid-compound, from v's implied domain.
-        JumpBox box{};
-        const JumpBox* narrowed = nullptr;
-        if (nj_domains_ && !move_stack_.empty()) {
-            box = {nj_domains_->lo(v), nj_domains_->hi(v)};
-            narrowed = &box;
-        }
         const NoveltyJump pick =
             compute_novelty_jump(model_, novelty_weights_, vm_.weights, v, linear_,
-                                 config_.tolerance, config_.exact_int_jump, narrowed);
+                                 config_.tolerance, config_.exact_int_jump);
         const JumpResult& nr = pick.novelty;
         const double score = -pick.delta_w;
         const bool passes = (s_m + nr.score > 0.0) || (score > s_c);
@@ -3621,16 +3515,11 @@ bool FeasibilityJump::novelty_jump_search(double s_m, int budget) {
         s_c = std::max(s_c, pick.score);
 
         const double old_value = model_.var(pick.var).value;
-        const bool consistent = nj_apply(pick.var, pick.jump);
+        nj_apply(pick.var, pick.jump);
         if (s_m + pick.score > 0.0) {
             return true;  // commit (leave applied)
         }
-        // compound_propagation (#339): a leg whose fix emptied a domain is not
-        // extended -- a deliberate departure from Algorithm 5, which would
-        // recurse -- and is reverted below as a failed sibling. The commit
-        // test above stays first: a compound move that already improves under
-        // W is taken whatever its implied domains say.
-        if (consistent && novelty_jump_search(s_m + pick.score, budget)) {
+        if (novelty_jump_search(s_m + pick.score, budget)) {
             return true;
         }
         // Backtrack: revert this move and try a sibling (consumes a discrepancy).
@@ -3645,36 +3534,10 @@ bool FeasibilityJump::novelty_jump_search(double s_m, int budget) {
 // weight, and re-queue v's row-neighbours, whose scores both changes may have
 // moved. Every W' change, and every row this move satisfied at full weight, is
 // noted for the next level's reset (reset_changed_novelty_weights).
-//
-// Under compound_propagation the leg also fixes v in the propagator, after a
-// checkpoint that its undo backtracks to; vars that narrows are re-queued. The
-// return is false on a conflict, true otherwise.
-//
-// Cost of the flag, per leg (d = v's linear rows; t = bound-trail and r =
-// row-activity entries since the leg's checkpoint): checkpoint O(1); fix
-// O(1) if it changes no bound of v (v's box is already the point, or a
-// conflict), else O(d) activity updates, plus O(nnz) for each row whose
-// slack is below its max variation plus the drift margin (O(1) for each
-// other row), plus O(rows of u) per bound of u it derives
-// (DomainPropagator); changed_since's re-queue O(t log t) plus two
-// allocations, paid here and again in the undo, whose backtrack adds
-// O(t + r). Memory: one LinearRowStore and DomainPropagator,
-// O(rows + vars + nnz), built once, plus a trail the stack's unwinding
-// empties. Even a leg that derives nothing pays the O(d) updates (when its
-// fix changes v's bounds), the re-queues and the backtrack. Measured (#341,
-// engine 36f9de3, laptop, 20 s, seed 1, 1 thread, 11 MIPfeas smoke + 10
-// MINLPLib, noisy): FJ iterations per CPU s on/off median 0.98, range 0.85
-// (mad) .. 1.10 (chain50); Novelty moves per CPU s median 0.98, range
-// 0.82 .. 1.22; the slowdown does not track the tightening count (pk1: 6.5M, 0.93; mad: 0.3M,
-// 0.85). On the 8 instances with no tightenings the ratios lie in
-// 0.97 .. 1.00 (mas76 and maxmin 0.97; elec50 makes no Novelty moves).
-// Peak RSS on the largest smoke instance (neos-5114902-kasavu) 997 -> 1198
-// MiB (+20%).
-bool FeasibilityJump::nj_apply(int32_t v, double jump) {
+void FeasibilityJump::nj_apply(int32_t v, double jump) {
     const auto& cids = model_.constraint_ids();
     const double objective_before = objective_value();
-    const int32_t level = nj_domains_ ? nj_domains_->checkpoint() : -1;
-    move_stack_.push_back({v, model_.var(v).value, level});
+    move_stack_.push_back({v, model_.var(v).value});
     model_.var_mut(v).value = jump;
     delta_evaluate(model_, &v, 1);
     on_stack_[v] = 1;
@@ -3701,15 +3564,6 @@ bool FeasibilityJump::nj_apply(int32_t v, double jump) {
         }
     }
     nj_requeue_neighbours(v, objective_before);
-    if (!nj_domains_) {
-        return true;
-    }
-    const bool consistent = nj_domains_->fix(v, jump);
-    if (!consistent) {
-        ++nj_prop_conflicts_;
-    }
-    nj_requeue_narrowed(level);
-    return consistent;
 }
 
 // Revert the top leg, v, to `old_value`. W' keeps every promotion (paper §4:
@@ -3720,7 +3574,6 @@ bool FeasibilityJump::nj_apply(int32_t v, double jump) {
 void FeasibilityJump::nj_undo(int32_t v, double old_value) {
     const auto& cids = model_.constraint_ids();
     on_stack_[v] = 0;
-    const int32_t level = move_stack_.back().level;
     move_stack_.pop_back();
     const double objective_before = objective_value();
     model_.var_mut(v).value = old_value;
@@ -3729,10 +3582,6 @@ void FeasibilityJump::nj_undo(int32_t v, double old_value) {
         set_violated(c, is_violated(model_.node_value(cids[c]), config_.tolerance));
     }
     nj_requeue_neighbours(v, objective_before);
-    if (level >= 0) {
-        // After V is current again: the re-queue reads it.
-        nj_backtrack_domains(level);
-    }
 }
 
 // ApplyNoveltyJump (Algorithm 4) over the W', Q' and stack begin_novelty_run

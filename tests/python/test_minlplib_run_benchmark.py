@@ -1703,8 +1703,6 @@ def test_the_counters_sidecar_holds_one_row_per_search_and_leaves_the_table_alon
         "fj_batches",
         "novelty_batches",
         "novelty_moves",
-        "novelty_propagation_tightenings",
-        "novelty_propagation_conflicts",
         "peak_rss_kb",
     ):
         assert int(row[column]) >= 0, column

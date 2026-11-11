@@ -1152,7 +1152,7 @@ cbls::SearchResult measured_search(const Args& args, cbls::Model& model,
 }
 
 /// Under `--counters`, one row of what the search did (#341): iterations and
-/// batches, the Novelty and propagated-leg counters, CPU time and peak RSS
+/// batches, the Novelty counters, CPU time and peak RSS
 /// (per instance only with one instance per call). Counters are summed over
 /// workers. Written only once the solve bracket has succeeded, so a
 /// solve-error row has no counters row.
@@ -1163,9 +1163,8 @@ void write_counters_row(std::ofstream& counters, const Args& args, const std::st
     }
     const cbls::SearchCounters& k = result.counters;
     counters << name << "," << result.iterations << "," << k.fj_batches << "," << k.novelty_batches
-             << "," << k.novelty_moves << "," << k.novelty_propagation_tightenings << ","
-             << k.novelty_propagation_conflicts << "," << cost.cpu_seconds << ","
-             << cost.peak_rss_kb << "," << args.search_config << "\n";
+             << "," << k.novelty_moves << "," << cost.cpu_seconds << "," << cost.peak_rss_kb << ","
+             << args.search_config << "\n";
     counters.flush();
 }
 
@@ -1371,7 +1370,7 @@ int run_benchmark(int argc, char** argv) {
             return 2;
         }
         counters << "instance,iterations,fj_batches,novelty_batches,novelty_moves,"
-                    "novelty_propagation_tightenings,novelty_propagation_conflicts,cpu_seconds,"
+                    "cpu_seconds,"
                     "peak_rss_kb,search_config\n";
     }
 

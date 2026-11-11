@@ -54,7 +54,7 @@ m.close();
 ```bash
 cmake -B build
 cmake --build build
-ctest --test-dir build    # 874 C++ tests, ~25s (add -LE slow for the fast 864, ~12s)
+ctest --test-dir build    # 858 C++ tests, ~25s (add -LE slow for the fast 848, ~12s)
 ```
 
 The build type defaults to `Release`; pass `-DCMAKE_BUILD_TYPE=Debug` to override
@@ -73,7 +73,7 @@ With Python bindings (the venv first, which also builds the package into it):
 uv sync --extra dev
 cmake -B build -DCBLS_BUILD_PYTHON=ON -DPython_EXECUTABLE="$PWD/.venv/bin/python"
 cmake --build build
-.venv/bin/pytest          # 1678 tests, 266 of them for the bindings
+.venv/bin/pytest          # 1668 tests, 263 of them for the bindings
 ```
 
 Tests of the benchmark baselines skip themselves when `ortools` or `pyscipopt` is
@@ -105,7 +105,7 @@ recent engine work; the full-campaign tables are not published yet (#253).
 
 ## Known limitations
 
-- Local search, with no LP relaxation and no cutting planes, so no bound and no proof of optimality or infeasibility. Propagation is limited to the linear rows: implied variable bounds at MPS and `.nl` load (on by default), and opt-in propagation inside compound moves (`SearchConfig::compound_move_propagation`, `--compound-propagation` in the benchmark runners), which did not help on #331's dev rosters and stays off ([#331](https://github.com/spoorendonk/cbls/issues/331)). A load-time presolve with postsolve did not help there either and was removed (#379; in git history at `b10da9d2`).
+- Local search, with no LP relaxation and no cutting planes, so no bound and no proof of optimality or infeasibility. Propagation is limited to the linear rows: implied variable bounds at MPS and `.nl` load (on by default). Propagation inside compound moves and a load-time presolve with postsolve did not help on [#331](https://github.com/spoorendonk/cbls/issues/331)'s dev rosters and were removed (#380, in git history at `57cdbfba`; #379, at `b10da9d2`).
 - Tightly coupled equality rows are slow to satisfy with single-variable jumps. The removed presolve (#379), which included doubleton-equality aggregation, did not fix this on #331's dev rosters (measured as a whole; aggregation was not run alone). On 22 MIPLIB instances its pooled primal-integral ratio was 0.93, inside the 1.30 noise floor. On 25 MINLPLib instances it solved one instance fewer at one seed (23 against 24 of 25; ex8_3_2, whose residuals are on equality rows), and ex8_3_4 stayed infeasible at two seeds in every arm.
 - Benchmark models may be simplified relative to their source papers, so a "BKS gap" is not always apples-to-apples; where that applies (uc-chped) the deviation is audited equation by equation in [`benchmarks/uc-chped/FIDELITY.md`](benchmarks/uc-chped/FIDELITY.md), and the comparison table states what it may and may not claim.
 - **`Set` variables are expressible, not competitive; `List` variables have no published result.** On weighted OR-Library set covering the `Set` encoding lands at several times the optimum, while the same model in Bools is within 4-9% of it. No `List` result is published until the CVRP campaign (#204). The evidence and its mechanical cause are in [docs/benchmarks/README.md](docs/benchmarks/README.md#structured-variables-the-claim-is-currently-unsupported).

@@ -119,9 +119,9 @@ counts for its commits are on #326, #343 and #328.
 ### Search counters (#341)
 
 `cbls_minlplib --counters CSV` writes one row per instance the search ran on:
-`instance, iterations, fj_batches, novelty_batches, novelty_moves,
-novelty_propagation_tightenings, novelty_propagation_conflicts, cpu_seconds,
-peak_rss_kb, search_config`. `cpu_seconds` is process CPU time around the
+`instance, iterations, fj_batches, novelty_batches, novelty_moves, cpu_seconds,
+peak_rss_kb, search_config` (#380 dropped the propagated-leg counters with the
+feature). `cpu_seconds` is process CPU time around the
 search: the search's own at `--threads 1`, summed over workers above it.
 `peak_rss_kb` is the process's peak as the search returns, so it is per
 instance only with one `--instance` per call. The table is unchanged; the
@@ -262,19 +262,17 @@ recorded in each row's `search_config` cell (#136):
 --no-time-limit            disable the wall clock; requires --max-iterations
 --perturb-near-value       OR-Tools' near-value kick (#217)
 --no-objective-tie-break   drop the FJ objective tie-break (#218; on since #226)
---compound-propagation     propagate Novelty legs over the linear rows (#340)
 ```
 
-`--perturb-near-value`, `--no-objective-tie-break` and `--compound-propagation`
+`--perturb-near-value` and `--no-objective-tie-break`
 are recorded only off the engine default, so a default row's cell is the one
 the committed tables hold (they predate #226 and ran the tie-break off; only
 the commit tells them apart). Compound moves are on by default since
 2026-10-07; the published tables record `compound_moves=off` and so are an
-off-default arm until regenerated. Four pairs are refused, because the engine
+off-default arm until regenerated. Two pairs are refused, because the engine
 never reads the second flag and the row would record an arm the run did not
-have: `--lns-interval` with `--no-lns`, `--novelty-prob` with
-`--no-compound-moves`, and `--compound-propagation` with `--no-compound-moves`
-or `--novelty-prob 0`.
+have: `--lns-interval` with `--no-lns`, and `--novelty-prob` with
+`--no-compound-moves`.
 
 Any non-default value refuses to write the published `comparison.csv` (and
 `anytime_trace.csv`). `cbls_uc_chped` carries the same flags against its own

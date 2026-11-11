@@ -8,16 +8,12 @@
 #include <chrono>
 #include <cstdint>
 #include <limits>
-#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
 namespace cbls {
-
-class DomainPropagator;  // cbls/domain_propagation.h
-class LinearRowStore;
 
 // Generalised Feasibility Jump (ViolationLS, Davies et al. CPAIOR 2024,
 // Algorithms 1-3). Drives the Model's current assignment X toward feasibility
@@ -134,21 +130,10 @@ struct JumpResult {
 // rule and ignores it. Between variables, apply_jump breaks an exact score tie
 // on the same objective gain, so of several objective-only jumps the largest
 // gain wins, as OR-Tools' score term would order them.
-//
-// `box`, when given and narrower than var_id's declared [lb, ub], is the domain
-// the candidates are drawn from (#339: a Novelty leg's implied domain under
-// GFJConfig::compound_propagation). Every candidate path reads it in place of
-// the declared box; the variable itself is not touched. A box with fewer than
-// two values left offers just that value. The current value may lie outside
-// it. A box no narrower than the declared one changes nothing.
-struct JumpBox {
-    double lo;
-    double hi;
-};
 JumpResult compute_var_jump(Model& model, const std::vector<double>& weights, int32_t var_id,
                             bool allow_escape_probe = false, LinearJumpScorer* linear = nullptr,
                             double tol = kDefaultFeasibilityTolerance, bool exact_int = false,
-                            const double* objective_coef = nullptr, const JumpBox* box = nullptr);
+                            const double* objective_coef = nullptr);
 
 // Guided Local Search weight update (paper Algorithm 3, lines 8-10): decay all
 // weights by rho, then bump every currently-violated constraint by 1. Weights
@@ -273,14 +258,6 @@ struct GFJConfig {
     // decided off by #208 (closed not planned) and #216, and kept as a
     // CP-SAT-faithful arm. solve() sets it from SearchConfig::fj_exact_int_jump.
     bool exact_int_jump = false;
-    // Opt-in propagation of Novelty compound-move legs (B2, #330/#339). Each
-    // leg fixes its var in a DomainPropagator over the model's linear rows
-    // (built on the first Novelty run), and the later legs of that compound
-    // move draw their candidates from the implied domains (compute_var_jump's
-    // `box`); undo and commit backtrack it. A leg whose fix empties a domain
-    // is not extended (see novelty_jump_search). Off by default, which is the
-    // Novelty path bit for bit; FJ batches, perturbation and LNS never read it.
-    bool compound_propagation = false;
     // Opt-in OR-Tools-style kick (#217), off by default: perturb() redraws each
     // jumpable variable with probability `perturb_near_value_probability`
     // (OR-Tools' feasibility_jump_var_randomization_probability, 0.05) to a
@@ -357,11 +334,6 @@ enum class GFJStatus : std::uint8_t { Feasible, Unsolved };
 class FeasibilityJump {
 public:
     FeasibilityJump(Model& model, ViolationManager& vm, RNG& rng, GFJConfig config = {});
-    ~FeasibilityJump();  // out of line: the propagator types are incomplete here
-    FeasibilityJump(const FeasibilityJump&) = delete;
-    FeasibilityJump& operator=(const FeasibilityJump&) = delete;
-    FeasibilityJump(FeasibilityJump&&) = delete;
-    FeasibilityJump& operator=(FeasibilityJump&&) = delete;
 
     // Run GLS until feasible, or until the iteration/time budget is exhausted
     // (standalone construction / single-shot use).
@@ -594,15 +566,6 @@ public:
     [[nodiscard]] int64_t novelty_moves() const { return novelty_moves_; }
     [[nodiscard]] int64_t novelty_commits() const { return novelty_commits_; }
     [[nodiscard]] int64_t novelty_weight_bumps() const { return novelty_bumps_; }
-    /// Under GFJConfig::compound_propagation (#339), cumulative: bounds the
-    /// legs' propagation derived, and legs whose fix emptied a domain. 0 with
-    /// the flag off.
-    [[nodiscard]] int64_t novelty_propagation_tightenings() const;
-    [[nodiscard]] int64_t novelty_propagation_conflicts() const { return nj_prop_conflicts_; }
-    /// The legs' propagator, for tests: null until the first Novelty run with
-    /// GFJConfig::compound_propagation on. Between Novelty calls it is at its
-    /// root, every domain the declared box.
-    [[nodiscard]] const DomainPropagator* novelty_propagator() const { return nj_domains_.get(); }
     /// The novelty weight W' of row `ci` as Novelty last left it -- read-only
     /// observability for the tests that pin its incremental upkeep (#209).
     /// Throws `std::out_of_range` on a row the model does not have, or before
@@ -824,9 +787,7 @@ private:
     NoveltyPick select_novelty_var(double s_m, double s_c);
     bool novelty_jump_search(double s_m, int budget);
     // Algorithm 5 lines 11-16 and 20-21: one leg applied, and one undone.
-    // nj_apply is false when compound_propagation found the leg's fix in
-    // conflict (always true with it off).
-    bool nj_apply(int32_t v, double jump);
+    void nj_apply(int32_t v, double jump);
     void nj_undo(int32_t v, double old_value);
     // Algorithm 4 over the state begin_novelty_run() set up, incrementally.
     NoveltyOutcome novelty_descent();
@@ -1211,17 +1172,7 @@ private:
     struct StackMove {
         int32_t var;
         double old_value;
-        int32_t level;  // nj_domains_'s checkpoint before this leg; -1 without it
     };
-    // GFJConfig::compound_propagation (#339): the legs' propagator over the
-    // model's linear rows, built on the first Novelty run (bounds never change
-    // after construction, so once), and at its root between Novelty calls.
-    std::unique_ptr<LinearRowStore> nj_rows_;
-    std::unique_ptr<DomainPropagator> nj_domains_;
-    std::vector<int32_t> nj_narrowed_;  // scratch: changed_since's output
-    int64_t nj_prop_conflicts_ = 0;     // see novelty_propagation_conflicts()
-    void nj_backtrack_domains(int32_t level);
-    void nj_requeue_narrowed(int32_t level);
     std::vector<StackMove> move_stack_;
 };
 

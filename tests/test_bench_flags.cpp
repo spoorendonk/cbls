@@ -217,7 +217,6 @@ TEST_CASE("search flags default to the engine's own configuration", "[bench][fla
     REQUIRE(f.unproductive_iters == engine.unproductive_iterations);
     REQUIRE(f.perturbation_period == engine.perturbation_period);
     REQUIRE(f.max_iterations == engine.max_iterations);
-    REQUIRE(f.compound_propagation == engine.compound_move_propagation);
     REQUIRE(f.float_hook);
     REQUIRE(f.lns);
     REQUIRE_FALSE(f.no_time_limit);
@@ -232,7 +231,7 @@ TEST_CASE("every search flag sets the field it claims", "[bench][flags]") {
     const ParseOutcome parsed =
         parse({"--no-float-hook", "--lns-interval", "7", "--compound-moves", "--novelty-prob",
                "0.25", "--unproductive-iters", "0", "--perturbation-period", "9",
-               "--max-iterations", "1234", "--no-time-limit", "--compound-propagation"});
+               "--max-iterations", "1234", "--no-time-limit"});
     REQUIRE(parsed.unmatched.empty());
     std::string error;
     REQUIRE(
@@ -247,7 +246,6 @@ TEST_CASE("every search flag sets the field it claims", "[bench][flags]") {
     REQUIRE(f.perturbation_period == 9);
     REQUIRE(f.max_iterations == 1234);
     REQUIRE(f.no_time_limit);
-    REQUIRE(f.compound_propagation);
 
     // ...and that those land on the objects solve() is actually handed.
     SearchConfig cfg;
@@ -257,7 +255,6 @@ TEST_CASE("every search flag sets the field it claims", "[bench][flags]") {
     REQUIRE(cfg.unproductive_iterations == 0);
     REQUIRE(cfg.perturbation_period == 9);
     REQUIRE(cfg.max_iterations == 1234);
-    REQUIRE(cfg.compound_move_propagation);
 
     cbls::FloatIntensifyHook hook;
     LNS lns(0.3);
@@ -341,15 +338,6 @@ TEST_CASE("one run cannot be recorded under two different cells", "[bench][flags
     REQUIRE_FALSE(cbls::bench::validate_search_flags(
         parse({"--no-compound-moves", "--novelty-prob", "0.25"}).flags, kScalar, false, error));
     REQUIRE(error.find("--novelty-prob") != std::string::npos);
-    // Propagation is read only by Novelty batches (#340): without compound
-    // moves, or at probability 0, no batch reads it.
-    REQUIRE_FALSE(cbls::bench::validate_search_flags(
-        parse({"--no-compound-moves", "--compound-propagation"}).flags, kScalar, false, error));
-    REQUIRE(error.find("--compound-propagation has no effect without") != std::string::npos);
-    REQUIRE_FALSE(cbls::bench::validate_search_flags(
-        parse({"--novelty-prob", "0", "--compound-propagation"}).flags, kScalar, false, error));
-    REQUIRE(error.find("--compound-propagation has no effect with --novelty-prob 0") !=
-            std::string::npos);
 
     // Restating the default alongside the switch is not a no-effect flag; it is
     // a no-op, and nothing was asked for that the run does not do.
@@ -362,8 +350,6 @@ TEST_CASE("one run cannot be recorded under two different cells", "[bench][flags
                                                error));
     REQUIRE(cbls::bench::validate_search_flags(
         parse({"--compound-moves", "--novelty-prob", "0.25"}).flags, kScalar, false, error));
-    REQUIRE(cbls::bench::validate_search_flags(parse({"--compound-propagation"}).flags, kScalar,
-                                               false, error));
 }
 
 TEST_CASE("the usage line documents exactly the recorded flags", "[bench][flags]") {
@@ -397,8 +383,6 @@ TEST_CASE("an opt-in flag is recorded only when it is on (#226)", "[bench][flags
     // cell records it only when the flag turns it off.
     REQUIRE(cbls::bench::search_config_string(parse({"--no-objective-tie-break"}).flags, kScalar) ==
             base + ";objective_tie_break=off");
-    REQUIRE(cbls::bench::search_config_string(parse({"--compound-propagation"}).flags, kScalar) ==
-            base + ";compound_propagation=on");
 }
 
 TEST_CASE("a non-default arm is named for the published-table guard", "[bench][flags]") {
@@ -421,7 +405,6 @@ TEST_CASE("a non-default arm is named for the published-table guard", "[bench][f
         {"--neighbours", "5"},
         {"--perturb-near-value"},
         {"--no-objective-tie-break"},
-        {"--compound-propagation"},
     };
     REQUIRE(arms.size() == cbls::bench::kSearchFlagCount);
     for (const auto& arm : arms) {
@@ -727,46 +710,6 @@ TEST_CASE("the --compound-moves flag changes the batches the search runs",
     REQUIRE(off_arm.counters.novelty_batches == 0);
     REQUIRE(on_arm.counters.novelty_batches > 0);
     REQUIRE(on_arm.counters.fj_batches == 0);
-}
-
-/// Two equality rows over Ints in [0, 4] tied by a third row: a leg that moves
-/// any x_i forces bounds on the other two of its row (x0 = v leaves
-/// x1 + x2 = 9 - v, so each of them >= 5 - v), so a propagated leg narrows
-/// boxes almost every time. The objective keeps the search going after it is
-/// feasible.
-void build_tight_linear_model(Model& m) {
-    std::vector<int32_t> x;
-    x.reserve(6);
-    for (int i = 0; i < 6; ++i) {
-        x.push_back(m.int_var(0, 4));
-    }
-    m.add_constraint(m.eq_expr(m.sum({x[0], x[1], x[2]}), m.constant(9.0)));
-    m.add_constraint(m.eq_expr(m.sum({x[3], x[4], x[5]}), m.constant(9.0)));
-    m.add_constraint(m.leq(m.sum({x[0], x[3]}), m.constant(2.0)));
-    m.minimize(m.sum({x[1], x[4]}));
-    m.close();
-}
-
-TEST_CASE("the --compound-propagation flag propagates Novelty legs", "[bench][flags][probe]") {
-    // Both arms run every batch as Novelty, so any difference is the flag's.
-    const std::vector<std::string> budget = {"--no-lns",
-                                             "--compound-moves",
-                                             "--novelty-prob",
-                                             "1.0",
-                                             "--max-iterations",
-                                             "300",
-                                             "--perturbation-period",
-                                             "5"};
-    std::vector<std::string> on = budget;
-    on.emplace_back("--compound-propagation");
-
-    const SearchResult off_arm = probe(budget, build_tight_linear_model, /*batch_iterations=*/10);
-    const SearchResult on_arm = probe(on, build_tight_linear_model, /*batch_iterations=*/10);
-    REQUIRE(off_arm.counters.novelty_batches > 0);
-    REQUIRE(on_arm.counters.novelty_batches > 0);
-    REQUIRE(off_arm.counters.novelty_propagation_tightenings == 0);
-    REQUIRE(off_arm.counters.novelty_propagation_conflicts == 0);
-    REQUIRE(on_arm.counters.novelty_propagation_tightenings > 0);
 }
 
 TEST_CASE("the --novelty-prob flag changes how many batches are compound",
