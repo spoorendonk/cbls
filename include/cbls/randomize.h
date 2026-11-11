@@ -13,7 +13,7 @@
 // Every scalar entry point is total: a finite in-domain value for any domain
 // the model can hold, unbounded ones included (see `domain_window`). This
 // covers only randomisation: a Float jump candidate still reads var.lb/var.ub
-// directly.
+// directly, so an unbounded model can still reach an infinite assignment.
 
 namespace cbls {
 

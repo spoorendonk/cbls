@@ -2725,7 +2725,7 @@ GFJStatus FeasibilityJump::gls_loop_scaled(int sample_size, int64_t batch_iter_l
     // watch_progress_ is the second witness: solve() arms it only once its own
     // stagnation count says the search has stopped improving, because this
     // measure on its own is unconditionally true on any plateau at positive
-    // violation (see THE SECOND WITNESS on unweighted_violation_).
+    // violation (see the second-witness note on unweighted_violation_).
     const bool watch_progress =
         watch_progress_ && batch_iter_limit > 0 && config_.unproductive_iterations > 0;
 

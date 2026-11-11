@@ -55,10 +55,14 @@ struct SearchConfig {
     double perturbation_probability = 0.1;
     // P(a batch is Structural: typed List/Set moves kept when they reduce
     // weighted violation). < 0 = automatic: 0.33 when the batch would build a
-    // generator, else 0.0; 1.0 when it would and FJ has no jumpable scalar
-    // (#201). An explicit value is honoured; empty FJ/Novelty batches then
-    // neither kick nor count toward perturbation_period. A scalar FJ settles
-    // early still counts as FJ work: set 1.0 explicitly on such a model (#201).
+    // generator (an entry in move_generators, or a List/Set variable with
+    // default_structural_generators on), else 0.0; 1.0 when it would and FJ
+    // has no jumpable work: no Bool/Int/Float variable with >= 2 domain values
+    // that some row reads, the folded objective included (#201). An explicit
+    // value is honoured; on such a model its empty FJ/Novelty batches neither
+    // kick nor count toward perturbation_period. A scalar read only by the
+    // objective, or one FJ settles early, still counts as FJ work: set 1.0
+    // explicitly (#201).
     double structural_batch_probability = -1.0;
 
     // ---- structural batch: what proposes moves, and how one is chosen (#165) --
@@ -74,7 +78,8 @@ struct SearchConfig {
     // `structural_neighbours` is set, else the pre-#165 rule (#203).
     StructuralSelection structural_selection = StructuralSelection::Auto;
     // Candidates scored per generator under BestOfSample / ViolationGuided /
-    // GranularBest (inert under FirstImprovingSample). 8 is an unmeasured
+    // GranularBest (inert under FirstImprovingSample); GranularBest tops its
+    // one-element neighbourhoods up to this floor. 8 is an unmeasured
     // placeholder (#203); sweep it per instance set.
     int structural_sample_size = 8;
     // Optional k-nearest neighbourhood for the built-in generators: a move's

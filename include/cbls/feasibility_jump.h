@@ -91,7 +91,8 @@ struct JumpResult {
 // `objective_coef` (var_id's coefficient in an affine objective) turns on the
 // tie-break (#218): among candidates with exactly the minimum f, the largest
 // objective decrease wins, lexicographically, so it never overrides a
-// violation decrease. An objective-only win scores kObjectiveTieScore.
+// violation decrease. An objective-only win scores kObjectiveTieScore. Between
+// variables, apply_jump breaks an exact score tie on the objective gain.
 JumpResult compute_var_jump(Model& model, const std::vector<double>& weights, int32_t var_id,
                             bool allow_escape_probe = false, LinearJumpScorer* linear = nullptr,
                             double tol = kDefaultFeasibilityTolerance,
@@ -112,17 +113,19 @@ void gls_update_weights(ViolationManager& vm, double rho,
 //   effective w_c:  s * w'_c
 //
 // Equal to the eager form to rounding (bit-identical at rho = 1, s = 1), as in
-// CP-SAT's violation_ls. Cached scores stay exact in the scaled space across a
-// decay (docs/architecture.md).
+// CP-SAT's violation_ls, but trajectories differ: eager left cached scores
+// stale (#175). Cached scores stay exact in the scaled space across a decay
+// (docs/architecture.md).
 //
 // Scale-free readers: FJ's GLS loop only compares weighted sums with each
 // other or 0, so it reads w' directly. `active()` reads w' > 0 (s > 0).
 //
 // Renormalisation: s stays in [kMinScale, kMaxScale]; a decay that would leave
 // it folds s * rho into every stored weight (O(#rows)) and resets s = 1. A
-// weighted term stays ~1e60 below overflow; at rho = 0.95 a fold happens once
-// per 1347 decays. A rho the scale cannot absorb (0, negative, NaN, one-step
-// underflow) takes the fold, i.e. the eager update.
+// weighted term is at most ~1e60x its effective weight, far from overflow; at
+// rho = 0.95 a fold happens once per 1347 decays. A rho the scale cannot
+// absorb (0, negative, NaN, one-step underflow) takes the fold, i.e. the eager
+// update.
 //
 // Weight 0 stays exactly 0 and a positive weight stays positive: an
 // underflowing fold floors at the smallest subnormal, since a 0 row is masked
@@ -220,7 +223,8 @@ public:
     // Randomise each jumpable var w.p. p, then apply
     // clamp(round(p*|elements|), 1, |elements|) random structural moves to each
     // List/Set var (#111); if nothing moved, force one variable, a scalar if
-    // any can move (#109).
+    // any can move (#109). The fallback leaves large models, and models
+    // without List/Set, bit-identical to plain p-draws.
     void perturb(double probability);
     void set_rho(double rho) { config_.rho = rho; }
     // Armed by the search loop once it has stagnated; see solve().
@@ -290,7 +294,8 @@ public:
     // Iteration cap on the stride, and why the overrun is bounded: a stride
     // grown while iterations were cheap is spent in full once they turn
     // expensive, since a shrink applies only at a check. 64 was the old fixed
-    // stride, so the worst case is no worse than before (#113).
+    // stride, so the worst case is no worse than before (#113). Costs ~1.2%
+    // throughput on cheap iterations (#113).
     static constexpr int64_t kMaxDeadlineStride = 64;
     // Pure function of the last measurement; exposed for testing.
     static int64_t next_deadline_stride(int64_t stride, double elapsed_seconds,
@@ -550,7 +555,8 @@ private:
     //
     // Cost: any_active_violated, the Novelty seed and the bump scan are O(|V|)
     // plus the variable lists of the rows they queue from, instead of
-    // O(#rows); V is visited in flip order (deterministic, not sorted). A
+    // O(#rows), + one O(#rows + #vars) fold per gls_loop exit that decayed; V
+    // is visited in flip order (deterministic, not sorted). A
     // Novelty batch stays O(#rows) once per batch (#209). The price is a
     // constant per row flip (a push or swap-remove plus a walk of the row's
     // variable list), paid by Novelty's apply and undo too; it loses where

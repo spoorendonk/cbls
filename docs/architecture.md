@@ -113,6 +113,12 @@ Examples, tests, benchmarks and bindings are each behind an option:
 `CBLS_BUILD_EXAMPLES`/`CBLS_BUILD_TESTS`/`CBLS_BUILD_BENCHMARKS` default ON,
 `CBLS_BUILD_PYTHON` defaults OFF (but the gated build turns it on).
 
+### Tools
+
+| Script | Purpose |
+|--------|---------|
+| `tools/comment_share.py` | comment share per source area (#394) |
+
 ### Dependencies
 
 - **zlib** — required (`find_package(ZLIB REQUIRED)`), gzip-compressed MPS input
