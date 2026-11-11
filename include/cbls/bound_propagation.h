@@ -6,8 +6,9 @@
 // magnitude that may cut off the optimum. Up to the `safety_absolute` margin
 // it removes only infeasible points; a column it cannot finitize falls back to
 // the caller's clamp. Activity-based tightening only: no coefficient
-// tightening, row removal, aggregation, probing, dual reductions or nonlinear
-// rows (a caller omits those, losing tightening, never validity).
+// tightening, row removal, aggregation, probing or dual reductions, and
+// nothing nonlinear: a caller omits nonlinear rows, losing tightening, never
+// validity.
 
 #include <cstdint>
 #include <vector>

@@ -25,8 +25,9 @@ public:
     // default (direct calls) is never requested. Valid only until solve()
     // returns: the hook's own threads may poll it during the call, not after.
     //
-    // A parameter, not a second virtual, so a subclass overriding only one
-    // cannot be silently bypassed. An old-signature override fails to compile
+    // A parameter, not a second virtual: with two, a subclass that overrode
+    // only the stop-less one was silently bypassed by the search. An
+    // old-signature override fails to compile
     // if marked `override` or if it left a direct subclass abstract; UNMARKED
     // in a FloatIntensifyHook subclass it compiles and is hidden, flagged only
     // by -Woverloaded-virtual (GCC 15 -Wall, clang-tidy), not use-override.

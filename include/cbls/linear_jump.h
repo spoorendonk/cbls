@@ -64,7 +64,7 @@ bool affine_row_terms(const Model& model, int32_t ci,
 /// for slopes laid out parallel to `Model::constraints_of_var`, so `prepare`
 /// reads a slope at a fixed position rather than searching the row (#176: up to
 /// 49% of the MIPfeas runner's CPU). The slope array is `calloc`ed on the first
-/// build: a block mapped fresh (above glibc's mmap threshold, at most 32 MiB)
+/// build: a block mapped fresh (above glibc's dynamic mmap threshold, itself at most 32 MiB)
 /// stays untouched zero pages beyond the rows built; a smaller heap block is
 /// zero-filled, O(incidences), the order of the per-row tables each LNS
 /// repair's FJ already pays. Measured worst case (every call memset): 3.1 MB
@@ -96,7 +96,8 @@ public:
 
     /// Snapshot G_v for closed-form scoring under `weights`. False: score
     /// with `weighted_violation_delta` (a nonzero-weight row is ineligible, or
-    /// a value read is not finite). Zero-weight rows are skipped (exactly 0
+    /// a value read is not finite, where `p + r D` and the DAG's arithmetic
+    /// part ways). Zero-weight rows are skipped (exactly 0
     /// either way), so a MASKED nonlinear row (two-phase GLS) does not block
     /// the closed form.
     /// Valid until the assignment or `weights` changes. Throws
@@ -147,9 +148,9 @@ public:
     /// Nonzero slopes written since the last layout reset: a build counter, not
     /// memory (the array is 8 B per G_v incidence regardless).
     [[nodiscard]] size_t cached_slopes() const { return cached_slopes_; }
-    /// Slope-table length: 0 before the first build after a layout change, then
-    /// the G_v incidence count AT THAT BUILD. Lets tests catch a stale table
-    /// overrunning on rebuild (#176).
+    /// Slope-table length: 0 before the first build and after a layout change
+    /// until the next build, then the G_v incidence count AT THAT BUILD. Lets tests catch a stale
+    /// table overrunning on rebuild (#176).
     [[nodiscard]] size_t slope_table_size() const { return slope_len_; }
 
 private:
