@@ -1,2 +1,0 @@
-# Instance files are vendored (~180 KB) because tests read them from a fresh clone
-# and they back up comparison.csv. The retired set has no downloader (#373).

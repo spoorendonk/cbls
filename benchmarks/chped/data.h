@@ -18,6 +18,8 @@ struct Instance {
     bool all_committed = false;   // if true, all units must be on (no commit vars)
 };
 
+// The 4- and 7-unit parameters are from the literature (Basu 2011, Vasebi et
+// al. 2007), as the former Python data cited them.
 inline Instance make_4unit() {
     return {
         "4-unit",

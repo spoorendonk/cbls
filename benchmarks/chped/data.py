@@ -3,9 +3,7 @@
 The 13- and 40-unit systems. `reference_solve.py` imports them directly for its
 default dispatch mode; `benchmarks/instances/uc-chped/data.py` loads them by
 path, which is how `reference_solve.py --uc` reaches them. The 4-, 7- and
-24-unit dispatch instances live in `data.h` only; their Python definitions (the
-24-unit one an RNG-scaled draw, not `data.h`'s table) had no reader and went
-with #373.
+24-unit dispatch instances are defined only in `data.h`.
 Cost function: F_i(P_i) = a_i + b_i*P_i + c_i*P_i^2 + |d_i*sin(e_i*(P_min_i - P_i))|
 """
 
