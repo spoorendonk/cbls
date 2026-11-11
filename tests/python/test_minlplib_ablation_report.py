@@ -27,10 +27,7 @@ from benchmarks.minlplib.ablation_report import (
     NO_COMPARABLE_GAP,
     NO_SEARCH_NOTES,
     PROBE_ARM_NAME,
-    TRANSFER_HEADING,
     Cell,
-    InstanceMeta,
-    TransferPlan,
     build_cells,
     compare,
     control_spreads,
@@ -39,9 +36,7 @@ from benchmarks.minlplib.ablation_report import (
     min_move_points,
     noise_floor,
     render_report,
-    roster_meta,
     scored_instances,
-    size_band,
     summarize_arm,
 )
 from benchmarks.minlplib.run_ablation import Arm, Run, failed_row
@@ -1171,39 +1166,7 @@ def test_the_wall_average_excludes_the_rows_that_recorded_no_search(tmp_path: Pa
     assert "rows recorded:        9 (6 completed a search)" in report
 
 
-# --- #145: the transfer check's section ----------------------------------------
-
-#: A three-instance held-out roster, one per pre-registered band, so a mover's
-#: band and class are both visible in the breakdown.
-TRANSFER_META = {
-    "small1": InstanceMeta(structure="other", size=10),
-    "mid1": InstanceMeta(structure="mixed-integer", size=60),
-    "big1": InstanceMeta(structure="transcendental", size=150),
-}
-
-
-def _transfer_rows(
-    shift: dict[str, float] | None = None, infeasible_arm: str | None = None
-) -> list[dict[str, object]]:
-    """Control (=300) and both grid neighbours on the three instances.
-
-    The control's spread is 0.1 per instance (gaps g, g+0.1, g+0.2). `shift`
-    moves one instance's unproductive-1000 gaps; `infeasible_arm` makes
-    unproductive-100 lose every run on `small1` -- the original grid's failure
-    shape (100 lost feasibility on kall_ellipsoids_tc02b).
-    """
-    rows: list[dict[str, object]] = []
-    for name in TRANSFER_META:
-        base = [10.0, 10.1, 10.2]
-        rows += run_rows(name, CONTROL_ARM, base)
-        rows += run_rows(
-            name,
-            "unproductive-100",
-            [None, None, None] if infeasible_arm == name else base,
-        )
-        moved = (shift or {}).get(name, 0.0)
-        rows += run_rows(name, "unproductive-1000", [g + moved for g in base])
-    return _at_budget(rows)
+# --- the header: budget, commit, documented failures ---------------------------
 
 
 def _at_budget(
@@ -1213,354 +1176,41 @@ def _at_budget(
     return [{**row, "time_limit": budget, "commit_sha": commit} for row in rows]
 
 
-#: The plan the fixture campaign was run under: the three instances, seeds 1-3,
-#: both neighbours.
-TRANSFER_PLAN = TransferPlan(
-    meta=TRANSFER_META, seeds=(1, 2, 3), arms=("unproductive-100", "unproductive-1000")
-)
+def _stamped_rows() -> list[dict[str, object]]:
+    """Control and one arm on three instances, at one budget and commit."""
+    rows: list[dict[str, object]] = []
+    for name in ("small1", "mid1", "big1"):
+        rows += run_rows(name, CONTROL_ARM, [10.0, 10.1, 10.2])
+        rows += run_rows(name, "x", [10.0, 10.1, 10.2])
+    return _at_budget(rows)
 
 
-def _transfer_report(
-    tmp_path: Path, rows: list[dict[str, object]], plan: TransferPlan = TRANSFER_PLAN
-) -> str:
-    results = write_results(tmp_path / "r.csv", rows)
-    return render_report(results, heading=TRANSFER_HEADING, transfer=plan)
-
-
-def test_the_pre_registered_size_bands_split_the_committed_heldout_roster_as_published() -> None:
-    """HELDOUT.md fixed the bands at the held-out set's size tertiles before any
-    run: small <= 32 (16 instances, 0/9/7 mixed-integer/other/transcendental),
-    medium 33-99 (18, 11/7/0), large >= 100 (16, 10/4/2). Re-cutting them after
-    seeing a result would fail here."""
-    meta = roster_meta(
-        REPO_ROOT / "benchmarks" / "instances" / "minlplib" / "heldout" / "bounds.csv"
-    )
-    assert len(meta) == 50
-    table: dict[str, dict[str, int]] = {}
-    for item in meta.values():
-        band = table.setdefault(size_band(item.size), {})
-        band[item.structure] = band.get(item.structure, 0) + 1
-    assert table == {
-        "small": {"other": 9, "transcendental": 7},
-        "medium": {"mixed-integer": 11, "other": 7},
-        "large": {"mixed-integer": 10, "other": 4, "transcendental": 2},
-    }
-    assert [size_band(s) for s in (32, 33, 99, 100)] == ["small", "medium", "medium", "large"]
-
-
-def test_a_transfer_report_with_nothing_outside_the_floor_states_the_third_outcome(
-    tmp_path: Path,
-) -> None:
-    """The one outcome the report may state by rule: nothing moved and nothing
-    changed feasibility. Its floor is the held-out control's own spread from
-    this file -- s = 0.1, so 4.303 * 0.1 * sqrt(2/3) = 0.351 points."""
-    report = _transfer_report(tmp_path, _transfer_rows())
-    assert report.startswith(TRANSFER_HEADING)
-    assert "INSIDE THE MEASURED NOISE FLOOR" in report
-    assert "third outcome" in report
-    assert "NOT STATED MECHANICALLY" not in report
-    assert "+/-0.35 points" in report
-    assert "--- unproductive-100 vs control ---" in report
-    assert "--- unproductive-1000 vs control ---" in report
-
-
-def test_a_transfer_report_with_a_mover_leaves_the_outcome_to_the_write_up(
-    tmp_path: Path,
-) -> None:
-    """A neighbour that moved an instance names no winner by rule -- it prints the
-    evidence, with the mover filed under its pre-registered band and its class."""
-    report = _transfer_report(tmp_path, _transfer_rows(shift={"big1": -5.0}))
-    assert "NOT STATED MECHANICALLY" in report
-    assert "INSIDE THE MEASURED NOISE FLOOR" not in report
-    section = report[report.index("--- unproductive-1000 vs control ---") :]
-    assert re.search(r"large\s+n=1\s+worse 0, better 1, .*; better: big1", section)
-    assert re.search(r"transcendental\s+n=1\s+worse 0, better 1, .*; better: big1", section)
-    assert re.search(r"small\s+n=1\s+worse 0, better 0, held 1", section)
-
-
-def test_a_feasibility_change_alone_is_not_inside_the_noise(tmp_path: Path) -> None:
-    """A gap verdict of INSIDE THE NOISE says nothing about an instance one side
-    solved and the other did not -- the exact way 100 failed in the original
-    grid -- so the third outcome needs feasibility unchanged as well."""
-    report = _transfer_report(tmp_path, _transfer_rows(infeasible_arm="small1"))
-    assert "NOT STATED MECHANICALLY" in report
-    section = report[report.index("--- unproductive-100 vs control ---") :]
-    assert "control-only-feasible 1" in section
-
-
-def test_the_ablation_report_carries_no_transfer_section(tmp_path: Path) -> None:
-    results = write_results(tmp_path / "r.csv", _transfer_rows())
-    report = render_report(results)
-    assert report.startswith("=== MINLPLib ablation campaign (issue #143) ===")
-    assert "#145" not in report
-
-
-def test_a_roster_instance_interrupted_after_its_control_blocks_the_inside_reading(
-    tmp_path: Path,
-) -> None:
-    """An interrupted campaign has control rows for its last ROSTER instance and
-    no arm rows: that instance is in no bucket, and "nothing moved" over the rest
-    is not a statement about the roster. `extra` is in the plan's roster, so this
-    is the completeness check firing, not the outside-the-roster one."""
-    plan = TransferPlan(
-        meta={**TRANSFER_META, "extra": InstanceMeta(structure="other", size=5)},
-        seeds=TRANSFER_PLAN.seeds,
-        arms=TRANSFER_PLAN.arms,
-    )
-    rows = [*_transfer_rows(), *_at_budget(run_rows("extra", CONTROL_ARM, [1.0, 1.1, 1.2]))]
-    reading = _reading(_transfer_report(tmp_path, rows, plan))
-    assert "NOT STATED MECHANICALLY" in reading
-    assert "extra/unproductive-100, extra/unproductive-1000" in reading
-    assert "outside the roster" not in reading
-
-
-# --- #145: what blocks the mechanical "inside the noise" reading ---------------
-
-
-def _reading(report: str) -> str:
-    return report[report.index("READING:") :]
-
-
-def test_the_clean_fixture_names_its_budget_and_commit(tmp_path: Path) -> None:
-    """The report says what it measured: one budget, one commit, both in the
-    header, and the budget again in the READING sentence it qualifies."""
-    report = _transfer_report(tmp_path, _transfer_rows())
+def test_the_header_names_its_budget_and_commit(tmp_path: Path) -> None:
+    report = render_report(write_results(tmp_path / "r.csv", _stamped_rows()))
     assert "budget (time_limit):  10s" in report
     assert "engine commit(s):     abc1234" in report
-    assert "INSIDE THE MEASURED NOISE FLOOR at 10s" in report
-    assert "3/3 roster instances scored" in report
-
-
-def test_an_unscored_instance_that_moved_blocks_the_inside_reading(tmp_path: Path) -> None:
-    """A control at the same gap on every seed has no measurable floor, so the
-    instance is not scored -- but a neighbour 50 points away is a difference."""
-    rows = _transfer_rows()
-    rows = [r for r in rows if r["instance"] != "big1"]
-    rows += _at_budget(
-        [
-            *run_rows("big1", CONTROL_ARM, [0.0, 0.0, 0.0]),
-            *run_rows("big1", "unproductive-100", [0.0, 0.0, 0.0]),
-            *run_rows("big1", "unproductive-1000", [50.0, 50.0, 50.0]),
-        ]
-    )
-    reading = _reading(_transfer_report(tmp_path, rows))
-    assert "NOT STATED MECHANICALLY" in reading
-    assert "unscored instance(s) big1" in reading
-
-
-def test_an_unscored_delta_inside_the_runners_tie_band_does_not_block(tmp_path: Path) -> None:
-    """The threshold is the runner's own tie band, not 'any nonzero delta': a
-    residual the runner calls equal is not a finding."""
-    rows = [r for r in _transfer_rows() if r["instance"] != "big1"]
-    rows += _at_budget(
-        [
-            *run_rows("big1", CONTROL_ARM, [5.0, 5.0, 5.0]),
-            *run_rows("big1", "unproductive-100", [5.0, 5.0, 5.0]),
-            *run_rows("big1", "unproductive-1000", [5.0 + 1e-6] * 3),
-        ]
-    )
-    assert "INSIDE THE MEASURED NOISE FLOOR" in _transfer_report(tmp_path, rows)
-
-
-@pytest.mark.parametrize(
-    ("keep", "said"),
-    [
-        # Rows for one of the three roster instances: "nothing moved" over one
-        # instance is not a statement about the roster.
-        (lambda r: r["instance"] == "small1", "lack a completed search"),
-        # Every arm present on every instance, but one instance at two seeds.
-        (lambda r: not (r["instance"] == "mid1" and r["seed"] == 3), "mid1/control"),
-    ],
-    ids=["one-of-three-instances", "one-instance-at-two-seeds"],
-)
-def test_an_incomplete_plan_blocks_the_inside_reading(
-    tmp_path: Path, keep: Callable[[dict[str, object]], bool], said: str
-) -> None:
-    rows = [r for r in _transfer_rows() if keep(r)]
-    reading = _reading(_transfer_report(tmp_path, rows))
-    assert "NOT STATED MECHANICALLY" in reading
-    assert said in reading
-
-
-def test_missing_roster_metadata_blocks_the_inside_reading(tmp_path: Path) -> None:
-    plan = TransferPlan(meta={}, seeds=(1, 2, 3), arms=TRANSFER_PLAN.arms)
-    reading = _reading(_transfer_report(tmp_path, _transfer_rows(), plan))
-    assert "NOT STATED MECHANICALLY" in reading
-    assert "no roster metadata" in reading
-
-
-def test_feasibility_changes_that_cancel_in_a_sum_still_block(tmp_path: Path) -> None:
-    """3/3 -> 2/3 on one instance and 2/3 -> 3/3 on another sum to zero. They are
-    two feasibility changes, and are judged per instance."""
-    rows = [r for r in _transfer_rows() if r["instance"] not in ("small1", "mid1")]
-    rows += _at_budget(
-        [
-            *run_rows("small1", CONTROL_ARM, [10.0, 10.1, 10.2]),
-            *run_rows("small1", "unproductive-100", [10.1, 10.1, None]),
-            *run_rows("small1", "unproductive-1000", [10.0, 10.1, 10.2]),
-            *run_rows("mid1", CONTROL_ARM, [10.0, 10.2, None]),
-            *run_rows("mid1", "unproductive-100", [10.0, 10.1, 10.2]),
-            *run_rows("mid1", "unproductive-1000", [10.0, 10.2, None]),
-        ]
-    )
-    report = _transfer_report(tmp_path, rows)
-    assert "balanced feasible-run delta +0" in report  # the sum that hid it
-    reading = _reading(report)
-    assert "NOT STATED MECHANICALLY" in reading
-    assert "feasible-run count differs on small1, mid1" in reading
-
-
-def test_a_neighbour_that_errors_on_every_seed_blocks_the_inside_reading(
-    tmp_path: Path,
-) -> None:
-    """A solve-error on every seed of one arm is held out of every count -- so
-    without a completeness test the instance simply vanishes and the reading
-    goes through. Whether a solve throws can depend on the arm."""
-    rows = [
-        r
-        for r in _transfer_rows()
-        if not (r["instance"] == "mid1" and r["arm"] == "unproductive-1000")
-    ]
-    rows += _at_budget(
-        [
-            {
-                "instance": "mid1",
-                "arm": "unproductive-1000",
-                "seed": seed,
-                "feasible": "false",
-                "gap_to_bks%": "NaN",
-                "note": "solve-error",
-            }
-            for seed in (1, 2, 3)
-        ]
-    )
-    reading = _reading(_transfer_report(tmp_path, rows))
-    assert "NOT STATED MECHANICALLY" in reading
-    assert "mid1/unproductive-1000" in reading
-    # A side with no completed run is its own reason -- not a feasible-run
-    # count that "differs", since nothing was counted on that side.
-    assert "unproductive-1000: no completed run on one side for mid1" in reading
-    assert "feasible-run count differs" not in reading
 
 
 def test_a_results_file_that_mixes_budgets_is_refused(tmp_path: Path) -> None:
-    rows = _transfer_rows()
+    rows = _stamped_rows()
     rows[0] = {**rows[0], "time_limit": "60"}
-    report = _transfer_report(tmp_path, rows)
+    report = render_report(write_results(tmp_path / "r.csv", rows))
     assert "mixes budgets 10s, 60s" in report
-    assert "READING" not in report
+    assert "VERDICT" not in report
 
 
 def test_a_row_with_no_recorded_budget_counts_as_a_budget_of_its_own(tmp_path: Path) -> None:
     """Rows written before `time_limit` was recorded, merged with newer rows, are
     not known to share their budget."""
-    rows = _transfer_rows()
+    rows = _stamped_rows()
     rows[0] = {**rows[0], "time_limit": ""}
-    report = _transfer_report(tmp_path, rows)
+    report = render_report(write_results(tmp_path / "r.csv", rows))
     assert "mixes budgets 10s, not recorded" in report
-    assert "READING" not in report
-
-
-def test_a_repeated_seed_blocks_the_inside_reading(tmp_path: Path) -> None:
-    """A seed recorded twice is not "every planned seed, exactly once"."""
-    rows = _transfer_rows()
-    rows.append(next(r for r in rows if r["instance"] == "mid1" and r["arm"] == CONTROL_ARM))
-    reading = _reading(_transfer_report(tmp_path, rows))
-    assert "NOT STATED MECHANICALLY" in reading
-    assert "mid1/control" in reading
+    assert "VERDICT" not in report
 
 
 def test_the_header_names_only_documented_failures_the_file_carries(tmp_path: Path) -> None:
-    """The held-out roster has no elec instance, so nothing is said to be excluded."""
-    report = _transfer_report(tmp_path, _transfer_rows())
+    """A file with no elec instance says nothing is excluded."""
+    report = render_report(write_results(tmp_path / "r.csv", _stamped_rows()))
     assert "excluding" not in report
     assert "instances scored:     3\n" in report
-
-
-def _gap_rows(instance: str, notes: dict[str, str]) -> list[dict[str, object]]:
-    """Coverage-gap rows (`unsupported`/`not-found`) for `instance`, per arm, every seed."""
-    return _at_budget(
-        [
-            {
-                "instance": instance,
-                "arm": arm,
-                "seed": seed,
-                "feasible": "false",
-                "gap_to_bks%": "NaN",
-                "note": note,
-            }
-            for arm, note in notes.items()
-            for seed in (1, 2, 3)
-        ]
-    )
-
-
-ALL_ARMS = (CONTROL_ARM, "unproductive-100", "unproductive-1000")
-UNSUPPORTED = "unsupported: NL_UNKNOWN_OPCODE 42"
-
-
-def test_an_instance_no_arm_can_load_is_reported_not_measured(tmp_path: Path) -> None:
-    """HELDOUT.md pre-registers that an unloadable instance stays in the roster
-    and is reported that way. It must not block the reading forever."""
-    rows = [r for r in _transfer_rows() if r["instance"] != "big1"]
-    rows += _gap_rows("big1", dict.fromkeys(ALL_ARMS, UNSUPPORTED))
-    report = _transfer_report(tmp_path, rows)
-    assert "REPORTED, NOT MEASURED: 1 roster instance(s)" in report
-    assert "(big1)" in report
-    assert "INSIDE THE MEASURED NOISE FLOOR" in _reading(report)
-
-
-@pytest.mark.parametrize(
-    "notes",
-    [
-        # Loads under the control, not under one neighbour: a property of the ARM.
-        {"unproductive-1000": UNSUPPORTED},
-        # Unloadable everywhere, but for different reasons per arm.
-        {
-            CONTROL_ARM: UNSUPPORTED,
-            "unproductive-100": UNSUPPORTED,
-            "unproductive-1000": "not-found",
-        },
-    ],
-    ids=["one-arm-only", "different-notes"],
-)
-def test_a_coverage_gap_that_is_not_the_instances_own_still_blocks(
-    tmp_path: Path, notes: dict[str, str]
-) -> None:
-    rows = [r for r in _transfer_rows() if not (r["instance"] == "big1" and r["arm"] in notes)]
-    rows += _gap_rows("big1", notes)
-    report = _transfer_report(tmp_path, rows)
-    assert "REPORTED, NOT MEASURED" not in report
-    assert "NOT STATED MECHANICALLY" in _reading(report)
-
-
-def test_a_seed_that_left_a_constant_control_blocks_even_when_the_means_agree(
-    tmp_path: Path,
-) -> None:
-    """Control [5, 5, 5] has no measurable floor; an arm at [0, 5, 10] has the
-    same mean and is not the same result."""
-    rows = [r for r in _transfer_rows() if r["instance"] != "big1"]
-    rows += _at_budget(
-        [
-            *run_rows("big1", CONTROL_ARM, [5.0, 5.0, 5.0]),
-            *run_rows("big1", "unproductive-100", [5.0, 5.0, 5.0]),
-            *run_rows("big1", "unproductive-1000", [0.0, 5.0, 10.0]),
-        ]
-    )
-    reading = _reading(_transfer_report(tmp_path, rows))
-    assert "NOT STATED MECHANICALLY" in reading
-    assert "unscored instance(s) big1" in reading
-
-
-def test_the_per_arm_verdict_in_the_transfer_report_says_it_is_gap_only(tmp_path: Path) -> None:
-    """The per-arm VERDICT ignores completeness and feasibility, which READING
-    checks. In #145's report it is labelled so it cannot be quoted as the answer;
-    the ablation's is unchanged."""
-    rows = [r for r in _transfer_rows() if not (r["instance"] == "mid1" and r["seed"] == 3)]
-    report = _transfer_report(tmp_path, rows)
-    assert "VERDICT (gap only -- see READING below for #145): INSIDE THE NOISE" in report
-    assert "  VERDICT: " not in report
-    assert "NOT STATED MECHANICALLY" in _reading(report)
-    ablation = render_report(write_results(tmp_path / "a.csv", rows))
-    assert "  VERDICT: " in ablation
-    assert "gap only" not in ablation

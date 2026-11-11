@@ -61,7 +61,7 @@ in the #265 study's configuration and in #331's sample list.
 | `heldout/*.nl` | The fifty text-NL files, committed (1.2 MB, about the size of the published roster's 1.2 MB). |
 | `heldout/pool.csv` | Snapshot of the catalogue rows the filter admits (all 397), limited to the columns the filter reads. Both rosters are re-derivable from it offline. |
 | `heldout/unfetchable.csv` | The instances each fetch walk skipped because MINLPLib serves them as binary NL. A walk can only be replayed offline with this list. |
-| `heldout/presolve_322_sample.txt` | #331's presolve-322 sample: the 25 instances presolve reduces (see "#331: the presolve-322 sample"). |
+| `heldout/presolve_322_sample.txt` | #331's presolve-322 sample: the 25 instances presolve reduces (see "#331: the presolve-322 sample"). Removed with the campaign; in git history at `ef795b55`. |
 
 The `.nl` files are committed, not fetched on demand. #145 must run on exactly
 these bytes. MINLPLib revises instances, and a check that silently ran on a
@@ -270,8 +270,8 @@ independently, pass `--solution-dir <dir>` and run
 benchmarks/instances/minlplib/heldout --solution-dir <dir>` (both drivers do
 this themselves). `heldout/` has no
 `comparison.csv`, `scip_baseline.csv` or `analysis_notes.csv`, and the runner
-does not need them. #145's grid is `run_ablation.py --campaign transfer-145`;
-see the next section.
+does not need them. #145's grid ran as `run_ablation.py --campaign transfer-145`
+(removed; in git history at `ef795b55`); see the next section.
 
 ## #145: does the shipped unproductive-exit threshold transfer?
 
@@ -288,33 +288,30 @@ on all 50 held-out instances at seeds 1-3 and `--time-limit 10`, engine commit
   MECHANICALLY".
 
 #145 was closed on this result by decision. Answering it at 60 s needs the same
-command at `--time-limit 60` (about 7.5 h), under its own issue. The full
+campaign at `--time-limit 60` (about 7.5 h), under its own issue. The full
 write-up (noise floor, per-neighbour table, movers, what it does not establish,
 and how the report states an outcome) is in
 [#145](https://github.com/spoorendonk/cbls/issues/145#issuecomment-6633092217).
 
-The campaign, at smoke scale (450 solves, about 1.25 h, serial on an idle
-machine under the machine-wide lock):
-
-    .venv/bin/python3 -m benchmarks.minlplib.run_ablation --campaign transfer-145 \
-        --out-dir "$HOME/.cache/cbls-145/smoke" --time-limit 10
-
-`--inst-dir` defaults to `heldout/` for this campaign and the published roster
-is refused for it. `--dry-run` prints the plan; `--report-only --no-build` on
-the same `--campaign` and `--out-dir` re-scores it, and reproduces the report
-exactly. The report prints "INSIDE THE MEASURED NOISE FLOOR" only when the
-campaign is complete at one budget and one commit, no instance moved outside
-its floor or the tie band, and no instance changed feasibility; otherwise
-"NOT STATED MECHANICALLY" with its reasons. Quote the READING, not the per-arm
+The campaign ran at smoke scale (450 solves, about 1.25 h, serial on an idle
+machine under the machine-wide lock) as
+`run_ablation.py --campaign transfer-145 --time-limit 10`. That arm set and its
+report section are removed; both are in git history at `ef795b55`. The report
+printed "INSIDE THE MEASURED NOISE FLOOR" only when the campaign was complete
+at one budget and one commit, no instance moved outside its floor or the tie
+band, and no instance changed feasibility; otherwise "NOT STATED MECHANICALLY"
+with its reasons. The READING above is that section's, not the per-arm
 `VERDICT` (gap only).
 
 ## #331: the presolve-322 sample
 
 #331 asks whether presolve and compound-move propagation should be on by
-default. Its MINLPLib arms run with
+default. Its MINLPLib arms ran with
 `run_ablation.py --campaign presolve-322` (control, `--presolve`,
 `--compound-propagation`, both) on a 25-instance dev sample of this roster,
-`heldout/presolve_322_sample.txt`.
+`heldout/presolve_322_sample.txt`. The campaign, its sample file and its report
+section (`benchmarks/minlplib/presolve_report.py`) are removed; all three are
+in git history at `ef795b55`.
 
 **Rule, fixed before any solve:** the held-out instances the A4-NL presolve
 reduces, filled up to 25 with instances it leaves untouched if fewer reduce.
@@ -324,39 +321,23 @@ The census reads and presolves each model without solving it:
 
 At commit 408a4bf exactly 25 of the 50 print `presolve=reduced`, so the
 sample is those 25 and no fill was needed. A presolve change that alters the
-census does not alter the sample: it is a committed list, and the campaign's
-stamp records its hash. The sample is a dev set, chosen because presolve acts
+census does not alter the sample: it was a committed list, and the campaign's
+stamp recorded its hash. The sample is a dev set, chosen because presolve acts
 on it, so it says nothing about instances presolve leaves untouched (there the
 `presolve` arm is the control up to the presolve pass's own cost).
 
-    .venv/bin/python3 -m benchmarks.minlplib.run_ablation --campaign presolve-322 \
-        --out-dir <scratch> [--dry-run]
-
-defaults to this sample and to `heldout/`, refuses the published roster, and
-takes `--instances` for a subset (the laptop smoke). `--lock-command 'xk lock --'`
-takes the machine lock per solve, as #331 asks, so the campaign's hours do not
-hold it against other sessions' builds. Pair it with `--no-build`, since the
-driver's own build runs outside that prefix: build at this commit first, under
-the lock, and do not rebuild that `--build-dir` until the campaign ends. The
-lock is free between solves and this driver has no binary check, so rows from a
-rebuilt binary would land under the same commit. If the prefix does not start a
-solve, the campaign stops with nothing recorded for it, and a resume goes on.
-The load check still refuses a start on a busy machine rather than queueing on
-the lock; `--allow-busy` passes it. Arms of one block stay adjacent in order, but
-another session's locked job can run between two of them.
-
-**How the report reads.** After the shared per-arm scoring, the report adds
-#331's section (`benchmarks/minlplib/presolve_report.py`): each arm's
+**How the report read.** After the shared per-arm scoring, the report added
+#331's section: each arm's
 GM(gap+1) against the control's, per seed and pooled over seeds, with feasible
 counts. A ratio is taken over the instances feasible, with a finite gap, in
 both the arm and the control at that seed, so an instance only one of them
 solves moves the feasible count, not the ratio; below 1 is the arm ahead. The
 noise floor is the control's GM per seed over one instance set (feasible in
 every arm at every seed), max over min; a pooled ratio inside
-[1/floor, floor] is not a difference. The section opens with `INCOMPLETE`,
+[1/floor, floor] is not a difference. The section opened with `INCOMPLETE`,
 naming the missing (instance, arm, seed) runs and those recorded without a
-completed search (a crash), when the rows fall short of the stamped seeds and
-roster size: #331's decision is read off a complete run only.
+completed search (a crash), when the rows fell short of the stamped seeds and
+roster size: #331's decision was read off a complete run only.
 
 ## Reproducing and checking
 

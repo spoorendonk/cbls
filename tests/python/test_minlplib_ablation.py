@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import re
 import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -30,22 +29,13 @@ from benchmarks.minlplib.ablation_report import (
 from benchmarks.minlplib.run_ablation import (
     ARMS,
     GATED_ARM,
-    HELDOUT_INST_DIR,
     LOCK_NAME,
     MAX_LOAD_AVERAGE,
-    PRESOLVE_ARMS,
-    PRESOLVE_CAMPAIGN,
-    PRESOLVE_SAMPLE,
     PROBE_ARM,
     RESULT_COLUMNS,
     RESULTS_NAME,
-    SHIPPED_UNPRODUCTIVE_ITERS,
     STAMP_NAME,
-    TRANSFER_ARMS,
-    TRANSFER_CAMPAIGN,
-    TRANSFER_GRID,
     Arm,
-    ArmConfigMismatchError,
     Run,
     campaign_lock,
     campaign_plan,
@@ -58,22 +48,17 @@ from benchmarks.minlplib.run_ablation import (
     failed_row,
     header_conflict,
     load_refusal,
-    load_sample,
     main,
-    parse_args,
     probe_plan,
     read_runner_row,
     recorded_keys,
-    recorded_seeds,
-    report_for,
-    resolve_campaign,
     run_locked,
     runner_command,
     scratch_refusal,
     stamp_conflict,
     usage_error,
 )
-from benchmarks.minlplib.run_benchmark import DEFAULT_INST_DIR, _data_problems, roster_from_bounds
+from benchmarks.minlplib.run_benchmark import DEFAULT_INST_DIR, roster_from_bounds
 from benchmarks.minlplib.runner import RUNNER_COLUMNS, RUNNER_EXIT_ERRORED, completed_search
 
 if TYPE_CHECKING:
@@ -109,7 +94,6 @@ def make_args(tmp_path: Path, **overrides: object) -> argparse.Namespace:
         "seeds": [1, 2, 3],
         "instances": [],
         "lns_arm": "auto",
-        "campaign": "ablation",
         "allow_busy": False,
         "lock_command": "",
         "resume": True,
@@ -349,8 +333,6 @@ def test_a_lock_command_that_is_not_on_path_refuses_before_any_solve(
     argv = [
         "--out-dir",
         str(tmp_path / "scratch"),
-        "--campaign",
-        PRESOLVE_CAMPAIGN,
         "--no-build",
         "--lock-command",
         "no-such-lock-program --",
@@ -1007,504 +989,77 @@ def test_a_held_wallclock_lock_refuses_the_campaign_before_it_touches_the_out_di
     assert not out_dir.exists()
 
 
-# --- #145: the unproductive-exit transfer campaign ------------------------------
+# --- the stamp's campaign line ---------------------------------------------------
 
 
-def echoing_runner(*, ignore_flag: bool = False) -> Callable[..., FakeCompleted]:
-    """A fake runner whose `search_config` cell reports the `--unproductive-iters`
-    it was given, as the real runner's does -- or, with `ignore_flag`, a binary
-    that drops the flag and reports the shipped 300 whatever it was asked."""
-
-    def run(cmd: Sequence[str], **kwargs: object) -> FakeCompleted:
-        value = "300"
-        if "--unproductive-iters" in cmd and not ignore_flag:
-            value = cmd[cmd.index("--unproductive-iters") + 1]
-        cell = DEFAULT_ARM_CELL.replace("unproductive_iters=300", f"unproductive_iters={value}")
-        row = f"{{name}},1,1,1,5,5,10,true,feasible,{{sha}},0,0,0,0,3,0.5,{cell}"
-        return fake_runner(row=row)(cmd, **kwargs)
-
-    return run
-
-
-def test_the_transfer_arms_are_the_provenance_grid_with_the_shipped_value_as_control() -> None:
-    """#145 re-runs exactly the grid the shipped value came from, centred on it.
-
-    Pinned against the C++ header rather than restated: if the default moves,
-    this campaign would otherwise go on calling 300 the control while the engine
-    ships something else, and the "transfer" it measured would be of a value
-    nobody ships.
-    """
-    header = (REPO_ROOT / "include" / "cbls" / "feasibility_jump.h").read_text()
-    shipped = re.search(r"int64_t unproductive_iterations = (\d+);", header)
-    assert shipped is not None
-    assert int(shipped.group(1)) == SHIPPED_UNPRODUCTIVE_ITERS == 300
-    assert "{100, 300, 1000}" in header  # the provenance comment's grid
-    # ... and the default the RUNNER actually applies: search_config_flags.h
-    # seeds `--unproductive-iters` from SearchConfig, which forwards it to
-    # GFJConfig. Either could move alone.
-    flags = (REPO_ROOT / "benchmarks" / "common" / "search_config_flags.h").read_text()
-    assert "unproductive_iters = SearchConfig{}.unproductive_iterations;" in flags
-    search = (REPO_ROOT / "include" / "cbls" / "search.h").read_text()
-    runner_default = re.findall(r"int64_t unproductive_iterations = (\d+);", search)
-    assert runner_default == [str(SHIPPED_UNPRODUCTIVE_ITERS)]
-    assert TRANSFER_GRID == (100, 300, 1000)
-
-    assert [(a.name, a.flags, a.config) for a in TRANSFER_ARMS] == [
-        (CONTROL_ARM, ("--unproductive-iters", "300"), ("unproductive_iters=300",)),
-        ("unproductive-100", ("--unproductive-iters", "100"), ("unproductive_iters=100",)),
-        ("unproductive-1000", ("--unproductive-iters", "1000"), ("unproductive_iters=1000",)),
-    ]
-    # No name is shared with an ablation arm other than the control, so the two
-    # campaigns' rows can never be mistaken for one another by arm name alone.
-    assert {a.name for a in TRANSFER_ARMS} & {a.name for a in (*ARMS, GATED_ARM)} == {CONTROL_ARM}
-
-
-def test_the_transfer_campaign_interleaves_its_arms_per_instance() -> None:
-    """The same protocol as the ablation: every grid point for one (instance,
-    seed) back to back, control first, before the next block starts."""
-    plan = campaign_plan(["a", "b"], [1, 2, 3], TRANSFER_ARMS)
-    assert len(plan) == 2 * 3 * 3
-    names = [a.name for a in TRANSFER_ARMS]
-    for start in range(0, len(plan), len(names)):
-        block = plan[start : start + len(names)]
-        assert [r.arm.name for r in block] == names
-        assert len({(r.instance, r.seed) for r in block}) == 1
-    assert [(r.instance, r.seed) for r in plan[:: len(names)]] == [
-        ("a", 1),
-        ("a", 2),
-        ("a", 3),
-        ("b", 1),
-        ("b", 2),
-        ("b", 3),
-    ]
-
-
-def test_the_stamp_refuses_a_resume_across_campaigns(tmp_path: Path) -> None:
-    """Both campaigns have a `control`, and the two are different configurations.
-    The stamp names the campaign and each arm's flags, so neither can resume into
-    the other's rows."""
+def test_the_stamp_names_each_arms_flags_and_the_ablation_campaign(tmp_path: Path) -> None:
+    """The arm name alone does not identify an arm, so the stamp carries each
+    arm's flags: the same names under different flags is a different arm set.
+    The `campaign=ablation` line is constant, kept so that an out-dir stamped
+    while the driver ran other campaigns still resumes."""
     out_dir = tmp_path / "scratch"
     out_dir.mkdir()
-    ablation = campaign_stamp("abc1234", 10.0, [1, 2, 3], [*ARMS, GATED_ARM])
-    transfer = campaign_stamp("abc1234", 10.0, [1, 2, 3], TRANSFER_ARMS, campaign=TRANSFER_CAMPAIGN)
-    assert "campaign=transfer-145\n" in transfer
-    assert "control[--unproductive-iters 300]" in transfer
-    assert stamp_conflict(out_dir, ablation, resume=True) is None
-    conflict = stamp_conflict(out_dir, transfer, resume=True)
-    assert conflict is not None
-    assert "different configuration" in conflict
-    # ... and the other way round.
-    other = tmp_path / "other"
-    other.mkdir()
-    assert stamp_conflict(other, transfer, resume=True) is None
-    assert stamp_conflict(other, ablation, resume=True) is not None
-    # Same arm NAMES under different flags is a different arm set too.
+    stamp = campaign_stamp("abc1234", 10.0, [1, 2, 3], [*ARMS, GATED_ARM])
+    assert stamp.startswith("campaign=ablation\n")
+    assert "no-lns[--no-lns]" in stamp
+    assert stamp_conflict(out_dir, stamp, resume=True) is None
     renamed = campaign_stamp(
-        "abc1234",
-        10.0,
-        [1, 2, 3],
-        [Arm(CONTROL_ARM, ()), *TRANSFER_ARMS[1:]],
-        campaign=TRANSFER_CAMPAIGN,
+        "abc1234", 10.0, [1, 2, 3], [Arm(arm.name, ("--x",)) for arm in (*ARMS, GATED_ARM)]
     )
-    assert stamp_conflict(other, renamed, resume=True) is not None
+    assert stamp_conflict(out_dir, renamed, resume=True) is not None
 
 
-def test_a_transfer_run_cannot_resume_into_an_ablation_out_dir(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+@pytest.mark.parametrize("mode", [[], ["--report-only"]], ids=["run", "report-only"])
+@pytest.mark.parametrize("campaign", ["transfer-145", "presolve-322"])
+def test_an_out_dir_stamped_by_a_removed_campaign_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], campaign: str, mode: list[str]
 ) -> None:
-    """End to end through `execute`: refused before a single solve."""
-    seen: list[str] = []
-    monkeypatch.setattr(subprocess, "run", fake_runner(seen=seen))
+    """Their rows have other arms, so scoring them as an ablation would report
+    arms the rows do not contain; the refusal points at the history instead."""
     out_dir = tmp_path / "scratch"
-    out_dir.mkdir()  # `campaign_lock` creates it in a real run
-    assert execute(make_args(tmp_path, lns_arm="off"), "abc1234", ["a"], out_dir) == 0
-    ablation_runs = len(seen)
-    assert ablation_runs == len(ARMS) * 3
-
-    transfer = make_args(tmp_path, campaign=TRANSFER_CAMPAIGN)
-    assert execute(transfer, "abc1234", ["a"], out_dir) == 2
-    assert len(seen) == ablation_runs, "a transfer solve ran in an ablation out-dir"
-    assert "campaign=ablation" in capsys.readouterr().err
-
-
-def test_a_transfer_campaign_runs_its_grid_and_every_row_records_the_arms_value(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """#145: "every row records engine commit, seed, budget and the arm's value".
-    The value is in `arm_flags` (so a crashed run's row has it too) and in the
-    runner's own `search_config` cell (what the binary actually applied)."""
-    monkeypatch.setattr(subprocess, "run", echoing_runner())
-    out_dir = tmp_path / "scratch"
-    out_dir.mkdir()  # `campaign_lock` creates it in a real run
-    args = make_args(tmp_path, campaign=TRANSFER_CAMPAIGN, time_limit=10.0)
-    (tmp_path / "inst").mkdir()
-    (tmp_path / "inst" / "bounds.csv").write_text(
-        "instance,structure,nvars,ncons,objsense,primal_bks,dual_bound,n_disc_vars_bks\n"
-        "a,other,3,4,min,1,1,0\nb,mixed-integer,60,50,min,1,1,0\n"
-    )
-    assert execute(args, "abc1234", ["a", "b"], out_dir) == 0
-
-    rows = _recorded(out_dir)
-    assert [(r["instance"], r["arm"], r["seed"]) for r in rows[:3]] == [
-        ("a", CONTROL_ARM, "1"),
-        ("a", "unproductive-100", "1"),
-        ("a", "unproductive-1000", "1"),
-    ]
-    assert len(rows) == 2 * 3 * 3
-    for row in rows:
-        value = {"control": "300", "unproductive-100": "100", "unproductive-1000": "1000"}[
-            row["arm"]
-        ]
-        assert row["arm_flags"] == f"--unproductive-iters {value}"
-        assert f"unproductive_iters={value};" in row["search_config"]
-        assert row["commit_sha"] == "abc1234"
-        assert row["time_limit"] == "10"
-        assert row["seed"] in ("1", "2", "3")
-    # No gate probe and no LNS arm: those are the ablation's.
-    assert not any(r["arm"] in (PROBE_ARM.name, GATED_ARM.name) for r in rows)
-    assert not (out_dir / "lns_gate.json").exists()
-    assert "campaign=transfer-145" in (out_dir / STAMP_NAME).read_text()
-    out = capsys.readouterr().out
-    assert "issue #145" in out
-    assert "by pre-registered size band" in out
+    out_dir.mkdir()
+    stamp = campaign_stamp("abc1234", 10.0, [1, 2, 3], list(ARMS))
+    (out_dir / STAMP_NAME).write_text(stamp.replace("campaign=ablation", f"campaign={campaign}"))
+    write_results(out_dir / RESULTS_NAME, [("a", CONTROL_ARM, 1), ("a", "x", 1)])
+    assert main(["--out-dir", str(out_dir), "--no-build", *mode]) == 2
+    err = capsys.readouterr().err
+    assert f"campaign={campaign}" in err
+    assert "ef795b55" in err
 
 
-def test_a_row_whose_search_config_contradicts_its_arm_stops_the_campaign(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A binary that ignores `--unproductive-iters` would otherwise fill the
-    campaign with three copies of the control filed under three grid points --
-    and report, correctly by its own lights, that the value does not matter."""
-    monkeypatch.setattr(subprocess, "run", echoing_runner(ignore_flag=True))
-    out_dir = tmp_path / "scratch"
-    plan = campaign_plan(["a"], [1], TRANSFER_ARMS)
-    with pytest.raises(ArmConfigMismatchError, match="unproductive_iters=100"):
-        execute_runs(make_args(tmp_path), "abc1234", plan, out_dir, "campaign")
-    # The control (whose cell does say 300) was recorded; the mismatched run was not.
-    assert [r["arm"] for r in _recorded(out_dir)] == [CONTROL_ARM]
-
-
-def test_the_transfer_campaign_defaults_to_the_heldout_roster_and_refuses_the_published(
-    tmp_path: Path,
-) -> None:
-    out = ["--out-dir", str(tmp_path / "scratch")]
-    args = parse_args([*out, "--campaign", TRANSFER_CAMPAIGN])
-    assert resolve_campaign(args) is None
-    assert args.inst_dir == HELDOUT_INST_DIR
-    assert usage_error(args) is None
-
-    ablation = parse_args(out)
-    assert resolve_campaign(ablation) is None
-    assert ablation.campaign == "ablation"
-    assert ablation.inst_dir == DEFAULT_INST_DIR
-
-    published = parse_args(
-        [*out, "--campaign", TRANSFER_CAMPAIGN, "--inst-dir", str(DEFAULT_INST_DIR)]
-    )
-    assert resolve_campaign(published) is None
-    refusal = usage_error(published)
-    assert refusal is not None
-    assert "fitted on" in refusal
-
-    gated = parse_args([*out, "--campaign", TRANSFER_CAMPAIGN, "--lns-arm", "on"])
-    assert resolve_campaign(gated) is None
-    refusal = usage_error(gated)
-    assert refusal is not None
-    assert "no LNS arm" in refusal
-
-
-def test_the_heldout_roster_passes_the_drivers_roster_preflight(tmp_path: Path) -> None:
-    """The roster comes from `heldout/bounds.csv`, every instance has its `.nl`,
-    and the out-dir refusal is still about `benchmarks/instances/` as a whole --
-    a scratch dir is fine and `heldout/` itself is refused."""
-    roster = roster_from_bounds(HELDOUT_INST_DIR / "bounds.csv")
-    assert len(roster) == 50
-    args = make_args(tmp_path, campaign=TRANSFER_CAMPAIGN, inst_dir=HELDOUT_INST_DIR)
-    assert _data_problems(args, roster) == []
-    assert usage_error(args) is None
-    inside = usage_error(make_args(tmp_path, out_dir=HELDOUT_INST_DIR / "scratch"))
-    assert inside is not None
-    assert "published" in inside
-
-
-def test_report_only_scores_the_campaign_its_stamp_records(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+@pytest.mark.parametrize(
+    "stamp",
+    [
+        "campaign=ablation\ncommit=abc1234\n",
+        # Written before the stamp carried a campaign: an ablation.
+        "commit=abc1234\n",
+    ],
+    ids=["ablation", "pre-campaign"],
+)
+def test_report_only_scores_an_ablation_stamped_out_dir(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], stamp: str
 ) -> None:
     out_dir = tmp_path / "scratch"
     out_dir.mkdir()
-    (out_dir / STAMP_NAME).write_text(
-        campaign_stamp("abc1234", 10.0, [1, 2, 3], TRANSFER_ARMS, campaign=TRANSFER_CAMPAIGN)
-    )
-    write_results(out_dir / RESULTS_NAME, [("a", CONTROL_ARM, 1), ("a", "unproductive-100", 1)])
+    (out_dir / STAMP_NAME).write_text(stamp)
+    write_results(out_dir / RESULTS_NAME, [("a", CONTROL_ARM, 1), ("a", "x", 1)])
     assert main(["--out-dir", str(out_dir), "--report-only"]) == 0
-    assert "issue #145" in capsys.readouterr().out
-
-    assert main(["--out-dir", str(out_dir), "--report-only", "--campaign", "ablation"]) == 2
-    assert "contradicts" in capsys.readouterr().err
+    assert "issue #143" in capsys.readouterr().out
 
 
-def test_report_only_checks_completeness_against_the_stamped_seeds(tmp_path: Path) -> None:
-    """`--report-only` does not repeat `--seeds`, so the plan the rows are checked
-    against takes its seeds from the stamp, not from the default list."""
-    out_dir = tmp_path / "scratch"
-    out_dir.mkdir()
-    assert recorded_seeds(out_dir) is None
-    (out_dir / STAMP_NAME).write_text(
-        campaign_stamp("abc1234", 10.0, [4, 5, 6], TRANSFER_ARMS, campaign=TRANSFER_CAMPAIGN)
-    )
-    assert recorded_seeds(out_dir) == [4, 5, 6]
-
-    (tmp_path / "inst").mkdir()
-    (tmp_path / "inst" / "bounds.csv").write_text(
-        "instance,structure,nvars,ncons,objsense,primal_bks,dual_bound,n_disc_vars_bks\n"
-        "a,other,3,4,min,1,1,0\n"
-    )
-    results = _campaign_csv(
-        out_dir / RESULTS_NAME,
-        [
-            {"instance": "a", "arm": arm.name, "seed": seed, "gap_to_bks%": 1.0 + 0.1 * seed}
-            for seed in (4, 5, 6)
-            for arm in TRANSFER_ARMS
-        ],
-    )
-    args = make_args(tmp_path, campaign=TRANSFER_CAMPAIGN, out_dir=out_dir)
-    assert args.seeds == [1, 2, 3]  # what a --report-only invocation carries
-    stamped = report_for(args, results, gate=None)
-    assert "lack a completed search" not in stamped
-    # ... and nothing else blocks it either: the stamped seeds make it read clean.
-    assert "INSIDE THE MEASURED NOISE FLOOR" in stamped
-    (out_dir / STAMP_NAME).unlink()  # no stamp: falls back to --seeds, and says so
-    assert "lack a completed search" in report_for(args, results, gate=None)
-
-
-def test_the_transfer_dry_run_prints_the_grid_and_no_gate_probe(
+def test_the_dry_run_prints_the_probe_and_the_interleaved_arms(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """The dry run touches nothing and needs no build; it may refuse (no build
     dir in a test), but it still prints the plan it would run."""
     out_dir = tmp_path / "scratch"
-    main(
-        [
-            "--out-dir",
-            str(out_dir),
-            "--campaign",
-            TRANSFER_CAMPAIGN,
-            "--time-limit",
-            "10",
-            "--dry-run",
-        ]
-    )
+    main(["--out-dir", str(out_dir), "--time-limit", "10", "--dry-run"])
     out = capsys.readouterr().out
-    assert "campaign: transfer-145" in out
-    assert "control[--unproductive-iters 300]" in out
-    assert "unproductive-1000[--unproductive-iters 1000]" in out
-    assert "campaign: 450 run(s)" in out
-    assert "gate probe" not in out
-    assert "estimated 1.2h of solving" in out  # 450 x 10s
-    assert not out_dir.exists()
-
-
-# --- the presolve-322 campaign (#331, #353) -----------------------------------
-
-
-def presolve_echoing_runner(
-    *, ignore: str = "", presolve_by_default: bool = False, aggregation_off: bool = False
-) -> Callable[..., FakeCompleted]:
-    """A fake runner whose `search_config` cell reports `--presolve` and
-    `--compound-propagation` the way the real one does -- or, with `ignore`
-    naming one of them, a binary that drops that flag; with
-    `presolve_by_default`, one whose presolve default has flipped to on; with
-    `aggregation_off`, one whose presolve aggregation default has flipped off."""
-
-    def run(cmd: Sequence[str], **kwargs: object) -> FakeCompleted:
-        cell = DEFAULT_ARM_CELL
-        if "--compound-propagation" in cmd and ignore != "--compound-propagation":
-            cell += ";compound_propagation=on"
-        if presolve_by_default or ("--presolve" in cmd and ignore != "--presolve"):
-            cell += ";presolve"
-            if aggregation_off:
-                cell += ";no-presolve-aggregation"
-        row = f"{{name}},1,1,1,5,5,10,true,feasible,{{sha}},0,0,0,0,3,0.5,{cell}"
-        return fake_runner(row=row)(cmd, **kwargs)
-
-    return run
-
-
-def test_the_presolve_sample_is_25_distinct_heldout_instances_with_their_nl() -> None:
-    """#331's sample: 25 distinct held-out instances, each with its `.nl`. That
-    they are the census's reducing set is recorded in HELDOUT.md, not checked
-    here: the census needs the built runner."""
-    sample = load_sample(PRESOLVE_SAMPLE)
-    assert len(sample) == 25
-    roster = set(roster_from_bounds(HELDOUT_INST_DIR / "bounds.csv"))
-    assert set(sample) <= roster
-    assert all((HELDOUT_INST_DIR / f"{name}.nl").is_file() for name in sample)
-
-
-def test_load_sample_skips_comments_and_refuses_a_repeated_name(tmp_path: Path) -> None:
-    path = tmp_path / "sample.txt"
-    path.write_text("# header\n\na\n  # indented comment\nb\n")
-    assert load_sample(path) == ["a", "b"]
-    path.write_text("a\nb\na\n")
-    with pytest.raises(ValueError, match="twice"):
-        load_sample(path)
-
-
-def test_the_presolve_campaign_defaults_to_the_heldout_sample_and_refuses_the_published(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    out = ["--out-dir", str(tmp_path / "scratch"), "--campaign", PRESOLVE_CAMPAIGN]
-    args = parse_args(out)
-    assert resolve_campaign(args) is None
-    assert args.inst_dir == HELDOUT_INST_DIR
-    assert args.instances == load_sample(PRESOLVE_SAMPLE)
-    assert usage_error(args) is None
-
-    subset = parse_args([*out, "--instances", "tln4", "hydro"])
-    assert resolve_campaign(subset) is None
-    assert subset.instances == ["tln4", "hydro"]
-
-    published = parse_args([*out, "--inst-dir", str(DEFAULT_INST_DIR)])
-    assert resolve_campaign(published) is None
-    refusal = usage_error(published)
-    assert refusal is not None
-    assert "published on" in refusal
-
-    gated = parse_args([*out, "--lns-arm", "off"])
-    assert resolve_campaign(gated) is None
-    refusal = usage_error(gated)
-    assert refusal is not None
-    assert "no LNS arm" in refusal
-
-    monkeypatch.setattr(run_ablation, "PRESOLVE_SAMPLE", tmp_path / "missing.txt")
-    refusal = resolve_campaign(parse_args(out))
-    assert refusal is not None
-    assert "sample" in refusal
-
-
-def test_a_presolve_campaign_runs_its_four_arms_and_rows_carry_what_the_runner_applied(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    monkeypatch.setattr(subprocess, "run", presolve_echoing_runner())
-    out_dir = tmp_path / "scratch"
-    out_dir.mkdir()  # `campaign_lock` creates it in a real run
-    args = make_args(tmp_path, campaign=PRESOLVE_CAMPAIGN, time_limit=10.0)
-    assert execute(args, "abc1234", ["a", "b"], out_dir) == 0
-
-    rows = _recorded(out_dir)
-    assert [(r["instance"], r["arm"], r["seed"]) for r in rows[:4]] == [
-        ("a", CONTROL_ARM, "1"),
-        ("a", "presolve", "1"),
-        ("a", "compound-propagation", "1"),
-        ("a", "both", "1"),
-    ]
-    assert len(rows) == 2 * 4 * 3
-    for row in rows:
-        applied = set(row["search_config"].split(";"))
-        presolve = row["arm"] in ("presolve", "both")
-        propagation = row["arm"] in ("compound-propagation", "both")
-        assert ("presolve" in applied) == presolve
-        assert ("compound_propagation=on" in applied) == propagation
-        assert ("--presolve" in row["arm_flags"]) == presolve
-        assert ("--compound-propagation" in row["arm_flags"]) == propagation
-    assert not any(r["arm"] in (PROBE_ARM.name, GATED_ARM.name) for r in rows)
-    assert not (out_dir / "lns_gate.json").exists()
-    assert "campaign=presolve-322" in (out_dir / STAMP_NAME).read_text()
-    assert "issue #331" in capsys.readouterr().out
-
-    # Neither held-out campaign resumes into the other's out-dir.
-    transfer = make_args(tmp_path, campaign=TRANSFER_CAMPAIGN, time_limit=10.0)
-    assert execute(transfer, "abc1234", ["a", "b"], out_dir) == 2
-    assert "campaign=presolve-322" in capsys.readouterr().err
-
-    assert main(["--out-dir", str(out_dir), "--report-only"]) == 0
-    assert "issue #331" in capsys.readouterr().out
-
-
-@pytest.mark.parametrize("dropped", ["--presolve", "--compound-propagation"])
-def test_a_runner_that_drops_a_presolve_arm_flag_stops_the_campaign(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, dropped: str
-) -> None:
-    """A binary that ignores either flag would file the control under that arm."""
-    monkeypatch.setattr(subprocess, "run", presolve_echoing_runner(ignore=dropped))
-    plan = campaign_plan(["a"], [1], PRESOLVE_ARMS)
-    token = "presolve" if dropped == "--presolve" else "compound_propagation=on"
-    with pytest.raises(ArmConfigMismatchError, match=token):
-        execute_runs(make_args(tmp_path), "abc1234", plan, tmp_path / "scratch", "campaign")
-
-
-def test_a_runner_whose_presolve_default_flipped_stops_the_control(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """With presolve on by default every cell carries `presolve`; the control
-    must refuse it rather than compare presolve against itself."""
-    monkeypatch.setattr(subprocess, "run", presolve_echoing_runner(presolve_by_default=True))
-    plan = campaign_plan(["a"], [1], PRESOLVE_ARMS)
-    with pytest.raises(ArmConfigMismatchError, match="must not"):
-        execute_runs(make_args(tmp_path), "abc1234", plan, tmp_path / "scratch", "campaign")
-    assert _recorded(tmp_path / "scratch") == []
-
-
-def test_a_runner_whose_aggregation_default_flipped_stops_the_presolve_arm(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """#331 decides on the default presolve; one without doubleton aggregation
-    would be filed under `presolve` and pass its `config` check."""
-    monkeypatch.setattr(subprocess, "run", presolve_echoing_runner(aggregation_off=True))
-    plan = campaign_plan(["a"], [1], PRESOLVE_ARMS)
-    with pytest.raises(ArmConfigMismatchError, match="no-presolve-aggregation"):
-        execute_runs(make_args(tmp_path), "abc1234", plan, tmp_path / "scratch", "campaign")
-    assert [r["arm"] for r in _recorded(tmp_path / "scratch")] == [CONTROL_ARM]
-
-
-def test_the_presolve_arms_assume_both_settings_off_by_default() -> None:
-    """The control is "both off" only while both defaults are off. A flipped
-    presolve default is caught per row (`Arm.absent`); compound propagation is
-    an opt-in key that vanishes from the cell under a flipped default, so it
-    can only be pinned here, at its source."""
-    search = (REPO_ROOT / "include" / "cbls" / "search.h").read_text()
-    assert re.findall(r"bool compound_move_propagation = (\w+);", search) == ["false"]
-    flags = (REPO_ROOT / "benchmarks" / "common" / "search_config_flags.h").read_text()
-    assert "bool compound_propagation = SearchConfig{}.compound_move_propagation;" in flags
-    runner = (REPO_ROOT / "benchmarks" / "minlplib" / "minlplib.cpp").read_text()
-    assert re.findall(r"bool presolve = (\w+);", runner) == ["false"]
-    assert re.findall(r"bool presolve_aggregation = (\w+);", runner) == ["true"]
-
-
-def test_the_presolve_campaign_refuses_instances_outside_its_sample(tmp_path: Path) -> None:
-    out = ["--out-dir", str(tmp_path / "scratch"), "--campaign", PRESOLVE_CAMPAIGN]
-    refusal = resolve_campaign(parse_args([*out, "--instances", "tln4", "not_in_sample"]))
-    assert refusal is not None
-    assert "not_in_sample" in refusal
-    assert "tln4" not in refusal
-
-
-def test_report_only_does_not_need_the_presolve_sample(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    out_dir = tmp_path / "scratch"
-    out_dir.mkdir()
-    (out_dir / STAMP_NAME).write_text(
-        campaign_stamp("abc1234", 10.0, [1, 2, 3], PRESOLVE_ARMS, campaign=PRESOLVE_CAMPAIGN)
-    )
-    write_results(out_dir / RESULTS_NAME, [("a", CONTROL_ARM, 1), ("a", "presolve", 1)])
-    monkeypatch.setattr(run_ablation, "PRESOLVE_SAMPLE", tmp_path / "missing.txt")
-    assert main(["--out-dir", str(out_dir), "--report-only"]) == 0
-    assert "issue #331" in capsys.readouterr().out
-
-
-def test_the_presolve_dry_run_prints_four_arms_over_the_sample(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    out_dir = tmp_path / "scratch"
-    main(["--out-dir", str(out_dir), "--campaign", PRESOLVE_CAMPAIGN, "--dry-run"])
-    out = capsys.readouterr().out
-    assert "campaign: presolve-322" in out
-    assert "roster: 25 instance(s)" in out
-    assert "both[--presolve --compound-propagation]" in out
-    assert "campaign: 300 run(s)" in out  # 25 x 4 arms x 3 seeds
-    assert "gate probe" not in out
-    assert "estimated 5.0h of solving" in out  # 300 x 60s
+    roster = len(roster_from_bounds(DEFAULT_INST_DIR / "bounds.csv"))
+    assert f"roster: {roster} instance(s)" in out
+    assert "no-lns[--no-lns]" in out
+    assert f"gate probe: {roster} run(s)" in out
+    assert f"campaign: {roster * 3 * (len(ARMS) + 1)} run(s)" in out
     assert not out_dir.exists()
 
 

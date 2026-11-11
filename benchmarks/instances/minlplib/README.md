@@ -257,10 +257,10 @@ In `../../minlplib/`: `run_benchmark.py` (the re-run driver, the supported way
 to regenerate `comparison.csv`); `campaign_report.py` (every run-derived number
 in **Results** and **SCIP baseline**, the JSON summary and the README blocks,
 #142; solves nothing);
-`run_ablation.py` and `ablation_report.py` (#143's ablation campaign; also
-`--campaign transfer-145` and `--campaign presolve-322` on the held-out roster,
-HELDOUT.md, with `presolve_report.py`; scratch `--out-dir` only, refused under
-`benchmarks/instances/`); `nl_check.cpp` (`cbls_minlplib_nl_check`: read and
+`run_ablation.py` and `ablation_report.py` (#143's ablation campaign; scratch
+`--out-dir` only, refused under `benchmarks/instances/`. The held-out
+`--campaign transfer-145` and `--campaign presolve-322` arm sets and
+`presolve_report.py`, HELDOUT.md, are removed; in git history at `ef795b55`); `nl_check.cpp` (`cbls_minlplib_nl_check`: read and
 model, no solve); `independent_check.py` (#205's SCIP check of a row's `.sol`);
 `scip_shards.py`, `check_staged.py`, `gm_ratio.py` (the full-library campaign);
 `runner.py` (the

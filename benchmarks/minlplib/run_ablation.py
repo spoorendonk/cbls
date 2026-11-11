@@ -50,36 +50,10 @@ The campaign changes no engine default and writes no published table. If an arm
 argues for a different default, that is a separate change with its own
 justification (issue #143's own acceptance criteria).
 
-A SECOND ARM SET, `--campaign transfer-145`. Issue #145 asks whether the shipped
-unproductive-batch exit threshold transfers to the held-out roster of #144. That
-is the same experiment shape as the ablation -- arms against a same-sitting
-control, interleaved per instance, three seeds, scored against a noise floor
-measured from the control's own spread -- so it is an arm set of this driver
-rather than a second driver, and every refusal above applies to it unchanged:
-
-    control            --unproductive-iters 300   (the shipped default, spelled out)
-    unproductive-100   --unproductive-iters 100
-    unproductive-1000  --unproductive-iters 1000
-
-That is the provenance grid recorded on `GFJConfig::unproductive_iterations`,
-exactly, with the shipped value as the control. It runs no gate probe and has no
-LNS arm. Its `--inst-dir` defaults to the held-out roster, and the published
-roster -- the one the value was fitted on -- is refused for it. The stamp records
-which campaign an out-dir belongs to and each arm's flags, so neither campaign can
-resume into the other's rows.
-
-A THIRD ARM SET, `--campaign presolve-322`. Issue #331 asks whether presolve and
-compound-move propagation should be on by default. Same shape again, on the
-held-out roster, with no gate probe and no LNS arm:
-
-    control               (all defaults: both off)
-    presolve              --presolve
-    compound-propagation  --compound-propagation
-    both                  --presolve --compound-propagation
-
-It runs on the 25-instance dev sample `heldout/presolve_322_sample.txt` (the
-held-out instances presolve reduces, fixed before any solve; HELDOUT.md) unless
-`--instances` names a subset, and refuses the published roster.
+This driver also ran #145's `--campaign transfer-145` and #331's
+`--campaign presolve-322` arm sets on the held-out roster. Both issues are
+closed and both campaigns are removed; they are in git history at `ef795b55`.
+An out-dir stamped by either is refused rather than scored as an ablation.
 """
 
 from __future__ import annotations
@@ -123,14 +97,9 @@ from benchmarks.minlplib import independent_check  # noqa: E402
 from benchmarks.minlplib import runner as runner_contract  # noqa: E402
 from benchmarks.minlplib.ablation_report import (  # noqa: E402
     CONTROL_ARM,
-    PRESOLVE_HEADING,
     PROBE_ARM_NAME,
-    TRANSFER_HEADING,
-    TransferPlan,
     render_report,
-    roster_meta,
 )
-from benchmarks.minlplib.presolve_report import PresolvePlan, presolve_lines  # noqa: E402
 from benchmarks.minlplib.run_benchmark import (  # noqa: E402
     DEFAULT_BUILD_DIR,
     DEFAULT_INST_DIR,
@@ -175,19 +144,6 @@ class Arm:
 
     name: str
     flags: tuple[str, ...]
-    #: `key=value` entries the runner's own `search_config` cell must carry on
-    #: every row this arm produces. Checked by `read_runner_row`: the cell is
-    #: what the runner APPLIED, so a mismatch means the binary did not run the
-    #: arm the row is about to be filed under. Empty for the ablation arms,
-    #: whose flags are switches the cell already names one-to-one.
-    config: tuple[str, ...] = ()
-    #: Entries the cell must NOT carry. Only a token the runner writes whenever
-    #: its setting is on, default or not, can be checked this way: if that
-    #: default flipped on, every arm's cell would carry it, `config` alone would
-    #: pass, and the campaign would compare the setting against itself. An
-    #: opt-in search key (written only when it differs from the default)
-    #: vanishes instead under a flipped default, so it cannot go here.
-    absent: tuple[str, ...] = ()
 
 
 #: The arms that always run. `control` is first and is run in this same sitting
@@ -214,108 +170,8 @@ GATED_ARM = Arm("no-lns", ("--no-lns",))
 #: protocol says makes a control unusable as a comparison baseline.
 PROBE_ARM = Arm(PROBE_ARM_NAME, ())
 
-#: The arm sets this driver runs, selected with `--campaign`.
+#: The campaign every stamp records (see `campaign_stamp`, `campaign_refusal`).
 ABLATION_CAMPAIGN = "ablation"
-TRANSFER_CAMPAIGN = "transfer-145"
-PRESOLVE_CAMPAIGN = "presolve-322"
-CAMPAIGNS: tuple[str, ...] = (ABLATION_CAMPAIGN, TRANSFER_CAMPAIGN, PRESOLVE_CAMPAIGN)
-
-#: The campaigns that run on the held-out roster, with no gate probe and no LNS
-#: arm. Both refuse the published roster.
-HELDOUT_CAMPAIGNS: tuple[str, ...] = (TRANSFER_CAMPAIGN, PRESOLVE_CAMPAIGN)
-
-#: The held-out roster of #144, which the held-out campaigns run on by default.
-#: The published roster is refused for them: #145's shipped value was fitted
-#: there, which is the exposure #145 exists to check, and #331 sets defaults
-#: that must not be tuned on the roster they will be published on.
-HELDOUT_INST_DIR = DEFAULT_INST_DIR / "heldout"
-
-#: #331's dev sample: the held-out instances the A4-NL presolve reduces, fixed
-#: before any solve (HELDOUT.md). `--campaign presolve-322` runs on it unless
-#: `--instances` names a subset.
-PRESOLVE_SAMPLE = HELDOUT_INST_DIR / "presolve_322_sample.txt"
-
-#: The shipped `GFJConfig::unproductive_iterations`, and the grid it came from
-#: (the provenance comment on that field: {100, 300, 1000}, one roster, one 2s
-#: budget, one seed). #145 re-runs exactly that grid; a test pins both against
-#: `include/cbls/feasibility_jump.h`, so a changed default fails there rather
-#: than leaving this campaign centred on a value the engine no longer ships.
-SHIPPED_UNPRODUCTIVE_ITERS = 300
-TRANSFER_GRID: tuple[int, ...] = (100, 300, 1000)
-
-
-def _unproductive_arm(value: int) -> Arm:
-    """One point of the #145 grid. The shipped value is the control."""
-    name = CONTROL_ARM if value == SHIPPED_UNPRODUCTIVE_ITERS else f"unproductive-{value}"
-    return Arm(name, ("--unproductive-iters", str(value)), (f"unproductive_iters={value}",))
-
-
-#: #145's arms, control first. The control passes `--unproductive-iters 300`
-#: EXPLICITLY although 300 is the default: it is the same configuration (the
-#: runner's canonical `search_config` cell is identical to a flag-less run's),
-#: and spelling it out puts the arm's value in `arm_flags` on every row --
-#: including a crashed run's row, whose `search_config` is NaN. That is #145's
-#: "every row records ... the arm's value", met without a schema change.
-TRANSFER_ARMS: tuple[Arm, ...] = tuple(
-    _unproductive_arm(value)
-    for value in sorted(TRANSFER_GRID, key=lambda v: v != SHIPPED_UNPRODUCTIVE_ITERS)
-)
-
-#: #331's arms, control first: presolve and compound propagation, each alone
-#: and together, against the shipped defaults (both off). Each arm names the
-#: token the runner's `search_config` cell carries when it applied the flag:
-#: `presolve` from `cbls_minlplib` itself, `compound_propagation=on` from the
-#: shared search flags (an opt-in key, absent from the cell when off).
-#:
-#: `cbls_minlplib` writes `presolve` whenever presolve is on and
-#: `no-presolve-aggregation` whenever aggregation is off, so `absent` catches a
-#: flipped default of either: no presolved row under an arm without
-#: `--presolve`, no aggregation-free presolve under an arm that asked for the
-#: default presolve. `compound_propagation=on` is opt-in and cannot be guarded
-#: that way (see `Arm.absent`); a test pins both defaults at their source
-#: instead, so a flip fails the suite before any campaign runs at that commit.
-_PRESOLVE_TOKEN = "presolve"
-_NO_AGGREGATION_TOKEN = "no-presolve-aggregation"
-_PROPAGATION_TOKEN = "compound_propagation=on"
-PRESOLVE_ARMS: tuple[Arm, ...] = (
-    Arm(CONTROL_ARM, (), absent=(_PRESOLVE_TOKEN,)),
-    Arm("presolve", ("--presolve",), (_PRESOLVE_TOKEN,), (_NO_AGGREGATION_TOKEN,)),
-    Arm(
-        "compound-propagation",
-        ("--compound-propagation",),
-        (_PROPAGATION_TOKEN,),
-        (_PRESOLVE_TOKEN,),
-    ),
-    Arm(
-        "both",
-        ("--presolve", "--compound-propagation"),
-        (_PRESOLVE_TOKEN, _PROPAGATION_TOKEN),
-        (_NO_AGGREGATION_TOKEN,),
-    ),
-)
-
-#: The fixed arm set of each held-out campaign.
-HELDOUT_ARMS: dict[str, tuple[Arm, ...]] = {
-    TRANSFER_CAMPAIGN: TRANSFER_ARMS,
-    PRESOLVE_CAMPAIGN: PRESOLVE_ARMS,
-}
-
-
-def load_sample(path: Path) -> list[str]:
-    """The instance names a sample file lists, in file order.
-
-    One name per line; blank lines and `#` comments are skipped. A repeated
-    name is refused: it would plan the same triple twice.
-    """
-    names = [
-        line.strip()
-        for line in path.read_text().splitlines()
-        if line.strip() and not line.lstrip().startswith("#")
-    ]
-    if len(set(names)) != len(names):
-        raise ValueError(f"{path} lists an instance twice")
-    return names
-
 
 #: Three seeds, as the protocol requires. 1 is the seed the published table was
 #: measured at, so the control arm stays comparable with it -- once that table
@@ -541,7 +397,6 @@ def campaign_stamp(
     arms: Sequence[Arm],
     roster: Sequence[str] = (),
     lns_arm: str = "auto",
-    campaign: str = ABLATION_CAMPAIGN,
 ) -> str:
     """The configuration an out-dir's rows belong to, one field per line.
 
@@ -552,14 +407,13 @@ def campaign_stamp(
     destroying exactly the "counter reading that justified skipping" the
     acceptance criterion asks for.
 
-    The campaign and each arm's FLAGS are in here because the arm name alone
-    does not identify an arm: both campaigns have a `control`, and the two are
-    different configurations. Resuming a #145 transfer run into an ablation
-    out-dir would otherwise be refused only by the accident that the other arm
-    names differ.
+    Each arm's FLAGS are in here because the arm name alone does not identify
+    an arm. The `campaign=ablation` line is constant: it is kept from when this
+    driver ran other arm sets, so an out-dir stamped then still resumes, and so
+    `campaign_refusal` can recognise one of theirs.
     """
     return (
-        f"campaign={campaign}\n"
+        f"campaign={ABLATION_CAMPAIGN}\n"
         f"commit={sha}\n"
         f"time-limit={time_limit:g}\n"
         f"seeds={','.join(str(s) for s in seeds)}\n"
@@ -569,18 +423,6 @@ def campaign_stamp(
     )
 
 
-def stamp_field(out_dir: Path, field: str) -> str | None:
-    """One field of an out-dir's stamp, or None where the stamp has no such field."""
-    path = out_dir / STAMP_NAME
-    if not path.exists():
-        return None
-    for line in path.read_text().splitlines():
-        key, _, value = line.partition("=")
-        if key == field:
-            return value
-    return None
-
-
 def recorded_campaign(out_dir: Path) -> str | None:
     """The campaign an out-dir's stamp names, or None where it names none.
 
@@ -588,55 +430,14 @@ def recorded_campaign(out_dir: Path) -> str | None:
     campaign -- every such out-dir is an ablation, but saying so is the
     caller's decision, not this reader's.
     """
-    return stamp_field(out_dir, "campaign")
-
-
-def recorded_seeds(out_dir: Path) -> list[int] | None:
-    """The seed list an out-dir's stamp records, or None if it records none readably."""
-    text = stamp_field(out_dir, "seeds")
-    if not text:
+    path = out_dir / STAMP_NAME
+    if not path.exists():
         return None
-    try:
-        return [int(seed) for seed in text.split(",")]
-    except ValueError:
-        return None
-
-
-def recorded_roster_size(out_dir: Path) -> int | None:
-    """The instance count an out-dir's stamp records (`roster=N:hash`), or None.
-
-    None also for `roster=0:all`, the whole-roster stamp, whose size it does
-    not record.
-    """
-    text = stamp_field(out_dir, "roster")
-    if not text:
-        return None
-    count, _, _ = text.partition(":")
-    try:
-        size = int(count)
-    except ValueError:
-        return None
-    return size or None
-
-
-def stamped_presolve_roster(out_dir: Path) -> tuple[str, ...]:
-    """The presolve campaign's instances, named, where the stamp proves them.
-
-    The stamp records the roster as a count and a hash, not names. A
-    `--report-only` call repeats no `--instances`, so the names are recovered
-    from the committed sample, where its hash is the stamp's. Empty otherwise
-    (a subset, such as the laptop smoke's, or an unreadable sample): the
-    report then checks the instance count alone.
-    """
-    text = stamp_field(out_dir, "roster")
-    if not text:
-        return ()
-    _, _, key = text.partition(":")
-    try:
-        sample = load_sample(PRESOLVE_SAMPLE)
-    except (OSError, ValueError):
-        return ()
-    return tuple(sample) if roster_key(sample) == key else ()
+    for line in path.read_text().splitlines():
+        key, _, value = line.partition("=")
+        if key == "campaign":
+            return value
+    return None
 
 
 def stamp_conflict(out_dir: Path, stamp: str, *, resume: bool) -> str | None:
@@ -767,16 +568,6 @@ def solution_dir(out_dir: Path, run: Run) -> Path:
     return out_dir / "runs" / f"{run.slug}.sol.d"
 
 
-class ArmConfigMismatchError(Exception):
-    """A runner row whose `search_config` contradicts the arm it was run as.
-
-    Deliberately NOT a `RuntimeError`, so it is outside `UNREADABLE_ROW` and is
-    not recorded as one failed run among many: a binary that ignores an arm's
-    flag ignores it on every run, and a campaign that carried on would fill its
-    results with rows filed under the wrong arm.
-    """
-
-
 def read_runner_row(path: Path, run: Run, sha: str) -> dict[str, str]:
     """The single result row the runner wrote, checked against what was asked for.
 
@@ -801,24 +592,6 @@ def read_runner_row(path: Path, run: Run, sha: str) -> dict[str, str]:
     missing = [column for column in _RUNNER_COLUMNS if row.get(column) is None]
     if missing:
         raise RuntimeError(f"{path} is missing column(s) {', '.join(missing)}")
-    applied = set(row["search_config"].split(";"))
-    absent = [entry for entry in run.arm.config if entry not in applied]
-    if absent:
-        raise ArmConfigMismatchError(
-            f"{path}: the runner's search_config cell {row['search_config']!r} does not carry "
-            f"{', '.join(absent)}, which arm {run.arm.name!r} ({' '.join(run.arm.flags)}) "
-            "requires. The binary did not run the configuration this row would be filed "
-            "under, so the campaign stops here rather than record it -- rebuild, or check "
-            "that the runner still accepts the arm's flags."
-        )
-    unwanted = [entry for entry in run.arm.absent if entry in applied]
-    if unwanted:
-        raise ArmConfigMismatchError(
-            f"{path}: the runner's search_config cell {row['search_config']!r} carries "
-            f"{', '.join(unwanted)}, which arm {run.arm.name!r} ({' '.join(run.arm.flags)}) "
-            "must not. The runner's default has probably changed, so this row would compare "
-            "the setting against itself; the campaign stops here rather than record it."
-        )
     return row
 
 
@@ -1284,14 +1057,9 @@ def describe_plan(
     """`--dry-run`: print the plan and the cost, touch nothing."""
     for problem in problems:
         print(f"WOULD REFUSE: {problem}")
-    heldout = args.campaign in HELDOUT_CAMPAIGNS
-    probe = [] if heldout or args.lns_arm != "auto" else probe_plan(roster, args.seeds[0])
-    if heldout:
-        arms = list(HELDOUT_ARMS[args.campaign])
-    else:
-        arms = [*ARMS, GATED_ARM] if args.lns_arm != "off" else list(ARMS)
+    probe = [] if args.lns_arm != "auto" else probe_plan(roster, args.seeds[0])
+    arms = [*ARMS, GATED_ARM] if args.lns_arm != "off" else list(ARMS)
     main = campaign_plan(roster, args.seeds, arms)
-    print(f"campaign: {args.campaign}")
     print(f"roster: {len(roster)} instance(s) from {args.inst_dir / 'bounds.csv'}")
     print(f"arms: {', '.join(arm_label(arm) for arm in arms)}")
     print(f"seeds: {', '.join(str(s) for s in args.seeds)}")
@@ -1302,32 +1070,20 @@ def describe_plan(
     print(
         f"campaign: {len(main)} run(s) -- {' '.join(locked_command(args, sha, main[0], out_dir))}"
     )
-    if heldout:
-        print(f"estimated {estimate_hours(len(main), args.time_limit):.1f}h of solving")
-    else:
-        print(
-            f"estimated {estimate_hours(len(probe), args.time_limit):.1f}h probe + "
-            f"{estimate_hours(len(main), args.time_limit):.1f}h campaign = "
-            f"{estimate_hours(len(probe) + len(main), args.time_limit):.1f}h of solving, "
-            "less whichever arms the gate drops"
-        )
+    print(
+        f"estimated {estimate_hours(len(probe), args.time_limit):.1f}h probe + "
+        f"{estimate_hours(len(main), args.time_limit):.1f}h campaign = "
+        f"{estimate_hours(len(probe) + len(main), args.time_limit):.1f}h of solving, "
+        "less whichever arms the gate drops"
+    )
     return 2 if problems else 0
 
 
 def execute(args: argparse.Namespace, sha: str, roster: Sequence[str], out_dir: Path) -> int:
-    """The campaign: probe, gate, interleaved arms, report.
-
-    The held-out campaigns (`transfer-145`, `presolve-322`) skip the probe and
-    the gate -- they have no LNS arm to gate -- and run their own fixed arm set
-    instead; everything else is shared.
-    """
-    heldout_arms = HELDOUT_ARMS.get(args.campaign)
-    stamp_arms = list(heldout_arms) if heldout_arms else [*ARMS, GATED_ARM]
+    """The campaign: probe, gate, interleaved arms, report."""
     conflict = stamp_conflict(
         out_dir,
-        campaign_stamp(
-            sha, args.time_limit, args.seeds, stamp_arms, roster, args.lns_arm, args.campaign
-        ),
+        campaign_stamp(sha, args.time_limit, args.seeds, [*ARMS, GATED_ARM], roster, args.lns_arm),
         resume=args.resume,
     )
     if conflict:
@@ -1358,61 +1114,11 @@ def execute(args: argparse.Namespace, sha: str, roster: Sequence[str], out_dir: 
         print(schema, file=sys.stderr)
         return 2
     open_results(results)
-    if heldout_arms:
-        execute_runs(
-            args, sha, campaign_plan(roster, args.seeds, heldout_arms), out_dir, "campaign"
-        )
-        print(report_for(args, results, gate=None))
-        return 0
     decision = resolve_gate(args, sha, roster, out_dir)
     arms = [*ARMS, GATED_ARM] if decision.run_arm else list(ARMS)
     execute_runs(args, sha, campaign_plan(roster, args.seeds, arms), out_dir, "campaign")
-    print(report_for(args, results, gate=decision.as_dict()))
+    print(render_report(results, gate=decision.as_dict()))
     return 0
-
-
-def report_for(args: argparse.Namespace, results: Path, gate: dict[str, object] | None) -> str:
-    """The report for this campaign's rows.
-
-    The transfer campaign's report carries #145's section, which needs the
-    roster's structure class and size per instance -- read from the same
-    `bounds.csv` the run took its roster from, so the bands are the held-out
-    roster's own and nothing is imported from the published one.
-
-    The presolve campaign gets the shared per-arm scoring under its own heading,
-    then #331's GM(gap+1) section. Its plan takes the seeds and the roster size
-    from the stamp where there is one (a `--report-only` call repeats neither),
-    so a partial campaign is named as one.
-    """
-    if args.campaign == PRESOLVE_CAMPAIGN:
-        presolve = PresolvePlan(
-            arms=tuple(arm.name for arm in PRESOLVE_ARMS),
-            seeds=tuple(recorded_seeds(args.out_dir) or args.seeds),
-            instances=tuple(args.instances) or stamped_presolve_roster(args.out_dir),
-            roster_size=recorded_roster_size(args.out_dir),
-        )
-        return render_report(
-            results,
-            gate=gate,
-            heading=PRESOLVE_HEADING,
-            section=lambda rows: presolve_lines(rows, presolve),
-        )
-    if args.campaign != TRANSFER_CAMPAIGN:
-        return render_report(results, gate=gate)
-    meta = roster_meta(args.inst_dir / "bounds.csv")
-    if args.instances:
-        # A subset run is planned as that subset; the report's completeness
-        # check is against what was asked for, in roster order.
-        meta = {name: item for name, item in meta.items() if name in args.instances}
-    plan = TransferPlan(
-        meta=meta,
-        # The seeds the campaign was STAMPED with where there is a stamp: a
-        # `--report-only` invocation does not repeat `--seeds`, and checking the
-        # rows against the default list would misreport a campaign run at others.
-        seeds=tuple(recorded_seeds(args.out_dir) or args.seeds),
-        arms=tuple(arm.name for arm in TRANSFER_ARMS if arm.name != CONTROL_ARM),
-    )
-    return render_report(results, gate=gate, heading=TRANSFER_HEADING, transfer=plan)
 
 
 def usage_error(args: argparse.Namespace) -> str | None:
@@ -1427,53 +1133,17 @@ def usage_error(args: argparse.Namespace) -> str | None:
         )
     if len(set(args.seeds)) != len(args.seeds):
         return f"--seeds must be distinct (got {args.seeds}); a repeated seed is a repeated run"
-    if args.campaign in HELDOUT_CAMPAIGNS:
-        if args.lns_arm != "auto":
-            return (
-                f"--lns-arm {args.lns_arm} belongs to the ablation's LNS gate; the "
-                f"{args.campaign} campaign has no LNS arm and runs no gate probe"
-            )
-        if args.inst_dir.resolve() == DEFAULT_INST_DIR.resolve():
-            why = (
-                "re-run the grid on the roster the shipped value was fitted on, which is the "
-                "exposure #145 exists to check"
-                if args.campaign == TRANSFER_CAMPAIGN
-                else "fit #331's defaults on the roster they will be published on"
-            )
-            return (
-                f"--campaign {args.campaign} on {args.inst_dir} would {why}; run it on the "
-                f"held-out roster ({HELDOUT_INST_DIR}, the default)"
-            )
     return scratch_refusal(args.out_dir)
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0] if __doc__ else None)
     parser.add_argument("--out-dir", type=Path, required=True, help="scratch directory (required)")
-    parser.add_argument(
-        "--campaign",
-        choices=CAMPAIGNS,
-        default=None,
-        help=f"arm set: {ABLATION_CAMPAIGN} (#143, the default), {TRANSFER_CAMPAIGN} (#145's "
-        f"unproductive-iters grid) or {PRESOLVE_CAMPAIGN} (#331's presolve and compound "
-        "propagation arms); --report-only reads it from the out-dir's stamp",
-    )
-    parser.add_argument(
-        "--inst-dir",
-        type=Path,
-        default=None,
-        help=f"roster directory; default {DEFAULT_INST_DIR} for {ABLATION_CAMPAIGN}, "
-        f"{HELDOUT_INST_DIR} for {TRANSFER_CAMPAIGN} and {PRESOLVE_CAMPAIGN}",
-    )
+    parser.add_argument("--inst-dir", type=Path, default=DEFAULT_INST_DIR)
     parser.add_argument("--build-dir", type=Path, default=DEFAULT_BUILD_DIR)
     parser.add_argument("--time-limit", type=float, default=DEFAULT_TIME_LIMIT)
     parser.add_argument("--seeds", type=int, nargs="+", default=list(DEFAULT_SEEDS))
-    parser.add_argument(
-        "--instances",
-        nargs="+",
-        default=[],
-        help=f"subset; default whole roster ({PRESOLVE_CAMPAIGN}: {PRESOLVE_SAMPLE.name})",
-    )
+    parser.add_argument("--instances", nargs="+", default=[], help="subset; default whole roster")
     parser.add_argument(
         "--lns-arm",
         choices=("auto", "on", "off"),
@@ -1507,51 +1177,30 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def resolve_campaign(args: argparse.Namespace) -> str | None:
-    """Fill in `--campaign` and `--inst-dir`, or return the reason not to.
+def campaign_refusal(out_dir: Path) -> str | None:
+    """Refuse an out-dir whose stamp names a campaign other than the ablation.
 
-    The campaign comes from the flag, else -- for `--report-only` -- from the
-    out-dir's stamp, else it is the ablation. A flag that contradicts the stamp
-    is refused rather than obeyed: scoring a transfer run as an ablation (or the
-    reverse) prints a report for arms the rows do not contain. The roster
-    directory then defaults per campaign, and `presolve-322`'s instances default
-    to its committed sample.
+    This driver once ran two more arm sets on the held-out roster (#145's
+    `transfer-145`, #331's `presolve-322`), whose stamps say so. Their rows
+    have different arms, so neither resuming into them nor scoring them as an
+    ablation is meaningful; the code that ran and scored them is in git history
+    at `ef795b55`. A stamp with no campaign line predates the field and is an
+    ablation.
     """
-    stamped = recorded_campaign(args.out_dir)
-    if args.report_only and stamped is not None:
-        if args.campaign is not None and args.campaign != stamped:
-            return (
-                f"--campaign {args.campaign} contradicts {args.out_dir / STAMP_NAME}, which "
-                f"records campaign={stamped}; drop --campaign to score it as recorded"
-            )
-        args.campaign = stamped
-    if args.campaign is None:
-        args.campaign = ABLATION_CAMPAIGN
-    if args.inst_dir is None:
-        args.inst_dir = HELDOUT_INST_DIR if args.campaign in HELDOUT_CAMPAIGNS else DEFAULT_INST_DIR
-    # Not under --report-only: the report does not read the sample, and a later
-    # edit to it must not stop a finished campaign from being scored.
-    if args.campaign == PRESOLVE_CAMPAIGN and not args.report_only:
-        try:
-            sample = load_sample(PRESOLVE_SAMPLE)
-        except (OSError, ValueError) as exc:
-            return f"cannot read the {PRESOLVE_CAMPAIGN} sample: {exc}"
-        # A subset is fine (the laptop smoke); an instance outside the sample
-        # is not, since the sample was fixed before any solve.
-        outside = [name for name in args.instances if name not in sample]
-        if outside:
-            return (
-                f"--instances {' '.join(outside)}: not in {PRESOLVE_SAMPLE.name}; "
-                f"{PRESOLVE_CAMPAIGN} runs only on its fixed sample or a subset of it"
-            )
-        args.instances = args.instances or sample
-    return None
+    stamped = recorded_campaign(out_dir)
+    if stamped is None or stamped == ABLATION_CAMPAIGN:
+        return None
+    return (
+        f"{out_dir / STAMP_NAME} records campaign={stamped}, which this driver no longer runs "
+        "or scores; only the ablation is left. The removed campaign's driver is in git "
+        "history at ef795b55."
+    )
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     out_dir: Path = args.out_dir
-    refusal = resolve_campaign(args) or usage_error(args)
+    refusal = campaign_refusal(out_dir) or usage_error(args)
     if refusal:
         print(refusal, file=sys.stderr)
         return 2
@@ -1579,7 +1228,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
             gate_path = out_dir / GATE_NAME
             gate = json.loads(gate_path.read_text()) if gate_path.exists() else None
-            print(report_for(args, snapshot, gate=gate))
+            print(render_report(snapshot, gate=gate))
         return 0
 
     sha = commit_sha()
@@ -1602,8 +1251,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
 
     print(
-        f"campaign {args.campaign}: commit {sha}, {args.time_limit:g}s/instance, "
-        f"seeds {args.seeds}, serial",
+        f"campaign: commit {sha}, {args.time_limit:g}s/instance, seeds {args.seeds}, serial",
         file=sys.stderr,
     )
     print(f"roster {len(roster)} instance(s) from {args.inst_dir / 'bounds.csv'}", file=sys.stderr)
