@@ -223,8 +223,9 @@ public:
     // Randomise each jumpable var w.p. p, then apply
     // clamp(round(p*|elements|), 1, |elements|) random structural moves to each
     // List/Set var (#111); if nothing moved, force one variable, a scalar if
-    // any can move (#109). The fallback leaves large models, and models
-    // without List/Set, bit-identical to plain p-draws.
+    // any can move (#109). The fallback leaves large models bit-identical to
+    // plain p-draws, and a model without List/Set keeps its exact draw
+    // sequence.
     void perturb(double probability);
     void set_rho(double rho) { config_.rho = rho; }
     // Armed by the search loop once it has stagnated; see solve().
