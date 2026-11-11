@@ -601,11 +601,11 @@ def _run_job(job: Job, args: argparse.Namespace, results_dir: Path) -> str:
         # Dropped before the solve: a failed solve still leaves a new row (one that
         # lost portfolio workers, #170, is written and exits 1).
         job.verification_path(results_dir).unlink(missing_ok=True)
-        # The old row goes first: if a runner is killed before it writes (the OOM
-        # killer, SIGKILL), `_judge_solve` records `killed` only when no result
-        # exists, and `record_worker_loss` and `record_measured` would stamp the
-        # old row as this attempt. Only its worker-loss count (`previous_losses`)
-        # carries over.
+        # The old row goes first. Left in place, a runner killed before it writes
+        # (the OOM killer, SIGKILL) would leave it on disk -- `_judge_solve` records
+        # `killed` only when no result exists -- and `record_worker_loss` and
+        # `record_measured` would stamp it as this attempt. Only its worker-loss
+        # count (`previous_losses`) carries over.
         job.result_path(results_dir).unlink(missing_ok=True)
         job.solution_path(results_dir).unlink(missing_ok=True)
         line, solved = _run_solver(job, args, results_dir)

@@ -531,8 +531,9 @@ def status_note(status_name: str, has_solution: bool, parameters: str) -> tuple[
     about. The precise verdict survives in `cpsat_status` and reaches the comparison
     table as `solver_status`.
 
-    Each carries a message because the scorer publishes one per withheld row, and
-    this is the defect class the preflight exists to catch before a roster.
+    Each carries a message because the scorer publishes one per withheld row, and a
+    row reading "no message recorded" is useless for the defect class the preflight
+    exists to catch before a roster.
     """
     if status_name == "INVALID_SOLVER_PARAMETERS":
         return (
