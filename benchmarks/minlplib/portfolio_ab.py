@@ -60,6 +60,8 @@ from benchmarks.common.provenance import (  # noqa: E402
     machine_record,
 )
 from benchmarks.common.records import repair_torn_tail  # noqa: E402
+from benchmarks.common.stats import sign_test_p  # noqa: E402
+from benchmarks.common.stats import t975 as t975  # noqa: E402
 from benchmarks.mipfeas.primal_integral import primal_gap, primal_integral  # noqa: E402
 
 if TYPE_CHECKING:
@@ -69,32 +71,6 @@ REPO = Path(__file__).resolve().parents[2]
 DEFAULT_BUILD_DIR = REPO / "build"
 BINARY_NAME = "cbls_minlplib_portfolio"
 DEFAULT_INST_DIR = REPO / "benchmarks" / "instances" / "minlplib"
-
-#: Two-sided 97.5% t quantiles by degrees of freedom; beyond the table, 1.96.
-_T975 = {
-    1: 12.706,
-    2: 4.303,
-    3: 3.182,
-    4: 2.776,
-    5: 2.571,
-    6: 2.447,
-    7: 2.365,
-    8: 2.306,
-    9: 2.262,
-    10: 2.228,
-    15: 2.131,
-    20: 2.086,
-    30: 2.042,
-    40: 2.021,
-    60: 2.000,
-}
-
-
-def t975(df: int) -> float:
-    """The 97.5% t quantile at `df`, from the nearest tabulated df at or below it."""
-    if df < 1:
-        return math.nan
-    return _T975[max(k for k in _T975 if k <= df)] if df <= 60 else 1.96
 
 
 def references(inst_dir: Path) -> dict[str, float]:
@@ -242,14 +218,6 @@ def _num(value: object) -> float:
     return float(value)
 
 
-def _sign_test(better: int, worse: int) -> float:
-    n = better + worse
-    if n == 0:
-        return 1.0
-    tail = sum(math.comb(n, k) for k in range(min(better, worse) + 1)) / float(1 << n)
-    return min(1.0, 2 * tail)
-
-
 def analyze(path: Path) -> list[str]:
     """The pair- and instance-level summaries of one campaign file, as text lines."""
     pairs: dict[tuple[str, int], dict[bool, dict[str, object]]] = defaultdict(dict)
@@ -290,7 +258,7 @@ def analyze(path: Path) -> list[str]:
         lines.append(
             f"{metric} instances: n={len(means)} mean={imean:+.4f} "
             f"t95=[{imean - ihalf:+.4f}, {imean + ihalf:+.4f}] better={better} worse={worse} "
-            f"flat={len(means) - better - worse} sign-test p={_sign_test(better, worse):.3f}"
+            f"flat={len(means) - better - worse} sign-test p={sign_test_p(better, worse):.3f}"
         )
         for instance, ds in sorted(by_instance.items()):
             lines.append(f"    {instance:28s} diff={statistics.fmean(ds):+.4f} (n={len(ds)})")

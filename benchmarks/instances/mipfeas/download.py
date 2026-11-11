@@ -43,7 +43,6 @@ import io
 import os
 import sys
 import urllib.error
-import urllib.request
 import zipfile
 from pathlib import Path
 from typing import NamedTuple
@@ -54,6 +53,7 @@ from typing import NamedTuple
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
+from benchmarks.common.fetch import http_get, looks_like_html  # noqa: E402
 from benchmarks.common.pins import (  # noqa: E402
     pin_mismatch,
     read_pin_table,
@@ -115,15 +115,7 @@ class RosterEntry(NamedTuple):
 
 
 def _http_get(url: str, timeout: int = 120) -> bytes:
-    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
-        data: bytes = resp.read()
-    return data
-
-
-def _looks_like_html(data: bytes) -> bool:
-    head = data[:128].lstrip().lower()
-    return head.startswith(b"<!doctype") or head.startswith(b"<html")
+    return http_get(url, USER_AGENT, timeout)
 
 
 def parse_test_file(text: str) -> list[str]:
@@ -310,7 +302,7 @@ def fetch_instance(name: str, dest: Path, force: bool = False) -> bool:
         print(f"[fail]  {url}: {exc}")
         return False
     # A 404 disguised as a 200 landing page must not be written out as an instance.
-    if not data.startswith(b"\x1f\x8b") or _looks_like_html(data):
+    if not data.startswith(b"\x1f\x8b") or looks_like_html(data):
         print(f"[fail]  {url}: server returned HTML / non-gzip")
         return False
     dest.write_bytes(data)

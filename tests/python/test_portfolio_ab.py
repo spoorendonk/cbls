@@ -13,7 +13,8 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from benchmarks.minlplib.portfolio_ab import REPO, _sign_test, analyze, main, t975
+from benchmarks.common.stats import sign_test_p as _sign_test
+from benchmarks.minlplib.portfolio_ab import REPO, analyze, main, t975
 
 if TYPE_CHECKING:
     from pathlib import Path

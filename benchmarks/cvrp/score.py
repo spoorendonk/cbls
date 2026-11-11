@@ -66,6 +66,8 @@ if __package__ in (None, ""):
 
 from benchmarks.common.provenance import REPO_ROOT  # noqa: E402
 from benchmarks.common.records import atomic_write, read_json_object  # noqa: E402
+from benchmarks.common.stats import sign_test_p as sign_test_p  # noqa: E402
+from benchmarks.common.stats import t975  # noqa: E402
 from benchmarks.cvrp.run_benchmark import (  # noqa: E402
     DEFAULT_INST_DIR,
     MACHINE_NAME,
@@ -79,7 +81,6 @@ from benchmarks.instances.cvrp.download import (  # noqa: E402
     read_manifest,
     read_roster,
 )
-from benchmarks.minlplib.portfolio_ab import t975  # noqa: E402
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -366,15 +367,6 @@ def routing_callout(runs: list[Run]) -> list[str]:
         name = ROUTING_STATUS_NAMES.get(status, f"unknown status {status}")
         lines.append(f"| {run.instance} | {run.seed} | {name} |")
     return lines
-
-
-def sign_test_p(better: int, worse: int) -> float:
-    """Two-sided exact sign test; ties are excluded by the caller."""
-    n = better + worse
-    if n == 0:
-        return 1.0
-    tail = sum(math.comb(n, k) for k in range(min(better, worse) + 1)) / float(1 << n)
-    return min(1.0, 2 * tail)
 
 
 def _interval(values: list[float]) -> tuple[float, float]:

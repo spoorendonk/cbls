@@ -35,7 +35,6 @@ import hashlib
 import html
 import re
 import sys
-import urllib.request
 from pathlib import Path
 from typing import NamedTuple
 
@@ -45,6 +44,7 @@ from typing import NamedTuple
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
+from benchmarks.common.fetch import http_get, looks_like_html  # noqa: E402
 from benchmarks.common.pins import (  # noqa: E402
     pin_mismatch,
     read_pin_table,
@@ -425,15 +425,7 @@ def verify(here: Path) -> list[str]:
 
 
 def _http_get(url: str, timeout: int = 120) -> bytes:
-    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
-        data: bytes = resp.read()
-    return data
-
-
-def _looks_like_html(data: bytes) -> bool:
-    head = data[:512].lstrip().lower()
-    return head.startswith((b"<!doctype", b"<html"))
+    return http_get(url, USER_AGENT, timeout)
 
 
 class Snapshot(NamedTuple):
@@ -458,7 +450,7 @@ def download_snapshot() -> Snapshot | str:
     for row in listing:
         vrp = _http_get(INSTANCE_URL.format(id=row.cvrplib_id))
         sol_bytes = _http_get(SOLUTION_URL.format(id=row.cvrplib_id))
-        if _looks_like_html(vrp) or _looks_like_html(sol_bytes):
+        if looks_like_html(vrp) or looks_like_html(sol_bytes):
             return f"{row.instance}: the server returned an HTML page, not a file"
         mrow = manifest_row(row.instance, vrp, row.k_min)
         if (int(mrow["n"]), int(mrow["capacity"])) != (row.customers, row.capacity):

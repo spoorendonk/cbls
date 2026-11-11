@@ -21,6 +21,7 @@
 #include "verify_cvrp.h"
 
 #include <benchmarks/common/runner_args.h>
+#include <benchmarks/common/runner_io.h>
 #include <benchmarks/common/search_config_flags.h>
 #include <benchmarks/mipfeas/worker_accounting.h>
 #include <cbls/cbls.h>
@@ -78,6 +79,8 @@ void print_usage() {
 
 using cbls::bench::parse_double;
 using cbls::bench::parse_int64;
+using cbls::bench::seconds_since;
+using cbls::bench::write_atomically;
 
 int parse_bounded_int(const char* flag, const char* text, int lo, int hi) {
     const int64_t v = parse_int64(flag, text);
@@ -171,36 +174,6 @@ Bks read_bks(const std::string& inst_dir, const std::string& instance) {
         }
     }
     return out;
-}
-
-double seconds_since(const std::chrono::steady_clock::time_point& start) {
-    return std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
-}
-
-/// Writes `text` to `path` through a temp file and a rename, so a killed job
-/// leaves the previous file or none, never half of one.
-bool write_atomically(const std::string& path, const std::string& text) {
-    const std::string tmp = path + ".tmp";
-    {
-        std::ofstream out(tmp);
-        if (!out.is_open()) {
-            std::fprintf(stderr, "Failed to open %s for writing\n", tmp.c_str());
-            return false;
-        }
-        out << text;
-        if (!out.good()) {
-            std::fprintf(stderr, "Failed to write %s\n", tmp.c_str());
-            return false;
-        }
-    }
-    std::error_code ec;
-    std::filesystem::rename(tmp, path, ec);
-    if (ec) {
-        std::fprintf(stderr, "Failed to rename %s -> %s: %s\n", tmp.c_str(), path.c_str(),
-                     ec.message().c_str());
-        return false;
-    }
-    return true;
 }
 
 /// CVRPLIB's `.sol` format: one `Route #i:` line per non-empty route, customer

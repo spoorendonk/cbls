@@ -24,6 +24,7 @@
 #include <array>
 #include <atomic>
 #include <benchmarks/common/runner_args.h>
+#include <benchmarks/common/runner_io.h>
 #include <benchmarks/common/search_config_flags.h>
 #include <benchmarks/mipfeas/original_check.h>
 #include <benchmarks/mipfeas/worker_accounting.h>
@@ -43,7 +44,6 @@
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <string>
-#include <sys/resource.h>
 #include <utility>
 #include <vector>
 
@@ -187,9 +187,12 @@ void print_usage() {
 // reporting policy is documented there and is unchanged: a bad double is
 // reported and returned as NaN for the positivity guards below to turn into
 // exit 2, and a bad integer is reported and exits 2 directly.
+using cbls::bench::file_exists;
 using cbls::bench::parse_double;
 using cbls::bench::parse_int64;
 using cbls::bench::parse_thread_count;
+using cbls::bench::peak_rss_kib;
+using cbls::bench::seconds_since;
 
 /// Range-checked rather than cast: parse_int64 validates the syntax, but an
 /// out-of-range value would wrap to a small or negative pass count and silently
@@ -308,11 +311,6 @@ Args parse_args(int argc, char** argv) {
     return a;
 }
 
-bool file_exists(const std::string& path) {
-    std::ifstream f(path);
-    return f.good();
-}
-
 // Records the incumbent objective against wall time — the step function the
 // Primal Integral integrates.
 //
@@ -360,22 +358,6 @@ private:
     double last_written_ = std::numeric_limits<double>::infinity();
     long n_points_ = 0;
 };
-
-// Seconds elapsed since `start`, on the monotonic clock.
-double seconds_since(const std::chrono::steady_clock::time_point& start) {
-    return std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
-}
-
-// Peak resident set of this process, in KiB. Reported per result so the
-// concurrency for a full-roster run can be sized from measurement rather than
-// guessed: the roster spans models from tens of KB to millions of nonzeros.
-long peak_rss_kib() {
-    struct rusage usage{};
-    if (getrusage(RUSAGE_SELF, &usage) != 0) {
-        return 0;
-    }
-    return usage.ru_maxrss;
-}
 
 int count_int_vars(const cbls::MpsProblem& prob) {
     int n = 0;
@@ -472,10 +454,7 @@ bool write_solution(const Args& args, const cbls::MpsProblem& prob,
         std::filesystem::remove(tmp_path, ec);
         return false;
     }
-    std::filesystem::rename(tmp_path, path, ec);
-    if (ec) {
-        std::fprintf(stderr, "Failed to rename %s -> %s: %s\n", tmp_path.c_str(), path.c_str(),
-                     ec.message().c_str());
+    if (!cbls::bench::rename_into_place(tmp_path, path)) {
         std::filesystem::remove(tmp_path, ec);
         return false;
     }
@@ -516,20 +495,7 @@ void write_result(const Args& args, const nlohmann::json& extra) {
     // result or none, never a truncated one. The driver resumes on file existence
     // and does not revalidate, so a half-written result is otherwise permanent.
     const std::string path = args.out_dir + "/" + args.instance + ".json";
-    const std::string tmp_path = path + ".tmp";
-    {
-        std::ofstream out(tmp_path);
-        if (!out.is_open()) {
-            std::fprintf(stderr, "Failed to open %s for writing\n", tmp_path.c_str());
-            std::exit(2);
-        }
-        out << j.dump(2) << "\n";
-    }
-    std::error_code rename_ec;
-    std::filesystem::rename(tmp_path, path, rename_ec);
-    if (rename_ec) {
-        std::fprintf(stderr, "Failed to rename %s -> %s: %s\n", tmp_path.c_str(), path.c_str(),
-                     rename_ec.message().c_str());
+    if (!cbls::bench::write_atomically(path, j.dump(2) + "\n")) {
         std::exit(2);
     }
 }

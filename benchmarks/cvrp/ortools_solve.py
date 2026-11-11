@@ -44,7 +44,7 @@ construction does not, so the first solution is charged to the budget. Every
 solution the routing search reports satisfies the capacity dimension, so the
 first one is the first feasible.
 
-THE CLI AND THE RECORD mirror `reference_solve.py`'s, so `run_benchmark.py`
+THE CLI AND THE RECORD are `reference_solve.py`'s (`baseline_cli.py`), so `run_benchmark.py`
 runs it as the `ortools` arm and `score.py` scores it alike; `engine` is
 `ortools`. Usage:
 
@@ -54,9 +54,7 @@ runs it as the `ortools` arm and `score.py` scores it alike; `engine` is
 
 from __future__ import annotations
 
-import argparse
 import importlib.metadata
-import json
 import math
 import re
 import sys
@@ -69,18 +67,20 @@ from ortools.constraint_solver import pywrapcp, routing_enums_pb2
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from benchmarks.common.records import atomic_write  # noqa: E402
-from benchmarks.cvrp.reference_solve import bks_of, solution_text  # noqa: E402
+from typing import TYPE_CHECKING
+
+from benchmarks.cvrp import baseline_cli  # noqa: E402
+from benchmarks.cvrp.baseline_cli import DEFAULT_INST_DIR as DEFAULT_INST_DIR  # noqa: E402
 from benchmarks.cvrp.verify_solution import (  # noqa: E402
     VrpInstance,
-    check_routes,
     distance_matrix,
     read_vrp_file,
 )
 
-DEFAULT_INST_DIR = Path(__file__).resolve().parents[1] / "instances" / "cvrp"
+if TYPE_CHECKING:
+    import argparse
+
 ENGINE = "ortools"
-ARM = "ortools"
 
 
 def name_k(instance: str) -> int | None:
@@ -156,88 +156,33 @@ def run(args: argparse.Namespace, fleet: int) -> int:
     solution = routing.model.SolveWithParameters(params)
     wall = time.monotonic() - started
     feasible = solution is not None
-    routes = routes_of(routing, solution, fleet) if feasible else []
-    cost = int(solution.ObjectiveValue()) if feasible else 0
-    check = check_routes(inst, routes, cost)
-    verified = feasible and check.ok
-    for error in check.errors if feasible else []:
-        print(f"{args.instance}: VERIFY FAILED: {error}", file=sys.stderr)
-    if verified and args.solution_out is not None:
-        atomic_write(args.solution_out, solution_text(routes, check.cost))
-    bks = bks_of(args.inst_dir, args.instance)
-    objective = check.cost if verified else None
-    record: dict[str, object] = {
-        "engine": ENGINE,
-        "arm": ARM,
-        "instance": args.instance,
-        "customers": inst.customers,
-        "capacity": inst.capacity,
-        "bks": bks,
-        "objective": objective,
-        "gap_percent": None if objective is None or bks is None else 100 * (objective - bks) / bks,
-        "feasible": feasible,
-        "verified": verified,
-        "verify_errors": check.errors if feasible else [],
-        "routes_used": check.routes_used,
-        "fleet": fleet,
-        "budget_seconds": args.budget,
-        "seed": args.seed,
-        "threads": 1,
-        "wall_seconds": wall,
-        "build_seconds": build_seconds,
-        "time_to_first_feasible": found[0] if feasible and found else None,
-        "solutions_found": len(found),
-        "routing_status": int(routing.model.status()),
-        "workers_launched": 1,
-        "workers_completed": 1,
-        "commit_sha": args.commit,
-        "ortools_version": importlib.metadata.version("ortools"),
-    }
-    if args.out is not None:
-        atomic_write(args.out, json.dumps(record, indent=2, sort_keys=True) + "\n")
-    gap = record["gap_percent"]
-    print(
-        f"{args.instance:14s} feasible={int(feasible)} verified={int(verified)} "
-        f"obj={objective} gap={gap if gap is None else f'{gap:.2f}'}% {wall:.2f}s"
+    outcome = baseline_cli.Outcome(
+        engine=ENGINE,
+        feasible=feasible,
+        routes=routes_of(routing, solution, fleet) if feasible else [],
+        cost=int(solution.ObjectiveValue()) if feasible else 0,
+        fleet=fleet,
+        wall=wall,
+        extra={
+            "build_seconds": build_seconds,
+            "time_to_first_feasible": found[0] if feasible and found else None,
+            "solutions_found": len(found),
+            "routing_status": int(routing.model.status()),
+            "ortools_version": importlib.metadata.version("ortools"),
+        },
     )
-    # Same contract as cbls_cvrp: a claimed-feasible solution that fails the
-    # check is an error; an infeasible run is a result.
-    return 1 if feasible and not check.ok else 0
-
-
-def parse_args(argv: list[str] | None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
-    )
-    parser.add_argument("--instance", required=True)
-    parser.add_argument("--inst-dir", type=Path, default=DEFAULT_INST_DIR)
-    parser.add_argument("--out", type=Path, default=None)
-    parser.add_argument("--solution-out", type=Path, default=None)
-    parser.add_argument("--budget", type=float, default=10.0)
-    parser.add_argument("--seed", type=int, default=1)
-    parser.add_argument("--threads", type=int, default=1)
-    parser.add_argument("--commit", default="unknown")
-    return parser.parse_args(argv)
+    return baseline_cli.finish(args, inst, outcome)
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = parse_args(argv)
-    if args.threads != 1:
-        print(
-            "--threads must be 1: the OR-Tools routing search is single-threaded", file=sys.stderr
-        )
-        return 2
-    if not args.budget > 0:
-        print("--budget must be a positive number of seconds", file=sys.stderr)
+    args = baseline_cli.parse_args(__doc__, argv)
+    if baseline_cli.refuse_args(args, "the OR-Tools routing search is single-threaded"):
         return 2
     k = name_k(args.instance)
     if k is None:
         print(f"{args.instance}: the name carries no k", file=sys.stderr)
         return 2
-    # As cbls_cvrp does: a previous run's files must not be read as this one's.
-    for path in (args.out, args.solution_out):
-        if path is not None:
-            path.unlink(missing_ok=True)
+    baseline_cli.clear_outputs(args)
     return run(args, default_fleet(k))
 
 

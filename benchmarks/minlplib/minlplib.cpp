@@ -10,7 +10,9 @@
 
 #include <algorithm>
 #include <array>
+#include <benchmarks/common/published_guard.h>
 #include <benchmarks/common/runner_args.h>
+#include <benchmarks/common/runner_io.h>
 #include <benchmarks/common/search_config_flags.h>
 #include <benchmarks/minlplib/nl_refusal.h>
 #include <benchmarks/minlplib/note_policy.h>
@@ -31,10 +33,10 @@
 #include <iomanip>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
-#include <sys/resource.h>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -202,69 +204,16 @@ const char* unpublishable_flag(const Args& a) {
 }
 
 /// Fills in `--out` and enforces what may overwrite the published comparison
-/// table. Its own step because the guards are about the FILE rather than about
-/// which flags were typed: a run that names the published table explicitly --
-/// which is the shape the documented command uses -- must be held to the same
-/// rule as one that defaults into it.
+/// table: the shared guards (published_guard.h), then a refusal of every
+/// publish from here.
 void resolve_out_csv(Args& a) {
-    const std::string published = a.inst_dir + "/comparison.csv";
-    const std::string published_trace = a.inst_dir + "/anytime_trace.csv";
     if (a.out_csv.empty()) {
-        a.out_csv = published;
+        a.out_csv = a.inst_dir + "/comparison.csv";
     }
-    // One path for both flags is two truncating writers on one inode, and the
-    // table's closing write then publishes whatever interleaved. The temp path
-    // is the same file one rename later. uc-chped has both guards; this runner
-    // is reached by hand more often now that publishing requires --commit.
-    if (!a.trace_csv.empty() && cbls::bench::same_file(a.out_csv, a.trace_csv)) {
-        std::fprintf(stderr, "--out and --trace name the same file %s\n", a.out_csv.c_str());
-        std::exit(2);
-    }
-    if (!a.trace_csv.empty() && cbls::bench::same_file(a.trace_csv, a.out_csv + ".tmp")) {
-        std::fprintf(stderr, "--trace names the table's temp file %s\n", a.trace_csv.c_str());
-        std::exit(2);
-    }
-    // A CROSSED artifact is refused for every run, ahead of any question of
-    // which protocol it is: only `--out` ever writes the table and only
-    // `--trace` ever writes the trace. The protocol ladder below cannot police
-    // this, because the run it lets through is the legitimate published one --
-    // and `--trace` truncates its file on open, before any solving, so
-    // `--trace <the comparison table>` empties the published results at exit 0.
-    // The sibling uc-chped runner had the identical hole and it was
-    // reproduced there against a real table.
-    if (!a.trace_csv.empty() && cbls::bench::same_file(a.trace_csv, published)) {
-        std::fprintf(stderr, "--trace cannot write the published table %s (only --out writes it)\n",
-                     published.c_str());
-        std::exit(2);
-    }
-    if (cbls::bench::same_file(a.out_csv, published_trace)) {
-        std::fprintf(stderr,
-                     "--out cannot write the published anytime trace %s (only --trace writes it)\n",
-                     published_trace.c_str());
-        std::exit(2);
-    }
-    const char* why = unpublishable_flag(a);
-    const bool writes_table = cbls::bench::same_file(a.out_csv, published);
-    const bool writes_trace =
-        !a.trace_csv.empty() && cbls::bench::same_file(a.trace_csv, published_trace);
-    if (!writes_table && !writes_trace) {
+    const std::optional<cbls::bench::PublishedTarget> target = cbls::bench::check_published_write(
+        a.out_csv, a.trace_csv, a.inst_dir, unpublishable_flag(a), a.commit_set);
+    if (!target.has_value()) {
         return;
-    }
-    const char* const target = writes_table ? published.c_str() : published_trace.c_str();
-    const char* const redirect = writes_table ? "--out" : "--trace";
-    if (why != nullptr) {
-        std::fprintf(stderr,
-                     "%s cannot write the published %s %s "
-                     "(pass %s elsewhere for an unpublished run)\n",
-                     why, writes_table ? "table" : "anytime trace", target, redirect);
-        std::exit(2);
-    }
-    if (!a.commit_set) {
-        std::fprintf(stderr,
-                     "writing %s requires an explicit --commit SHA "
-                     "(pass %s elsewhere for an unpublished run)\n",
-                     target, redirect);
-        std::exit(2);
     }
     // Even a full-protocol run does not write the published files itself any
     // more (#205). The `feasible` column it writes is this engine's verdict on
@@ -278,7 +227,7 @@ void resolve_out_csv(Args& a) {
                  "the published %s %s is written only by benchmarks/minlplib/run_benchmark.py, "
                  "which checks every verified row outside this engine's DAG "
                  "(pass %s elsewhere for an unpublished run)\n",
-                 writes_table ? "table" : "anytime trace", target, redirect);
+                 target->artifact(), target->path.c_str(), target->redirect());
     std::exit(2);
 }
 
@@ -401,11 +350,6 @@ Args parse_args(int argc, char** argv) {
     resolve_out_csv(a);
     check_counters_path(a);
     return a;
-}
-
-bool file_exists(const std::string& path) {
-    std::ifstream f(path);
-    return f.good();
 }
 
 struct Bounds {
@@ -880,8 +824,7 @@ void write_solution(const Args& args, const std::string& name, const cbls::NlToM
             std::exit(2);
         }
     }
-    if (std::rename(tmp.c_str(), path.c_str()) != 0) {
-        std::fprintf(stderr, "cannot rename %s to %s\n", tmp.c_str(), path.c_str());
+    if (!cbls::bench::rename_into_place(tmp, path)) {
         std::exit(2);
     }
 }
@@ -1123,7 +1066,7 @@ bool prepare_instance(std::ostream& csv, const Args& args, const std::string& na
                       const BoundsMap& bounds, cbls::NlProblem& prob, cbls::NlToModelResult& built,
                       Bounds& b, Tally& t) {
     std::string nl_path = args.inst_dir + "/" + name + ".nl";
-    if (!file_exists(nl_path)) {
+    if (!cbls::bench::file_exists(nl_path)) {
         std::printf("%-22s  (skipped: %s not found)\n", name.c_str(), nl_path.c_str());
         ++t.not_found;
         write_preread_row(csv, args, name, "not-found");
@@ -1286,9 +1229,7 @@ cbls::SearchResult measured_search(const Args& args, cbls::Model& model,
     const double cpu0 = process_cpu_seconds();
     cbls::SearchResult result = search_instance(args, model, callback);
     cost.cpu_seconds = process_cpu_seconds() - cpu0;
-    rusage usage{};
-    getrusage(RUSAGE_SELF, &usage);
-    cost.peak_rss_kb = usage.ru_maxrss;
+    cost.peak_rss_kb = cbls::bench::peak_rss_kib();
     return result;
 }
 

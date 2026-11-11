@@ -90,6 +90,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from benchmarks.common.records import csv_number
+from benchmarks.common.stats import sign_test_p as sign_test_p
 from benchmarks.minlplib.runner import (
     CLAIM_EXCLUDED,
     COVERAGE_GAP_NOTES,
@@ -314,20 +315,6 @@ def t_multiplier(df: int) -> float:
     # there is no df at which falling back to 1.96 is the safer answer.
     wider = [k for k in T_95 if k < df]
     return T_95[max(wider)] if wider else NORMAL_Z_95
-
-
-def sign_test_p(worse: int, better: int) -> float:
-    """Exact two-sided binomial p-value for `worse` vs `better` under p = 1/2.
-
-    Written out rather than pulled from scipy: the campaign's dependencies are
-    the repository's, and this is six lines.
-    """
-    n = worse + better
-    if n == 0:
-        return 1.0
-    extreme = min(worse, better)
-    tail = math.fsum(math.comb(n, k) for k in range(extreme + 1)) / (2.0**n)
-    return min(1.0, 2.0 * tail)
 
 
 def format_points(value: float, *, signed: bool = True) -> str:

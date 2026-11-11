@@ -25,7 +25,9 @@
 
 #include <algorithm>
 #include <array>
+#include <benchmarks/common/published_guard.h>
 #include <benchmarks/common/runner_args.h>
+#include <benchmarks/common/runner_io.h>
 #include <benchmarks/common/search_config_flags.h>
 #include <benchmarks/mipfeas/worker_accounting.h>
 #include <cbls/cbls.h>
@@ -40,6 +42,7 @@
 #include <limits>
 #include <map>
 #include <memory>
+#include <optional>
 #include <ostream>
 #include <sstream>
 #include <string>
@@ -143,7 +146,6 @@ using cbls::bench::parse_int64;
 // The published-table guard's path comparison is shared with the other runners
 // (benchmarks/common/runner_args.h): every runner that publishes a table needs
 // it, and a second copy is where a fix to one silently diverges from the rest.
-using cbls::bench::same_file;
 
 /// True when a double flag names a usable positive quantity. Both failure modes
 /// of the parse layer fall out here: NaN (the token was not a number) and inf
@@ -267,105 +269,16 @@ const char* build_refusal() {
 }
 
 /// Fills in `--out` and enforces what may overwrite this benchmark's published
-/// artifacts. Its own step because the guards are about the FILES rather than
-/// about which flags were typed -- see the comment inside.
+/// artifacts: the shared guards (published_guard.h), then this runner's own
+/// two, `--verify` and a Release binary.
 void resolve_out_csv(Args& a) {
-    const std::string published = a.inst_dir + "/comparison.csv";
-    const std::string published_trace = a.inst_dir + "/anytime_trace.csv";
     if (a.out_csv.empty()) {
-        a.out_csv = published;
+        a.out_csv = a.inst_dir + "/comparison.csv";
     }
-    // The guards below are about the FILE, not about which flags were typed. An
-    // earlier cut tested `--out` for emptiness, which meant the documented
-    // command -- which passes `--out <the published table>` explicitly --
-    // satisfied every guard while doing exactly the damage they exist to stop:
-    // a `--time-limit 60` pass over one instance rewrote the table and deleted
-    // the cited reference rows for every instance it did not run, at exit 0.
-    // So compare the resolved paths instead. Canonicalised where the file
-    // exists, because `./benchmarks/...` and an absolute path are the same file
-    // and a string compare says otherwise; a path that does not exist yet
-    // cannot be the published table, so the lexical fallback is safe.
-    // Both flags write a file, so pointing them at one path means the table's
-    // closing rename lands on top of the trace -- losing it at exit 0, which is
-    // the failure mode this whole guard exists to refuse.
-    const bool trace_set = !a.trace_csv.empty();
-    if (trace_set && same_file(a.out_csv, a.trace_csv)) {
-        std::fprintf(stderr,
-                     "--out and --trace name the same file %s; the table would replace it\n",
-                     a.out_csv.c_str());
-        std::exit(2);
-    }
-    // ...and the table's TEMP path is that same file too. The table is written
-    // to `<out>.tmp` and renamed into place, so `--trace <out>.tmp` puts two
-    // truncating streams on one inode at independent offsets and then PUBLISHES
-    // the interleave under the table's name, at exit 0. With `--out` left at
-    // its default that is the published table itself, corrupted by a typo.
-    if (trace_set && same_file(a.trace_csv, a.out_csv + ".tmp")) {
-        std::fprintf(stderr,
-                     "--trace names the table's temp file %s; the two writers would interleave "
-                     "and the result would be published as the table\n",
-                     a.trace_csv.c_str());
-        std::exit(2);
-    }
-    // A CROSSED artifact is refused unconditionally, ahead of any question of
-    // which protocol the run is: only `--out` may ever write the table, and
-    // only `--trace` may ever write the trace.
-    //
-    // The protocol ladder below cannot police this, and that is not a
-    // hypothetical gap. A run that IS the published protocol -- no --instance,
-    // no --time-limit, no arm flag -- carrying --commit satisfies every rung
-    // and reaches the permit path; `--trace <the comparison table>` then
-    // truncated the published table to trace rows within a second of launch,
-    // the ten cited Pedroso rows gone, before any solve had started. The run
-    // is legitimate; only the pairing of file to flag is wrong, so the pairing
-    // is what has to be refused, and it has to be refused for every run rather
-    // than for the unpublished ones.
-    if (trace_set && same_file(a.trace_csv, published)) {
-        std::fprintf(stderr, "--trace cannot write the published table %s (only --out writes it)\n",
-                     published.c_str());
-        std::exit(2);
-    }
-    if (same_file(a.out_csv, published_trace)) {
-        std::fprintf(stderr,
-                     "--out cannot write the published anytime trace %s (only --trace writes it)\n",
-                     published_trace.c_str());
-        std::exit(2);
-    }
-    // Past the crossed-artifact refusals above, each published name can only be
-    // reached by its own flag, so what is left to decide is whether this RUN is
-    // allowed to write the published artifact it names. Both names are reserved
-    // whether or not a file exists there yet: the guard has to exist before the
-    // first one is lost, not after.
-    const bool writes_table = same_file(a.out_csv, published);
-    const bool writes_trace = trace_set && same_file(a.trace_csv, published_trace);
-    if (!writes_table && !writes_trace) {
+    const std::optional<cbls::bench::PublishedTarget> target = cbls::bench::check_published_write(
+        a.out_csv, a.trace_csv, a.inst_dir, non_published_protocol(a), a.commit_set);
+    if (!target.has_value()) {
         return;
-    }
-    // Report the artifact being refused and the flag that actually redirects
-    // it: a trace-only run told to "pass --out elsewhere" would be sent to
-    // change a path it never set.
-    const std::string& target = writes_table ? published : published_trace;
-    const char* const artifact = writes_table ? "table" : "anytime trace";
-    const char* const redirect = writes_table ? "--out" : "--trace";
-    const char* why = non_published_protocol(a);
-    if (why != nullptr) {
-        std::fprintf(stderr,
-                     "%s cannot write the published %s %s "
-                     "(pass %s elsewhere for an unpublished run)\n",
-                     why, artifact, target.c_str(), redirect);
-        std::exit(2);
-    }
-    // A full-roster run at the documented budgets is the only thing allowed
-    // to land here, and it still has to say which engine it measured:
-    // "unknown" is exactly the provenance a reader cannot tell engine drift
-    // from a bug with. It is the trace's provenance too -- every trace row
-    // carries the commit for the same reason.
-    if (!a.commit_set) {
-        std::fprintf(stderr,
-                     "writing %s requires an explicit --commit SHA "
-                     "(pass %s elsewhere for an unpublished run)\n",
-                     target.c_str(), redirect);
-        std::exit(2);
     }
     // Without --verify every `verified` cell is empty, and an independent
     // re-check is one of the published run's own acceptance criteria (#146).
@@ -377,9 +290,9 @@ void resolve_out_csv(Args& a) {
             stderr,
             "writing %s requires --verify%s "
             "(pass %s elsewhere for an unverified run)\n",
-            target.c_str(),
-            writes_table ? "" : ": the published trace belongs to the verified published run",
-            redirect);
+            target->path.c_str(),
+            target->table ? "" : ": the published trace belongs to the verified published run",
+            target->redirect());
         std::exit(2);
     }
     const char* const unfit = build_refusal();
@@ -387,7 +300,7 @@ void resolve_out_csv(Args& a) {
         std::fprintf(stderr,
                      "this binary cannot write the published %s %s: it was %s "
                      "(rebuild in a Release build directory without CBLS_SANITIZE/CBLS_PROFILE)\n",
-                     artifact, target.c_str(), unfit);
+                     target->artifact(), target->path.c_str(), unfit);
         std::exit(2);
     }
 }
@@ -1169,16 +1082,10 @@ int run_benchmark(int argc, char** argv) {
         return 2;
     }
     csv.close();
-    std::error_code rename_ec;
-    std::filesystem::rename(tmp_csv, args.out_csv, rename_ec);
-    if (!rename_ec) {
-        tmp_guard.release();  // it is the published table now, not scratch
-    }
-    if (rename_ec) {
-        std::fprintf(stderr, "Failed to rename %s -> %s: %s\n", tmp_csv.c_str(),
-                     args.out_csv.c_str(), rename_ec.message().c_str());
+    if (!cbls::bench::rename_into_place(tmp_csv, args.out_csv)) {
         return 2;
     }
+    tmp_guard.release();  // it is the published table now, not scratch
 
     print_tally(args, tally);
 
