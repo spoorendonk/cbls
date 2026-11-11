@@ -1,80 +1,10 @@
 """CHPED (Combined Heat and Power Economic Dispatch) instance data.
 
-Parameters from literature (Basu 2011, Vasebi et al. 2007).
+The 13- and 40-unit systems, which `benchmarks/instances/uc-chped/data.py` and
+`reference_solve.py --uc` read. The 4-, 7- and 24-unit dispatch instances live
+in `data.h` only; their Python copies had no reader and went with #373.
 Cost function: F_i(P_i) = a_i + b_i*P_i + c_i*P_i^2 + |d_i*sin(e_i*(P_min_i - P_i))|
 """
-
-# 4-unit instance (Basu 2011)
-CHPED_4UNIT = {
-    "name": "4-unit",
-    "n_units": 4,
-    "n_periods": 1,
-    # Cost coefficients: a, b, c, d, e (valve-point effect)
-    "a": [25.0, 60.0, 100.0, 120.0],
-    "b": [2.0, 1.8, 2.1, 2.0],
-    "c": [0.008, 0.006, 0.009, 0.007],
-    "d": [100.0, 140.0, 160.0, 180.0],
-    "e": [0.042, 0.040, 0.038, 0.037],
-    "P_min": [10.0, 20.0, 30.0, 40.0],
-    "P_max": [75.0, 125.0, 175.0, 250.0],
-    "demand": [400.0],
-    "reserve": [0.0],  # no spinning reserve for simple case
-}
-
-# 7-unit instance
-CHPED_7UNIT = {
-    "name": "7-unit",
-    "n_units": 7,
-    "n_periods": 1,
-    "a": [25.0, 60.0, 100.0, 120.0, 40.0, 70.0, 110.0],
-    "b": [2.0, 1.8, 2.1, 2.0, 1.9, 2.2, 1.7],
-    "c": [0.008, 0.006, 0.009, 0.007, 0.008, 0.005, 0.006],
-    "d": [100.0, 140.0, 160.0, 180.0, 120.0, 150.0, 130.0],
-    "e": [0.042, 0.040, 0.038, 0.037, 0.041, 0.039, 0.043],
-    "P_min": [10.0, 20.0, 30.0, 40.0, 15.0, 25.0, 35.0],
-    "P_max": [75.0, 125.0, 175.0, 250.0, 100.0, 150.0, 200.0],
-    "demand": [800.0],
-    "reserve": [0.0],
-}
-
-
-# 24-unit instance (extended from 4-unit by repeating with perturbations)
-def make_24unit() -> dict[str, object]:
-    """Generate 24-unit instance by replicating and perturbing base units.
-
-    The per-unit lists are built as their own `list[float]`s and assembled at the
-    end rather than appended into the dict: a heterogeneous instance dict is
-    `dict[str, object]`, so `inst["a"].append(...)` is an append on `object` and
-    neither the reader nor the type checker can see what it holds.
-    """
-    import numpy as np
-
-    rng = np.random.default_rng(123)
-    base = CHPED_4UNIT
-    n = 24
-    keys = ("a", "b", "c", "d", "e", "P_min", "P_max")
-    built: dict[str, list[float]] = {key: [] for key in keys}
-    for i in range(n):
-        j = i % 4
-        scale = 0.8 + rng.random() * 0.4  # 0.8 to 1.2
-        for key in keys:
-            source = base[key]
-            assert isinstance(source, list)
-            # P_max never shrinks: a unit perturbed below its base ceiling could
-            # make the replicated instance infeasible against a fixed demand.
-            factor = max(scale, 1.0) if key == "P_max" else scale
-            built[key].append(float(source[j]) * factor)
-    return {
-        "name": "24-unit",
-        "n_units": n,
-        "n_periods": 1,
-        **built,
-        "demand": [2000.0],
-        "reserve": [100.0],
-    }
-
-
-CHPED_24UNIT = make_24unit()
 
 # 13-unit instance (Sinha et al. 2003)
 # Source: al-roomi.org/economic-dispatch/13-units-system

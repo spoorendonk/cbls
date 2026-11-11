@@ -1,2 +1,2 @@
 # Instance files are vendored (~180 KB) because tests read them from a fresh clone
-# and they back up comparison.csv. download.py refreshes them on demand.
+# and they back up comparison.csv. The retired set has no downloader (#373).

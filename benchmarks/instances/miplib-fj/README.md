@@ -26,15 +26,15 @@ Luteberget & Sartor 2023 (*Feasibility Jump*), not its roster: `enlight_hard`,
 `neos5`, `mad` and `binkar10_1`, with reference values from
 `miplib2017-v22.solu`. All are vendored, so a fresh clone needs no download.
 The original description is in git history (`benchmarks/instances/miplib-fj/README.md`
-before #360).
+before #360); so is the downloader that fetched them (`download.py`, removed by
+#373).
 
 ## Layout
 
 ```
 benchmarks/instances/miplib-fj/
   README.md                # this file
-  download.py              # fetch .mps.gz + .solu (network required)
   comparison.csv           # pre-port SA and post-port ViolationLS record (not reproducible)
-  miplib2017-v22.solu      # vendored; download.py fetches it
+  miplib2017-v22.solu      # vendored
   *.mps.gz                 # the 11 vendored instances (tracked)
 ```
