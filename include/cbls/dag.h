@@ -11,29 +11,20 @@
 
 namespace cbls {
 
-/// Default tolerance below which a constraint counts as satisfied.
-///
-/// Applied to the constraint node's violation value, which is an *absolute*
-/// residual (for an equality row, the raw |lhs - rhs|). 1e-6 matches SCIP's
-/// `numerics/feastol` default and `verify_model`'s tolerance. A far tighter
-/// value is not meaningful on continuous/nonlinear models: on a row whose body
-/// is of magnitude 1e4 it would demand ~13 significant digits, which double
-/// precision cannot deliver. Here rather than in violation.h because `Model`
-/// defaults its domain rows' margin from it (`Model::set_domain_tolerance`).
+/// Default tolerance below which a constraint counts as satisfied, on the
+/// node's *absolute* residual (|lhs - rhs| for an equality). Matches SCIP's
+/// `numerics/feastol` and `verify_model`. Much tighter is meaningless in double
+/// precision (a 1e4 body would need ~13 digits). Here, not in violation.h,
+/// because `Model::set_domain_tolerance` defaults domain margins from it.
 inline constexpr double kDefaultFeasibilityTolerance = 1e-6;
 
 enum class VarType : uint8_t { Bool, Int, Float, List, Set };
 
-/// True for the types that carry an `elements` permutation/subset rather than a
-/// scalar `value`. The complement — Bool/Int/Float — is exactly what
-/// `FeasibilityJump::jumpable()` accepts, and `solve()` relies on the two
-/// partitioning VarType to initialise every variable exactly once (#108): FJ sets
-/// the scalars, `initialize_structured_random` sets the rest.
-///
-/// Both are whitelists rather than one being `!other`, so a VarType added later
-/// has to opt in on each side. Nothing catches it if you forget: both are `==`
-/// comparisons, not switches, so no -Wswitch can report a type they omit, and a
-/// new type would silently be neither initialised nor jumped. Add it here and to
+/// True for the types carrying `elements` rather than a scalar `value`. The
+/// complement is exactly `FeasibilityJump::jumpable()`, and `solve()` relies on
+/// the two partitioning VarType to initialise every variable once (#108).
+/// Both are `==` whitelists, not switches, so no -Wswitch catches a new type:
+/// it would silently be neither initialised nor jumped. Add it here and to
 /// `jumpable()` in the same change.
 constexpr bool is_structured(VarType type) {
     return type == VarType::List || type == VarType::Set;
@@ -41,21 +32,17 @@ constexpr bool is_structured(VarType type) {
 
 /// How `initialize_structured_random` fills a List (#164).
 ///
-/// It decides the STARTING assignment only; the move set can reach every other
-/// assignment from any of them. A member of a partition is filled as part of
-/// that partition (`randomize_list_partition`), which reads `ListInit` only
-/// under `Cover::AtMostOnce` -- an `Exact` cover is maintained by the moves
-/// rather than by a penalty row, so it has to hold at the first assignment and
-/// the members are always laid out complete. See `Model::add_list_partition`.
+/// The STARTING assignment only; the moves reach the rest from any. A
+/// partition member is filled by `randomize_list_partition`, which reads it
+/// only under `Cover::AtMostOnce`: an `Exact` cover is kept by the moves, not a
+/// penalty row, so it must hold from the start (`Model::add_list_partition`).
 enum class ListInit : uint8_t {
-    /// `elements == [0, 1, ..., universe-1]`, and therefore a permutation.
-    /// Requires `min_size == max_size == universe_size`, which is exactly what
-    /// `list_var(n)` builds -- and is what keeps that call's randomisation on
-    /// `rng.permutation(max_size)`, the pre-#164 draw verbatim.
+    /// `elements == [0, 1, ..., universe-1]`, a permutation. Requires
+    /// `min_size == max_size == universe_size`, as `list_var(n)` builds, whose
+    /// randomisation stays `rng.permutation(max_size)` (#164).
     Identity,
-    /// `elements == []`. Draws no random numbers. Requires `min_size == 0`,
-    /// since otherwise it is a starting assignment outside the List's own
-    /// length window.
+    /// `elements == []`; draws no random numbers. Requires `min_size == 0`
+    /// (else it starts outside the length window).
     Empty,
     /// A uniformly random subset of a uniformly random admissible size, in a
     /// uniformly random order.
@@ -70,42 +57,34 @@ struct Variable {
     double ub = 0.0;
     std::string name;
     std::vector<int32_t> elements;  // List/Set current elements
-    // The three size fields mean the same thing for both structured types
-    // (#164): `elements` is drawn from the universe {0..universe_size-1} and its
-    // size stays within [min_size, max_size]. A List additionally keeps its
-    // elements DISTINCT and ORDERED, where a Set's stored order carries no
-    // meaning. `list_var(n)` is the special case universe == min == max == n,
-    // i.e. a permutation, which is all a List could be before #164.
+    // For both structured types (#164), `elements` is drawn from
+    // {0..universe_size-1} with size in [min_size, max_size]. A List's elements
+    // are DISTINCT and ORDERED; a Set's stored order means nothing.
+    // `list_var(n)` is universe == min == max == n, a permutation.
     int32_t universe_size = 0;  // List/Set: universe {0..n-1}
     int32_t min_size = 0;       // List/Set: minimum length/cardinality
     int32_t max_size = 0;       // List/Set: maximum length/cardinality
     /// List only: how `initialize_structured_random` fills it.
     ListInit list_init = ListInit::Identity;
-    /// List only: set by `Model::add_list_partition`, and the reason
-    /// `list_moves` emits no `list_insert`/`list_remove` for this variable. Its
-    /// membership is shared with the partition's other lists, so an intra-list
-    /// insert would duplicate an element a sibling holds, and an intra-list
-    /// remove would drop an element out of an `Exact` cover. The partition's own
-    /// generator owns both halves instead (`generate_partition_moves`).
+    /// List only, set by `Model::add_list_partition`: `list_moves` then emits
+    /// no `list_insert`/`list_remove`, which would duplicate a sibling's
+    /// element or drop one from an `Exact` cover. `generate_partition_moves`
+    /// owns both.
     bool partitioned = false;
-    // The nodes that read this variable are `Model::dependents(id)`: a slice of
-    // one flat array the model owns, not a vector per variable (#156).
+    // Its readers are `Model::dependents(id)`, a slice of a model-owned array.
 };
 
-/// A read-only view of a contiguous run of `T` -- what `Model::children`,
-/// `Model::parents`, `Model::dependents` and `Model::constraints_of_var` hand
-/// out, each a slice of one flat array the model owns. C++17 has no `std::span`,
-/// and the four accessors need nothing beyond iteration, a size and an index.
+/// A read-only view of a contiguous run of `T` (C++17 has no `std::span`):
+/// what `Model::children`, `parents`, `dependents` and `constraints_of_var`
+/// hand out, each a slice of one flat model-owned array.
 ///
-/// Invalidated by whatever reallocates the array it points into: appending a
-/// node for `children`, and the rebuild in `close()` /
-/// `add_objective_soft_constraint()` for the other three. No caller holds one
-/// across either.
+/// Invalidated by whatever reallocates that array: appending a node for
+/// `children`, the rebuild in `close()` / `add_objective_soft_constraint()`
+/// for the other three. No caller holds one across either.
 ///
-/// `operator[]` asserts its bound. That is not decoration: an index past a
-/// node's children now lands on the NEXT node's children inside one heap block,
-/// which AddressSanitizer cannot see, where the per-node vector this replaced
-/// was a heap overflow it reported. The assert costs nothing under NDEBUG.
+/// `operator[]` asserts its bound because an overrun lands silently on the
+/// NEXT slice of the same heap block, invisible to AddressSanitizer. Free
+/// under NDEBUG.
 template <typename T>
 class ConstSpan {
 public:
@@ -155,24 +134,16 @@ enum class NodeOp : uint8_t {
     Neq,
     Lt,
     Gt,
-    // The `default:`-free dispatch tables in `src/dag.cpp` and `src/io.cpp` are
-    // what make a missed case visible: since #171 the build compiles with -Wall
-    // (GCC's -Wswitch) and clang-tidy reports `clang-diagnostic-switch`. No hook
-    // blocks on either now; zero first-party warnings and zero clang-tidy
-    // findings are checked by hand before a push (CLAUDE.md, Git Hooks).
-    // `.githooks/tidy-probe.sh` proves the clang-tidy check still bites. Only a
-    // `default:`-free switch is covered -- not an `if`/`==` chain, and not
-    // `node_is_affine` in `src/feasibility_jump.cpp`, whose deliberate
-    // `default:` classes a new op as non-affine without a word -- so
+    // A new op shows up as -Wswitch / `clang-diagnostic-switch` in the
+    // `default:`-free tables of `src/dag.cpp` and `src/io.cpp` (#171) -- not
+    // in `if`/`==` chains, nor in `node_is_affine` (src/feasibility_jump.cpp),
+    // whose deliberate `default:` silently classes it non-affine. So
     // `grep -rn 'NodeOp::' src/ include/ python/` for the rest.
     //
-    // The six below are #186's. Element/Ceil/Floor/Round are piecewise
-    // constant in their scalar children, and the two extra lambdas are opaque
-    // functors, so all six report a local derivative of 0 and none of them is
-    // affine. What FJ uses instead of a gradient is in `compute_var_jump`
-    // (src/feasibility_jump.cpp): the plateau edges of Ceil/Floor/Round and the
-    // index values of Element, reached from a variable through ops that carry a
-    // slope (`carries_slope`), are offered as jump candidates.
+    // The six below (#186) are piecewise constant or opaque functors: local
+    // derivative 0, never affine. FJ instead offers the plateau edges of
+    // Ceil/Floor/Round and the index values of Element, reached through
+    // `carries_slope` ops, as jump candidates (`compute_var_jump`).
     /// `table[i]` or `table[i][j]` over a numeric table, each index any scalar,
     /// truncated toward zero -- 1 or 2 children, every one an index. The table
     /// is `ModelStructure::element_tables[lambda_func_id]`. See
@@ -199,36 +170,27 @@ struct ChildRef {
     bool is_var = false;
 };
 
-/// One DAG node. It owns no heap block: its children are the slice
-/// `[child_begin, child_begin + child_count)` of the model's flat child array,
-/// read through `Model::children(node)`, and its parents are
-/// `Model::parents(id)` (#156).
+/// One DAG node, owning no heap block: children are the slice
+/// `[child_begin, child_begin + child_count)` of the model's flat child array
+/// (`Model::children(node)`), parents are `Model::parents(id)` (#156). Offsets,
+/// not pointers, so copying a `Model` per portfolio worker rebases nothing,
+/// deep-copied or shared (#157).
 ///
-/// Offsets rather than pointers, so that copying a `Model` -- which is how a
-/// portfolio replicates a model per worker -- needs nothing rebased, whether it
-/// deep-copies the structure or shares it (#157).
-///
-/// It carries NO evaluation result: a node's current value lives in the model's
-/// per-model `node_values()` array, read through `Model::node_value(id)`. That
-/// is what lets the whole node array sit in the immutable `ModelStructure` that
-/// portfolio replicas share, where a `value` field would be one worker's search
-/// state in storage every worker reads (#157).
+/// NO evaluation result: values live in the per-model `node_values()`
+/// (`Model::node_value(id)`), so the node array can sit in the immutable
+/// `ModelStructure` replicas share (#157).
 struct ExprNode {
     int32_t id = -1;
     NodeOp op = NodeOp::Const;
-    /// The incremental Sum (#177, #188), set by `Model::close()`: `kIncSum` on a
-    /// `Sum` that `commit_scalar_move` moves by its terms' changes instead of
-    /// re-summing it, `kFeedsIncSum` on a node that is a term of one. A Sum
-    /// qualifies when no term is a Sum or named twice and every reader is a
-    /// top-level comparison against a variable or a constant -- see
-    /// `Model::classify_incremental_sums` for why each rule is there. Its
-    /// per-model state (`Model::inc_sum_state`) is found through
-    /// `lambda_func_id`, which holds the Sum's slot. In what was padding after
-    /// `op`, so it costs no memory, and read from the node the walk has already
-    /// loaded, so it costs no extra load per dirty node. (A separate per-node
-    /// array measured 9.5% slower on cbs-cta at `bd0e5ab`, but that was code
-    /// alignment -- it vanishes under `-falign-functions=64` -- so it is no
-    /// evidence either way.)
+    /// The incremental Sum (#177, #188), set by `Model::close()`: `kIncSum` on
+    /// a `Sum` that `commit_scalar_move` moves by its terms' changes rather
+    /// than re-summing, `kFeedsIncSum` on a term of one. A Sum qualifies when
+    /// no term is a Sum or named twice and every reader is a top-level
+    /// comparison against a variable or constant (reasons:
+    /// `Model::classify_incremental_sums`). Its per-model state
+    /// (`Model::inc_sum_state`) is at slot `lambda_func_id`. Sits in padding
+    /// after `op` (no memory) and is read from the already-loaded node (no
+    /// extra load per dirty node).
     uint8_t inc_sum_flags = 0;
     static constexpr uint8_t kIncSum = 1;
     static constexpr uint8_t kFeedsIncSum = 2;
@@ -247,9 +209,8 @@ struct ExprNode {
     ///  - a `Sum` with `kIncSum`: its slot in `Model::inc_sum_state()` and
     ///    `ModelStructure::inc_sum_nodes` (#188)
     ///
-    /// One field for all of them rather than one per op, because no node is more
-    /// than one of them and `ExprNode` is the array a 4.3M-node model is built
-    /// out of. -1 for every other op.
+    /// One field for all, since no node is two of them and a model can have
+    /// 4.3M nodes. -1 for every other op.
     int32_t lambda_func_id = -1;
 };
 
@@ -266,17 +227,13 @@ enum class PairMode : uint8_t {
 /// Everything a `PairLambda` node needs beyond its pair function: the closing
 /// rule and the two optional fixed-endpoint terms.
 ///
-/// It is a SIDE TABLE in `ModelStructure`, parallel to `pair_lambda_funcs` and
-/// keyed by the same `ExprNode::lambda_func_id`, rather than three more
-/// `NodeOp` enumerators. `src/dag.cpp`'s two dispatch tables are 34 cases wide
-/// and already carry a cognitive-complexity suppression each; one variant per
-/// closing rule crossed with head/tail presence would be six more cases in both
-/// of them for no gain, since every variant evaluates through the same loop.
+/// A SIDE TABLE in `ModelStructure`, parallel to `pair_lambda_funcs` and keyed
+/// by `ExprNode::lambda_func_id`, not more `NodeOp`s: every variant runs the
+/// same loop, and `src/dag.cpp`'s two dispatch tables (each already under a
+/// complexity suppression) would gain six cases apiece for nothing.
 ///
-/// `head_id` and `tail_id` index `ModelStructure::lambda_funcs` -- the same
-/// table `lambda_sum` fills -- or are -1 for "no term". They are therefore
-/// shared across portfolio workers on exactly the terms the `lambda_funcs`
-/// comment states.
+/// `head_id`/`tail_id` index `ModelStructure::lambda_funcs` (as `lambda_sum`
+/// fills it), or -1 for no term; shared across workers on that table's terms.
 struct PairLambdaSpec {
     PairMode mode = PairMode::Open;
     int32_t head_id = -1;  // index into ModelStructure::lambda_funcs, or -1
@@ -291,40 +248,27 @@ struct PairLambdaSpec {
 /// That flag is the whole point of this function, because an infinity means two
 /// completely different things depending on where it came from:
 ///
-///  - **Sentinel.** A `Const` +inf is the standard "this side is absent"
-///    idiom: `a <= +inf` and `-inf <= b` hold for every a/b, including a
-///    non-finite one. Plain `a - b` yields NaN when both sides are infinite
-///    with the same sign, and the violation machinery reads NaN as a maximal
-///    violation — so a *vacuous* row would be reported as the worst-violated
-///    row in the model. That is what destroys the feasibility signal when the
-///    objective is folded in as `obj <= bound`, the objective overflows to
-///    +inf, and the bound is still at its initial +inf (issue #100).
+///  - **Sentinel.** A `Const` +-inf means "this side is absent": `a <= +inf`
+///    and `-inf <= b` hold for every a/b. Plain `a - b` gives NaN at same-sign
+///    infinities, read as maximal violation, so a *vacuous* row would rank
+///    worst -- destroying the feasibility signal when the folded `obj <= bound`
+///    overflows against the initial +inf bound (#100).
 ///
-///  - **Overflow.** An infinity computed by an expression means only "this
-///    quantity left double range". `exp(1000) <= exp(720)` is a genuinely
-///    violated row, and both sides evaluate to +inf; treating it as vacuous
-///    would silently pass an assignment we have no evidence for. Overflow
-///    therefore keeps the NaN, which the clamp turns into a maximal violation.
-///    This preserves the invariant the rest of the engine defends explicitly
-///    (see the NaN guards in ViolationManager, LNS and the search loop).
+///  - **Overflow.** A computed infinity only left double range:
+///    `exp(1000) <= exp(720)` is genuinely violated. It keeps the NaN, which
+///    the clamp makes a maximal violation, as the engine's NaN guards expect.
 ///
-/// Only the side that would make the row vacuous is consulted: +inf on both
-/// sides is vacuous when the *upper* bound is the sentinel, -inf on both sides
-/// when the *lower* one is. Every other input is the plain difference, which is
-/// already right: +inf for (a=+inf, b=-inf), -inf for (a=-inf, b=+inf), and NaN
-/// whenever either side is NaN.
+/// Only the side that would make the row vacuous is consulted (+inf on both
+/// with `b` a literal, -inf on both with `a` one). Everything else is the plain
+/// difference, already right: +-inf for opposite infinities, NaN for a NaN.
 ///
-/// A sentinel-vacuous row returns 0.0 — satisfied, sitting exactly on the
-/// boundary. `Lt`/`Gt` then add their strictness margin on top. A side that is
-/// a +-inf constant is not integral (`Model::is_integral`), so the margin is the
-/// 1e-9 epsilon, *inside* the default feasibility tolerance of 1e-6: a vacuous
-/// strict row still counts as satisfied.
+/// A sentinel-vacuous row returns 0.0, on the boundary. `Lt`/`Gt` add their
+/// margin; an inf constant is not integral, so it is 1e-9, inside the default
+/// 1e-6 tolerance: a vacuous strict row stays satisfied.
 ///
-/// Scope: used by `Leq`/`Geq`/`Lt`/`Gt`. `Eq`/`Neq` deliberately keep plain
-/// `|a - b|`, so `x == y` at inf/inf stays NaN (maximally violated). An
-/// infinity is a *bound* idiom; asserting a quantity is exactly infinite is not
-/// something the engine can evaluate, and leaving it unevaluable is the safe
-/// reading.
+/// Used by `Leq`/`Geq`/`Lt`/`Gt`. `Eq`/`Neq` keep plain `|a - b|`, so `x == y`
+/// at inf/inf stays NaN: infinity is a bound idiom, and "exactly infinite" is
+/// not evaluable, so it is safest left maximally violated.
 inline double comparison_residual(double a, double b, bool a_is_const, bool b_is_const) {
     if (a == b && std::isinf(a)) {
         const bool sentinel = (a > 0.0) ? b_is_const : a_is_const;
@@ -338,30 +282,23 @@ inline double comparison_residual(double a, double b, bool a_is_const, bool b_is
 /// Whether a node of this op is a comparison row (`Leq`/`Geq`/`Lt`/`Gt`/`Eq`):
 /// its value is a residual of its two children, not an expression in them. A
 /// constraint whose node is anything else is a bare body, read as `expr <= 0`.
-/// One predicate for every place that splits rows that way (#192's incremental
-/// Sum gate, #190's closed-form scorer and its classification).
+/// One predicate for every place that splits rows so (#192, #190).
 inline bool is_comparison_op(NodeOp op) {
     return op == NodeOp::Leq || op == NodeOp::Geq || op == NodeOp::Lt || op == NodeOp::Gt ||
            op == NodeOp::Eq;
 }
 
-/// The strictness margin `Lt`/`Gt` add on top of `comparison_residual`: a strict
-/// row reads as violated by its margin at equality. Each strict node carries its
-/// own margin in `ExprNode::const_value`, fixed by `Model::lt`/`gt` when the node
-/// is built, and both `evaluate` and FJ's closed-form linear scorer
-/// (`linear_jump.h`) read it from there, so the two reproduce one residual.
+/// The margin `Lt`/`Gt` add to `comparison_residual`, so a strict row is
+/// violated by it at equality. Fixed per node by `Model::lt`/`gt` in
+/// `ExprNode::const_value`; `evaluate` and `linear_jump.h` both read it there,
+/// so they reproduce one residual.
 ///
-/// Integral sides (`Model::is_integral`) get `kIntegralStrictMargin` = 1: over
-/// integers `a < b` IS `a - b + 1 <= 0`, and that is exact. Before #211 every
-/// strict row got the epsilon below, which is far inside the search's
-/// feasibility tolerance (1e-6) -- so `x < y` over Ints accepted x = y.
-///
-/// Any other strict row keeps `kStrictComparisonEps`, and it is honest to say
-/// what that means: such a row is strict only up to the feasibility tolerance,
-/// i.e. it behaves as `a <= b`. Over a continuous side strictness is not
-/// representable at a positive tolerance at all -- the open set has no closest
-/// feasible point -- which is why MPS and NL carry no strict rows. A caller who
-/// needs a gap writes it: `x + delta <= y`.
+/// Integral sides (`Model::is_integral`) get 1: over integers `a < b` IS
+/// `a - b + 1 <= 0`, exactly (#211; an epsilon inside the 1e-6 tolerance let
+/// `x < y` accept x = y). Any other strict row gets `kStrictComparisonEps`
+/// and so behaves as `a <= b` up to the tolerance: strictness over a continuous
+/// side has no closest feasible point, which is why MPS and NL carry no strict
+/// rows. A caller who needs a gap writes `x + delta <= y`.
 inline constexpr double kStrictComparisonEps = 1e-9;
 inline constexpr double kIntegralStrictMargin = 1.0;
 constexpr double strict_comparison_margin(bool integral_sides) {

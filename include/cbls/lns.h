@@ -22,71 +22,51 @@ std::pair<double, double> lns_acceptance_key(const Model& model, double tol);
 ///
 /// Two destroy/repair pairs, by variable kind (#202):
 ///
-///  - The members of every `ListPartition` are ruined and recreated: adjacent
-///    strings of elements are removed from a few of the partition's lists and
-///    reinserted one by one, each at its best position under the acceptance
-///    key's own lexicographic (real violation, objective) rule, probed through
-///    the DAG. That is ASB-RR/SISR (Christiaens & Vanden Berghe; KU Leuven
-///    technical report 2016, Transportation Science 54(2) 2020) with the
-///    paper's parameters; see `ruin_recreate_partition` in src/lns.cpp for
-///    the two places it departs. FJ cannot move a List, so the old
-///    perturb-then-FJ pair could only ever return a worse route: 0 repairs
-///    accepted in every CVRP smoke run before this.
-///  - Every other variable keeps the original pair: a random `destroy_fraction`
-///    is randomised and a Feasibility Jump pass repairs it. On a model with no
-///    partition this is the whole of it, with the same random draws as before.
+///  - Every `ListPartition`'s members are ruined and recreated (ASB-RR/SISR,
+///    Christiaens & Vanden Berghe, Transportation Science 54(2) 2020, with the
+///    paper's parameters; `ruin_recreate_partition` in src/lns.cpp lists the
+///    two departures): strings are removed from a few lists and reinserted one
+///    by one at their best position under the acceptance key, probed through
+///    the DAG. FJ cannot move a List, so perturb-then-FJ only worsens routes.
+///  - Every other variable: a random `destroy_fraction` is randomised and an
+///    FJ pass repairs it. A model with no partition draws as it always did.
 ///
 /// An extension point, like InnerSolverHook: `solve()` takes an `LNS*` and
-/// `ParallelSearch` a factory returning `shared_ptr<LNS>`, so a C++ caller can
-/// substitute its own destroy/repair strategy by overriding `destroy_repair`.
-/// C++ only, for now: the Python binding registers `LNS` without a trampoline,
-/// so an override there is never dispatched to and this base runs instead.
-///
-/// Hence the virtual destructor — a caller that deletes an override through a
-/// base `LNS*` needs it, and nanobind keys its polymorphic downcast on it.
-/// Note that `ParallelSearch`'s `shared_ptr<LNS>` is NOT the reason: a
-/// shared_ptr captures its deleter from the most-derived type at construction,
-/// so it would destroy an override correctly either way. That used to be the
-/// reason, when the pointer was a `unique_ptr<LNS>` (issue #129).
+/// `ParallelSearch` a `shared_ptr<LNS>` factory, so C++ can override
+/// `destroy_repair`. C++ only: the binding has no trampoline, so a Python
+/// override is never dispatched to and this base runs instead. The virtual
+/// destructor serves deletion through a base `LNS*` and nanobind's
+/// polymorphic downcast (#129).
 class LNS {
 public:
     explicit LNS(double destroy_fraction = 0.3);
     virtual ~LNS();
 
-    // `repair_time_limit` seconds bound the FJ repair pass; <= 0 means the
-    // repair is bounded by its iteration budget alone, which makes it
-    // deterministic. `solve()` passes `min(2.0, remaining budget)` — capped so a
-    // single kick early in a long run cannot monopolise it, and floored by the
-    // remaining budget so a kick taken near the deadline cannot overrun it.
+    // `repair_time_limit` seconds bound the FJ repair; <= 0 leaves only its
+    // iteration budget, which makes it deterministic. `solve()` passes
+    // `min(2.0, remaining budget)`: no early kick monopolises a long run, no
+    // late one overruns the deadline. An override must honour it, or `solve()`
+    // breaks its wall-clock budget.
     //
-    // An override must honour `repair_time_limit`: that is what keeps `solve()`
-    // inside the wall-clock budget it promised its caller.
-    //
-    // NO DEFAULT ARGUMENT, deliberately. Default arguments are bound statically,
-    // so on a virtual function the *base's* default wins on every call through
-    // an `LNS*` — which is the only way `solve()` ever calls this — and an
-    // override's own default would be silently ignored. Requiring the argument
-    // removes the trap. `destroy_repair_cycle` below is non-virtual, so its
-    // default is safe.
+    // NO DEFAULT ARGUMENT: defaults bind statically, so through an `LNS*` (how
+    // `solve()` calls) an override's default would be silently ignored.
+    // `destroy_repair_cycle` is non-virtual, so its default is safe.
     virtual bool destroy_repair(Model& model, ViolationManager& vm, RNG& rng,
                                 double repair_time_limit);
     int destroy_repair_cycle(Model& model, ViolationManager& vm, RNG& rng, int n_rounds = 10,
                              double repair_time_limit = 2.0);
 
-    /// The residual a row may keep and still count as satisfied, both in the
-    /// repair's FJ and in the acceptance key, which clamps each row's violation
-    /// to 0 at or below it. `solve()` sets it to `SearchConfig::
-    /// feasibility_tolerance` before each kick. Without the clamp two feasible
-    /// states were ranked by sub-tolerance rounding noise on their equality
-    /// rows (1e-12 against 3e-12), and the objective was never consulted (#211).
+    /// The residual a row may keep and count as satisfied, in the repair's FJ
+    /// and the acceptance key (which clamps each row to 0 at or below it, so
+    /// feasible states rank by objective, not rounding noise, #211). `solve()`
+    /// sets it to `SearchConfig::feasibility_tolerance` before each kick.
     void set_feasibility_tolerance(double tol) { feasibility_tolerance_ = tol; }
     [[nodiscard]] double feasibility_tolerance() const { return feasibility_tolerance_; }
 
-    /// The relatedness the partition ruin draws its strings by: an element's
-    /// neighbours, nearest first, over the partition's universe (#202). `solve()`
-    /// sets it from `SearchConfig::structural_neighbours` before each kick. Null
-    /// -- the default -- means no relatedness: after the seed, strings are taken
-    /// near randomly drawn elements instead.
+    /// The relatedness the partition ruin draws strings by: each element's
+    /// neighbours, nearest first (#202). `solve()` sets it from
+    /// `SearchConfig::structural_neighbours` before each kick. Null (default):
+    /// after the seed, strings are taken near randomly drawn elements.
     void set_neighbours(std::shared_ptr<const NeighbourList> neighbours) {
         neighbours_ = std::move(neighbours);
     }

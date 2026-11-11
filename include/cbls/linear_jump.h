@@ -15,163 +15,101 @@ class Model;
 /// `residual = 0` (Eq). Geq/Gt are swapped to `q - p` as everywhere else, and a
 /// strict row's margin (`ExprNode::const_value`) is in `constant`.
 ///
-/// `terms` gets each variable at most once, sorted by id, with no zero entry. Its
-/// slopes are exactly the closed-form scorer's (`LinearJumpScorer`, `build_row`):
-/// the same sweep (`compute_partials_sparse` on the row node; for Eq, on each side
-/// then merged). `constant` is the residual at every variable zero, computed
-/// exactly: a variable-free subtree contributes its current value, `Neg`/`Sum`
-/// and `Prod` or `Div` by a variable-free subtree carry it through.
+/// `terms`: each variable at most once, sorted by id, no zero entry, with
+/// exactly the closed-form scorer's slopes (`build_row`'s
+/// `compute_partials_sparse` sweep; for Eq, per side then merged). `constant`
+/// is the exact residual at all variables zero: a variable-free subtree gives
+/// its current value, carried through `Neg`/`Sum` and `Prod`/`Div` by one.
 ///
-/// Returns false, with `terms` and `constant` unspecified, for a row that is not
-/// affine in that sense: `Neq`, a domain row (#258, whose DAG residual adds a
-/// margin once positive), any other op on a variable path (a comparison nested
-/// inside a side included), a divisor the DAG reads as zero, or a non-finite
-/// slope or constant. Reads node values, so they must be current, as for
-/// `compute_partials_sparse`.
+/// False, with outputs unspecified, for a non-affine row: `Neq`, a domain row
+/// (#258: its residual adds a margin once positive), any other op on a variable
+/// path (a nested comparison included), a divisor the DAG reads as zero, or a
+/// non-finite slope or constant. Node values must be current.
 ///
-/// Cost: two walks of the row's cone (the memoised constant walk, with a hash
-/// map allocated per call, and the partials sweep) plus O(k log k) for the k
-/// terms. Meant for a one-time load, not a per-move path.
+/// Cost: two walks of the row's cone (one allocating a hash map) plus
+/// O(k log k) for k terms; for a one-time load, not a per-move path.
 bool affine_row_terms(const Model& model, int32_t ci,
                       std::vector<std::pair<int32_t, double>>& terms, double& constant);
 
-/// Closed-form scoring of a scalar jump over LINEAR rows: affine comparisons and
-/// affine bare bodies.
+/// Closed-form scoring of a scalar jump over LINEAR rows (affine comparisons
+/// and affine bare bodies). The probe (`Model::weighted_violation_delta`)
+/// re-sums every row of the column twice per candidate, 65-86% of CPU on
+/// `gen-ip002`, `neos-860300`, `n2seq36q` (gprof, `175e617`). Here each row has
+/// a constant slope r = d(p - q)/dv (p, q the residual's arguments, swapped for
+/// Geq/Gt), so a move by D reads cmp(p + r D, q): O(1) per row, O(|G_v|) per
+/// candidate.
 ///
-/// `Model::weighted_violation_delta` scores a candidate value by setting the
-/// variable and running a Probe `delta_evaluate` and a Rollback one. A dirty
-/// `Sum` re-sums all of its children, so on a MIP each candidate costs the
-/// summed length of every row in the variable's column -- twice -- and an Int
-/// can have ~260 candidates. On `gen-ip002`, `neos-860300` and `n2seq36q` that
-/// was 65-86% of the solver's CPU (gprof, main `175e617`).
+/// A BARE body means `expr <= 0` (#190): p = the row's own node, q = a literal
+/// 0, so the residual is the node value for every input, non-finite included.
+/// That read is drift-free only because `classify_incremental_sums` (#192)
+/// refuses incremental status to a Sum that is a row; relax that and a bare Sum
+/// row is scored on a drifted value with no gate.
 ///
-/// A row whose constraint node is a comparison (`Leq`/`Geq`/`Lt`/`Gt`/`Eq`)
-/// with both children AFFINE in the variables has, for each variable v, a
-/// constant r = d(p - q)/dv, where p and q are the two arguments of the row's
-/// residual (`p = child0, q = child1` for Leq/Lt/Eq, the swap for Geq/Gt). So
-/// moving v by D moves the residual from cmp(p, q) to cmp(p + r D, q) -- no DAG
-/// walk, O(1) per row, O(|G_v|) per candidate.
+/// **Exact in the arithmetic, not bit-identical**: a score can differ from the
+/// probe in its last bits. Nothing accumulates: commits go through the DAG
+/// (`commit_scalar_move`) and every prepare reads node values fresh, as the
+/// DAG holds them (an incremental Sum's within its drift bound, #188). The
+/// candidate set, the first-seen rule (`compute_var_jump`) and #100's
+/// per-constraint differencing are unchanged. So selection matches the probe
+/// to the bit only on integral data (exact sums); on fractional data an ulp can
+/// flip a near-tie. Nor is it exactly antisymmetric like the probe: on a
+/// balanced Float plateau both directions can score +1 ulp. No threshold is
+/// applied, since one would change the selection rule.
 ///
-/// A BARE body, `add_constraint(expr)` with an affine non-comparison node, means
-/// `expr <= 0` (#190): the engine's violation is `clamped(value)`. It is built
-/// as the residual `p - q` with p = the row's own node and q = a literal 0, read
-/// through `comparison_residual(p, 0, p_literal, true)`. That is the node value
-/// itself for EVERY input, non-finite included: the sentinel branch needs
-/// `p == q` with q infinite, and 0 never is, and `v - 0.0` is `v` (NaN stays
-/// NaN, +/-inf stays itself, -0.0 stays -0.0). The slope is the node's own
-/// partial, the same sweep `compute_partial(row, v)` runs, so its Newton
-/// partial is exact like a Leq row's. Reading the row's own node as p is
-/// drift-free only because `classify_incremental_sums` (src/model.cpp, #192)
-/// refuses incremental status to a Sum that is itself a row; relax that rule
-/// and a bare Sum row would be scored on a drifted value with no gate.
+/// The OWNER (FeasibilityJump) classifies rows via `set_row_eligible`; slopes
+/// are built LAZILY on the first prepare that reads a row, so a short-lived FJ
+/// (one per LNS repair) sweeps only the rows it touches.
 ///
-/// **Exact in the arithmetic, not bit-identical.** `p + r D` is not the row the
-/// DAG would re-sum, so a score can differ from `weighted_violation_delta` in its
-/// last bits (the equivalence tests pin a tight relative tolerance). Nothing
-/// accumulates here: a committed jump still goes through the DAG walk
-/// (`commit_scalar_move`), and every prepare reads the node values fresh. Those
-/// values are the DAG's own, which since #188 means an incremental Sum's: moved
-/// by its terms' changes and, on fractional data, up to its drift bound off the
-/// real sum until the batch's end re-sums it. The scorer reads them as they
-/// are, which is what the commit it is scoring would move.
+/// Storage: 4 B per row slot, 12 B per BUILT row, and 8 B per G_v incidence
+/// for slopes laid out parallel to `Model::constraints_of_var`, so `prepare`
+/// reads a slope at a fixed position rather than searching the row (#176: up to
+/// 49% of the MIPfeas runner's CPU). The slope array is `calloc`ed on the first
+/// build: a block mapped fresh (above glibc's mmap threshold, at most 32 MiB)
+/// stays untouched zero pages beyond the rows built; a smaller heap block is
+/// zero-filled, O(incidences), the order of the per-row tables each LNS
+/// repair's FJ already pays. Measured worst case (every call memset): 3.1 MB
+/// (neos-860300) 0.04 ms warm, ~0.2 ms cold; 10 repairs in 20 s is under
+/// 0.01%. A build is O(row log |G_v|) once.
 ///
-/// What `delta` does NOT change: the candidate set, the selection rule and its
-/// first-seen tie-breaking (`compute_var_jump`), and the per-constraint differencing of
-/// issue #100 -- each row's `w * (clamped(new) - clamped(old))` is accumulated on
-/// its own, so a row clamped to kInfPenalty cancels exactly instead of swallowing
-/// the O(1) rows.
-///
-/// Rows are classified by the OWNER (FeasibilityJump, which already derives
-/// per-node affineness) through `set_row_eligible`, and each row's slopes are
-/// built LAZILY, on the first prepare that reads the row: a short-lived FJ (the
-/// LNS repair builds one per call) sweeps only the rows it touches -- though its
-/// slope table may be zero-filled whole on allocation; see Storage.
-///
-/// Storage: 4 bytes per row (a slot: ineligible, pending, or the index of its
-/// built record), a 12-byte record per row BUILT, and one slope per entry of the
-/// model's G_v incidence array -- 8 bytes per (variable, row) incidence, laid out
-/// parallel to `Model::constraints_of_var`, so `prepare` reads the slope of the
-/// k-th row of G_v at a fixed position instead of searching the row for the
-/// variable (#176: that search was up to 49% of the MIPfeas runner's CPU). The
-/// array is allocated on the first build by `calloc`. A block the allocator maps
-/// fresh (glibc: above its dynamic mmap threshold, which tops out at 32 MiB)
-/// comes back as untouched zero pages, so a short-lived FJ that builds a few rows
-/// makes resident only the pages those rows' columns land on; a smaller block
-/// reused from the heap is zero-filled, O(incidences) -- the same order as the
-/// FJ constructor's own per-row tables, which the LNS repair already pays per
-/// call. Measured, worst case (threshold raised, every call memset): calloc +
-/// free of neos-860300's 3.1 MB table costs 0.04 ms warm and a 32 MB one 2.2 ms
-/// (~15 GB/s, so ~0.2 ms for 3.1 MB cold); that instance runs 10 repairs in 20s,
-/// under 0.01% of the budget. A build writes
-/// the row's nonzero slopes into its variables' slots, O(row log |G_v|) once.
-///
-/// A row is classified once, before it is built, and its slopes never change.
-/// The one thing that can move them is the model's incidence layout: the objective
-/// row, appended by `add_objective_soft_constraint`, rebuilds every G_v and shifts
-/// the offsets. `resize_rows` is how a caller follows a row added to the model,
-/// so a strict growth drops every built row back to pending (the rows are
-/// structure: rebuilding one reproduces its slopes bit for bit), and `prepare`
-/// and `residual_partial_at` refuse to read while the row counts disagree. The
-/// slopes are structure, but each portfolio worker's FJ builds its own; the build
-/// also sizes `dag_ops.cpp`'s thread_local adjoint scratch, which a pure MIP
-/// otherwise never allocated.
-///
-/// **Selection is unchanged to the bit only on integral data.** Scores there are
-/// exact (small integers and dyadic coefficients sum without rounding), so the
-/// first-seen minimum picks the same candidate as the probe. On fractional data a
-/// score can differ by an ulp, which can flip a near-tie between candidates; the
-/// candidate set and the rule are the same, the arithmetic is not.
-///
-/// One property the probe has and this does not: exact antisymmetry. The probe's
-/// score of x -> j and of j -> x (after committing) are exact negations; here the
-/// committed row is re-summed by the DAG, so on an exactly balanced Float plateau
-/// both directions can score +1 ulp. Integral rows are exact and immune; a
-/// threshold would change the selection rule, so none is applied.
+/// Slopes never change once built; only the incidence layout moves them (the
+/// objective row rebuilds every G_v). A strict `resize_rows` growth sends every
+/// built row back to pending (rebuilds are bit-identical), and `prepare` and
+/// `residual_partial_at` refuse while row counts disagree. Each portfolio
+/// worker's FJ builds its own; a build also sizes `dag_ops.cpp`'s thread_local
+/// adjoint scratch, which a pure MIP otherwise never allocates.
 class LinearJumpScorer {
 public:
     explicit LinearJumpScorer(const Model& model);
 
-    /// Size the per-row table to `n` rows. New rows start ineligible. Grow-only:
-    /// a shrink throws `std::logic_error` -- a closed model's rows are never
-    /// removed. A strict growth means the model gained a row, which rebuilt its
-    /// G_v layout, so every built row returns to pending and is rebuilt on its
-    /// next read (its classification is kept).
+    /// Size the per-row table to `n` rows; new rows start ineligible.
+    /// Grow-only (a shrink throws `std::logic_error`). A strict growth sends
+    /// every built row to pending, classification kept (see above).
     void resize_rows(size_t n);
     [[nodiscard]] size_t num_rows() const { return slots_.size(); }
 
-    /// Classify row `ci`. Throws `std::logic_error` if its slopes are already
-    /// built: a row's body does not change once the model is closed, so a
-    /// built row is never reclassified.
+    /// Classify row `ci`. Throws `std::logic_error` if it is already built: a
+    /// closed model's row bodies never change.
     void set_row_eligible(int32_t ci, bool eligible);
-    /// As classified. A row not yet built can still be demoted by its build, on a
-    /// non-finite slope.
+    /// As classified; an unbuilt row can still be demoted by a non-finite
+    /// slope.
     [[nodiscard]] bool row_eligible(int32_t ci) const;
 
-    /// Snapshot the rows of G_v for closed-form scoring under `weights`. False
-    /// means the caller must score with `weighted_violation_delta`: some row with
-    /// a nonzero weight is not eligible, or a value the formula reads is not
-    /// finite (where `p + r D` and the DAG's arithmetic part ways). Rows with a
-    /// zero weight are skipped -- they contribute exactly 0 either way -- which
-    /// is also what lets a variable touching a MASKED nonlinear row (the linear
-    /// phase of two-phase GLS) score in closed form.
-    ///
-    /// The snapshot is valid until the assignment or `weights` changes. Throws
-    /// `std::logic_error` if this scorer is not sized to the model's rows (a row
-    /// added to the model after `resize_rows`).
+    /// Snapshot G_v for closed-form scoring under `weights`. False: score
+    /// with `weighted_violation_delta` (a nonzero-weight row is ineligible, or
+    /// a value read is not finite). Zero-weight rows are skipped (exactly 0
+    /// either way), so a MASKED nonlinear row (two-phase GLS) does not block
+    /// the closed form.
+    /// Valid until the assignment or `weights` changes. Throws
+    /// `std::logic_error` if not sized to the model's rows.
     bool prepare(int32_t var_id, const std::vector<double>& weights);
 
-    /// `prepare(var_id, weights)`, which it returns, and in the same pass over
-    /// G_v each term's weight under `second` (#272: Novelty scores its W'-argmin
-    /// under W). `second_ready()` then says whether `prepare(var_id, second)`
-    /// is known to build the SAME terms: true when every row of G_v up to the
-    /// first refusal (all of G_v when there is none) has a zero weight under
-    /// `second` exactly where it has one under `weights` -- the only thing
-    /// prepare reads from a weight. Then that prepare would succeed exactly
-    /// when this one did (a refusal both weigh refuses both), and
-    /// `delta_second(j)` is, to the bit, what its `delta(j)` would return: the
-    /// same terms, summed in the same order. False (a weight one vector has and
-    /// the other lacks): call `prepare(var_id, second)` instead. `second` is
-    /// sized like `weights`.
+    /// Returns `prepare(var_id, weights)` and, in the same pass, records each
+    /// term's weight under `second` (#272: Novelty scores its W'-argmin under
+    /// W). `second_ready()` is true when every row of G_v up to the first
+    /// refusal is zero under `second` exactly where it is under `weights` (all
+    /// prepare reads of a weight): `prepare(var_id, second)` would then succeed
+    /// alike and `delta_second(j)` equals its `delta(j)` to the bit. Otherwise
+    /// call `prepare(var_id, second)`. `second` is sized like `weights`.
     bool prepare(int32_t var_id, const std::vector<double>& weights,
                  const std::vector<double>& second);
     [[nodiscard]] bool second_ready() const { return second_ready_; }
@@ -184,43 +122,34 @@ public:
     /// `std::logic_error`).
     double delta_second(double j);
 
-    /// d(residual of row ci)/d(var_id) for ci = `constraints_of_var(var_id)[k]`
-    /// -- the row named by its position in G_v, which is how the Newton step
-    /// walks it, so the slope is read in O(1). Bit-identical (up to the sign of a
-    /// zero on a satisfied Eq row) to
-    /// `compute_partial(model, constraint_ids()[ci], var_id)`, when the row's
-    /// cached slope provably is (see the definition). False: call compute_partial
-    /// -- also when k is past the end of G_v, or the model's row count is not
-    /// this scorer's.
+    /// d(residual of row ci)/d(var_id), ci = `constraints_of_var(var_id)[k]`
+    /// (by G_v position, as Newton walks it), in O(1). When true, bit-identical
+    /// (up to a zero's sign on a satisfied Eq row) to
+    /// `compute_partial(model, constraint_ids()[ci], var_id)`. False: call
+    /// compute_partial -- also when k is past G_v or the row counts disagree.
     bool residual_partial_at(int32_t var_id, size_t k, double& out);
 
-    /// OR-Tools' `row_max_variations` for row `ci`, over the variables `vars`:
-    /// the largest |d(p - q)/dv| * (ub_v - lb_v), a bound on how far any ONE of
-    /// them can move the row's residual by a jump inside its declared box. Builds
-    /// the row if pending. +inf when a variable with a nonzero slope has an
-    /// infinite (or NaN) box. False when the row is not eligible (or its build
-    /// demoted it), or the scorer is not sized to the model's rows: a non-affine
-    /// row has no such bound. Every variable of `vars` must have `ci` in its G_v;
-    /// one that does not throws `std::logic_error`. O(sum over `vars` of
-    /// log |G_v|); FeasibilityJump calls it once per object, for the objective
-    /// row (#210).
+    /// OR-Tools' `row_max_variations` for row `ci` over `vars`: the largest
+    /// |d(p - q)/dv| * (ub_v - lb_v), bounding how far ONE in-box jump moves
+    /// the residual. Builds the row if pending; +inf for a nonzero slope on an
+    /// infinite or NaN box. False when the row is (or is demoted) ineligible,
+    /// or the scorer is unsized. Each of `vars` must have `ci` in its G_v, else
+    /// `std::logic_error`. O(sum of log |G_v|); FJ calls it once, for the
+    /// objective row (#210).
     bool row_max_variation(int32_t ci, const std::vector<int32_t>& vars, double& out);
 
-    /// Prepares that took the closed form / fell back, and row partials served
-    /// from the cache. Diagnostics, and the pins on the wiring in tests.
+    /// Closed-form / fallback prepares and cached row partials (diagnostics).
     [[nodiscard]] int64_t fast_prepares() const { return fast_prepares_; }
     [[nodiscard]] int64_t fallback_prepares() const { return fallback_prepares_; }
     [[nodiscard]] int64_t cached_partials() const { return cached_partials_; }
     /// delta_second calls: second weights scored from a dual prepare (#272).
     [[nodiscard]] int64_t second_deltas() const { return second_deltas_; }
-    /// Nonzero slopes written by the builds since the last layout reset -- a
-    /// build counter, not a memory figure: the slope array costs 8 B per G_v
-    /// incidence of the model however many rows are built.
+    /// Nonzero slopes written since the last layout reset: a build counter, not
+    /// memory (the array is 8 B per G_v incidence regardless).
     [[nodiscard]] size_t cached_slopes() const { return cached_slopes_; }
-    /// Elements in the slope table: 0 before the first build, and after a layout
-    /// change until the next one, then the model's G_v incidence count AT THAT
-    /// BUILD. Observability for tests -- a table kept across a layout change would
-    /// be the old, shorter length and overrun on the rebuild (#176).
+    /// Slope-table length: 0 before the first build after a layout change, then
+    /// the G_v incidence count AT THAT BUILD. Lets tests catch a stale table
+    /// overrunning on rebuild (#176).
     [[nodiscard]] size_t slope_table_size() const { return slope_len_; }
 
 private:

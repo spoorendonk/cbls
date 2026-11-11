@@ -15,23 +15,14 @@ class NeighbourList;
 
 /// What one `ElementEdit` does to a structured variable's `elements` (#164).
 ///
-/// POSITIONS RATHER THAN A WHOLE VECTOR. Every structured candidate used to
-/// carry the complete element vector it wanted, which cost AT LEAST two heap
-/// allocations (the generator's vector, and the copy of it into the candidate
-/// list) and three O(n) copies (into the undo snapshot, into the variable, and
-/// back out again) per candidate SCORED, on the batch's hot path, for a move
-/// that touches two positions. "At least", because whether the generator's own
-/// `push_back` counts depends on how it builds the vector -- so the ledger is
-/// written as a floor here, in docs/architecture.md and in
-/// docs/benchmarks/README.md, and those three must agree. All but the swap
-/// and the tail exchange are `std::rotate`, `std::reverse` or a single
-/// insert/erase on the vector that is already there.
-///
-/// This is an allocation-count argument, not a micro-optimisation: it holds on
-/// any machine and for any n, and it is what makes a larger candidate sample
-/// affordable (see `StructuralSelection`). `Replace` keeps the old form for the
-/// two things positions cannot express -- an inter-list tail exchange, and a
-/// move from a generator the engine knows nothing about.
+/// POSITIONS RATHER THAN A WHOLE VECTOR: a whole-vector candidate costs AT
+/// LEAST two heap allocations and three O(n) copies per candidate SCORED for a
+/// move touching two positions (the floor docs/architecture.md and
+/// docs/benchmarks/README.md also state; the three must agree). Every kind but
+/// `Replace` edits the existing vector in place. An allocation-count
+/// argument, true on any machine and n, that makes a larger candidate sample
+/// affordable (`StructuralSelection`). `Replace` covers what positions cannot
+/// express: an inter-list tail exchange and an unknown generator's move.
 enum class EditKind : uint8_t {
     None,         ///< absent. A scalar change carries `new_value` and no edit.
     Replace,      ///< `elements = replacement`. The pre-#164 form.
@@ -56,11 +47,10 @@ enum class EditKind : uint8_t {
 ///     Assign       from, element
 ///     Replace      the change's `replacement` vector
 ///
-/// IT IS RELATIVE TO THE ASSIGNMENT THE MOVE WAS BUILT AGAINST. Applying an
-/// edit to a different assignment is not merely a different move; the positions
-/// name different elements and `Erase`/`Assign` can be out of range. The
-/// structural batch is what makes that safe for the several-candidates-per-sample
-/// rule -- see `MoveGenerator::generate`.
+/// RELATIVE TO THE ASSIGNMENT THE MOVE WAS BUILT AGAINST: on another, the
+/// positions name other elements and `Erase`/`Assign` can be out of range. The
+/// structural batch's baseline keeps several candidates per sample safe (see
+/// `MoveGenerator::generate`).
 struct ElementEdit {
     EditKind kind = EditKind::None;
     int32_t from = 0;
@@ -71,25 +61,20 @@ struct ElementEdit {
 
 struct Move {
     /// One variable's part of a move: a scalar value, or up to two positional
-    /// edits to its `elements`.
-    ///
-    /// Two rather than one because `set_swap` is genuinely two edits on one
-    /// variable -- erase the dropped element where it sits, append the new one
-    /// -- and that ORDER is what produces the element vector it has always
-    /// produced. A trailing `EditKind::None` means "only one edit".
+    /// edits applied in ORDER (`set_swap` erases the dropped element, then
+    /// appends the new one). A trailing `EditKind::None` means one edit.
     struct Change {
         int32_t var_id = -1;
         double new_value = 0.0;
         std::array<ElementEdit, 2> edits{};
         std::vector<int32_t> replacement;  // EditKind::Replace only
     };
-    /// Two inline: every move a generator builds has one or two changes, and a
-    /// heap vector here was a malloc per candidate proposed (#274).
+    /// Two inline: every built-in move has one or two changes, so no malloc
+    /// per candidate (#274).
     InlineVector<Change, 2> changes;
-    /// The kind's name. A view, so a STRING LITERAL or other static-storage
-    /// string only: assigning a temporary std::string dangles. A std::string
-    /// allocated for every name over libstdc++'s 15-character small buffer
-    /// ("partition_relocate", ...), once per candidate (#274).
+    /// The kind's name: a STRING LITERAL or other static-storage string only;
+    /// a temporary std::string dangles. A view, so no per-candidate allocation
+    /// for names past the small-string buffer (#274).
     std::string_view move_type;
     double delta_F = 0.0;
 };
@@ -123,47 +108,35 @@ inline ElementEdit assign_edit(int32_t pos, int32_t element) {
 }
 
 /// Apply `change`'s edits to `elements` in place. Out-of-range positions are
-/// ignored rather than indexed: `Variable.elements` is writable from Python, so
-/// an edit built against a longer vector can be replayed against a shorter one
-/// without any check in the way (#156).
+/// ignored, not indexed: `Variable.elements` is writable from Python, so an
+/// edit can meet a shorter vector than it was built for (#156).
 void apply_element_edits(const Move::Change& change, std::vector<int32_t>& elements);
 
-/// `elements` with `change` applied -- the absolute vector the change used to
-/// carry. For tests, for Python, and for anything that wants the result without
-/// touching the model. The engine edits in place instead.
+/// `elements` with `change` applied, without touching the model (tests,
+/// Python). The engine edits in place instead.
 std::vector<int32_t> elements_after(const Move::Change& change,
                                     const std::vector<int32_t>& elements);
 
-/// Does `change` leave `elements` exactly as it is? Decided per kind rather than
-/// by materialising the result, which is the whole point of the representation.
+/// Does `change` leave `elements` exactly as it is? Decided per kind, without
+/// materialising the result.
 ///
-/// EXACT FOR A SINGLE EDIT OVER DISTINCT ELEMENTS, which is every change the
-/// engine builds: `change_is_noop(c, e) == (elements_after(c, e) == e)` there,
-/// pinned over both the fitting and the non-fitting cases in
-/// `tests/test_moves.cpp`. Two things make it so: a List's elements are
-/// distinct, so a reversal of a non-empty range or a segment moved to a
-/// different position always reorders it; and an edit whose positions do not fit
-/// `elements` reads as inert here because applying it IS inert (`apply_one_edit`
-/// ignores an out-of-range position rather than indexing it -- #156).
+/// EXACT FOR A SINGLE EDIT OVER DISTINCT ELEMENTS (every change the engine
+/// builds): `change_is_noop(c, e) == (elements_after(c, e) == e)`, pinned in
+/// `tests/test_moves.cpp`. Distinct elements make any non-empty reversal or
+/// displaced segment a reorder; an out-of-range edit reads as inert because
+/// applying it is inert (#156).
 ///
-/// OUTSIDE THAT IT IS CONSERVATIVE, never wrong in the dangerous direction: it
-/// may report "changed" for something that materialises unchanged, never the
-/// reverse. Two shapes do it, and both matter only because
-/// `Variable::elements` is writable from Python. (1) Edits are judged
-/// INDEPENDENTLY against the original vector, so a pair that cancels --
-/// `erase(1)` then `insert(1, 11)` on `{10, 11, 12}` -- reads as changed. (2)
-/// On repeated elements, `Reverse` and `MoveSegment` decide from positions
-/// alone, so a segment moved within a run of equal values reads as changed.
-/// The cost of either is a candidate scored that need not have been.
+/// OTHERWISE CONSERVATIVE: it may say "changed" for an unchanged result, never
+/// the reverse, so the cost is a needless scored candidate. Reachable only via
+/// Python-written `Variable::elements`: (1) edits are judged INDEPENDENTLY, so
+/// `erase(1)` then `insert(1, 11)` on `{10, 11, 12}` reads as changed; (2) on
+/// repeated elements `Reverse`/`MoveSegment` decide by position alone.
 [[nodiscard]] bool change_is_noop(const Move::Change& change, const std::vector<int32_t>& elements);
 
-/// The whole pre-move state of the variables a `Move` touches.
-///
-/// Deliberately absolute rather than an inverse edit list: `undo_move` is no
-/// longer on the hot path -- the structural batch rolls a candidate back by
-/// replaying it from the sample baseline instead (`StructuralBatch`) -- so the
-/// simplest thing that cannot be subtly wrong is the right one here. It remains
-/// the public and Python-facing way to try a move and take it back.
+/// The whole pre-move state of the variables a `Move` touches: absolute, not
+/// an inverse edit list, since `undo_move` is off the hot path (the structural
+/// batch restores from its sample baseline). The public and Python way to try
+/// a move and take it back.
 struct SavedValues {
     std::vector<double> values;
     std::vector<std::vector<int32_t>> elements;
@@ -172,55 +145,40 @@ struct SavedValues {
 // Move generators
 std::vector<Move> generate_standard_moves(const Variable& var, RNG& rng);
 
-/// Appending form of the above, and the one the structural batch's built-in
-/// generators call (#165). Same moves, same RNG draws, in the same order;
-/// `generate_standard_moves` is this with `out` empty and `neighbours` null.
+/// Appending form of the above, called by the structural batch's built-in
+/// generators (#165): same moves and RNG draws in the same order;
+/// the overload above is this with `out` empty and `neighbours` null.
 ///
-/// `neighbours`, when non-null, makes the move's TARGET granular rather than
-/// uniform: a List move relocates/swaps position `i` against the position of one
-/// of `elements[i]`'s nearest neighbours, and a Set add/swap brings in the
-/// nearest neighbour of a currently-selected element that is not already in.
-/// Both fall back to the uniform draw when the list has nothing usable to offer,
-/// so a partial list is a restriction on where the search looks and never a
-/// restriction on what it can reach. Null is the default everywhere and is what
-/// keeps an unconfigured run on the trajectory it had before #165.
+/// Non-null `neighbours` makes the TARGET granular: a List move pairs position
+/// `i` with one of `elements[i]`'s nearest neighbours; a Set add/swap brings in
+/// a selected element's nearest neighbour not already in. Both fall back to the
+/// uniform draw when the list offers nothing, so a partial list limits where
+/// the search looks, never what it reaches. Null (the default) keeps an
+/// unconfigured run on its trajectory.
 ///
-/// A neighbour-guided List move builds an element -> position index, so it is
-/// O(|elements|) per call on top of the move construction that is already
-/// O(|elements|) per candidate. That is a constant-factor cost on a path that
-/// only runs when a caller supplied a list; the win it pays for is asymptotic on
-/// the SEARCH rather than on the call -- k candidates drawn from a k-nearest
-/// list instead of from the whole universe.
+/// Cost: a guided List move adds an O(|elements|) element -> position index
+/// per call, a constant factor on construction that is already O(|elements|);
+/// it buys an asymptotic SEARCH win (k candidates from a k-nearest list, not
+/// the universe), and is paid only when a list was supplied.
 void generate_standard_moves(const Variable& var, RNG& rng, std::vector<Move>& out,
                              const NeighbourList* neighbours);
 
 /// Append AT MOST ONE candidate inter-list move over `partition` (#164):
 /// relocate, swap or 2-opt* between two of its lists, and -- under
 /// `Cover::AtMostOnce` -- an insert from the unassigned elements or a removal.
-/// The kind is drawn uniformly from the ones the partition admits, so this list
-/// is also the mix; a kind whose guards reject the draw appends nothing.
+/// The kind is drawn uniformly from those the partition admits; a kind whose
+/// guards reject the draw appends nothing.
 ///
-/// AT MOST ONE CANDIDATE PER CALL, deliberately. Every candidate from one
-/// `MoveGenerator::generate` is built against, and applied to, the same
-/// assignment -- the structural batch puts the sample's baseline back before
-/// each one -- and `StructuralSelection::FirstImprovingSample` may commit
-/// several of them in turn, so committing k and then k+1 leaves only k+1's
-/// change. That baseline is what makes several candidates safe in general
-/// (`move_generator.h` carries the argument); one per call is kept anyway,
-/// because a cover maintained by construction is expensive to get wrong and one
-/// candidate is safe under any batch that applies moves at all rather than under
-/// this one's particular discipline. The sampling policies call `generate`
-/// repeatedly, so they still get a sample of the size they asked for.
+/// AT MOST ONE CANDIDATE PER CALL, deliberately. The batch's per-sample
+/// baseline makes several safe (argument in `move_generator.h`), but one is
+/// kept because a cover maintained by construction is costly to get wrong, and
+/// one is safe under any batch that applies moves, not just this one's
+/// discipline. Sampling policies call `generate` repeatedly for full samples.
 ///
-/// `anchor` is a member list id that every candidate must change, or -1 to draw
-/// both lists. The diversification kick names one, because it asks "move THIS
-/// variable" and decides whether the kick did anything by looking at that
-/// variable alone.
-///
-/// `neighbours` makes the TARGET granular rather than uniform, exactly as it
-/// does for the intra-list moves: an element is relocated next to, or swapped
-/// against, one of its nearest neighbours in the other list. Null is the default
-/// everywhere.
+/// `anchor`: a member list id every candidate must change, or -1 to draw both
+/// lists; the diversification kick names one because it judges its effect on
+/// that variable alone. `neighbours` makes the TARGET granular as for
+/// intra-list moves (nearest neighbours in the other list); null by default.
 void generate_partition_moves(const Model& model, int partition, int32_t anchor, RNG& rng,
                               std::vector<Move>& out, const NeighbourList* neighbours);
 
@@ -236,27 +194,22 @@ void generate_partition_moves(const Model& model, int partition, int32_t anchor,
 ///     reversals that do, across two lists the 2-opt* tail exchange in both
 ///     orientations.
 ///
-/// Under `Cover::AtMostOnce` an assigned `e` is also offered for removal, and an
-/// unassigned one is inserted just after and just before each assigned `f`.
-/// Finally `e` is moved into (or inserted into) every EMPTY member list, so an
-/// emptied list can be reopened. Length bounds are respected and no-op moves
-/// are dropped. At most `5 * |neighbours.of(e)| + 1 + |empty lists|`
-/// candidates, so the batch's bounded-yield contract holds for any fixed k and
-/// fleet.
+/// Under `Cover::AtMostOnce` an assigned `e` is also offered for removal, and
+/// an unassigned one inserted just after and before each assigned `f`. `e` is
+/// also moved into every EMPTY member list, so an emptied list can reopen.
+/// Length bounds hold and no-ops are dropped. At most
+/// `5 * |neighbours.of(e)| + 1 + |empty lists|` candidates, so the batch's
+/// bounded-yield contract holds for any fixed k and fleet.
 ///
-/// Two differences from Toth & Vigo, both the form #203 specified: the sparse
-/// graph is each element's k NEAREST neighbours, not the paper's edges below a
-/// cost threshold nu = beta * z / (n + K), a heuristic solution's average edge
-/// cost, plus every depot edge; and one call generates the neighbourhood of ONE
-/// randomly drawn element, not the whole granular neighbourhood.
+/// Deviations from Toth & Vigo, as #203 specified: the sparse graph is each
+/// element's k NEAREST neighbours, not edges below nu = beta * z / (n + K) plus
+/// depot edges; and one call covers ONE drawn element, not the whole
+/// neighbourhood.
 ///
-/// SEVERAL CANDIDATES PER CALL, unlike `generate_partition_moves`: it is meant
-/// for a policy that commits at most one of them (take-best). Every candidate is
-/// built against the current assignment, which is what the batch's per-sample
-/// baseline restores before applying each one.
-///
-/// `slot_scratch` is the caller's reusable element -> (list, position) index;
-/// it is rebuilt from the lists on every call, never trusted across calls.
+/// SEVERAL CANDIDATES PER CALL, for a policy committing at most one
+/// (take-best); all are built against the current assignment, which the
+/// batch's per-sample baseline restores before each. `slot_scratch`: the
+/// caller's reusable element -> (list, position) index, rebuilt every call.
 void generate_granular_partition_moves(const Model& model, int partition, RNG& rng,
                                        const NeighbourList& neighbours, std::vector<Move>& out,
                                        std::vector<int64_t>& slot_scratch);
