@@ -1,9 +1,8 @@
 """Re-run the MINLPLib CBLS rows at the current engine HEAD, in one command.
 
-This is the driver #123 regenerated the published table with: whenever the
-engine moves, `comparison.csv`'s `commit_sha` column names an engine that no
-longer exists and the table is regenerated against a current build. The whole
-procedure is one invocation:
+Whenever the engine moves, `comparison.csv`'s `commit_sha` column names an
+engine that no longer exists; this regenerates the table against a current
+build (#123) in one invocation:
 
     .venv/bin/python3 benchmarks/minlplib/run_benchmark.py
 
@@ -13,85 +12,68 @@ re-merges the **CBLS rows** of `comparison_all.csv`, and prints a summary. See
 `benchmarks/instances/minlplib/README.md` ("Re-running the CBLS rows") for the
 surrounding procedure and the post-run steps.
 
-SEEDS (#141). `comparison.csv` is ONE pre-registered seed, `DEFAULT_SEED`, and
-only that seed may write it or `anytime_trace.csv`: the published seed is fixed
-before the run by construction, not chosen after it. Every whole-roster run
-onto the default paths -- that seed and any other -- also publishes its rows
-into `comparison_seeds.csv` beside it, with the seed on every row, replacing
-that seed's earlier rows and keeping the others'. Another seed's own table and
-trace are assembled inside its staging directory. The summary then prints the
-spread across the per-seed table's comparable seeds (`campaign_report.
-summarize_seeds`, under the same aggregation rule as the single-table tally).
-Each published set gets a run record -- commit, budget, seed, machine,
-concurrency -- beside it (`comparison.run.json`, `comparison_seeds.run.json`).
+SEEDS (#141). `comparison.csv` is ONE pre-registered seed, `DEFAULT_SEED`, the
+only seed that may write it or `anytime_trace.csv`, so the published seed is
+fixed before the run, not chosen after it. Every whole-roster run onto the
+default paths, that seed included, also publishes its rows into
+`comparison_seeds.csv` beside it, seed on every row, replacing that seed's
+earlier rows and keeping the others'. Another seed's own table and trace are
+assembled inside its staging directory. The summary prints the spread across
+the per-seed table's comparable seeds (`campaign_report.summarize_seeds`, the
+single-table tally's aggregation rule). Each published set gets a run record
+(commit, budget, seed, machine, concurrency) beside it (`comparison.run.json`,
+`comparison_seeds.run.json`).
 
-Why it drives the runner one instance at a time rather than issuing the single
-whole-roster command the README used to document:
+Why one instance at a time rather than one whole-roster command:
 
 * **Resumable.** `cbls_minlplib` truncates its output CSV on open and writes
   rows as it goes, so a crash 40 minutes in leaves the published table
   half-replaced and the work lost. Here each instance lands in its own staging
-  file, outside the checkout (`default_staging_root`, so pre-push's
-  `rm -rf build` cannot take it), and a re-run skips the ones already complete.
+  file, outside the checkout (`default_staging_root`), and a re-run skips the
+  ones already complete.
 * **Non-destructive.** `comparison.csv` and `anytime_trace.csv` are only touched
   at the end, by an atomic rename of a fully-assembled file, so a failed solve
-  leaves the previous tables byte-for-byte intact. `comparison_all.csv` is the
-  exception: the merge step rewrites it in place, so a crash *there* can leave
-  it half-written — re-run to repair it, which reuses the staged rows and goes
-  straight back to the merge.
-* **Faithful.** The runner seeds each instance's solve from `--seed` directly
+  leaves the previous tables byte-for-byte intact. Except `comparison_all.csv`:
+  the merge rewrites it in place, so a crash *there* can leave it half-written;
+  a re-run repairs it, reusing the staged rows and going straight to the merge.
+* **Faithful.** The runner seeds each solve from `--seed` directly
   (`cbls::solve(model, time_limit, seed, ...)`), so a per-instance process sees
-  exactly the state a whole-roster process would. The budget is wall-clock in
-  either case, which is the dominant source of run-to-run spread; see the
-  README's "Results".
+  exactly the state a whole-roster process would. The budget is wall-clock
+  either way, the dominant source of run-to-run spread; see the README's
+  "Results".
 
 Guards, because this file's output is published:
 
-* checks every verified row OUTSIDE the engine's DAG before publishing it
-  (#205): the runner leaves each verified row's assignment in the staging
-  directory (`--solution-dir`), and `verify_staged` has SCIP read the `.nl` and
-  check that assignment and its objective (`independent_check.py`). A row SCIP
-  rejects is published as `VERIFY-FAILED(independent: ...)`. The runner's own
-  re-check reads the node values the search optimised, so an evaluation bug the
-  two share passed it; that is also why the runner no longer writes the
-  published table itself. Needs the `benchmarks` extra (pyscipopt);
-
-* refuses a dirty working tree — a plain SHA from a modified checkout claims a
-  reproducibility the numbers do not have. The files this driver itself
-  publishes into `--inst-dir` do not count (`run_commit_sha`), so the next
-  seed of a campaign runs at the same SHA as the one that just published;
+* checks every verified row OUTSIDE the engine's DAG before publishing it, in
+  SCIP (`verify_staged`, #205); needs the `benchmarks` extra (pyscipopt);
+* refuses a dirty working tree, its own published files excepted
+  (`run_commit_sha`): a plain SHA from a modified checkout claims a
+  reproducibility the numbers do not have;
 * refuses a build directory that is not `Release`, or one configured from a
   different source tree than the SHA is read from;
 * rebuilds the runner target itself, so the binary cannot lag the SHA it is
   about to be labelled with;
-* refuses a subset run (`--instances`) that has not been given scratch output
-  *and staging* paths, so a debug run can neither truncate a fifty-row table nor
-  leave short-budget rows for a later run's resume to publish;
+* refuses a subset run (`--instances`) without scratch output *and staging*
+  paths, so a debug run can neither truncate a fifty-row table nor leave
+  short-budget rows for a later resume to publish;
 * refuses any whole-roster run that would write exactly one of the two published
-  artifacts, in either direction — `--out` moved off `comparison.csv` with
-  `--trace-out` left at its default would replace the published anytime trace at
-  exit 0 while reporting a scratch table, and the converse publishes
-  `comparison.csv` at this engine beside a trace from the previous one (#149);
+  artifacts, which would pair a table and a trace from different engines (#149);
 * refuses to resume a staging directory written by a different commit, budget,
   seed, thread count, host or roster, and re-solves any individual staged row
   whose `commit_sha` or thread count disagrees;
 * sets aside (`.rejected`) the staged row of any solve whose runner exited
-  nonzero, so a resume re-solves it: a solve that lost portfolio workers (#170)
-  writes an ordinary-looking row and says so only in its exit status;
-* leaves an instance with two recorded failed attempts alone on a resume, since
-  a third that succeeds would turn a final no-solution into solved depending on
-  how often someone re-runs (#323), and then assembles no table, which would
-  lack its row: `--retry-final NAME` asks for another attempt, `--instances NAME`
-  does not, since a campaign runs one name per call;
-* marks each staged row the independent SCIP check has passed (or demoted) with
-  `<instance>.checked`, holding the CSV's sha256, so a scorer reading the
-  staging directory can tell a checked row from one a killed driver left (#307);
-* runs the runner at `--threads N` (default 1; every campaign runs at
-  `CAMPAIGN_THREADS`, Simon, 2026-11-01, #255, #256) and never mixes thread
-  counts in one table: each row's `search_config` cell and each run record carry
-  the count, a count that is neither 1 nor the campaign's may not publish, and a
-  per-seed table already holding another count's seeds is refused, as is a
-  count above the CPUs this process may run on;
+  nonzero, so a resume re-solves it (`quarantine_staged`, #170);
+* leaves an instance with two recorded failed attempts alone on a resume
+  (`final_no_solutions`, #323) and then assembles no table, which would lack its
+  row; `--retry-final NAME` asks for another attempt, `--instances NAME` does
+  not, since a campaign runs one name per call;
+* marks each row the independent check has passed (or demoted) with
+  `<instance>.checked`, its CSV's sha256, so a scorer can tell it from one a
+  killed driver left (#307);
+* never mixes thread counts in one table (`--threads`, default 1; campaigns run
+  at `CAMPAIGN_THREADS`): each row's `search_config` and each run record carry
+  the count, any other count may not publish, a per-seed table holding another
+  count's seeds is refused, as is a count above the CPUs this process may use;
 * refuses a seed other than `DEFAULT_SEED` writing either published artifact,
   by default or by name, and any scratch output (or its run record) resolving
   to a published file (#141);
@@ -122,9 +104,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-# Run as a script (`python3 benchmarks/minlplib/run_benchmark.py`, the documented
-# form), only this file's own directory lands on sys.path. The repository root is
-# what makes the shared modules importable from any working directory.
+# Run as a script, only this file's directory is on sys.path; the repository root
+# makes the shared modules importable from any working directory.
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
@@ -179,18 +160,14 @@ REFERENCE_SOLVE = Path(__file__).resolve().parent / "reference_solve.py"
 #: from the committed anytime trace in the benchmark README ("Why 60s").
 DEFAULT_TIME_LIMIT = 60.0
 
-#: Seed of the published run: the PRE-REGISTERED seed (#141). Kept so a re-run
-#: differs from the old table only in the engine, not in the configuration, and
-#: the only seed allowed to write `comparison.csv` / `anytime_trace.csv` -- so the
-#: published seed is fixed before any run, never chosen after one. Every other
-#: seed publishes into the per-seed table (`campaign_report.SEEDS_TABLE_NAME`)
-#: beside it, as this one does too.
+#: Seed of the published run: the PRE-REGISTERED seed (#141), so a re-run differs
+#: from the old table only in the engine. The only seed allowed to write
+#: `comparison.csv` / `anytime_trace.csv`; every seed, this one too, publishes
+#: into the per-seed table (`campaign_report.SEEDS_TABLE_NAME`) beside it.
 DEFAULT_SEED = 1
 
-#: Processes at a time, as the run record states it beside `--threads` (each
-#: solve's portfolio size). The driver runs one instance at a time; both are
-#: recorded rather than implied, because a wall-clock-budgeted number means
-#: nothing without them.
+#: Processes at a time, recorded beside `--threads` (each solve's portfolio
+#: size): a wall-clock-budgeted number means nothing without both.
 PARALLEL_SOLVES = 1
 
 #: `--threads` by default: the single-threaded `solve()` the committed tables
@@ -200,9 +177,8 @@ DEFAULT_THREADS = 1
 #: The thread count every campaign runs cbls at: Simon's decision of 2026-11-01,
 #: recorded on https://github.com/spoorendonk/cbls/issues/255 for the full
 #: campaign, https://github.com/spoorendonk/cbls/issues/256. A table holds one
-#: thread count, so a count that is neither this nor `DEFAULT_THREADS` may not
-#: publish (`threads_policy_error`), and `cbls_minlplib` refuses it onto its
-#: published table the same way.
+#: thread count: any other than this or `DEFAULT_THREADS` may not publish
+#: (`threads_policy_error`), and `cbls_minlplib` refuses it the same way.
 CAMPAIGN_THREADS = 16
 
 #: Where a seed's assembled table and trace land when it is not the published
@@ -222,17 +198,13 @@ STAMP_NAME = "stamp.txt"
 def default_staging_root() -> Path:
     """The parent of every seed's default staging directory, outside the checkout.
 
-    `$XDG_STATE_HOME/cbls/minlplib-rerun` (`~/.local/state/...` when unset). Until
-    #141 it was `<build-dir>/minlplib-rerun`, which pre-push's ```clean fence
-    (`rm -rf build`) deletes -- so a push in the middle of a fifty-minute campaign
-    threw away every staged instance and its log. Outside the repository rather
-    than in a gitignored directory inside it, because the worktree workflow
-    deletes whole checkouts after a merge, and a gitignored `results/` would go
-    with them. XDG's *state* directory and not its cache: state is defined as
-    data that should survive a restart, cache as data that may be deleted at any
-    time, and a resumable campaign is the former. Two checkouts sharing it is
-    safe: the stamp refuses to resume rows from another commit, budget, seed,
-    thread count or host. Read at call time, so a test can point it elsewhere.
+    `$XDG_STATE_HOME/cbls/minlplib-rerun` (`~/.local/state/...` when unset). Not
+    under the build directory, which pre-push's ```clean fence (`rm -rf build`)
+    deletes (#141), nor gitignored in the checkout, which the worktree workflow
+    deletes after a merge. XDG *state*, not cache: state should survive a
+    restart, cache may be deleted at any time. Two checkouts sharing it is safe:
+    the stamp refuses to resume rows from another commit, budget, seed, thread
+    count or host. Read at call time, so a test can point it elsewhere.
     """
     state = os.environ.get("XDG_STATE_HOME", "")
     # The XDG spec ignores a relative value; so does this.
@@ -259,13 +231,12 @@ def resolve_paths(args: argparse.Namespace, sha: str) -> Paths:
     The pre-registered seed defaults to the published `comparison.csv` and
     `anytime_trace.csv`; any other seed defaults to its own staging directory,
     so leaving `--out` off can never publish a second seed into the published
-    table. A whole-roster run onto the default paths -- at any seed -- also
-    publishes its rows into the per-seed table.
+    table. A whole-roster run onto the default paths, at any seed, also
+    publishes into the per-seed table.
 
     The default staging directory is keyed by commit, budget and thread count as
-    well as seed: it outlives every campaign now, and keyed by seed alone the
-    first run after any new commit would hit the stamp's refusal instead of
-    starting fresh.
+    well as seed: it outlives every campaign, so keyed by seed alone the first
+    run after a new commit would hit the stamp's refusal instead of starting fresh.
     """
     published_out = args.inst_dir / "comparison.csv"
     stage = args.staging_dir or (
@@ -295,10 +266,9 @@ def resolve_paths(args: argparse.Namespace, sha: str) -> Paths:
 def roster_from_bounds(bounds_csv: Path) -> list[str]:
     """Instance names in `bounds.csv` order — the roster of record.
 
-    Same source and same order the runner uses when given no `--instance`, so an
-    assembled table is row-for-row comparable with a whole-roster run's. An
-    absent file yields an empty roster rather than raising, so preflight can turn
-    it into the refusal that names `download.py`.
+    The runner's source and order without `--instance`, so an assembled table is
+    row-for-row comparable with a whole-roster run's. An absent file yields an
+    empty roster, which preflight refuses naming `download.py`.
     """
     if not bounds_csv.exists():
         return []
@@ -364,9 +334,8 @@ SEEDS_TABLE_COLUMNS: tuple[str, ...] = (SEED_COLUMN, *runner.RUNNER_COLUMNS)
 def _seeds_table_problems(args: argparse.Namespace) -> list[str]:
     """Refusals about a per-seed table this run would add its rows to.
 
-    Checked up front because `publish_seed_rows` refuses the same things AFTER
-    the roster has been solved: a table whose header is not this runner's, or a
-    run record that does not parse, would otherwise cost fifty minutes to find.
+    Up front, since `publish_seed_rows` refuses the same things AFTER the solves:
+    a foreign header or an unparsable run record would cost fifty minutes to find.
     """
     seeds_out = resolve_paths(args, "").seeds_out
     if seeds_out is None:
@@ -397,10 +366,9 @@ def _seeds_threads_problems(
 ) -> list[str]:
     """Refuse adding this run's seed beside seeds measured at another thread count.
 
-    `publish_seed_rows` replaces this seed's block and keeps every other seed's,
-    so a 16-thread seed published beside 1-thread ones would put two thread
-    counts in one table. This seed's own record is about to be replaced, so it
-    does not count.
+    `publish_seed_rows` keeps every other seed's block, so a 16-thread seed beside
+    1-thread ones would mix thread counts. This seed's own record is about to be
+    replaced, so it does not count.
     """
     others = {
         seed: record.concurrency.get("threads_per_solve")
@@ -444,8 +412,8 @@ def common_preflight(
 ) -> list[str]:
     """The refusals shared with `run_ablation.py`: the binary, the SHA and the roster.
 
-    Kept apart from `preflight` because the ablation driver's namespace has no
-    `--out`/`--seed`/`--staging-dir`, which the per-seed-table check needs.
+    Apart from `preflight`: the ablation namespace has no `--out`/`--seed`/
+    `--staging-dir`, which the per-seed-table check needs.
     """
     return _build_problems(args, sha, dirty_paths) + _data_problems(args, roster)
 
@@ -455,8 +423,8 @@ def preflight(
 ) -> list[str]:
     """Every reason to refuse this invocation, checked before anything is spent.
 
-    All of them are cheap and all of them would otherwise surface as a wrong or
-    half-written published table — some of them 50 minutes in.
+    All cheap; each would otherwise surface as a wrong or half-written published
+    table, some 50 minutes in.
     """
     return (
         common_preflight(args, sha, roster, dirty_paths)
@@ -518,18 +486,12 @@ def usage_error(args: argparse.Namespace, published_out: Path) -> str | None:
 def _whole_roster_error(args: argparse.Namespace, published_out: Path) -> str | None:
     """`usage_error` for a whole-roster run: never publish one of the two artifacts alone."""
     if args.seed != DEFAULT_SEED:
-        # Its table and trace default into its own staging directory and its
-        # rows into the per-seed table, so neither published artifact is in
-        # reach and the two guards below have nothing to protect.
+        # Neither published artifact is in reach: its table and trace default
+        # into its staging directory, its rows into the per-seed table.
         return None
-    # A whole-roster run replaces the published comparison.csv, so skipping
-    # the trace would leave anytime_trace.csv describing the previous engine
-    # with nothing in either file saying the two disagree — and the README's
-    # post-run step recomputes its budget table from that stale trace.
-    # EITHER way of not writing the published trace, not just --no-trace: a
-    # scratch --trace-out with a defaulted --out leaves anytime_trace.csv at
-    # the previous engine just as surely, and slips past the guard below too
-    # (that one keys on --out having moved, and here it has not).
+    # Publishing comparison.csv without the published trace (--no-trace, or a
+    # scratch --trace-out) leaves anytime_trace.csv at the previous engine, and
+    # the README's post-run step recomputes its budget table from that trace.
     if (not args.trace or args.trace_out is not None) and (
         args.out is None or args.out.resolve() == published_out.resolve()
     ):
@@ -540,14 +502,11 @@ def _whole_roster_error(args: argparse.Namespace, published_out: Path) -> str | 
             f"while leaving {published_trace} at the previous one; drop it, or "
             "pass --out to write somewhere other than the published table"
         )
-    # The converse hazard, and the one the #149 campaign walks straight into:
-    # `--out` moved off the published table but `--trace-out` left to its
-    # default, which is the published `anytime_trace.csv`. Nothing else stops
-    # it -- `publish` assembles the staged traces into `trace_out` whatever
-    # `out` is, and the runner's own guard never sees the published path
-    # because each instance is staged. A scratch run would then replace the
-    # published anytime profile with one measured at another seed or budget,
-    # at exit 0, while reporting that it wrote a scratch table.
+    # The converse (#149): `--out` moved off the published table with
+    # `--trace-out` defaulted to the published `anytime_trace.csv`. `publish`
+    # assembles traces into `trace_out` whatever `out` is, and the runner's
+    # guard never sees the published path (each instance is staged), so a
+    # scratch run would replace the published profile at exit 0.
     if (
         args.trace
         and args.trace_out is None
@@ -611,9 +570,9 @@ PROTECTED_INPUTS: tuple[str, ...] = (
 def published_paths(inst_dir: Path) -> tuple[Path, ...]:
     """Each published table in `inst_dir` and its run-record path.
 
-    A superset of what a publish writes: no publish writes `anytime_trace.run.json`
-    or `comparison_all.run.json`, but both are the driver's own names, so the dirty
-    guard and the protected-output check treat them as its output too.
+    A superset of what a publish writes: `anytime_trace.run.json` and
+    `comparison_all.run.json` are never written but are the driver's own names,
+    so the dirty guard and the protected-output check treat them as output too.
     """
     tables = [inst_dir / name for name in PUBLISHED_NAMES]
     return tuple(f for t in tables for f in (t, run_record_path(t)))
@@ -629,13 +588,12 @@ def run_commit_sha(inst_dir: Path, repo_root: Path = REPO_ROOT) -> str:
     """The SHA this run's rows are labelled with: `commit_sha`, blind to this driver's own output.
 
     The dirty guard is about the code that ran. A multi-seed campaign runs one
-    seed per invocation, and seed 1's publish modifies the tracked
-    `comparison.csv`, `anytime_trace.csv` and `comparison_all.csv` -- so until
-    #123's campaign found it, seed 2 refused the tree seed 1 had just left, and
-    committing between seeds would have split the campaign across two SHAs,
-    which the seed summary then drops. Only `published_paths(inst_dir)` is
-    ignored: a modified instance-directory input (`analysis_notes.csv` changes
-    every later row's note), README or source file still marks the tree dirty.
+    seed per invocation, and seed 1's publish modifies tracked tables; counted,
+    seed 2 would refuse that tree, and committing between seeds would split the
+    campaign across two SHAs, which the seed summary drops (#123). Only
+    `published_paths(inst_dir)` is ignored: a modified instance-directory input
+    (`analysis_notes.csv` changes every later row's note), README or source file
+    still marks the tree dirty.
     """
     return commit_sha(repo_root, ignore=published_paths(inst_dir))
 
@@ -710,11 +668,11 @@ def roster_dir_error(args: argparse.Namespace, published_out: Path) -> str | Non
 def budget_policy_error(args: argparse.Namespace, published_out: Path) -> str | None:
     """Refuse a non-default budget writing any published table (#141's review).
 
-    A whole-roster run onto the default paths publishes -- `comparison.csv` at
-    seed 1, its seed's block of `comparison_seeds.csv` at any seed -- so a
-    five-second smoke run there replaced that seed's 60s block. Same rule as the
-    runners' "a non-default arm may never write a published table": a budget
-    other than `DEFAULT_TIME_LIMIT` must name a scratch `--out`.
+    A whole-roster run onto the default paths publishes (`comparison.csv` at seed
+    1, its seed's block of `comparison_seeds.csv` at any seed), so a five-second
+    smoke run there would replace that seed's 60s block. As for the runners' "a
+    non-default arm may never write a published table", a budget other than
+    `DEFAULT_TIME_LIMIT` must name a scratch `--out`.
     """
     if args.time_limit == DEFAULT_TIME_LIMIT or args.instances:
         return None
@@ -731,10 +689,9 @@ def budget_policy_error(args: argparse.Namespace, published_out: Path) -> str | 
 def threads_policy_error(args: argparse.Namespace, published_out: Path) -> str | None:
     """Refuse a thread count that is neither 1 nor `CAMPAIGN_THREADS` writing a published table.
 
-    The runner's own guard against it never fires here, because every instance
-    is staged; this is that guard for the driver. 1 is the committed tables'
-    count and 16 the campaign protocol's (#255, #256); a run at any other count
-    must name a scratch `--out`, as a run at another budget must.
+    The runner's own guard never fires here, since every instance is staged. 1
+    is the committed tables' count and 16 the campaign protocol's (#255, #256);
+    any other count must name a scratch `--out`, as another budget must.
     """
     if args.threads in (DEFAULT_THREADS, CAMPAIGN_THREADS) or args.instances:
         return None
@@ -752,12 +709,11 @@ def threads_policy_error(args: argparse.Namespace, published_out: Path) -> str |
 def seed_policy_error(args: argparse.Namespace, published_out: Path) -> str | None:
     """Refuse any route by which a seed other than `DEFAULT_SEED` reaches a published file.
 
-    The published table is ONE pre-registered seed (#141): an A/B against the
-    previous table where only the engine differs. A second seed written there,
-    by `--out` or by `--trace-out`, would make the published seed whichever one
-    was run last -- a post-hoc selection by another name. Also refused at seed 1:
-    a `--trace-out` naming the published trace while `--out` is scratch, the
-    explicit spelling of the hazard `usage_error`'s defaulted-trace guard covers.
+    The published table is ONE pre-registered seed (#141), an A/B against the
+    previous table where only the engine differs; a second seed written there
+    would make the published seed whichever ran last, a post-hoc selection. Also
+    refused at seed 1: a `--trace-out` naming the published trace while `--out`
+    is scratch, the explicit form of `usage_error`'s defaulted-trace guard.
     """
     misdirected = _misdirected_output(args, published_out)
     if misdirected:
@@ -787,11 +743,10 @@ def seed_policy_error(args: argparse.Namespace, published_out: Path) -> str | No
 def staging_stamp(args: argparse.Namespace, sha: str) -> str:
     """The configuration a staging directory's rows belong to, one field per line.
 
-    The host and the roster are part of it since #141 moved the default staging directory out of
-    the build tree: a home directory can be shared between machines, and a
-    campaign resumed on another one would publish one table measured on two. The
-    thread count since #299: a campaign resumed at another `--threads` would
-    publish one table measured with two portfolio sizes.
+    Host and roster (#141): a home directory can be shared between machines, and
+    a campaign resumed on another would publish one table measured on two.
+    Threads (#299): resumed at another `--threads`, one table would mix two
+    portfolio sizes.
     """
     return (
         f"commit={sha}\ntime-limit={args.time_limit:g}\nseed={args.seed}\n"
@@ -814,10 +769,9 @@ def roster_fingerprint(inst_dir: Path) -> str:
 def staging_stamp_conflict(stage: Path, args: argparse.Namespace, sha: str) -> str | None:
     """Refuse a staging directory written by a different engine, budget or seed.
 
-    Resume matches on a staged file being *complete*, which says nothing about
-    what produced it. Without this, a run interrupted at one commit and resumed
-    at another — or a five-second smoke run over the whole roster — publishes one
-    table built from two configurations, and only `wall_seconds` would betray it.
+    Resume matches on a staged file being *complete*, not on what produced it:
+    a run resumed at another commit, or a five-second smoke run over the roster,
+    would publish one table from two configurations that only `wall_seconds` betrays.
     """
     stamp_path = stage / STAMP_NAME
     stamp = staging_stamp(args, sha)
@@ -844,13 +798,12 @@ def staged_row_complete(path: Path, sha: str) -> bool:
 
     Three ways a staged file can look done without being usable:
 
-    * the runner opens its CSV and writes the header before it solves anything,
-      so a killed job leaves a header-only file;
-    * a job killed mid-write leaves a torn last line, which still reads as a
-      line — hence the trailing-newline and field-count checks;
-    * a row staged by an earlier invocation carries *that* run's commit, and
-      reusing it publishes a table whose rows disagree about which engine
-      produced them (issue #123 asks for one SHA in the column).
+    * the runner writes the header before it solves, so a killed job leaves a
+      header-only file;
+    * a job killed mid-write leaves a torn last line, still a line: hence the
+      trailing-newline and field-count checks;
+    * a row staged at an earlier commit would mix engines in one table (#123
+      asks for one SHA in the column).
     """
     row = _staged_row(path)
     return row is not None and path.read_text().endswith("\n") and row.get("commit_sha") == sha
@@ -864,14 +817,12 @@ def staged_row_whole(path: Path) -> bool:
 def staged_unpublishable(path: Path) -> bool:
     """Whether a staging CSV's row must NOT stand in for a fresh solve.
 
-    Read apart from `staged_row_complete`, which asks whether the FILE is whole.
-    Such a row is whole -- header, one full line, the right commit -- and that is
-    the problem: it would otherwise stand in for a solve on the next resume.
-
+    Apart from `staged_row_complete`, which asks whether the FILE is whole: such
+    a row is whole, and would otherwise stand in for a solve on the next resume.
     True for a row the runner wrote after throwing, and for any note
-    `runner.STAGEABLE_NOTES` does not recognise, an absent `note` column included. An
-    unreadable file is left to `staged_row_complete` and reported as incomplete,
-    not as unpublishable.
+    `runner.STAGEABLE_NOTES` does not recognise, an absent `note` column included.
+    An unreadable file is left to `staged_row_complete` (incomplete, not
+    unpublishable).
     """
     row = _staged_row(path)
     return row is not None and not stageable_note(row.get("note", ""))
@@ -890,19 +841,15 @@ def _staged_row(path: Path) -> dict[str, str] | None:
 def staged_complete(args: argparse.Namespace, sha: str, name: str, stage: Path) -> bool:
     """Whether `name`'s staged output can stand in for a fresh solve.
 
-    Both files matter: a run made with `--no-trace` leaves a complete CSV and no
-    trace at all, and skipping on the CSV alone would replace `comparison.csv`
-    and only then fail to assemble the trace.
+    Both files matter: a `--no-trace` run leaves a complete CSV and no trace, and
+    skipping on the CSV alone would replace `comparison.csv` and only then fail
+    to assemble the trace.
 
     A row the runner wrote after THROWING is refused (#153), as is any row whose
-    note `runner.STAGEABLE_NOTES` does not recognise. It is complete by every structural
-    check -- which is exactly why it has to be named here: the runner exits
-    nonzero on it and `run_roster` aborts, but `--resume` is the default, so
-    without this the next invocation would skip the instance and `publish` would
-    assemble a row that measured nothing into `comparison.csv`. The abort would
-    have delayed the bad publish by one invocation rather than preventing it. A
-    coverage gap -- `unsupported`, or a missing `.nl` -- exits 0 and is NOT
-    refused here; it is a documented row like any other.
+    note `runner.STAGEABLE_NOTES` does not recognise: structurally complete, it
+    would be skipped on the default `--resume` and `publish` would assemble a row
+    that measured nothing. A coverage gap (`unsupported`, or a missing `.nl`)
+    exits 0 and is NOT refused; it is a documented row like any other.
     """
     if not staged_row_complete(stage / f"{name}.csv", sha):
         return False
@@ -921,10 +868,9 @@ SEARCH_CONFIG_THREADS = re.compile(r"(?:^|;)threads=([0-9]+)(?:;|$)")
 def staged_row_threads(path: Path) -> int | None:
     """The thread count a staged row was solved at, or None when it has no whole row.
 
-    The staging stamp keys a directory to one count, but `--no-resume` rewrites
-    the stamp and leaves the earlier rows in place: an interrupted re-run at
-    another count would otherwise resume onto them and assemble a table holding
-    two counts. The row's own `search_config` is what it was measured at.
+    The stamp keys a directory to one count, but `--no-resume` rewrites it and
+    leaves earlier rows in place, so an interrupted re-run at another count could
+    resume onto them. The row's own `search_config` is what it was measured at.
     """
     row = _staged_row(path)
     if row is None:
@@ -956,14 +902,13 @@ def build_command(args: argparse.Namespace) -> list[str]:
 def verify_staged(args: argparse.Namespace, roster: Sequence[str], stage: Path) -> list[str]:
     """Check every staged verified row in SCIP, outside the DAG; demote what fails (#205).
 
-    Run over the WHOLE roster after `run_roster`, resumed rows included, rather
-    than once per fresh solve: a job killed between the runner's exit and the
-    check would otherwise leave a complete, unchecked row that the next resume
-    publishes. It is idempotent -- a demoted row is `feasible=false` and is not
-    looked at again -- so re-checking a row costs one SCIP read and nothing else.
+    Over the WHOLE roster after `run_roster`, resumed rows included: a job killed
+    between the runner's exit and the check would otherwise leave an unchecked
+    row the next resume publishes. Idempotent (a demoted row is `feasible=false`
+    and not looked at again), so a re-check costs one SCIP read.
 
-    Each row checked gets its `.checked` marker, written after the check and
-    any demotion, so the hash it holds is of the row as it will be published.
+    Each `.checked` marker is written after the check and any demotion, so its
+    hash is of the row as it will be published.
     """
     demoted: list[str] = []
     for name in roster:
@@ -981,8 +926,8 @@ def merge_command(inst_dir: Path) -> list[str]:
     """Rebuild `comparison_all.csv` from the CSVs on disk, solving nothing.
 
     `--merge-only` re-reads `scip_baseline.csv` and `bounds.csv` unchanged and
-    takes only the CBLS rows from the freshly written `comparison.csv`, which is
-    what keeps the `published-bks` and `scip` rows out of this run's reach.
+    takes only the CBLS rows from `comparison.csv`, keeping the `published-bks`
+    and `scip` rows out of this run's reach.
     """
     return [sys.executable, str(REFERENCE_SOLVE), "--merge-only", "--inst-dir", str(inst_dir)]
 
@@ -1046,11 +991,10 @@ def write_run_record(table: Path, record: RunRecord) -> None:
 def publish_seed_rows(seeds_out: Path, seed: int, table: Path) -> str:
     """Replace `seed`'s rows in the per-seed table with `table`'s, keeping every other seed.
 
-    Upsert, not append: a re-run of one seed replaces that seed's block and
-    leaves the others' rows intact, so seeds published one invocation at a time
-    accumulate without one clobbering another. Rows are ordered by seed, each
-    seed's block in `table`'s (roster) order. Written atomically. Returns the
-    block's `campaign_report.seed_block_sha256`, for its run record.
+    Upsert, not append, so seeds published one invocation at a time accumulate.
+    Rows are ordered by seed, each block in `table`'s (roster) order. Written
+    atomically. Returns the block's `campaign_report.seed_block_sha256`, for its
+    run record.
     """
     with table.open(newline="") as fh:
         reader = csv.reader(fh)
@@ -1092,14 +1036,11 @@ def publish_seed_record(seeds_out: Path, record: RunRecord) -> None:
 def summarize(out: Path, bounds_csv: Path) -> str:
     """The written table's tally, under `campaign_report`'s aggregate definitions.
 
-    Deliberately thin, and deliberately NOT its own definitions: until #142 this
-    function held `elec` out of every count while the README's tally counted the
-    whole roster, so a reader could not tell which denominator a number used. Both
-    now come from `campaign_report.summarize_results`, which states the rule it
-    applies (`campaign_report.AGGREGATION_RULE`) -- documented failures count in
-    the roster counts and are held out of the quality aggregates -- and this
-    prints that rule beside the numbers. The full report, anytime scores and SCIP
-    head-to-head included, is `campaign_report.py`.
+    No definitions of its own, so this and the README's tally share one
+    denominator (#142): `campaign_report.summarize_results` applies
+    `campaign_report.AGGREGATION_RULE` (documented failures count in the roster
+    counts, out of the quality aggregates), printed beside the numbers. The full
+    report, anytime scores and SCIP head-to-head included, is `campaign_report.py`.
     """
     rows = campaign_report.load_results(out, campaign_report.load_bounds_index(bounds_csv))
     summary = campaign_report.summarize_results(rows)
@@ -1143,9 +1084,8 @@ def summarize(out: Path, bounds_csv: Path) -> str:
 def print_summary(out: Path, bounds_csv: Path) -> None:
     """Print `summarize`, or say why it could not be derived -- never raise.
 
-    It runs after the table has been atomically written, so a refusal in the
-    summary (an instance `bounds.csv` does not know, a duplicate row) must not
-    turn a successful publish into a traceback that reads as a failed one.
+    It runs after the table is written, so a refusal in the summary (an unknown
+    instance, a duplicate row) must not read as a failed publish.
     """
     try:
         print(summarize(out, bounds_csv))
@@ -1188,9 +1128,9 @@ def final_no_solutions(
 
     Each has no row to resume from, a `.rejected` row and two recorded failed
     attempts (what `gm_ratio.py` scores as no-solution), and is not named by
-    `--retry-final`. `--no-resume` is no way round it: with `--instances` it would
-    give one instance a third attempt under the stamp its record was made under.
-    Read after `staging_stamp_conflict`: the attempts a new stamp clears do not count.
+    `--retry-final`. `--no-resume` does not override it, or with `--instances` it
+    would give one instance a third attempt under its record's stamp. Read after
+    `staging_stamp_conflict`: the attempts a new stamp clears do not count.
     """
     return [
         name
@@ -1233,10 +1173,9 @@ def run_roster(args: argparse.Namespace, sha: str, roster: Sequence[str], stage:
             continue
         cmd = runner_command(args, sha, name, stage)
         print(f"[{index}/{len(roster)}] {name}: {' '.join(cmd)}", flush=True)
-        # The old row's check says nothing about the new one. Nor does an old
-        # row whose solve was killed (header-only or torn) say anything about
-        # this attempt: if the runner dies before it opens its CSV, a row left
-        # here would be set aside and counted as this attempt's (#312).
+        # An old row and its check say nothing about this attempt: left here, a
+        # runner dying before it opens its CSV would have it counted as this
+        # attempt's (#312).
         discard_staged(stage, name)
         log = stage / f"{name}.log"
         completed = run_process(cmd, log=log)
@@ -1293,15 +1232,14 @@ class RowChangedError(RuntimeError):
 def check_and_mark(inst_dir: Path, stage: Path, name: str) -> list[str]:
     """Check `name`'s staged row in SCIP, demoting it if SCIP rejects it, then mark it.
 
-    The marker is written after the check and any demotion, so the hash it holds
-    is of the row as it will be published. A check that raises writes none.
-    Returns the demoted instances, as `independent_check.check_rows` does.
+    The marker is written after the check and any demotion, so it hashes the row
+    as it will be published; a check that raises writes none. Returns the demoted
+    instances, as `independent_check.check_rows` does.
 
-    The row is hashed before the check and after it. Unless the check demoted
-    it (and so rewrote it itself), the two must agree, or something else wrote
-    the row meanwhile and the marker would vouch for bytes nobody checked: that
-    raises `RowChangedError` and writes no marker. The wall-clock lock keeps
-    this host's drivers out; the check is for a writer the lock cannot see.
+    Unless the check demoted (rewrote) the row, its hash before and after must
+    agree, else `RowChangedError` and no marker: the marker would vouch for bytes
+    nobody checked. The wall-clock lock keeps this host's drivers out; this is
+    for a writer the lock cannot see.
     """
     row = stage / f"{name}.csv"
     before = campaign_report.file_sha256(row)
@@ -1329,9 +1267,8 @@ def checked_digest(stage: Path, name: str) -> str | None:
 def staged_checked(stage: Path, name: str) -> bool:
     """Whether `name`'s staged row is the one `check_and_mark` checked, byte for byte.
 
-    The hash, not the marker's presence, is what counts: a re-solve rewrites the
-    row, and `run_roster` also deletes the marker before it starts one, so a
-    marker can never vouch for a row the check did not see.
+    The hash counts, not the marker's presence (`run_roster` also deletes the
+    marker before a re-solve), so a marker never vouches for an unseen row.
     """
     row = stage / f"{name}.csv"
     return row.is_file() and checked_digest(stage, name) == campaign_report.file_sha256(row)
@@ -1340,18 +1277,16 @@ def staged_checked(stage: Path, name: str) -> bool:
 def quarantine_staged(stage: Path, name: str, returncode: int) -> None:
     """Set aside `name`'s staged row and trace after a nonzero runner exit, and record it.
 
-    A row can be whole and carry a stageable note yet measure the wrong thing:
-    a solve that lost portfolio workers (#170) is written as usual and only the
-    exit status says so. Left in place, the next resume would skip the instance
-    and publish that row as a full-thread one. Renamed rather than deleted, so
+    A whole row with a stageable note can still measure the wrong thing: a solve
+    that lost portfolio workers (#170) says so only in its exit status, and the
+    next resume would publish it as a full-thread row. Renamed, not deleted, so
     the evidence stays beside the log.
 
     The attempt is recorded last: a driver killed in between leaves one attempt
-    too few, which a final score refuses, never one too many. It is recorded
-    only when the runner staged a row: a runner that exits before it opens its
-    CSV (a usage error, an unwritable path, an unreadable roster) solved
-    nothing, and recording it would make an earlier attempt's `.rejected` row
-    read as retried.
+    too few, which a final score refuses, never one too many. Recorded only when
+    the runner staged a row: one exiting before it opens its CSV (a usage error,
+    an unwritable path, an unreadable roster) solved nothing, and counting it
+    would make an earlier attempt's `.rejected` row read as retried.
     """
     staged_row = (stage / f"{name}.csv").exists()
     for suffix in (".csv", ".trace.csv"):
@@ -1367,8 +1302,8 @@ def publish(
 ) -> int:
     """Assemble the staged rows into the tables, record the run, publish the seed, re-merge.
 
-    The run record goes beside `paths.out` whatever it is -- a scratch table is a
-    results set too, and the machine is what makes it readable later.
+    The run record goes beside `paths.out` whatever it is: a scratch table is a
+    results set too, readable later only with its machine.
     """
     assemble(paths.stage, roster, paths.out, ".csv")
     print(f"wrote {paths.out}")
@@ -1383,9 +1318,8 @@ def publish(
         print(f"wrote seed {args.seed} into {paths.seeds_out}")
     merge_failed = False
     if args.merge:
-        # check=False: `reference_solve.py --merge-only` exits 2 on its own
-        # refusals, and a traceback here would leave comparison.csv rewritten
-        # with no summary and no word about what to do next.
+        # check=False: `--merge-only` exits 2 on its own refusals, and a traceback
+        # would leave comparison.csv rewritten with no summary or next step.
         merged = subprocess.run(merge_command(args.inst_dir), check=False)
         merge_failed = merged.returncode != 0
         if merge_failed:
@@ -1575,10 +1509,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
     sha = run_commit_sha(args.inst_dir, REPO_ROOT)
     paths = resolve_paths(args, sha)
-    # The merge reads and rewrites the published comparison_all.csv from the
-    # published comparison.csv, so it is meaningless — and destructive — when
-    # this run's rows went somewhere else. Resolved paths, so a relative --out
-    # naming the published file is not mistaken for a scratch one.
+    # The merge rebuilds the published comparison_all.csv from the published
+    # comparison.csv: destructive when this run's rows went elsewhere. Resolved,
+    # so a relative --out naming the published file is not taken for scratch.
     skipping_merge = args.merge and paths.out.resolve() != paths.published_out.resolve()
     args.merge = args.merge and not skipping_merge
 

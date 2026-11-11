@@ -1,34 +1,28 @@
 """MINLPLib baseline: SCIP spatial branch-and-bound on the CBLS roster.
 
-Independently-run open-source yardstick for the headline nonlinear result. The
-roster of record is `bounds.csv` — the same file `cbls_minlplib` reads — and SCIP
-consumes the **same `.nl` files** through its own AMPL reader, so neither solver
-sees a re-modelled instance and no formulation drift can enter the comparison.
+Open-source yardstick for the headline nonlinear result. The roster of record
+is `bounds.csv`, the file `cbls_minlplib` reads, and SCIP reads the **same `.nl`
+files** with its own AMPL reader, so no formulation drift enters the comparison.
 
-Why SCIP (issue #89): BARON is commercial and only reachable through the NEOS
-queue, so it cannot be batch-run reproducibly; Couenne is free but has seen
-little development since ~2018 and is generally outperformed on this family.
-SCIP's nonconvex spatial branch-and-bound is purpose-built and separately
-benchmarked on MINLPLib in *Global Optimization of Mixed-Integer Nonlinear
-Programs with SCIP 8.0*
-(https://optimization-online.org/wp-content/uploads/2022/12/scip8_minlp.pdf).
+Why SCIP (#89): BARON is commercial and NEOS-only, so not batch-reproducible;
+Couenne has seen little development since ~2018 and is generally outperformed
+on this family. SCIP's nonconvex spatial branch-and-bound is benchmarked on
+MINLPLib in *Global Optimization of Mixed-Integer Nonlinear Programs with SCIP
+8.0* (https://optimization-online.org/wp-content/uploads/2022/12/scip8_minlp.pdf).
 
-What is and is not matched between the two runs:
+* **Matched**: instance files, roster and its order, per-instance wall-clock
+  budget, one thread, and the feasibility tolerance (1e-6 in both: CBLS's
+  default and SCIP's `numerics/feastol` default).
+* **Not matched, by construction**: SCIP proves a dual bound; CBLS, a primal
+  heuristic, proves none. Only the *primal* columns compare like for like;
+  `dual_bound` is reported per method so the asymmetry shows in the data.
+* **Asymmetric verification**: the C++ runner re-verifies against the model it
+  built; here SCIP checks its own solution against the pre-presolve problem
+  (`Model.checkSol(original=True)`). A solution it cannot validate is not
+  published as feasible.
 
-* **Matched** — instance files, roster and its order, per-instance wall-clock
-  budget, one thread, and the feasibility tolerance (CBLS defaults to 1e-6;
-  SCIP's `numerics/feastol` default is also 1e-6).
-* **Not matched, by construction** — SCIP is a complete global solver and proves
-  a dual bound; CBLS is a primal heuristic and proves none. Only the *primal*
-  columns are a like-for-like comparison. `dual_bound` is reported per method so
-  that asymmetry is visible in the data rather than hidden by it.
-* **Asymmetric verification** — the C++ runner re-verifies a returned assignment
-  against the model it built. Here the check is `Model.checkSol(original=True)`,
-  i.e. SCIP validating its own solution against the pre-presolve problem. A
-  solution SCIP cannot validate is not published as feasible.
-
-Like the CBLS run, the budget is wall-clock, so these are single-sample numbers:
-a fixed seed does not pin the node count and consecutive runs differ.
+The budget is wall-clock, as in the CBLS run, so these are single-sample
+numbers: a fixed seed does not pin the node count and consecutive runs differ.
 
 Requires the `benchmarks` extra (`pip install -e '.[benchmarks]'`). Run with the
 project venv:
@@ -69,9 +63,8 @@ DEFAULT_INST_DIR = Path(__file__).resolve().parents[1] / "instances" / "minlplib
 #: figure is argued from that run's committed anytime trace, not assumed.
 DEFAULT_TIME_LIMIT = 60.0
 
-#: SCIP's own default. Left unset rather than assigned, so that a SCIP release
-#: changing it surfaces as a mismatch instead of silently loosening one side of
-#: the comparison — `solve_instance` reads the live value back and flags it.
+#: SCIP's own default, left unset: `solve_instance` reads the live value back and
+#: flags a SCIP release that changes it, rather than loosen one side silently.
 SCIP_FEASTOL = 1e-6
 
 CBLS_METHOD = "cbls"
@@ -87,12 +80,10 @@ SAFE_GAP_ABSOLUTE_BELOW = 1e-12
 def safe_gap(obj: float, ref: float, maximizing: bool) -> float:
     """Signed gap in percent, positive == worse than `ref` in either sense.
 
-    Port of `safe_gap` in `benchmarks/minlplib/minlplib.cpp`; kept numerically
-    identical so a SCIP row and a CBLS row for the same instance are comparable.
-
-    NOTE: when ``|ref| < 1e-12`` the result is an ABSOLUTE residual, not a
-    percent — a percentage against zero is meaningless. The roster's five such
-    instances are listed in the instances README.
+    Numerically identical port of `safe_gap` in `benchmarks/minlplib/minlplib.cpp`,
+    so SCIP and CBLS rows compare. When ``|ref| < 1e-12`` the result is an
+    ABSOLUTE residual: a percentage against zero is meaningless. The roster's
+    five such instances are listed in the instances README.
     """
     if math.isnan(obj) or math.isnan(ref):
         return math.nan
@@ -119,13 +110,11 @@ def claim_band(bks: float, feas_tol: float) -> float:
 def classify_vs_bks(obj: float, bks: float, maximizing: bool, feas_tol: float) -> str:
     """Label a feasible objective against the published primal bound.
 
-    Same two-band rule as the C++ runner, so the note columns mean the same
-    thing for both methods. An improvement is only *claimed* when it clears
-    ``max(1e-6·(|BKS|+1), 10·feas_tol)`` — a solver may violate a constraint by
-    up to `feas_tol`, and that slack alone buys a small objective gain. Calling
-    two objectives *equal* needs the much tighter, purely relative band; a row
-    between the two is neither a win nor "worse than BKS", so it gets its own
-    label.
+    The C++ runner's two-band rule, so the note columns mean the same for both
+    methods. An improvement is *claimed* only past ``max(1e-6·(|BKS|+1),
+    10·feas_tol)``: violating a constraint by up to `feas_tol` alone buys a small
+    gain. *Equal* needs the tighter, purely relative band; a row between the two
+    is neither a win nor "worse than BKS", so it gets its own label.
     """
     if math.isnan(bks):
         return "feasible"
@@ -141,12 +130,10 @@ def classify_vs_bks(obj: float, bks: float, maximizing: bool, feas_tol: float) -
 
 
 def _reads_as_max(objsense: str) -> bool:
-    """The one place a sense string is interpreted.
+    """The one place a sense string is interpreted, the catalogue's and SCIP's.
 
-    Both the catalogue's spelling and SCIP's go through here, so the two can
-    never disagree about the identical string — a divergence would invert every
-    gap on a maximize row *and* silence the mismatch note, since both sides
-    would then agree on the wrong answer.
+    Two readings could disagree on one string, inverting every gap on a maximize
+    row *and* silencing the mismatch note, both sides agreeing on the wrong answer.
     """
     return objsense.strip().lower().startswith("max")
 
@@ -184,9 +171,8 @@ class ScipResult:
     #: The sense SCIP read from the instance, cross-checked against the catalogue.
     objsense: str = ""
     #: `SCIP x / PySCIPOpt y / Ts / seed n` this row came from. Empty on a fresh
-    #: solve, where the run-wide string applies; restored per row by
-    #: `read_scip_csv` so a results file spanning two runs keeps each row's own
-    #: provenance instead of inheriting the first row's.
+    #: solve (the run-wide string applies); `read_scip_csv` restores it per row,
+    #: so a file spanning two runs keeps each row's own provenance.
     version: str = ""
     notes: list[str] = field(default_factory=list)
 
@@ -251,18 +237,15 @@ def solve_instance(nl_path: Path, time_limit: float, seed: int, log: bool) -> Sc
     result.read_seconds = time.perf_counter() - t0
 
     # `getVars()` is the ORIGINAL problem (PySCIPOpt defaults transformed=False),
-    # which is what the catalogue's nbinvars+nintvars counts. The transformed
-    # problem carries presolve's aggregations instead. SCIP's .nl reader also adds
-    # a continuous `nlobjvar`, so a raw variable count would not match the
-    # catalogue even where the discrete count does.
+    # what the catalogue's nbinvars+nintvars counts. Discrete only: the reader
+    # adds a continuous `nlobjvar`, so a raw count would not match the catalogue.
     result.n_int_vars = sum(1 for v in model.getVars() if v.vtype() in ("BINARY", "INTEGER"))
     result.objsense = model.getObjectiveSense()
 
     model.setParam("limits/time", time_limit)
     model.setParam("randomization/randomseedshift", seed)
-    # feastol is deliberately left at SCIP's default so both runs share one
-    # tolerance. That only holds while the default still *is* the value the BKS
-    # classification is computed from, so read it back rather than assume it.
+    # feastol stays at SCIP's default so both runs share one tolerance; read it
+    # back, since the BKS classification assumes that default.
     live_feastol = float(model.getParam("numerics/feastol"))
     if live_feastol != SCIP_FEASTOL:
         result.notes.append(f"FEASTOL-MISMATCH(SCIP {live_feastol:g} vs assumed {SCIP_FEASTOL:g})")
@@ -289,16 +272,14 @@ def solve_instance(nl_path: Path, time_limit: float, seed: int, log: bool) -> Sc
 def _finite_or_nan(model: Model, value: float) -> float:
     """Normalise SCIP's "no bound proved" sentinel to NaN.
 
-    SCIP reports an unproved bound, and an undefined gap, as ±SCIPinfinity —
-    which is 1e20, a *finite* float. `math.isfinite` accepts it, so without this
-    it would be published as a bound the solver never proved, in the very column
-    the merged CSV documents as "what that method proves".
+    SCIP reports an unproved bound, and an undefined gap, as ±SCIPinfinity, 1e20:
+    a *finite* float that would publish as a bound the solver never proved, in
+    the column the merged CSV documents as "what that method proves".
 
-    The 0.9 factor is not slack for its own sake: `getDualbound` reports in the
-    original objective space, so an instance whose objective carries an offset
-    comes back as e.g. -9.999999980870551e19 rather than exactly -1e20, and
-    `Model.isInfinity` misses it. Genuine bounds in this roster peak around
-    7e10, nine orders below the threshold.
+    The 0.9 factor: `getDualbound` reports in the original objective space, so an
+    objective offset yields e.g. -9.999999980870551e19, not exactly -1e20, which
+    `Model.isInfinity` misses. Genuine bounds in this roster peak around 7e10,
+    nine orders below the threshold.
     """
     return math.nan if abs(value) >= 0.9 * model.infinity() else value
 
@@ -344,11 +325,9 @@ def annotate(result: ScipResult, bound: Bound) -> None:
         )
     if result.status == "optimal":
         result.notes.append("proved-optimal")
-    # `sense_is_max` scores this row by the instance's sense, matching the C++
-    # runner, which takes it from the model it built. A disagreement therefore no
-    # longer flips the gap's sign against the C++ row — but it does mean the
-    # catalogue's primal/dual here are oriented for the other sense, so both gaps
-    # are measured against a reference one of the two sides has wrong.
+    # The row is scored by the instance's sense, as in the C++ runner; on a
+    # disagreement the catalogue's primal/dual are oriented for the other sense,
+    # so both gaps measure against a reference one side has wrong.
     if result.objsense and _reads_as_max(result.objsense) != bound.maximizing:
         result.notes.append(
             f"objsense mismatch: instance {result.objsense} vs catalogue {bound.objsense}"
@@ -379,10 +358,9 @@ def annotate(result: ScipResult, bound: Bound) -> None:
 def solver_version(time_limit: float, seed: int) -> str:
     """`SCIP <v> / PySCIPOpt <v> / <T>s / seed <n>` — the run configuration.
 
-    Budget and seed belong in the provenance string, not just the version: both
-    CSVs are rewritten whole, so a re-run at a different budget would otherwise
-    produce rows indistinguishable from the published ones, and silently
-    comparing unequal budgets is the one mistake this table cannot survive.
+    Budget and seed are in the provenance string: both CSVs are rewritten whole,
+    and a re-run at another budget must not be indistinguishable from the
+    published rows, since comparing unequal budgets would void the table.
     """
     from pyscipopt import Model  # optional `benchmarks` extra; see solve_instance
 
@@ -420,9 +398,8 @@ SCIP_CSV_HEADER = [
 def _cell(value: float) -> str:
     """`NaN` for undefined, matching what the C++ runner writes.
 
-    SCIP never hands back a float `inf` — it uses a 1e20 sentinel, which
-    `_finite_or_nan` folds into NaN at capture time, so "not proved" and "not
-    computed" share the one spelling the C++ runner already uses.
+    SCIP's 1e20 sentinel is folded to NaN by `_finite_or_nan`, so "not proved"
+    and "not computed" share the C++ runner's one spelling.
     """
     return "NaN" if math.isnan(value) else repr(value)
 
@@ -439,17 +416,15 @@ def _published_objective(result: ScipResult) -> float:
 def sense_is_max(bound: Bound, result: ScipResult) -> bool:
     """The objective sense to score by: the instance's, else the catalogue's.
 
-    The C++ runner takes the sense from the model it built, not from
-    `bounds.csv`, and the instance file is the ground truth — the catalogue is
-    derived metadata from a library that drifts. Scoring by the catalogue would
-    let a one-word error there invert every gap and label on the row *before*
-    `annotate`'s cross-check could report the disagreement.
+    As in the C++ runner, the instance file is the ground truth; the catalogue
+    is derived metadata that drifts, and a one-word error there would invert
+    every gap and label *before* `annotate`'s cross-check could report it.
 
     Falls back to the catalogue whenever SCIP never read the instance: a
     `not-found` or `read-error` row, and every `--merge-only` reload, since
-    `scip_baseline.csv` has no `objsense` column to restore. On a row where the
-    two senses disagree the merge therefore scores it differently from the fresh
-    run — `_run_merge_only` refuses rather than publish that contradiction.
+    `scip_baseline.csv` has no `objsense` column. Where the senses disagree the
+    merge would then score differently from the fresh run, so `_run_merge_only`
+    refuses.
     """
     return _reads_as_max(result.objsense) if result.objsense else bound.maximizing
 
@@ -457,8 +432,8 @@ def sense_is_max(bound: Bound, result: ScipResult) -> bool:
 def _gap_to_bks(result: ScipResult, bound: Bound) -> float:
     """Gap only for a row we publish as feasible; NaN otherwise.
 
-    Companion to `_published_objective`: a row that failed its check must not
-    carry the gap it was rejected for, in either CSV or on the console.
+    As `_published_objective`: no rejected row carries its gap, in either CSV or
+    on the console.
     """
     if not result.feasible:
         return math.nan
@@ -489,9 +464,8 @@ def write_scip_csv(path: Path, rows: Sequence[tuple[Bound, ScipResult]], version
                     _cell(gap_dual),
                     repr(result.wall_seconds),
                     "true" if result.feasible else "false",
-                    # No comma scrubbing: csv.writer quotes the field. The C++
-                    # runner has to scrub because it writes raw CSV, and a
-                    # scrubbed comma would corrupt "; " — the note separator.
+                    # No comma scrubbing (the C++ runner's raw-CSV need):
+                    # csv.writer quotes, and scrubbing would corrupt "; ".
                     result.note,
                     _cell(result.dual_bound),
                     _cell(100.0 * result.scip_gap),
@@ -518,9 +492,8 @@ MERGED_CSV_HEADER = [
 
 
 def _bks_row(bound: Bound) -> list[str]:
-    # An absent catalogue primal is not a feasible solution. Every consumer here
-    # filters on `feasible`, so a NaN objective on a "true" row would be counted
-    # as a solved instance with no objective.
+    # An absent catalogue primal is not feasible: consumers filter on `feasible`,
+    # so a NaN objective on a "true" row would count as solved.
     have_primal = not math.isnan(bound.primal_bks)
     return [
         bound.instance,
@@ -575,8 +548,8 @@ def write_merged_csv(
 
     `dual_bound` is the bound *that method proves*: the catalogue's for
     `published-bks`, SCIP's own for `scip`, and NaN for `cbls`, which as a primal
-    heuristic proves none. It is deliberately not the published dual repeated on
-    every row — that would read as if all three had proved the same thing.
+    heuristic proves none; the published dual repeated on every row would read
+    as if all three had proved it.
     """
     with path.open("w", newline="") as fh:
         out = csv.writer(fh)
@@ -693,22 +666,18 @@ def read_versions(path: Path) -> list[str]:
 def _usage_error(args: argparse.Namespace) -> str | None:
     """The reason to refuse this invocation outright, or None to proceed.
 
-    Every case here would otherwise publish something misleading rather than
-    fail: a budget SCIP cannot use, a seed it rejects deep in the loop, or a
-    subset run aimed at the roster-wide output paths.
+    Each case would otherwise publish something misleading rather than fail.
     """
     if args.time_limit <= 0.0:
-        # A non-positive budget makes SCIP return before it starts, publishing a
-        # full roster of "infeasible" rows that say nothing about the solver and
-        # are indistinguishable from a real result. The C++ runner refuses it too.
+        # SCIP would return before starting: a roster of "infeasible" rows that
+        # look like a real result. The C++ runner refuses it too.
         return f"--time-limit must be > 0 (got {args.time_limit})"
     if args.seed < 0:
         # SCIP's own range check would fire mid-loop, as a bare traceback.
         return f"--seed must be >= 0 (got {args.seed})"
     if args.instances and (args.out is None or args.merged_out is None):
-        # Both CSVs are rewritten whole, so a three-instance debug run would
-        # silently replace fifty rows with three. Make the caller name a scratch
-        # path rather than defaulting into the published one.
+        # Both CSVs are rewritten whole: a three-instance debug run would replace
+        # fifty rows with three, so the caller names a scratch path.
         return (
             "--instances is a subset run; pass explicit --out and --merged-out so it "
             "cannot overwrite the published roster-wide CSVs."
@@ -727,11 +696,9 @@ def _run_merge_only(
     if not scip_rows:
         print(f"{out_csv} not found or empty; nothing to merge.", file=sys.stderr)
         return 2
-    # `scip_baseline.csv` has no objsense column, so a reload scores by the
-    # catalogue while the fresh run scored by the instance. On a row where the
-    # two disagree that flips the gap's sign, and the two published files would
-    # contradict each other on the same instance. Refuse instead: the fresh run
-    # already recorded which rows are affected.
+    # A reload scores by the catalogue (`sense_is_max`): where it disagrees with
+    # the instance the gap's sign flips against the fresh run. The fresh run's
+    # notes name the affected rows.
     conflicted = sorted(n for n, r in scip_rows.items() if "objsense mismatch" in r.note)
     if conflicted:
         print(
@@ -809,10 +776,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         write_scip_csv(out_csv, results, version)
 
     _print_tally(results, args.time_limit, args.seed)
-    # Only on a complete run, unlike the per-instance CSV above: the merged file
-    # is the published artifact, so a crashed run should leave the last complete
-    # one in place rather than half-replace it. `--merge-only` rebuilds it from
-    # whatever the per-instance CSV holds.
+    # Only on a complete run: the merged file is the published artifact, so a
+    # crash leaves the last complete one. `--merge-only` rebuilds it from the
+    # per-instance CSV.
     write_merged_csv(merged_csv, bounds, cbls_rows, {r.instance: r for _, r in results}, version)
     print(f"\nwrote {out_csv}\nwrote {merged_csv}")
     return 1 if any(r.status.endswith("-error") for _, r in results) else 0

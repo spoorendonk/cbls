@@ -1,16 +1,12 @@
 """Check a MINLPLib row's assignment in SCIP, independently of this engine's DAG (#205).
 
-The runner's own re-check (`worst_residual` in `minlplib.cpp`) reads the very
-node values the search optimised. It catches a search that misreports its own
-bookkeeping, and nothing else: an evaluation bug the DAG and its re-check share
-agrees with itself by construction. #205 was one -- `sqrt` of a negative read
-as 0.0, `pow(neg, 0.5)` as +inf -- and rows built on it were marked `feasible`.
-
-This module is the check that does not share the DAG. The runner writes each
-verified row's assignment (`--solution-dir`, one `<instance>.sol` per instance:
-the NL column values in column order and the true-sense objective, both at full
-precision), and here SCIP reads the instance's `.nl` with its own AMPL reader,
-loads the values and decides:
+The runner's own re-check (`worst_residual` in `minlplib.cpp`) reads the node
+values the search optimised, so an evaluation bug the DAG and its re-check share
+agrees with itself by construction (#205). This check does not share the DAG.
+The runner writes each verified row's assignment (`--solution-dir`, one
+`<instance>.sol`: the NL column values in column order and the true-sense
+objective, both at full precision); SCIP reads the `.nl` with its own AMPL
+reader, loads the values and decides:
 
 * **feasibility** -- `Model.checkSol` on the ORIGINAL problem, bounds,
   integrality and every constraint, with SCIP's own expression evaluation. A
@@ -21,21 +17,18 @@ loads the values and decides:
 
 A row that fails either is demoted in place: `feasible=false`, the objective
 and both gaps blanked to `NaN` (the runner's rule for a row it does not stand
-behind), and the note replaced by `VERIFY-FAILED(independent: ...)` -- inside
-the existing `VERIFY-FAILED` vocabulary, so every consumer already buckets it as
-a verification failure.
+behind), and the note replaced by `VERIFY-FAILED(independent: ...)`, inside the
+existing `VERIFY-FAILED` vocabulary, so every consumer buckets it as a
+verification failure.
 
 `run_benchmark.py` applies this to every staged row before it publishes, and
 `run_ablation.py` to every run before it records it. The runner refuses to
 write the published table itself, so no row reaches it unchecked.
 
-SCIP's objective, for the record: its `.nl` reader keeps a linear objective as
-variable coefficients and moves a nonlinear part g(x) into a constraint
-`objcons: g(x) - nlobjvar <= 0` (`>= 0` when maximising) over an auxiliary free
-column `nlobjvar`. The check sets `nlobjvar` from the published objective minus
-SCIP's own linear part and asks `checkSol` twice -- once just above that value,
-where `objcons` must hold, and once just below, where it must not -- which
-brackets g(x) without reading it from anywhere but SCIP.
+SCIP's `.nl` reader keeps a linear objective as coefficients and moves a
+nonlinear part g(x) into `objcons: g(x) - nlobjvar <= 0` (`>= 0` when
+maximising) over a free column `nlobjvar`; `_check_nonlinear_objective`
+brackets g(x) through `checkSol` alone.
 
 Standalone use, over a runner CSV:
 
@@ -75,12 +68,10 @@ SOLUTION_MAGIC = "cbls-minlplib-solution 1"
 #: `VERIFY-FAILED`, which `runner.COMPLETED_SEARCH_NOTES` already allowlists.
 DEMOTED_NOTE_PREFIX = "VERIFY-FAILED(independent: "
 
-#: The columns a demoted row blanks: what it would otherwise publish about a
-#: solution nobody stands behind (`run_instance` in `minlplib.cpp`, same rule),
-#: plus the first-feasible pair. That point came from the same DAG verdicts SCIP
-#: has just contradicted, and no assignment of it was kept to check, so a row
-#: SCIP rejects stands behind no feasible point at all: no reader may count it
-#: as reaching feasibility.
+#: The columns a demoted row blanks: the runner's rule (`run_instance` in
+#: `minlplib.cpp`) plus the first-feasible pair, which came from the DAG verdicts
+#: SCIP just contradicted and kept no assignment to check, so no reader may count
+#: a rejected row as reaching feasibility.
 BLANKED_COLUMNS = (
     "objective",
     "gap_to_bks%",
@@ -209,10 +200,9 @@ def _columns(model: Any, n: int) -> tuple[list[Any], Any | None, list[tuple[Any,
     if len(columns) != n:
         raise ValueError(f"SCIP sees {len(columns)} columns; the solution has {n}")
     # Without a .col file the reader names column j `x<j>`/`i<j>`/`b<j>`, and
-    # `getVars()` lists them by TYPE, not by column (nvs05: i2, i3, x0, x1, ...),
-    # so the order comes from the names, and only from them: a name without an
-    # index is refused, never guessed from getVars() order. `_Probe` hides any
-    # `.col` beside the `.nl` (#319), so this guards a change in SCIP's naming.
+    # `getVars()` lists them by TYPE (nvs05: i2, i3, x0, x1, ...), so the order
+    # comes from the names alone; an unindexed name is refused, never guessed.
+    # `_Probe` hides any `.col` (#319), so this guards a change in SCIP's naming.
     indices = [_COLUMN_NAME.match(var.name) for var in columns]
     unindexed = [var.name for m, var in zip(indices, columns, strict=True) if m is None]
     naming = "(a .col file read with the .nl, or a change in SCIP's NL reader naming?)"
@@ -232,15 +222,13 @@ class _Probe:
 
         self.model: Any = Model()
         self.model.hideOutput()
-        # SCIP's AMPL reader picks up a `<stem>.col` beside the `.nl` and names
-        # columns from it: GAMS names, 1-based `x1..xn` (not a permutation of
-        # 0..n-1) and unindexed ones like `objvar`, both refused by `_columns`. The
-        # library archive ships one beside every `.nl` (#319), so the reader is
-        # given the `.nl` alone: a symlink in an empty directory. That hides
-        # `<stem>.row` too, so constraints in a demotion note carry SCIP's
-        # default row names, never GAMS names. The model is fully read before
-        # the directory goes. `strict=True`: a missing `.nl` is named as itself,
-        # not as a dangling link in a directory already deleted.
+        # The reader would name columns from a `<stem>.col` beside the `.nl`
+        # (GAMS names: 1-based `x1..xn`, `objvar`), which `_columns` refuses, and
+        # the archive ships one beside every `.nl` (#319). So it reads the `.nl`
+        # alone, a symlink in an empty directory; that hides `<stem>.row` too, so
+        # a demotion note names SCIP's default rows. The model is fully read
+        # before the directory goes. `strict=True` names a missing `.nl` itself,
+        # not a dangling link in a deleted directory.
         target = nl_path.resolve(strict=True)
         with tempfile.TemporaryDirectory(prefix="cbls-check-") as lone:
             link = Path(lone) / nl_path.name

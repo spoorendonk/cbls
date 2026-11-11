@@ -1,13 +1,10 @@
 """Score the full-library MINLPLib campaign: the GM(gap+1) ratio, cbls over SCIP (#300).
 
-#256 reports one headline number for the full-library campaign: the geometric
-mean of (gap_to_bks% + 1) over the instances BOTH solvers solved, cbls over
-SCIP, which is the measure #228's smoke used. `campaign_report.py` does not
-produce it (it scores one instance directory's `comparison.csv` against one
-`scip_baseline.csv`), and the campaign's SCIP half is sharded: one CSV per
-instance. This module reads the roster, the cbls table and the SCIP shards, and
-prints the ratio with the counts and provenance that make it readable. It
-solves nothing.
+#256's headline number: the geometric mean of (gap_to_bks% + 1) over the
+instances BOTH solvers solved, cbls over SCIP (#228's measure). Reads the
+roster, the cbls table and the sharded SCIP half (one CSV per instance, unlike
+`campaign_report.py`'s one `scip_baseline.csv`) and prints the ratio with its
+counts and provenance. It solves nothing.
 
 Usage, from any directory:
 
@@ -16,23 +13,21 @@ Usage, from any directory:
         [--budget 60] --memory-cap "110G cgroup" [--json summary.json]
 
 `--cbls-staging DIR` reads the driver's staging directory instead of the
-assembled table. The driver demotes a staged row to `VERIFY-FAILED` in
-`verify_staged` (`run_benchmark.py`), after the solve, and a driver killed in
-between leaves the row unchecked. So without `--partial`, every staged
-`<instance>.csv` must carry the `<instance>.checked` marker `verify_staged`
-writes, holding that file's sha256 (#307); an instance whose only row is a
-`.rejected` one needs none, as it is scored as no-solution. Any other row is
-refused by name. `check_staged.py` checks and marks the rows a driver left
-unchecked, whatever commit staged them, and solves nothing.
+assembled table. `verify_staged` (`run_benchmark.py`) demotes a staged row after
+the solve, so a driver killed in between leaves it unchecked: without
+`--partial`, every staged `<instance>.csv` must carry the `<instance>.checked`
+marker holding its sha256 (#307), else it is refused by name. An instance whose
+only row is `.rejected` needs none: it scores as no-solution. `check_staged.py`
+checks and marks unchecked rows, whatever commit staged them.
 
-The #256 rule is one retry and then no-solution, and the data records it (#312).
+The #256 rule is one retry and then no-solution, recorded in the data (#312).
 Without `--partial`, a scored instance left with a lone `.rejected` row or a SCIP
 `.failed` marker needs two recorded failed attempts (`exit <rc> <utc>` lines, in
 `<instance>.failures` beside the rejected row and in the `.failed` marker itself);
-fewer is refused by name. A campaign staged before #312 has no such lines, so it
-scores only with `--partial`. Both drivers leave an instance with two recorded
-attempts alone on a resume, so how often someone re-runs cannot turn a final
-no-solution into solved (#323); `--retry-final NAME` asks for another attempt.
+fewer is refused by name, so a campaign staged before #312 scores only with
+`--partial`. Both drivers leave a two-attempt instance alone on a resume, so
+re-running cannot turn a final no-solution into solved (#323); `--retry-final
+NAME` asks for another attempt.
 
 The SCIP shards are `scip_shards.py`'s output: `<instance>.csv`, or an
 `<instance>.failed` marker with one `exit <rc> <utc>` line per failed attempt.
@@ -54,16 +49,15 @@ states it in every output):
   counted beside them in brackets (only-cbls, only-SCIP); those need no gap, so
   instances without a finite BKS are in the brackets.
 
-SOLVED means, the same rule on both sides (decided at the hub, 2026-11-01): a
-row with `feasible == true` (for cbls, also a note that is not `VERIFY-FAILED`).
-Every other scored instance is that solver's NO SOLUTION, listed by name with
-its reason: the row's note (`read-error(...)`, `infeasible`, `no-solution(...)`,
-`CHECK-FAILED(...)`, ...), the last exit in a SCIP `<instance>.failed` marker (the
-solve process died after its retry), or, in a cbls staging directory,
-`rejected: <note>` for an instance whose only row is the driver's
-`<instance>.csv.rejected` (its runner exited nonzero). A whole `<instance>.csv`
-beside a `.rejected` is a re-solve and wins. `cbls_solved` and `scip_solved` are
-the one place that decides it.
+SOLVED, the same rule on both sides (hub, 2026-11-01): a row with `feasible ==
+true` (for cbls, also a note that is not `VERIFY-FAILED`), decided only in
+`cbls_solved` and `scip_solved`. Every other scored instance is that solver's NO
+SOLUTION, listed by name with its reason: the row's note (`read-error(...)`,
+`infeasible`, `no-solution(...)`, `CHECK-FAILED(...)`, ...), the last exit in a
+SCIP `<instance>.failed` marker, or, in a cbls staging directory, `rejected:
+<note>` for an instance whose only row is the driver's `<instance>.csv.rejected`
+(its runner exited nonzero). A whole `<instance>.csv` beside a `.rejected` is a
+re-solve and wins.
 
 PROVENANCE comes from the data: the engine commit and thread count from the cbls
 rows, the SCIP version from its rows, and the budget from SCIP's `scip_version`
@@ -278,9 +272,8 @@ def load_roster(path: Path) -> list[Bound]:
 def has_whole_row(path: Path) -> bool:
     """Whether a per-instance CSV holds its one whole row; False for a header-only or torn one.
 
-    A solve writes its header before it solves anything, and a killed or running
-    one leaves a header-only file or a torn last line: that instance is not there
-    yet. More than one row is a malformed file and refused.
+    A solve writes its header first, so a killed or running one leaves a
+    header-only file or a torn last line. More than one row is refused.
     """
     text = path.read_text()
     lines = list(csv.reader(text.splitlines()))
@@ -493,9 +486,8 @@ def reconcile_shard_seed(scip: ScipSide, shards: Path) -> None:
     """Refuse a shard stamp whose `seed=` is not the seed in SCIP's rows (#323).
 
     A `.failed` marker carries no seed, so a `--restart --seed 1` beside a seed 0
-    campaign's rows would otherwise read its own failures as the campaign's.
-    Mixed row seeds are refused here too, before the versions are read (where
-    they would be `mixed SCIP versions`).
+    campaign's rows would read its own failures as the campaign's. Mixed row
+    seeds are refused here too, before `mixed SCIP versions` would.
     """
     stamped = _stamp_number(shards, STAMP_SEED_KEY)
     matches = (SCIP_SEED_FIELD.search(row.version) for row in scip.rows.values())
@@ -882,12 +874,10 @@ def unchecked_refusal(unchecked: Sequence[str]) -> str:
 def load_checked_staging(stage: Path, bounds: Sequence[Bound]) -> CblsSide:
     """`load_cbls_staging`, refused unless every staged row it read is marked as checked.
 
-    The rows are hashed before they are parsed and again after: a driver that
-    rewrites a row in between (its check demoting it, then marking the new
-    bytes) would otherwise pair a parsed, unchecked row with a marker that
-    matches the file as it is now. A row or marker that vanishes between a
-    test for it and its read (a driver quarantining a row, or deleting a marker
-    before a re-solve) is the same race and gets the same refusal.
+    The rows are hashed before and after parsing, else a driver rewriting a row
+    in between (demoting, then marking the new bytes) would pair a parsed,
+    unchecked row with a marker matching the file as it is now. A row or marker
+    that vanishes between test and read is the same race, the same refusal.
     """
     changed = RefusedError(
         f"{stage}: staged rows changed while they were read (a driver is writing "
@@ -944,9 +934,8 @@ def run(args: argparse.Namespace) -> Score:
         )
         derived = {"cbls staging stamp": staging_budget(args.cbls_staging)}
     scip = load_scip_shards(args.scip_shards, roster)
-    # The shard stamp (`scip_shards.shard_stamp`, same name and `time-limit=` key
-    # as the staging stamp) records the budget the `.failed` attempts ran under,
-    # which the markers themselves do not (#312).
+    # The shard stamp (`scip_shards.shard_stamp`, the staging stamp's name and
+    # `time-limit=` key) records the budget `.failed` markers lack (#312).
     shard_stamp = {"SCIP shard stamp": staging_budget(args.scip_shards)}
     budget = reconcile_budget(
         {"SCIP scip_version": scip_budget(scip), **shard_stamp, **derived}, args.budget

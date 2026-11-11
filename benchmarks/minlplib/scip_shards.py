@@ -1,46 +1,40 @@
-"""The SCIP half of a full-library MINLPLib campaign, one shard per instance (#305).
+"""The SCIP half of a full-library MINLPLib campaign, one shard per instance (#256, #305).
 
-`reference_solve.py` writes one CSV for a whole roster. The full-library
-campaign (#256) instead solves every instance of
-`<nl-dir>/bounds.csv` in its own process, `--jobs` at a time, and leaves one
-shard per instance in `SHARD_DIR`. That shard layout is what
-`gm_ratio.py --scip-shards` reads:
+Each instance of `<nl-dir>/bounds.csv` runs `reference_solve.py` in its own
+process, `--jobs` at a time. `gm_ratio.py --scip-shards` reads the shards:
 
-* `<instance>.csv`: `reference_solve.py`'s row for the instance. It is written
-  as `<instance>.csv.tmp` and renamed unless the process was killed (exit 124
-  or 137, as `sh` reports it), so a killed solve never leaves a half-written
-  row. Any other exit with a row written keeps the row, as the #256 wrapper did.
-* `<instance>.merged.csv`: the subset run's merged CSV (`--merged-out`);
-  the scorer ignores it.
+* `<instance>.csv`: `reference_solve.py`'s row, written as `<instance>.csv.tmp`
+  and renamed unless the process was killed (exit 124 or 137, as `sh` reports
+  it), so a killed solve never leaves a half-written row. Any other exit with a
+  row written keeps the row.
+* `<instance>.merged.csv`: the subset run's merged CSV (`--merged-out`); the
+  scorer ignores it.
 * `<instance>.failed`: one line per failed attempt, `exit <rc> <utc>`, when the
   process ran past the wrapper cap (`timeout` exit 124, or 137 after `-k`), died
-  by a signal or left a torn row. A retry appends: the scorer counts the lines
-  (#312). A process that exits by itself with nothing written solved nothing
-  (`reference_solve.py` turns a solve's errors into rows, so this is a missing
-  `pyscipopt`, a refusal, a broken environment) and records no attempt (#323):
-  counted, a broken environment would make a whole roster final.
+  by a signal or left a torn row. A retry appends; the scorer counts the lines
+  (#312). An exit with nothing written never reached a solve (`reference_solve.py`
+  turns solve errors into rows: this is a missing `pyscipopt`, a refusal, a broken
+  environment) and records no attempt, or a broken environment would make a
+  whole roster final (#323).
 * `<instance>.log`: the process's stdout and stderr.
 
 SCIP runs at its defaults (`--seed 0`: no `randomseedshift`) for `--time-limit`
-seconds, one thread per process. The budget covers the solve; reading the `.nl`
-file is outside it, so the per-instance wrapper cap (`--cap`, 15 min by
-default) is far above the budget and only stops a hung read or a solve that
-ignores its limit.
+seconds, one thread per process. Reading the `.nl` file is outside the budget,
+so the wrapper cap (`--cap`, 15 min by default) is far above it and only stops
+a hung read or a solve that ignores its limit.
 
-Resumable: an instance whose `<instance>.csv` holds a whole row is skipped, so a re-run
-retries exactly the `.failed` and unfinished ones. A shard that succeeds on
-retry drops its `.failed` marker. The #256 rule for what is left after one
-retry (hub, 2026-11-01): run it again once with the memory cap raised (the
-campaign ran under a 110G cgroup cap), and a failure that remains counts as
-"SCIP: no solution", named with its exit. A final score refuses a marker with
-fewer than two attempts, and a re-run leaves a marker with two alone unless
-`--retry-final NAME` asks for it: a third attempt that succeeds would otherwise
-turn a final no-solution into solved, depending on how often someone re-runs
-(#323). `--instances NAME` does not ask for it, since a campaign may be resumed
-one name at a time. The shard directory's `stamp.txt` records the budget and
-seed. A run under another one is refused; with `--restart` it deletes every
-`.failed` marker first, since an attempt under another configuration is no
-retry of this one.
+Resumable: an instance whose `<instance>.csv` holds a whole row is skipped, so a
+re-run retries exactly the `.failed` and unfinished ones; a success on retry
+drops the marker. The #256 rule (hub, 2026-11-01): after one retry, run once
+more with the memory cap raised (the campaign ran under a 110G cgroup cap); a
+failure that remains counts as "SCIP: no solution", named with its exit. A final
+score refuses a marker with fewer than two attempts. A re-run leaves a
+two-attempt marker alone unless `--retry-final NAME` asks, else a third success
+would turn a final no-solution into solved depending on how often someone
+re-runs (#323); `--instances NAME` does not ask, since a campaign may be resumed
+one name at a time. `stamp.txt` records budget and seed: a run under another is
+refused, and `--restart` first deletes every `.failed` marker, since an attempt
+under another configuration is no retry of this one.
 
 Usage, from any directory, under the machine lock (one lock for the whole run;
 `--jobs` single-thread solves share the machine):
@@ -139,13 +133,11 @@ class StampMismatchError(ValueError):
 def reset_on_new_stamp(shards: Path, stamp: str, *, restart: bool) -> list[str]:
     """Stamp `shards`; on another stamp, refuse unless `restart`, then delete every `.failed`.
 
-    Returns the names cleared. Refused by default, as the cbls driver refuses a
-    staging stamp: a quick check at another budget must not wipe a campaign's
-    attempt records, nor count its own failures as the campaign's. Cleared
-    before the stamp is written, so a kill in between clears them again on the
-    next run, and never counts an old attempt under the new stamp. The stamp is
-    written whole or not at all. A directory without a stamp predates #312:
-    its markers hold no attempt lines, so there is nothing to keep apart.
+    Returns the names cleared. Refused by default: a quick check at another
+    budget must not wipe a campaign's attempt records, nor count its own failures
+    as the campaign's. Cleared before the stamp is written (whole or not at all),
+    so a kill in between never counts an old attempt under the new stamp. A
+    directory without a stamp predates #312: its markers hold no attempt lines.
     """
     path = shards / SHARD_STAMP_NAME
     cleared: list[str] = []
@@ -188,8 +180,7 @@ def attempted_a_solve(rc: int, *, wrote_output: bool) -> bool:
     """Whether a run without a publishable row counts as a failed attempt on its instance.
 
     It does if it wrote anything, hit the cap, or died by a signal (128+N). Any
-    other exit with nothing written never reached a solve, as on the cbls side,
-    where a runner that stages no row records nothing (#312, #323).
+    other exit with nothing written never reached a solve (#312, #323).
     """
     return wrote_output or rc in CAP_EXITS or rc > 128
 
@@ -205,8 +196,8 @@ def solve_shard(
     Returns the process's exit code, as a shell reports it. The row is published
     (renamed from `.csv.tmp`) when the process wrote one whole row and was not
     stopped by the cap; otherwise `.failed` gains a line recording the exit, if
-    `attempted_a_solve`. "Whole row" is `gm_ratio.has_whole_row`, the scorer's own
-    test, so a torn file is neither published nor skipped on resume.
+    `attempted_a_solve`. "Whole row" is the scorer's own `gm_ratio.has_whole_row`,
+    so a torn file is neither published nor skipped on resume.
     """
     csv_path = shards / f"{name}.csv"
     if has_whole_row_at(csv_path):
@@ -245,9 +236,9 @@ def run_shards(
 ) -> dict[str, int | None]:
     """Every instance of `names`, `jobs` processes at a time; exit code by instance.
 
-    On Ctrl-C no further solve starts. The running ones finish (at most the
-    cap): `timeout` puts each in its own process group, out of the terminal's
-    SIGINT. Their shards are written as usual, so a re-run resumes cleanly.
+    On Ctrl-C no further solve starts; the running ones finish (at most the cap)
+    and write their shards, since `timeout` puts each in its own process group,
+    out of the terminal's SIGINT.
     """
     shards.mkdir(parents=True, exist_ok=True)
 
