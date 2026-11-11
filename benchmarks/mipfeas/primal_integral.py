@@ -179,8 +179,7 @@ def config_string(result: dict[str, object]) -> str:
     # way round: their off arm is what every row from before the flag ran, so
     # off is DROPPED rather than back-filled. Off rows old and new then share
     # one cell, which also keeps every table scored before the flag
-    # byte-identical, and only an on-arm row carries the key. (The exact Int
-    # jump, #216, had the same rule until #381 removed it.) The tie-break has
+    # byte-identical, and only an on-arm row carries the key. The tie-break has
     # been on by default since #226, so a new default row carries
     # `objective_tie_break=True` and does not match a table scored before it --
     # which is the point: that table was measured on the old default and must

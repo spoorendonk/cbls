@@ -1511,3 +1511,70 @@ TEST_CASE("two-phase run() carries the linear phase's weights into the general p
     REQUIRE(vm.weights[0] > 1.0);
     REQUIRE(vm.weights[3] == 1.0);  // the non-linear row: unmasked at 1
 }
+
+// #208's repro: x, y Int in [0, 1e7], x + y == 1e7 - 1 and |x - y| <= 1 as two
+// linear rows. Wide Int domains are where the jump's candidate grid (x +/- 1,
+// endpoints, sampled points) must still converge; a grid that oscillates here
+// needs 1e5+ iterations. The runs have no clock, so the counts are pinned.
+namespace {
+void build_wide_int_repro(Model& m) {
+    auto x = m.int_var(0, 10'000'000);
+    auto y = m.int_var(0, 10'000'000);
+    m.add_constraint(m.eq_expr(m.sum({x, y}), m.constant(9'999'999.0)));
+    m.add_constraint(m.leq(m.sum({x, m.neg(y)}), m.constant(1.0)));
+    m.add_constraint(m.leq(m.sum({y, m.neg(x)}), m.constant(1.0)));
+    m.close();
+}
+}  // namespace
+
+TEST_CASE("the jump's candidate grid solves #208's wide-domain Int repro", "[fj]") {
+    SECTION("solve() reaches feasibility in the pinned iteration counts") {
+        const std::vector<std::pair<uint64_t, int64_t>> pinned = {{1, 72}, {2, 19}, {3, 19}};
+        for (const auto& [seed, iterations] : pinned) {
+            Model m;
+            build_wide_int_repro(m);
+            SearchConfig config;
+            config.max_iterations = 10'000;
+            const SearchResult r =
+                solve(m, /*time_limit=*/0.0, seed, true, nullptr, nullptr, 3, nullptr, config);
+            CAPTURE(seed, r.iterations);
+            REQUIRE(r.feasible);
+            REQUIRE(r.termination == TerminationReason::Feasible);
+            REQUIRE(r.iterations == iterations);
+        }
+    }
+    SECTION("Novelty Jump batches alone reach it in the same count") {
+        Model m;
+        build_wide_int_repro(m);
+        SearchConfig config;
+        config.max_iterations = 10'000;
+        config.use_compound_moves = true;
+        config.novelty_jump_probability = 1.0;
+        const SearchResult r =
+            solve(m, /*time_limit=*/0.0, /*seed=*/1, true, nullptr, nullptr, 3, nullptr, config);
+        CAPTURE(r.iterations);
+        REQUIRE(r.counters.novelty_batches == r.counters.batches);
+        REQUIRE(r.feasible);
+        REQUIRE(r.iterations == 72);
+    }
+    SECTION("the LNS repair FJ reaches feasibility") {
+        Model m;
+        build_wide_int_repro(m);
+        full_evaluate(m);
+        ViolationManager vm(m);
+        RNG rng(1);
+        const int64_t it = fj_nl_initialize(m, vm, 10'000, &rng, /*time_limit=*/0.0);
+        CAPTURE(it);
+        REQUIRE(vm.total_violation() == 0.0);
+        REQUIRE(it < 10'000);
+
+        Model m2;
+        build_wide_int_repro(m2);
+        full_evaluate(m2);
+        ViolationManager vm2(m2);
+        RNG rng2(1);
+        LNS lns;
+        lns.destroy_repair(m2, vm2, rng2, /*repair_time_limit=*/0.0);
+        REQUIRE(vm2.total_violation() == 0.0);
+    }
+}

@@ -308,9 +308,7 @@ bool apply_random_structural_move(Model& model, int32_t var_id, RNG& rng) {
 // amortises either across the GLS loop. Scoring is still per candidate: a
 // closed-form ARGMIN over a linear column would pick from a different candidate
 // set, which is a different algorithm rather than a cheaper evaluation of this
-// one. That algorithm (OR-Tools' ComputeLinearJump, #208/#216) was an opt-in
-// arm, off by default as a known regression, and was removed (#381; in git
-// history at `1330cd2c`).
+// one (OR-Tools' ComputeLinearJump; docs/architecture.md).
 //
 // Bounds are read as doubles through `domain_window` (#114): no `long`, so
 // nothing overflows and an unbounded Int gets candidates instead of freezing in
