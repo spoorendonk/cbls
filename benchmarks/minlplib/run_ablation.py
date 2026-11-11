@@ -38,7 +38,8 @@ hours later:
   non-Release or sanitizer build, a build from another checkout, missing `.nl`
   files.
 
-Changes no engine default and writes no published table (#143). The removed
+Changes no engine default and writes no published table; an arm arguing for
+a new default is a separate change (#143). The removed
 `transfer-145` (#145) and `presolve-322` (#331) campaigns are at `ef795b55`; an
 out-dir stamped by either is refused.
 """
@@ -165,7 +166,8 @@ DEFAULT_SEEDS: tuple[int, ...] = (1, 2, 3)
 #: Gates on ATTEMPTS, not `lns_repairs_accepted` (#150): a rejected repair still
 #: randomises, runs `fj_nl_initialize` and rolls back, consuming RNG and budget,
 #: so it diverges, and that budget cost is what the arm prices. Acceptance is
-#: reported beside attempts by `ablation_report.py`. Both thresholds are flags.
+#: reported beside attempts by `ablation_report.py`. Both thresholds are recorded
+#: in `lns_gate.json`; `--lns-arm on|off` overrides the gate.
 LNS_GATE_MIN_REPAIRS = 1
 LNS_GATE_MIN_INSTANCES = 1
 

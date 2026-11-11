@@ -31,8 +31,8 @@ all 45 other instances moves it by less than its own noise. So:
 
 * Each instance is judged against **its own** floor; `moved worse` and
   `moved better` count instances whose delta exceeds it.
-* The counts get an exact two-sided **sign test**. Nothing outside the floor is
-  "inside the noise" (typical floor quoted); comparable moves both ways are
+* The counts get an exact two-sided **sign test**. An arm with no instance
+  outside its floor is "inside the noise" (typical floor quoted); comparable moves both ways are
   "mixed", not an effect.
 * The **median** delta is quoted, never the mean. The mean is printed with the
   largest single instance's share of it.
@@ -150,9 +150,10 @@ def min_move_points(primal_bks: float) -> float:
     #151's alternatives fail: a relative-spread test passes ~1e-7 gaps with
     ~1e-7 spreads (ratio order 1); a floor at a multiple of the gap's numerical
     resolution is cleared, since ~1e-7 is ~1e16 ulps at ~1e-23 resolution. A
-    flat `MIN_MOVE_POINTS` (the infimum, safe but loose below `|ref|` 1) is five
-    orders of magnitude too permissive on `ex6_2_6`/`ex6_2_11` (`|primal_bks|`
-    ~2.6e-6, tie band ~38 gap points, gaps -8.3e-5 and +9.5e-6).
+    flat `MIN_MOVE_POINTS` (the infimum: it never suppresses a move the runner
+    calls real, but is loose below `|ref|` 1) is five orders of magnitude too
+    permissive on `ex6_2_6`/`ex6_2_11` (`|primal_bks|` ~2.6e-6, tie band
+    ~38 gap points, gaps -8.3e-5 and +9.5e-6).
 
     Missing or non-finite `primal_bks` falls back to the infimum: such a row has
     no finite gap and never reaches a floor, so it errs wide rather than raising.
@@ -983,7 +984,8 @@ def render_report(
         return f"{results} holds no rows"
     budgets = sorted({r.time_limit for r in rows if math.isfinite(r.time_limit)})
     commits = sorted({r.commit for r in rows if r.commit})
-    # A row with no recorded budget counts as a budget of its own.
+    # A row with no recorded budget counts as a budget of its own: a row from
+    # before `time_limit` was recorded is not known to share one.
     unrecorded = any(not math.isfinite(r.time_limit) for r in rows)
     if len(budgets) > 1 or (budgets and unrecorded):
         named = [f"{b:g}s" for b in budgets] + (["not recorded"] if unrecorded else [])
