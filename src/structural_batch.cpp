@@ -486,9 +486,10 @@ bool StructuralBatch::take_best(Model& model, ViolationManager& vm, MoveGenerato
 // and so moves the kept candidate's rows away from the snapshot, and the one
 // after it no longer walks them. `differing_` is what carries them.
 //
-// A restore lands every row bit-for-bit (a plain Commit re-sums), so no row
-// stays in `differing_` past it. Scoring reads no scope; the scope drives only
-// the skips, and an empty one is still asserted against in Debug.
+// Every in-tree op lands a row bit-for-bit on a restore (a plain Commit
+// re-sums), so on such rows nothing stays in `differing_` past it. Scoring
+// reads no scope; the scope drives only the skips, and an empty one is still
+// asserted against in Debug.
 //
 // COST of the two trailing calls (after first-improving's final restore and
 // take_best's no-improvement restore): an extra pass over G(base_vars_) or

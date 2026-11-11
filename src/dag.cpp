@@ -504,9 +504,9 @@ static double extremum_share(const ExprNode& node, ConstSpan<ChildRef> children,
 // Non-finite partials. Every propagation pass multiplies the edges along a path
 // (`add_chain_term`), so one infinite edge makes the partial of every variable
 // below it on a live path infinite, and two such paths meeting with opposite
-// signs read `inf - inf` -- NaN. A zero edge below it is
-// skipped, not multiplied, since #260. `Pow`, `SignPower`, and
-// since #205 `Div` and `Tan`, therefore fold a non-finite partial to 0; `Log`
+// signs read `inf - inf` -- NaN. A zero edge below it is skipped, not
+// multiplied, since #260. `Pow`, `SignPower`, and since #205 `Div` and `Tan`,
+// therefore fold a non-finite partial to 0; `Log`
 // and `Sqrt` return 0 on and below their singular point, where their value is
 // -inf or NaN. What stays finite but huge near a pole (`1/x` at x = 1e-15) is
 // left alone: that slope is real, and clamping it would change every AD

@@ -89,8 +89,7 @@ namespace {
 thread_local bool in_evaluation = false;
 
 // RAII, so that an exception out of user code inside the walk clears the flag
-// on the way out
-// instead of poisoning every later call on this thread.
+// on the way out instead of poisoning every later call on this thread.
 class EvaluationGuard {
 public:
     explicit EvaluationGuard(const char* entry) {
@@ -373,9 +372,9 @@ public:
                     // A walk without pushes re-reads a term only at its Sum's
                     // turn, so anything throwing before that turn -- a plain
                     // or extra lambda (Python binds them as raw callables), or
-                    // anything else -- would leave the Sum stale
-                    // while its state says it is tracked; the next commit would
-                    // update the stale value. Untracked, it re-sums instead.
+                    // anything else -- would leave the Sum stale while its
+                    // state says it is tracked; the next commit would update
+                    // the stale value. Untracked, it re-sums instead.
                     // Defensive: after a throw the contract already asks for a
                     // full_evaluate, which resets them all.
                     //
@@ -711,8 +710,7 @@ double delta_walk(Model& model, const int32_t* changed_var_ids, size_t count, De
             merged.insert(merged.end(), changed_var_ids, changed_var_ids + count);
             std::sort(merged.begin(), merged.end());
             merged.erase(std::unique(merged.begin(), merged.end()), merged.end());
-            // The walk below stays a Rollback, now with no log pending: a
-            // Commit.
+            // The walk below stays a Rollback, now with no log pending: a Commit.
             changed_var_ids = merged.data();
             count = merged.size();
         }

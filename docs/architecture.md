@@ -286,11 +286,12 @@ variable's cone once and stored it sorted by `topo_pos`
 `topo_pos` is a total order, so the cached order is the one the walk sorts to
 and every value is bit-identical. A model with no incremental Sum sets no dirty
 flag at all on that path; the others set the cone's flags from the span, since
-the incremental-Sum pushes read them. The cache costs 4 bytes per (variable, cone node) pair, O(nodes ×
-vars) on a deep shared chain, so it is capped (`SearchConfig::cone_cache_bytes`,
-256 MiB): variables are cached in id order up to the first whose cone would
-cross the cap, and that one and every later one walk as an unfrozen model's do
-(a prefix, so the build is O(cap), not O(vars × cap)). A walk over several
+the incremental-Sum pushes read them. The cache costs 4 bytes per (variable,
+cone node) pair, O(nodes × vars) on a deep shared chain, so it is capped
+(`SearchConfig::cone_cache_bytes`, 256 MiB): variables are cached in id order up
+to the first whose cone would cross the cap, and that one and every later one
+walk as an unfrozen model's do (a prefix, so the build is O(cap), not
+O(vars × cap)). A walk over several
 variables, an unfrozen model's, and one past the prefix collect and sort as
 above.
 `SearchCounters::cone_cache_walks`/`cone_fallback_walks` give the hit rate;
@@ -394,10 +395,11 @@ only the nonzero ones, as `(var_id, partial)` pairs:
 components). Discrete operations (At, Count, Lambda, PairLambda, LambdaExtra,
 PairLambdaExtra) and the piecewise-constant ones (Element, Ceil, Floor, Round)
 return 0 — FJ gets the latter's plateaus from their breakpoints instead (see
-[`compute_var_jump`](#compute_var_jump)). Every propagation pass, reverse and forward, takes its edges
-through `add_chain_term` (`include/cbls/dag_ops.h`), which skips a zero edge
-rather than multiplying it, so an infinite adjoint or slope never reads
-`inf * 0` across an untaken If branch or a Min's unselected operand (#260).
+[`compute_var_jump`](#compute_var_jump)). Every propagation pass, reverse and
+forward, takes its edges through `add_chain_term` (`include/cbls/dag_ops.h`),
+which skips a zero edge rather than multiplying it, so an infinite adjoint or
+slope never reads `inf * 0` across an untaken If branch or a Min's unselected
+operand (#260).
 
 The built-ins follow the same rule (#205): `Pow`, `SignPower`, `Div` and
 `Tan` fold a non-finite partial to 0, `Log`/`Sqrt` return 0 on and below

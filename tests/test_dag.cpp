@@ -1850,3 +1850,78 @@ TEST_CASE("a walk an extra lambda throws out of leaves no stale Sum tracked", "[
     commit_scalar_move(m, vid(y), 1.0);
     CHECK(m.node_value(row) == 7.0);  // 5 + 2, re-summed from the stored terms
 }
+
+TEST_CASE("re-entering the evaluator from inside a lambda functor is refused", "[dag]") {
+    // A `lambda_sum` functor is user code inside the evaluation walk, and the
+    // realistic way it re-enters is by evaluating a sub-model of its own: no
+    // cast around any const contract, so the type system cannot stop it. The
+    // nested call would `clear()` the `thread_local` dirty list the outer
+    // call's guard holds, leaking the outer call's flags for the life of the
+    // thread -- a node that silently stops updating, long after the cause. So
+    // both entry points refuse it (`EvaluationGuard`, src/dag_ops.cpp). Ported
+    // from the CustomInvariant test #384 removed (b9664171).
+    enum class Nest : uint8_t { kNone, kFull, kDelta };
+    Model sub;
+    const int32_t sv = sub.int_var(0, 9, "sv");
+    sub.minimize(sub.prod(sv, sub.constant(2.0)));
+    sub.close();
+    const int32_t svid = vid(sv);
+
+    auto nest = std::make_shared<Nest>(Nest::kNone);
+    Model* const sub_ptr = &sub;
+    auto make_outer = [&](Model& m) {
+        const int32_t lst = m.list_var(2);
+        const int32_t lam = m.lambda_sum(lst, [nest, sub_ptr, svid](int e) {
+            switch (*nest) {
+                case Nest::kFull:
+                    return full_evaluate(*sub_ptr) + e;
+                case Nest::kDelta:
+                    sub_ptr->var_mut(svid).value = static_cast<double>(e);
+                    return delta_evaluate(*sub_ptr, &svid, 1);
+                case Nest::kNone:
+                    break;
+            }
+            return static_cast<double>(e);
+        });
+        m.add_constraint(m.leq(lam, m.constant(100.0)));
+        return vid(lst);
+    };
+
+    // From the full pass: `close()` runs the first `full_evaluate`, with the
+    // functor nesting either entry point.
+    for (const Nest inner : {Nest::kFull, Nest::kDelta}) {
+        *nest = inner;
+        Model m;
+        make_outer(m);
+        REQUIRE_THROWS_AS(m.close(), std::logic_error);
+    }
+
+    // From the delta path: a model that closed cleanly, then a List move whose
+    // walk reaches the functor.
+    *nest = Nest::kNone;
+    Model outer;
+    const int32_t li = make_outer(outer);
+    outer.close();
+    outer.var_mut(li).elements = {1, 0};
+    REQUIRE_NOTHROW(delta_evaluate(outer, &li, 1));
+    for (const Nest inner : {Nest::kFull, Nest::kDelta}) {
+        *nest = inner;
+        outer.var_mut(li).elements = {0, 1};
+        REQUIRE_THROWS_AS(delta_evaluate(outer, &li, 1), std::logic_error);
+    }
+
+    // The guard is RAII, so the thread is not poisoned: the same model, and an
+    // ordinary one, still evaluate on this thread afterwards.
+    *nest = Nest::kNone;
+    REQUIRE_NOTHROW(full_evaluate(outer));
+    REQUIRE_NOTHROW(delta_evaluate(outer, &li, 1));
+    Model plain;
+    const int32_t y = plain.int_var(0, 9, "y");
+    const int32_t row = plain.leq(y, plain.constant(4.0));
+    plain.add_constraint(row);
+    plain.close();
+    const int32_t yid = vid(y);
+    plain.var_mut(yid).value = 7.0;
+    delta_evaluate(plain, &yid, 1);
+    REQUIRE_THAT(plain.node_value(row), WithinAbs(3.0, 1e-12));
+}
