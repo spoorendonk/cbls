@@ -44,30 +44,6 @@ Model::Model(const Model& other)
       inc_sums_(other.inc_sums_) {
     // probe_old_violation_ is deliberately left empty: it is resized and
     // overwritten before it is read on every call, so it carries no state.
-    //
-    // custom_invariants_ is the opposite: it IS state, and a per-worker copy of
-    // it is the whole reason a custom node can be stateful at all (#166). Cloned
-    // one by one, in order, because the index is `ExprNode::lambda_func_id` and
-    // that lives in the structure the replicas share. A pending probe is not
-    // carried over -- nothing copies a model mid-probe, and starting a replica
-    // owing a rollback would be worse than starting it owing nothing.
-    custom_invariants_.reserve(other.custom_invariants_.size());
-    for (const CustomInvariantSlot& slot : other.custom_invariants_) {
-        // Copying MID-PROBE is a contract violation, not a supported state, and it
-        // cannot be made one here: `node_values_` above is copied verbatim, so it
-        // carries the counterfactual, while `clone()` contractually carries the
-        // staged state -- so the copy would owe a rollback that nothing can ever
-        // tell it about. Nothing in the tree does it (a probe's two legs are
-        // adjacent), but this constructor is public, so say so where it happens.
-        assert(!slot.probe_pending);
-        CustomInvariantSlot copy;
-        copy.invariant = slot.invariant->clone();
-        if (copy.invariant == nullptr) {
-            throw std::invalid_argument("CustomInvariant::clone() returned null");
-        }
-        copy.name = slot.name;
-        custom_invariants_.push_back(std::move(copy));
-    }
     if (other.open_structure_ == nullptr) {
         // Frozen: share. This is the whole point -- a portfolio replica costs the
         // variables and the node values, not the DAG (#157). Reading `other`
@@ -541,7 +517,6 @@ IntegralRule integral_rule(const Model& model, const ExprNode& nd, ConstSpan<Chi
         case NodeOp::Geq:
         case NodeOp::Lt:
         case NodeOp::Gt:
-        case NodeOp::Custom:
         case NodeOp::Element:
         case NodeOp::LambdaExtra:
         case NodeOp::PairLambdaExtra:
@@ -643,34 +618,6 @@ int32_t Model::pair_lambda_sum(int32_t list_var_id, std::function<double(int, in
 
     int32_t nid = alloc_node(NodeOp::PairLambda, {child});
     st.nodes[nid].lambda_func_id = func_id;
-    return nid;
-}
-
-int32_t Model::custom(const std::vector<int32_t>& inputs, std::unique_ptr<CustomInvariant> inv,
-                      const std::string& name) {
-    require_buildable("custom");
-    ModelStructure& st = mut();  // rejects a frozen model before anything is registered
-    if (inv == nullptr) {
-        throw std::invalid_argument("custom: invariant must not be null");
-    }
-    const auto slot_id = static_cast<int32_t>(custom_invariants_.size());
-    // The slot is BUILT and its space RESERVED before the node exists, so that
-    // nothing between `alloc_node_over_handles` and the `lambda_func_id` write can
-    // throw. `slot.name = name` allocates, and doing it on the far side of the node
-    // would leave a Custom node carrying -1 for a slot that was never appended --
-    // which throws out of the middle of the first evaluation, or out of the `.cbls`
-    // writer's refusal, instead of out of this call. `CustomInvariantSlot`'s move is
-    // noexcept, so the push_back into reserved capacity cannot throw either. The
-    // reserve is the same argument, and the same shape, as the one in
-    // pair_lambda_sum above; a throw from `alloc_node_over_handles` can still leave
-    // it in place, which costs one pointer of capacity.
-    CustomInvariantSlot slot;
-    slot.invariant = std::move(inv);
-    slot.name = name;
-    custom_invariants_.reserve(custom_invariants_.size() + 1);
-    const int32_t nid = alloc_node_over_handles(NodeOp::Custom, inputs);
-    custom_invariants_.push_back(std::move(slot));
-    st.nodes[nid].lambda_func_id = slot_id;
     return nid;
 }
 
@@ -955,16 +902,6 @@ Expr Model::List(int universe, int min_len, int max_len, ListInit init, const st
 
 Expr Model::Set(int n, int min_size, int max_size, const std::string& name) {
     return {this, set_var(n, min_size, max_size, name)};
-}
-
-Expr Model::Custom(const std::vector<Expr>& inputs, std::unique_ptr<CustomInvariant> inv,
-                   const std::string& name) {
-    std::vector<int32_t> handles;
-    handles.reserve(inputs.size());
-    for (const Expr& e : inputs) {
-        handles.push_back(e.handle);
-    }
-    return {this, custom(handles, std::move(inv), name)};
 }
 
 Expr Model::Constant(double val) {
@@ -1878,7 +1815,7 @@ std::vector<std::pair<int32_t, double>> Model::per_constraint_violation_delta(in
     }
 
     // Restore exactly: the Rollback writes the probe's undo log back (#270),
-    // custom nodes and drifted incremental Sums included -- see the notes on
+    // drifted incremental Sums included -- see the notes on
     // weighted_violation_delta below.
     var_mut(var_id).value = old_value;
     delta_evaluate(*this, &var_id, 1, DeltaMode::Rollback);
@@ -1934,34 +1871,14 @@ double Model::probe_weighted_delta(int32_t var_id, double j, const std::vector<d
         probe_old_violation_[k] = clamped_node_violation(node_values_[cids[affected[k]]]);
     }
 
-    // Probe/Rollback rather than two plain deltas, for the custom nodes of #166:
-    // this pair is the per-candidate hot path (one call per jump value, per
-    // variable, per GLS iteration), so a stateful invariant that saw it as two
-    // deltas would rebuild its cache twice per candidate and never hold a
-    // committed state for longer than one call. Under the bracket it sees one
-    // `delta()` and one `rollback()`, and the node's cached value is put back by
-    // the engine rather than recomputed.
-    //
-    // NARROWED DELIBERATELY: THREE other sites score by applying and then putting
-    // back, and every leg of all three stays a plain `Commit` delta -- the
-    // structural batch, the inner solver's multi-variable Newton step (its
-    // coordinate probes are bracketed since #207), and Novelty Jump's
-    // backtracking chain (`novelty_jump_search`), which is on the same
-    // per-candidate path this probe is. They are correct: each leg is a real assignment and the
-    // `changed` set each passes is a complete superset of what it moved. But a custom node in one
-    // of their cones costs two `delta()` + two `commit()` per candidate instead of one `delta()` +
-    // one `rollback()`, and an invariant caching a List's prefix sums rebuilds it on both legs.
-    // Bracketing them is a separate change to `src/structural_batch.cpp`, `src/inner_solver.cpp`
-    // and `src/feasibility_jump.cpp`.
-    //
-    // The old value is what lets the probe move each incremental Sum in the
-    // cone by its term's change, as the commit's update does (#188): the score
-    // is then measured against the committed value, drift included, rather than
-    // against a re-sum of it. The Rollback writes the probe's undo log back
-    // rather than walking the cone again (#270), so a drifted committed state
-    // comes back to the bit, at O(cone) stores. Where
-    // the commit would re-sum instead, the two can differ by the Sum's drift
-    // bound; see `probe_scalar_move`.
+    // Probe/Rollback rather than two plain deltas. The old value is what lets
+    // the probe move each incremental Sum in the cone by its term's change, as
+    // the commit's update does (#188): the score is then measured against the
+    // committed value, drift included, rather than against a re-sum of it. The
+    // Rollback writes the probe's undo log back rather than walking the cone
+    // again (#270), so a drifted committed state comes back to the bit, at
+    // O(cone) stores. Where the commit would re-sum instead, the two can differ
+    // by the Sum's drift bound; see `probe_scalar_move`.
     const double old_value = v.value;
     var_mut(var_id).value = j;
     probe_scalar_move(*this, var_id, old_value);

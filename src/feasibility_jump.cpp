@@ -377,9 +377,8 @@ bool int_jump_candidates(const Variable& var, double x0, Consider&& consider) {
 // terms of one big row (a dense least-squares objective) while only a small row
 // is violated. The budget bounds that loss at one sweep's worth of nodes a call.
 // It counts nodes, not their cost: the pass differentiates satisfied rows too,
-// so a variable under many expensive edges (Python CustomInvariant partials,
-// each taking the GIL) pays for all of them where a sweep paid for the violated
-// rows' only. Unmeasured; no benchmark has that shape.
+// so a variable under many expensive edges pays for all of them where a sweep
+// paid for the violated rows' only. Unmeasured; no benchmark has that shape.
 class NewtonPartials {
 public:
     NewtonPartials(const Model& model, int32_t var_id) : model_(model), var_id_(var_id) {}
@@ -1238,8 +1237,7 @@ namespace {
 // A second probe is taken only for a jump the argmin never scored, x0 (no
 // candidate improved under W'), when the closed form is out; it stays a probe
 // rather than a literal 0, which would equal it only if re-evaluating the cone
-// at x0 reproduced every committed value -- and a custom node's delta() (#166)
-// need not. The probe restores the
+// at x0 reproduced every committed value. The probe restores the
 // assignment to the bit (#270), so a delta taken mid-argmin equals one taken
 // after it. The cost: each dual probe adds one multiply-add per row of G_v,
 // paid on every candidate, winners or not, against the second pass over G_v
@@ -1759,8 +1757,8 @@ bool node_is_affine(NodeOp op, ConstSpan<ChildRef> children, const std::vector<u
 // A bare body (`add_constraint(expr)`, read as expr <= 0) that is itself affine
 // (#190): the scorer models it as the residual `expr - 0`, which is the node
 // value for every input (linear_jump.h). Asked of the row's own affineness:
-// Sum/Neg/Prod-by-constant/Div-by-constant over affine children. Neq (a step),
-// Custom, and every nonlinear op never qualify either way.
+// Sum/Neg/Prod-by-constant/Div-by-constant over affine children. Neq (a step)
+// and every nonlinear op never qualify either way.
 //
 // Both shapes read `cf_affine`, not node_is_affine's verdict: a comparison
 // NESTED below the row is not affine for scoring, because its value is a

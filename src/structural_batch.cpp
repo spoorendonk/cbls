@@ -284,8 +284,6 @@ void StructuralBatch::snapshot_sample_base(const Model& model) {
         base_values_[i] = var.value;
         base_elements_[i].assign(var.elements.begin(), var.elements.end());
     }
-    applied_.clear();
-    previous_.clear();
     record_accepted(model);
     dirty_vars_.clear();
 }
@@ -309,55 +307,6 @@ void StructuralBatch::record_accepted(const Model& model) {
         accepted_values_[i] = var.value;
         accepted_elements_[i].assign(var.elements.begin(), var.elements.end());
     }
-    if (journaling_) {
-        // Copy-assignment into a warm journal reuses its capacity.
-        accepted_ = applied_;
-    }
-}
-
-// Whether any custom node reads positional edits (#172). Asked on every run()
-// rather than cached at construction; O(#custom nodes) virtual calls, and one
-// predictable branch when the model has none -- which is every model without a
-// custom node, whose path is then the pre-#172 one exactly. (A closed model
-// cannot gain a custom node, so the answer does not change mid-search; asking
-// per run keeps it right without relying on that.)
-bool StructuralBatch::wants_journal(const Model& model) {
-    for (int32_t id = 0; id < model.num_custom_invariants(); ++id) {
-        if (model.custom_invariant(id).wants_positional_edits()) {
-            return true;
-        }
-    }
-    return false;
-}
-
-// What `delta_evaluate` is to be told about a move from "baseline + `undo`" to
-// "baseline + `redo`" over `vars`: per structured variable, `undo` inverted and
-// then `redo`, each exact because both were recorded from edits that actually
-// took effect. A variable either side knows only as a `Replace` reads Unknown.
-//
-// O(|vars| x records): the handful of variables one candidate touches, except
-// on the sample's final restore, where `vars` is every variable the sample named
-// -- quadratic in that, once per sample, and only while journaling.
-void StructuralBatch::describe_transition(const Model& model, const EditJournal& undo,
-                                          const EditJournal& redo,
-                                          const std::vector<int32_t>& vars) {
-    journal_.clear();
-    for (const int32_t var_id : vars) {
-        if (!is_structured(model.var(var_id).type)) {
-            continue;
-        }
-        // `vars` can name a variable twice -- `dirty_vars_` keeps one entry per
-        // CHANGE, and a registered generator may emit two changes on one
-        // variable -- and re-opening the newest record would append the whole
-        // transition a second time: a Known, wrong list. Describe each once.
-        ConstSpan<PositionalEdit> described;
-        if (journal_.lookup(var_id, described) != EditJournal::Status::Absent) {
-            continue;
-        }
-        journal_.begin(var_id);
-        journal_.append_inverse(undo, var_id);
-        journal_.append_forward(redo, var_id);
-    }
 }
 
 void StructuralBatch::restore_accepted(Model& model) const {
@@ -380,18 +329,10 @@ const std::vector<int32_t>& StructuralBatch::apply_from_base(Model& model, const
     // allocated vector this caller would discard -- one malloc and free per
     // candidate SCORED, on the path the positional representation exists to take
     // allocations off.
-    if (journaling_) {
-        std::swap(previous_, applied_);
-        applied_.clear();
-    }
     for (const Move::Change& change : move.changes) {
         Variable& var = model.var_mut(change.var_id);
         if (is_structured(var.type)) {
-            if (journaling_) {
-                apply_element_edits(change, var.elements, applied_);
-            } else {
-                apply_element_edits(change, var.elements);
-            }
+            apply_element_edits(change, var.elements);
         } else {
             var.value = change.new_value;
         }
@@ -399,9 +340,6 @@ const std::vector<int32_t>& StructuralBatch::apply_from_base(Model& model, const
         if (std::find(touched_.begin(), touched_.end(), change.var_id) == touched_.end()) {
             touched_.push_back(change.var_id);
         }
-    }
-    if (journaling_) {
-        describe_transition(model, previous_, applied_, touched_);
     }
     return touched_;
 }
@@ -418,7 +356,7 @@ bool StructuralBatch::take_first_improving(Model& model, ViolationManager& vm, M
     for (const Move& move : candidates_) {
         const std::vector<int32_t>& touched = apply_from_base(model, move);
         assert_move_within_scope(gen, touched);
-        delta_evaluate(model, touched, DeltaMode::Commit, journal());
+        delta_evaluate(model, touched);
         const double delta = delta_after_walk(model, vm, touched);
         if (delta < kImprovementThreshold) {
             changed = true;  // improving: keep
@@ -450,10 +388,7 @@ bool StructuralBatch::take_first_improving(Model& model, ViolationManager& vm, M
     // correct with it, because take_best wants the baseline and that is exactly
     // what an empty last candidate leaves.
     restore_accepted(model);
-    if (journaling_) {
-        describe_transition(model, applied_, accepted_, base_vars_);
-    }
-    delta_evaluate(model, base_vars_, DeltaMode::Commit, journal());
+    delta_evaluate(model, base_vars_);
     // Not a score: this walk moved rows, and the next generator's candidates
     // read `differing_`, which must name every row that differs from
     // `baseline_` once it is done -- a restore that does not land bit-for-bit
@@ -478,7 +413,7 @@ bool StructuralBatch::take_best(Model& model, ViolationManager& vm, MoveGenerato
         const Move& move = candidates_[i];
         const std::vector<int32_t>& touched = apply_from_base(model, move);
         assert_move_within_scope(gen, touched);
-        delta_evaluate(model, touched, DeltaMode::Commit, journal());
+        delta_evaluate(model, touched);
         const double delta = delta_after_walk(model, vm, touched);
         if (delta < best_delta) {
             best_delta = delta;
@@ -488,11 +423,7 @@ bool StructuralBatch::take_best(Model& model, ViolationManager& vm, MoveGenerato
     if (best < 0) {
         if (!dirty_vars_.empty()) {
             restore_sample_base(model, dirty_vars_);
-            if (journaling_) {
-                previous_.clear();  // an empty "redo": back to the baseline
-                describe_transition(model, applied_, previous_, dirty_vars_);
-            }
-            delta_evaluate(model, dirty_vars_, DeltaMode::Commit, journal());
+            delta_evaluate(model, dirty_vars_);
             // As at the end of `take_first_improving`: kept for `differing_`.
             static_cast<void>(delta_after_walk(model, vm, dirty_vars_));
             dirty_vars_.clear();
@@ -501,7 +432,7 @@ bool StructuralBatch::take_best(Model& model, ViolationManager& vm, MoveGenerato
     }
     const Move& move = candidates_[static_cast<size_t>(best)];
     const std::vector<int32_t>& touched = apply_from_base(model, move);
-    delta_evaluate(model, touched, DeltaMode::Commit, journal());
+    delta_evaluate(model, touched);
     resnapshot(vm);
     gen.on_commit(move);
     ++counters.moves_accepted;
@@ -555,13 +486,9 @@ bool StructuralBatch::take_best(Model& model, ViolationManager& vm, MoveGenerato
 // and so moves the kept candidate's rows away from the snapshot, and the one
 // after it no longer walks them. `differing_` is what carries them.
 //
-// One trajectory difference is possible, and only from a custom invariant
-// whose restore does not land a row bit-for-bit (a plain Commit re-sums, so
-// no in-tree node does this): that row stays in `differing_` and is summed
-// into every later candidate of the pass, where the scope scan summed it only
-// for generators whose scope's G_v reached it. The full scan before #165 also
-// summed it everywhere. Scoring reads no scope; the scope drives only the
-// skips, and an empty one is still asserted against in Debug.
+// A restore lands every row bit-for-bit (a plain Commit re-sums), so no row
+// stays in `differing_` past it. Scoring reads no scope; the scope drives only
+// the skips, and an empty one is still asserted against in Debug.
 //
 // COST of the two trailing calls (after first-improving's final restore and
 // take_best's no-improvement restore): an extra pass over G(base_vars_) or
@@ -579,7 +506,6 @@ bool StructuralBatch::run(Model& model, ViolationManager& vm, RNG& rng, bool has
         return false;
     }
     bool changed = false;
-    journaling_ = wants_journal(model);
     resnapshot(vm);
     // Sized once per pass to the model's rows, which `snapshot_violations` has
     // just checked against the weights; every mark is cleared after use.

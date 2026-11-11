@@ -205,7 +205,6 @@ endfunction()
 add_library(cbls_lib
     src/dag.cpp
     src/dag_ops.cpp
-    src/custom_invariant.cpp
     src/model.cpp
     src/expr.cpp
     src/violation.cpp

@@ -5,7 +5,6 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/catch_tostring.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
-#include <catch2/matchers/catch_matchers_string.hpp>
 #include <cbls/cbls.h>
 #include <cmath>
 #include <cstddef>
@@ -17,7 +16,6 @@
 #include <vector>
 
 using namespace cbls;
-using Catch::Matchers::ContainsSubstring;
 using Catch::Matchers::WithinAbs;
 using cbls_test::bits_of;
 
@@ -970,98 +968,6 @@ TEST_CASE("an infinite adjoint across a Min's unselected edge leaves the reverse
     REQUIRE(up.of(row) == 0.0);
 }
 
-TEST_CASE("a forward up-cone build re-entered from a CustomInvariant partial is refused", "[dag]") {
-    // The outer build is iterating `cone_` when it asks the Custom for its
-    // partial; a nested build on the same instance would clear and refill it.
-    class NestedBuild : public CustomInvariant {
-    public:
-        NestedBuild(UpConePartials* up, const Model* inner) : up_(up), inner_(inner) {}
-        double evaluate(const InvariantInputs& in) override { return in.value(0); }
-        double partial(const InvariantInputs& /*in*/, int32_t /*i*/) override {
-            return up_->build(*inner_, 0, 1000) ? 1.0 : 0.0;
-        }
-        [[nodiscard]] std::unique_ptr<CustomInvariant> clone() const override {
-            return std::make_unique<NestedBuild>(*this);
-        }
-
-    private:
-        UpConePartials* up_;
-        const Model* inner_;
-    };
-
-    Model inner;
-    const int32_t ix = inner.float_var(-1.0, 1.0);
-    const int32_t iexpr = inner.sin_expr(ix);
-    inner.minimize(iexpr);
-    inner.close();
-    full_evaluate(inner);
-
-    UpConePartials up;
-    Model outer;
-    const int32_t a = outer.float_var(-1.0, 1.0);
-    const int32_t c = outer.custom({a}, std::make_unique<NestedBuild>(&up, &inner), "nested");
-    const int32_t row = outer.leq(outer.sum({c, outer.sin_expr(a)}), outer.constant(1.0));
-    outer.add_constraint(row);
-    outer.close();
-    full_evaluate(outer);
-
-    REQUIRE_THROWS_WITH(up.build(outer, vid(a), 1000),
-                        ContainsSubstring("re-entered from inside a forward up-cone pass"));
-    REQUIRE(up.of(row) == 0.0);  // the refused build left nothing half-built
-    // The instance is usable again outside the pass.
-    REQUIRE(up.build(inner, 0, 1000));
-    REQUIRE(up.of(iexpr) == std::cos(inner.var(0).value));
-}
-
-TEST_CASE("an AD call from inside a CustomInvariant partial is refused", "[dag]") {
-    // The sweep that calls `partial` owns the thread's AD scratch; a nested sweep
-    // would push onto the cone the outer one is iterating. It must throw, and the
-    // outer sweep's guard must leave the scratch clean for the next call.
-    class NestedAd : public CustomInvariant {
-    public:
-        NestedAd(const Model* inner, int32_t inner_expr) : inner_(inner), inner_expr_(inner_expr) {}
-        double evaluate(const InvariantInputs& in) override { return in.value(0); }
-        double partial(const InvariantInputs& /*in*/, int32_t /*i*/) override {
-            return compute_partial(*inner_, inner_expr_, 0);
-        }
-        [[nodiscard]] std::unique_ptr<CustomInvariant> clone() const override {
-            return std::make_unique<NestedAd>(*this);
-        }
-
-    private:
-        const Model* inner_;
-        int32_t inner_expr_;
-    };
-
-    Model inner;
-    const int32_t ix = inner.float_var(-1.0, 1.0);
-    const int32_t iexpr = inner.sin_expr(ix);
-    inner.minimize(iexpr);
-    inner.close();
-    full_evaluate(inner);
-
-    Model outer;
-    const int32_t a = outer.float_var(-1.0, 1.0);
-    const int32_t c = outer.custom({a}, std::make_unique<NestedAd>(&inner, iexpr), "nested");
-    const int32_t row = outer.leq(outer.sum({c, outer.sin_expr(a)}), outer.constant(1.0));
-    outer.add_constraint(row);
-    pad_with_unrelated_chain(outer, 400);  // sorted-cone route: the cone is being iterated
-    outer.close();
-    full_evaluate(outer);
-
-    // The message, not just the type: without the refusal the nested sweep
-    // corrupts the outer one's cone and a garbage node id throws
-    // std::out_of_range -- itself a std::logic_error.
-    const auto refused = ContainsSubstring("re-entered from inside a reverse-mode AD sweep");
-    REQUIRE_THROWS_WITH(compute_partial(outer, row, vid(a)), refused);
-    REQUIRE_THROWS_WITH(compute_all_partials(outer, row), refused);
-    std::vector<std::pair<int32_t, double>> sparse;
-    REQUIRE_THROWS_WITH(compute_partials_sparse(outer, row, sparse), refused);
-    // Outside a sweep the same call is fine, and the scratch was left clean.
-    REQUIRE(compute_partial(inner, iexpr, 0) == std::cos(inner.var(0).value));
-    require_bit_identical_partials(inner, iexpr);
-}
-
 TEST_CASE("cone AD is bit-identical on a large linear model for small and whole-DAG cones",
           "[dag]") {
     // A MIP-shaped model: many rows over a shared pool of variables, so a row's
@@ -1109,55 +1015,6 @@ TEST_CASE("cone AD is bit-identical on a large linear model for small and whole-
         require_bit_identical_partials(m, lhs[static_cast<size_t>(r)]);
     }
     require_bit_identical_partials(m, obj);
-}
-
-TEST_CASE("a partial that throws does not poison later AD calls on the thread", "[dag]") {
-    // The sweep's scratch is thread_local and is restored by a guard. Without it,
-    // a throw from user code would leave adjoints and cone marks set, and every
-    // later call on this thread would start from them.
-    class ThrowingPartial : public CustomInvariant {
-    public:
-        double evaluate(const InvariantInputs& in) override { return in.value(0) + in.value(1); }
-        double partial(const InvariantInputs& /*in*/, int32_t /*i*/) override {
-            throw std::runtime_error("partial unavailable");
-        }
-        [[nodiscard]] std::unique_ptr<CustomInvariant> clone() const override {
-            return std::make_unique<ThrowingPartial>(*this);
-        }
-    };
-
-    Model bad;
-    const int32_t a = bad.float_var(-5.0, 5.0);
-    const int32_t b = bad.float_var(-5.0, 5.0);
-    const int32_t c = bad.custom({a, b}, std::make_unique<ThrowingPartial>(), "throws");
-    const int32_t bad_row = bad.leq(bad.sum({c, bad.sin_expr(a)}), bad.constant(1.0));
-    bad.add_constraint(bad_row);
-    pad_with_unrelated_chain(bad, 400);  // sorted-cone route: the throw lands mid-cone
-    bad.close();
-    full_evaluate(bad);
-    REQUIRE_THROWS_AS(compute_partial(bad, bad_row, vid(a)), std::runtime_error);
-    REQUIRE_THROWS_AS(compute_all_partials(bad, bad_row), std::runtime_error);
-    std::vector<std::pair<int32_t, double>> sparse;
-    REQUIRE_THROWS_AS(compute_partials_sparse(bad, bad_row, sparse), std::runtime_error);
-
-    // Same shape without the custom node, so its node ids overlap the ones the
-    // throwing sweeps touched. Both models are padded onto the sorted-cone route:
-    // there the whole cone is marked before the throw, so a leaked `in_cone` mark
-    // would make this model's collection skip a node and its partials go wrong.
-    Model good;
-    const int32_t x = good.float_var(-5.0, 5.0);
-    const int32_t y = good.float_var(-5.0, 5.0);
-    const int32_t s = good.sum({x, y});
-    const int32_t row = good.leq(good.sum({s, good.sin_expr(x)}), good.constant(1.0));
-    good.add_constraint(row);
-    pad_with_unrelated_chain(good, 400);
-    good.close();
-    good.var_mut(vid(x)).value = 0.5;
-    full_evaluate(good);
-    require_bit_identical_partials(good, row);  // first: before any call clears a stale mark
-    for (int32_t node = 0; node < static_cast<int32_t>(good.num_nodes()); ++node) {
-        require_bit_identical_partials(good, node);
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1903,60 +1760,6 @@ TEST_CASE("a model copy carries the incremental-Sum state with the node values",
     require_matches_full_evaluate(copy);
 }
 
-namespace {
-
-// Doubles its input, and throws from delta() while armed.
-class ThrowingDouble : public CustomInvariant {
-public:
-    explicit ThrowingDouble(std::shared_ptr<int> armed) : armed_(std::move(armed)) {}
-    double evaluate(const InvariantInputs& in) override { return in.value(0) * 2.0; }
-    double delta(const InvariantInputs& in, ConstSpan<int32_t> /*changed*/) override {
-        if (*armed_ > 0) {
-            --*armed_;
-            throw std::runtime_error("invariant refused");
-        }
-        return evaluate(in);
-    }
-    [[nodiscard]] std::unique_ptr<CustomInvariant> clone() const override {
-        return std::make_unique<ThrowingDouble>(*this);
-    }
-
-private:
-    std::shared_ptr<int> armed_;
-};
-
-}  // namespace
-
-TEST_CASE("a walk a custom node throws out of leaves no stale Sum tracked", "[dag][inc_sum]") {
-    // The custom node sits before the Sum in topological order. A plain walk
-    // over x throws there, so x holds its new value while the Sum -- never
-    // reached -- still holds the old sum. Unless that walk untracked the Sum up
-    // front, a later commit of y would update the stale value instead of
-    // re-summing it. (The contract asks for a full_evaluate after a throw; this
-    // pins the defensive clearing for a caller that skips it.)
-    auto armed = std::make_shared<int>(0);
-    Model m;
-    const int32_t x = m.int_var(-10, 10);
-    const int32_t y = m.int_var(-10, 10);
-    const int32_t c = m.custom({x}, std::make_unique<ThrowingDouble>(armed), "throws");
-    const int32_t row = m.sum({x, y});
-    m.add_constraint(m.leq(row, m.constant(0.0)));
-    m.add_constraint(m.leq(c, m.constant(100.0)));
-    m.close();
-    REQUIRE(m.topo_position(c) < m.topo_position(row));
-    m.var_mut(vid(y)).value = 1.0;
-    commit_scalar_move(m, vid(y), 0.0);
-    REQUIRE(m.inc_sums().slots[static_cast<size_t>(m.node(row).lambda_func_id)].tracked == 1);
-
-    *armed = 1;
-    const int32_t xi = vid(x);
-    m.var_mut(xi).value = 5.0;
-    REQUIRE_THROWS_AS(delta_evaluate(m, &xi, 1), std::runtime_error);
-    m.var_mut(vid(y)).value = 2.0;
-    commit_scalar_move(m, vid(y), 1.0);
-    CHECK(m.node_value(row) == 7.0);  // 5 + 2, re-summed from the stored terms
-}
-
 TEST_CASE("a List walk a plain lambda throws out of leaves no stale Sum tracked",
           "[dag][inc_sum]") {
     // #192, cold review: a plain `lambda_sum` functor is user code too (Python
@@ -1984,7 +1787,6 @@ TEST_CASE("a List walk a plain lambda throws out of leaves no stale Sum tracked"
     m.add_constraint(m.leq(row, m.constant(100.0)));
     m.add_constraint(m.leq(lam, m.constant(100.0)));
     m.close();
-    REQUIRE_FALSE(m.has_custom_nodes());
     REQUIRE_FALSE(m.has_lambda_extra_nodes());
     REQUIRE(m.node(row).lambda_func_id >= 0);
     REQUIRE(m.topo_position(head) < m.topo_position(lam));
@@ -2009,11 +1811,13 @@ TEST_CASE("a List walk a plain lambda throws out of leaves no stale Sum tracked"
 }
 
 TEST_CASE("a walk an extra lambda throws out of leaves no stale Sum tracked", "[dag][inc_sum]") {
-    // #192: the custom-node case above, with #186's extra lambda as the user
-    // code. It reads x, so it is in x's cone, and sits before the Sum in
-    // topological order. Red with the plain-commit untracking keyed on custom
-    // nodes alone: the commit of y then updates the stale Sum, which still
-    // holds x's old value, and reads -8 (x starts at its lower bound, -10).
+    // #192: #186's extra lambda as the user code. It reads x, so it is in x's
+    // cone, and sits before the Sum in topological order. A plain walk over x
+    // throws there, so x holds its new value while the Sum -- never reached --
+    // still holds the old sum. Unless that walk untracked the Sum up front, the
+    // commit of y then updates the stale value, and reads -8 (x starts at its
+    // lower bound, -10). (The contract asks for a full_evaluate after a throw;
+    // this pins the defensive clearing for a caller that skips it.)
     auto armed = std::make_shared<int>(0);
     Model m;
     const int32_t x = m.int_var(-10, 10);
@@ -2032,7 +1836,6 @@ TEST_CASE("a walk an extra lambda throws out of leaves no stale Sum tracked", "[
     m.add_constraint(m.leq(row, m.constant(0.0)));
     m.add_constraint(m.leq(lam, m.constant(100.0)));
     m.close();
-    REQUIRE_FALSE(m.has_custom_nodes());
     REQUIRE(m.has_lambda_extra_nodes());
     REQUIRE(m.topo_position(lam) < m.topo_position(row));
     m.var_mut(vid(y)).value = 1.0;

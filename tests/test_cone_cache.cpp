@@ -11,7 +11,6 @@
 #include <cstdint>
 #include <memory>
 #include <stdexcept>
-#include <utility>
 #include <vector>
 
 using namespace cbls;
@@ -55,60 +54,13 @@ std::vector<int32_t> expected_cone(const Model& m, int32_t var_id) {
     return cone;
 }
 
-// Sums its inputs, and on a delta adds 1000 per input the walk reports as
-// changed: so the two walks agree only if they report the same inputs.
-class ChangedSensitiveSum : public CustomInvariant {
-public:
-    double evaluate(const InvariantInputs& in) override {
-        double s = 0.0;
-        for (int32_t i = 0; i < in.size(); ++i) {
-            s += in.value(i);
-        }
-        return s;
-    }
-    double delta(const InvariantInputs& in, ConstSpan<int32_t> changed) override {
-        return evaluate(in) + (1000.0 * static_cast<double>(changed.size()));
-    }
-    [[nodiscard]] std::unique_ptr<CustomInvariant> clone() const override {
-        return std::make_unique<ChangedSensitiveSum>(*this);
-    }
-};
-
-// Sums its inputs, and throws from `delta` while `*armed` is positive, counting
-// it down: user code that refuses once, mid-walk.
-class ThrowOnce : public CustomInvariant {
-public:
-    explicit ThrowOnce(std::shared_ptr<int> armed) : armed_(std::move(armed)) {}
-    double evaluate(const InvariantInputs& in) override {
-        double s = 0.0;
-        for (int32_t i = 0; i < in.size(); ++i) {
-            s += in.value(i);
-        }
-        return s;
-    }
-    double delta(const InvariantInputs& in, ConstSpan<int32_t> /*changed*/) override {
-        if (*armed_ > 0) {
-            --*armed_;
-            throw std::runtime_error("invariant refused");
-        }
-        return evaluate(in);
-    }
-    [[nodiscard]] std::unique_ptr<CustomInvariant> clone() const override {
-        return std::make_unique<ThrowOnce>(*this);
-    }
-
-private:
-    std::shared_ptr<int> armed_;
-};
-
-enum class Shape : uint8_t { Plain, IncSum, Custom };
+enum class Shape : uint8_t { Plain, IncSum };
 
 // A closed, unfrozen model of the given shape with its objective row in place,
 // so that `freeze()` adds no node to one copy that the other lacks.
 //
 //  - Plain: products and sines under max/min rows, no incremental Sum.
 //  - IncSum: integral rows, incremental Sums, a shared objective Sum.
-//  - Custom: IncSum plus a custom node over several columns feeding a row.
 Model build(Shape shape, int n) {
     Model m;
     RNG rng(5);
@@ -134,11 +86,6 @@ Model build(Shape shape, int n) {
             objective_terms.push_back(m.prod(k, a));
         }
     }
-    if (shape == Shape::Custom) {
-        const int32_t cu = m.custom({x[0], m.prod(x[1], x[2]), m.neg(x[3]), x[5]},
-                                    std::make_unique<ChangedSensitiveSum>(), "csum");
-        m.add_constraint(m.leq(m.sum({cu, x[4]}), m.constant(30.0)));
-    }
     m.minimize(shape == Shape::Plain ? m.max_expr(objective_terms) : m.sum(objective_terms));
     m.close();
     m.add_objective_soft_constraint();
@@ -147,7 +94,6 @@ Model build(Shape shape, int n) {
     } else {
         REQUIRE_FALSE(m.inc_sum_nodes().empty());
     }
-    REQUIRE(m.has_custom_nodes() == (shape == Shape::Custom));
     return m;
 }
 
@@ -220,7 +166,7 @@ void run_twins(Shape shape, size_t cap, int steps) {
 }  // namespace
 
 TEST_CASE("a frozen model caches each variable's cone in topological order", "[cone_cache]") {
-    for (const Shape shape : {Shape::Plain, Shape::IncSum, Shape::Custom}) {
+    for (const Shape shape : {Shape::Plain, Shape::IncSum}) {
         CAPTURE(static_cast<int>(shape));
         Model m = build(shape, 12);
         for (int32_t v = 0; v < static_cast<int32_t>(m.num_vars()); ++v) {
@@ -244,9 +190,8 @@ TEST_CASE("one-variable walks on a frozen model match the unfrozen walk to the b
           "[cone_cache]") {
     // The cached cone is the collecting walk's sorted list, so every probe,
     // rollback and commit computes the same values in the same order -- on the
-    // plain walk, under the incremental-Sum rules, and through a custom node
-    // whose value depends on which inputs the walk reports as changed.
-    for (const Shape shape : {Shape::Plain, Shape::IncSum, Shape::Custom}) {
+    // plain walk and under the incremental-Sum rules.
+    for (const Shape shape : {Shape::Plain, Shape::IncSum}) {
         CAPTURE(static_cast<int>(shape));
         cone_cache_counters() = ConeCacheCounters{};
         run_twins(shape, Model::kDefaultConeCacheBytes, 2000);
@@ -261,7 +206,7 @@ TEST_CASE("one-variable walks on a frozen model match the unfrozen walk to the b
 
 TEST_CASE("the cone cache's cap leaves the rest uncached and their walks unchanged",
           "[cone_cache]") {
-    for (const Shape shape : {Shape::Plain, Shape::IncSum, Shape::Custom}) {
+    for (const Shape shape : {Shape::Plain, Shape::IncSum}) {
         CAPTURE(static_cast<int>(shape));
         Model full = build(shape, 12);
         full.freeze();
@@ -326,12 +271,23 @@ TEST_CASE("an unused variable's empty cone is cached, and a cap of 0 caches noth
 TEST_CASE("a throw inside a cached-cone walk leaves no dirty flag behind", "[cone_cache]") {
     // The cached walk sets its whole cone's dirty flags before evaluating any
     // node. A flag left set after the throw would make the next collecting
-    // walk skip that node as already seen, and leave it stale.
+    // walk skip that node as already seen, and leave it stale. The functor
+    // throws while `*armed` is positive, counting it down: user code that
+    // refuses once, mid-walk.
     auto armed = std::make_shared<int>(0);
     Model m;
     const int32_t x = m.int_var(0, 9);
     const int32_t y = m.int_var(0, 9);
-    const int32_t c = m.custom({x, m.prod(x, y)}, std::make_unique<ThrowOnce>(armed), "throws");
+    const int32_t route = m.list_var(3);
+    const int32_t c = m.lambda_sum(route,
+                                   [armed](int e, ConstSpan<double> extra) {
+                                       if (*armed > 0) {
+                                           --*armed;
+                                           throw std::runtime_error("functor refused");
+                                       }
+                                       return static_cast<double>(e) * extra[0];
+                                   },
+                                   {m.prod(x, y)});
     m.add_constraint(m.leq(m.sum({c, y}), m.constant(20.0)));
     m.minimize(m.sum({c, m.neg(y)}));
     m.close();
@@ -339,8 +295,8 @@ TEST_CASE("a throw inside a cached-cone walk leaves no dirty flag behind", "[con
     const int32_t xid = handle_to_var_id(x);
     const int32_t yid = handle_to_var_id(y);
     REQUIRE(m.has_cached_cone(xid));
-    REQUIRE(m.has_custom_nodes());
-    Model twin = m;  // only ever fully evaluated, so never reaches `delta`
+    REQUIRE_FALSE(m.inc_sum_nodes().empty());  // the walk that sets dirty flags
+    Model twin = m;  // only ever fully evaluated, after the functor is disarmed
 
     *armed = 1;
     m.var_mut(xid).value = 4.0;

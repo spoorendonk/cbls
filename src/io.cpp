@@ -72,18 +72,6 @@ static std::string op_to_string(NodeOp op) {
             return "Lt";
         case NodeOp::Gt:
             return "Gt";
-        case NodeOp::Custom:
-            // Never written to a file -- `save_model` refuses a model holding
-            // one before it opens the stream. Named here so a diagnostic that
-            // prints an op does not say "Unknown".
-            //
-            // This switch is `default:`-free so that -Wswitch names any op
-            // nobody handled: since #171 the build passes -Wall, and
-            // clang-tidy reports `clang-diagnostic-switch` (measured:
-            // deleting this case is reported by both). No hook blocks on
-            // either; both are checked by hand before a push. See the note
-            // on evaluate() in src/dag.cpp.
-            return "Custom";
         case NodeOp::Element:
             return "Element";
         case NodeOp::Ceil:
@@ -93,7 +81,15 @@ static std::string op_to_string(NodeOp op) {
         case NodeOp::Round:
             return "Round";
         case NodeOp::LambdaExtra:
-            // Never written, like Custom: `save_model` refuses the model first.
+            // Never written to a file -- `save_model` refuses a model holding
+            // one before it opens the stream. Named here so a diagnostic that
+            // prints an op does not say "Unknown".
+            //
+            // This switch is `default:`-free so that -Wswitch names any op
+            // nobody handled: since #171 the build passes -Wall, and
+            // clang-tidy reports `clang-diagnostic-switch`. No hook blocks on
+            // either; both are checked by hand before a push. See the note
+            // on evaluate() in src/dag.cpp.
             return "LambdaExtra";
         case NodeOp::PairLambdaExtra:
             return "PairLambdaExtra";
@@ -391,14 +387,6 @@ int32_t build_node(Model& m, NodeOp op, const json& j, const std::vector<int32_t
             return m.gt(children.at(0), children.at(1));
         case NodeOp::Const:
             break;  // handled by the caller, which needs no children
-        case NodeOp::Custom:
-            // Unreachable: `string_to_op` has no "Custom" entry, so a file
-            // naming one is rejected as an unknown op, with the line number
-            // attached, before it gets here. Listed because this switch is
-            // `default:`-free, and a throw rather than a `break` so that a
-            // future reader-side entry cannot silently return -1.
-            throw std::invalid_argument("line " + std::to_string(line_num) +
-                                        ": Custom nodes hold user code and cannot be loaded");
         case NodeOp::Element:
             return build_element(m, j, children, line_num);
         case NodeOp::Ceil:
@@ -409,8 +397,12 @@ int32_t build_node(Model& m, NodeOp op, const json& j, const std::vector<int32_t
             return m.round_expr(only_child(children, "Round", line_num));
         case NodeOp::LambdaExtra:
         case NodeOp::PairLambdaExtra:
-            // Unreachable for the reason Custom's is: `string_to_op` has no
-            // entry for either, and the writer refuses a model holding one.
+            // Unreachable: `string_to_op` has no entry for either, so a file
+            // naming one is rejected as an unknown op, with the line number
+            // attached, before it gets here, and the writer refuses a model
+            // holding one. Listed because this switch is `default:`-free, and a
+            // throw rather than a `break` so that a future reader-side entry
+            // cannot silently return -1.
             throw std::invalid_argument("line " + std::to_string(line_num) +
                                         ": lambdas over extra decisions hold user code and "
                                         "cannot be loaded");
@@ -746,24 +738,20 @@ json objective_record(const Model& model, NameTable& var_names, NameTable& node_
     return j;
 }
 
-// A `.cbls` file is a model the format can rebuild, and it cannot rebuild user
-// code: a `CustomInvariant` is a C++ object, not a table of numbers the way a
-// `Lambda` is (#166).
+// A `.cbls` file is a model the format can rebuild, and it cannot rebuild a
+// `lambda_sum` / `pair_lambda_sum` over extra decisions (#186): its functor takes
+// continuous values, so there is no finite table to write where a plain `Lambda`
+// has one.
 //
 // Checked BEFORE a single line is written. `std::ofstream` truncates on open, so
 // throwing partway through would replace an existing file with a prefix of a
 // model -- the same failure the benchmark runners guard against for published
 // tables, and for the same reason: it looks like a file.
-//
-// A `lambda_sum` / `pair_lambda_sum` over extra decisions (#186) is refused on
-// the same terms: its functor takes continuous values, so there is no finite
-// table to write where a plain `Lambda` has one.
 void refuse_user_code_nodes(const Model& model) {
-    // O(1) for every model that has neither kind of node, which is every model
-    // any in-tree caller writes today -- and it is what makes calling this
-    // twice on the `path` overload free, rather than two walks of a 4.3M-node
-    // array.
-    if (!model.has_custom_nodes() && !model.has_lambda_extra_nodes()) {
+    // O(1) for every model that has no such node, which is every model any
+    // in-tree caller writes today -- and it is what makes calling this twice on
+    // the `path` overload free, rather than two walks of a 4.3M-node array.
+    if (!model.has_lambda_extra_nodes()) {
         return;
     }
     for (const auto& node : model.nodes()) {
@@ -773,14 +761,6 @@ void refuse_user_code_nodes(const Model& model) {
                                      ") holds a functor over extra decisions, which the .cbls "
                                      "format cannot tabulate");
         }
-        if (node.op != NodeOp::Custom) {
-            continue;
-        }
-        const std::string& name = model.custom_name(node.lambda_func_id);
-        throw std::runtime_error("cannot serialise model: node n" + std::to_string(node.id) +
-                                 " (custom invariant '" +
-                                 (name.empty() ? std::string("<unnamed>") : name) +
-                                 "') holds user code, which the .cbls format cannot express");
     }
 }
 

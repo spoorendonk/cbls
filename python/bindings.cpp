@@ -687,8 +687,7 @@ NB_MODULE(_cbls_core, m) {
         .value("Floor", NodeOp::Floor)
         .value("Round", NodeOp::Round)
         .value("LambdaExtra", NodeOp::LambdaExtra)
-        .value("PairLambdaExtra", NodeOp::PairLambdaExtra)
-        .value("Custom", NodeOp::Custom);
+        .value("PairLambdaExtra", NodeOp::PairLambdaExtra);
 
     // Variable (read-only access)
     //

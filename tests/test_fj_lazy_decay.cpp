@@ -241,42 +241,27 @@ TEST_CASE("FJ's lazily decayed weights match an eager replay of every bump",
     REQUIRE(ref.weights[3] == 0.0);
 }
 
-namespace {
-
-// Reads its one input through; its delta throws once it has been called
-// `limit` times, standing in for user code that fails partway into a batch.
-class ThrowAfter : public CustomInvariant {
-public:
-    explicit ThrowAfter(int64_t limit) : limit_(limit) {}
-    double evaluate(const InvariantInputs& in) override { return in.value(0); }
-    double delta(const InvariantInputs& in, ConstSpan<int32_t> /*changed*/) override {
-        if (++calls_ > limit_) {
-            throw std::runtime_error("invariant failed mid-batch");
-        }
-        return evaluate(in);
-    }
-    [[nodiscard]] std::unique_ptr<CustomInvariant> clone() const override {
-        return std::make_unique<ThrowAfter>(*this);
-    }
-
-private:
-    int64_t limit_;
-    int64_t calls_ = 0;
-};
-
-}  // namespace
-
 TEST_CASE("FJ leaves effective weights behind when its GLS loop throws", "[fj][gls][lazy_decay]") {
     // gls_loop materialises the lazy scale on its exceptional exit too, so a
     // throw from user code mid-batch still leaves ViolationManager::weights as
-    // effective weights, not the scaled w' = w / s. y feeds a custom node on a
-    // row it can never satisfy, so y is re-scored (through the throwing delta)
-    // after every bump, and every iteration once y has reached 4 is a bump over
-    // an unchanging V. The satisfied row's weight is then exactly 0.95^k for the
-    // k bumps made, and the other rows must match an eager replay of those k.
+    // effective weights, not the scaled w' = w / s. y feeds an extra lambda
+    // over a one-element List -- its value is y -- on a row it can never
+    // satisfy, so y is re-scored (through the functor, which throws once it has
+    // been called 3000 times) after every bump, and every iteration once y has
+    // reached 4 is a bump over an unchanging V. The satisfied row's weight is
+    // then exactly 0.95^k for the k bumps made, and the other rows must match
+    // an eager replay of those k.
     Model m;
     const int32_t y = m.int_var(0, 4);
-    const int32_t c = m.custom({y}, std::make_unique<ThrowAfter>(3000), "throws");
+    auto calls = std::make_shared<int64_t>(0);
+    const int32_t c = m.lambda_sum(m.list_var(1),
+                                   [calls](int /*e*/, ConstSpan<double> extra) {
+                                       if (++*calls > 3000) {
+                                           throw std::runtime_error("functor failed mid-batch");
+                                       }
+                                       return extra[0];
+                                   },
+                                   {y});
     m.add_constraint(m.geq(c, m.constant(10.0)));  // r0: violated, active
     m.add_constraint(m.leq(y, m.constant(9.0)));   // r1: satisfied, decays only
     m.add_constraint(m.geq(y, m.constant(20.0)));  // r2: violated, masked below

@@ -12,58 +12,40 @@ namespace cbls {
 
 double full_evaluate(Model& model);
 
-/// What a `delta_evaluate` call means for a `CustomInvariant` (#166).
+/// What a `delta_evaluate` call means.
 ///
-/// `Commit` and `Probe` recompute every built-in op in the cone from the
-/// assignment in front of them; only a custom node reads the difference. A
-/// `Probe` also logs the cone's values as it found them (`ProbeUndo`, #270), and
-/// the matching `Rollback` writes that log back instead of walking the cone
-/// again: O(cone) stores rather than a collect, sort and evaluate, and exact by
-/// construction, so an incremental `Sum` (#188) carrying drift comes back to
-/// the bit instead of being re-summed.
+/// `Commit` and `Probe` recompute every op in the cone from the assignment in
+/// front of them. A `Probe` also logs the cone's values as it found them
+/// (`ProbeUndo`, #270), and the matching `Rollback` writes that log back instead
+/// of walking the cone again: O(cone) stores rather than a collect, sort and
+/// evaluate, and exact by construction, so an incremental `Sum` (#188) carrying
+/// drift comes back to the bit instead of being re-summed.
 enum class DeltaMode : uint8_t {
-    /// The assignment being evaluated is the new committed one. Each custom
-    /// node in the dirty cone gets `delta()` then `commit()`. This is what an
+    /// The assignment being evaluated is the new committed one. This is what an
     /// applied move, and both legs of an evaluate-forwards-evaluate-back probe,
-    /// mean -- and it is the default, so every call site that predates #166
-    /// keeps the behaviour it had.
+    /// mean -- and it is the default.
     Commit,
-    /// A counterfactual the caller WILL undo. Each custom node in the cone gets
-    /// `delta()`, and its previous node value is stashed for the matching
-    /// `Rollback` call. No `commit()`.
+    /// A counterfactual the caller WILL undo: the cone's values are logged for
+    /// the matching `Rollback` call.
     Probe,
     /// The caller has put back the assignment the `Probe` was measured from.
     /// Every node of the probe's cone gets its pre-probe value back from the
-    /// log, nothing is re-evaluated, and each custom node with a probe pending
-    /// gets `rollback()`.
+    /// log, and nothing is re-evaluated.
     ///
     /// Must directly follow a `Probe` over the same changed-variable set, in
     /// the same order. Any other walk, `full_evaluate`, `reground_inc_sum`,
     /// `Model::set_objective_bound` or `Model::set_domain_tolerance` in between
-    /// drops the log, and the Rollback is then treated as `Commit`
-    /// -- the honest reading of a caller that moved the assignment without
-    /// probing first -- apart from a custom node whose probe is still open,
-    /// which gets `rollback()` and its saved value. A Rollback over a different
-    /// set writes the log back, then commits the union of the probe's set and
-    /// the set it was given, without the journal (which describes only the
-    /// latter): correct whether or not the probed variables were put back.
+    /// drops the log, and the Rollback is then treated as `Commit` -- the honest
+    /// reading of a caller that moved the assignment without probing first. A
+    /// Rollback over a different set writes the log back, then commits the
+    /// union of the probe's set and the set it was given: correct whether or not
+    /// the probed variables were put back.
     Rollback,
 };
 
-class EditJournal;
-
 // Primary signature: accepts a contiguous range of var IDs.
-//
-// `journal`, when non-null, is WHERE the structured variables among
-// `changed_var_ids` changed since the assignment their previous evaluation was
-// measured at (#172): one record per such variable, which a `CustomInvariant`
-// reads through `InvariantInputs::edits`. Null -- the default, and every caller
-// but the structural batch -- means "no positional information", which an
-// invariant reads as "re-read the input". Only custom nodes ever look at it, so
-// a model without one evaluates identically either way. Read for the duration
-// of this call only.
 double delta_evaluate(Model& model, const int32_t* changed_var_ids, size_t count,
-                      DeltaMode mode = DeltaMode::Commit, const EditJournal* journal = nullptr);
+                      DeltaMode mode = DeltaMode::Commit);
 
 /// The inexact update that would be an incremental `Sum`'s kIncSumPeriod-th
 /// since its last re-sum re-sums it instead (#188), so a Sum carries at most
@@ -157,9 +139,8 @@ ConeCacheCounters& cone_cache_counters() noexcept;
 
 // Convenience overloads
 inline double delta_evaluate(Model& model, const std::vector<int32_t>& changed_var_ids,
-                             DeltaMode mode = DeltaMode::Commit,
-                             const EditJournal* journal = nullptr) {
-    return delta_evaluate(model, changed_var_ids.data(), changed_var_ids.size(), mode, journal);
+                             DeltaMode mode = DeltaMode::Commit) {
+    return delta_evaluate(model, changed_var_ids.data(), changed_var_ids.size(), mode);
 }
 
 inline double delta_evaluate(Model& model, const std::set<int32_t>& changed_var_ids,
@@ -180,8 +161,7 @@ inline double delta_evaluate(Model& model, std::initializer_list<int32_t> change
 // rationale and the cutover are at `reverse_sweep` in src/dag_ops.cpp.
 //
 // All three share one thread_local scratch, so none may be called from inside
-// another on the same thread -- i.e. not from a `CustomInvariant::partial`. That
-// is enforced: the nested call throws `std::logic_error`.
+// another on the same thread.
 //
 // `expr_id` must be a node id of `model` (not a variable handle); it is not
 // range-checked here, on the hot path. The Python binding checks it.
@@ -245,8 +225,7 @@ class UpConePartials {
 public:
     /// Collects and sweeps `var_id`'s up-cone. False, leaving every `of` at 0,
     /// when the model is not closed or the cone outgrows `max_nodes`. A build
-    /// re-entered on the same instance (from a CustomInvariant's partial) throws
-    /// `std::logic_error`; a build that throws leaves every `of` at 0.
+    /// that throws leaves every `of` at 0.
     bool build(const Model& model, int32_t var_id, size_t max_nodes);
 
     /// d(node)/dv at the point `build` saw; 0 for a node the variable cannot reach.
@@ -263,7 +242,6 @@ private:
     std::vector<double> slope_;
     std::vector<int32_t> cone_;
     uint32_t epoch_ = 0;
-    bool busy_ = false;
 };
 
 /// Batch AD: partials of `expr_id` w.r.t. ALL variables in one reverse pass.

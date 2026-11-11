@@ -6,12 +6,10 @@
 #include <algorithm>
 #include <catch2/catch_test_macros.hpp>
 #include <cbls/cbls.h>
-#include <cbls/custom_invariant.h>
 #include <cbls/linear_jump.h>
 #include <cmath>
 #include <functional>
 #include <limits>
-#include <memory>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -303,20 +301,12 @@ void check_jumps(Model& m, const std::vector<double>& w, LinearJumpScorer& sc) {
     }
 }
 
-// A scalar input sum, as user code: affine in fact, never eligible by rule.
-class InputSum : public CustomInvariant {
-public:
-    double evaluate(const InvariantInputs& in) override {
-        double s = 0.0;
-        for (int32_t i = 0; i < in.size(); ++i) {
-            s += in.value(i);
-        }
-        return s;
-    }
-    [[nodiscard]] std::unique_ptr<CustomInvariant> clone() const override {
-        return std::make_unique<InputSum>(*this);
-    }
-};
+// `x` passed through user code -- an extra lambda over a one-element List:
+// affine in fact, never eligible by rule.
+int32_t opaque_copy(Model& m, int32_t x) {
+    return m.lambda_sum(m.list_var(1), [](int /*e*/, ConstSpan<double> extra) { return extra[0]; },
+                        {x});
+}
 
 }  // namespace
 
@@ -546,12 +536,11 @@ TEST_CASE("the linear scorer declines rows it cannot model", "[fj][linear_jump]"
     const int32_t t = m.int_var(0, 3);
     const int32_t s = m.float_var(-std::numeric_limits<double>::infinity(),
                                   std::numeric_limits<double>::infinity());
-    m.add_constraint(m.leq(m.sum({x, z}), m.constant(1.0)));                  // 0: linear
-    m.add_constraint(m.leq(m.prod(x, y), m.constant(1.0)));                   // 1: bilinear
-    m.add_constraint(m.neq(u, m.constant(2.0)));                              // 2: Neq, a step
-    m.add_constraint(m.leq(m.custom({t}, std::make_unique<InputSum>(), "c"),  // 3: Custom
-                           m.constant(1.0)));
-    m.add_constraint(m.leq(m.sum({s, z}), m.constant(0.0)));  // 4: linear
+    m.add_constraint(m.leq(m.sum({x, z}), m.constant(1.0)));      // 0: linear
+    m.add_constraint(m.leq(m.prod(x, y), m.constant(1.0)));       // 1: bilinear
+    m.add_constraint(m.neq(u, m.constant(2.0)));                  // 2: Neq, a step
+    m.add_constraint(m.leq(opaque_copy(m, t), m.constant(1.0)));  // 3: user code
+    m.add_constraint(m.leq(m.sum({s, z}), m.constant(0.0)));      // 4: linear
     m.close();
     for (size_t v = 0; v < m.num_vars(); ++v) {
         m.var_mut(static_cast<int32_t>(v)).value = 0.0;
@@ -1047,8 +1036,8 @@ TEST_CASE("bare affine bodies are closed-form eligible, non-affine ones are not"
     m.add_constraint(m.prod(x, y));                                              // 5: bilinear
     m.add_constraint(m.abs_expr(x));                                             // 6: Abs
     m.add_constraint(m.neq(u, m.constant(2.0)));                                 // 7: Neq, a step
-    m.add_constraint(m.custom({u}, std::make_unique<InputSum>(), "c"));          // 8: Custom
-    m.add_constraint(m.sum({m.custom({u}, std::make_unique<InputSum>(), "d"), y}));  // 9
+    m.add_constraint(opaque_copy(m, u));                                         // 8: user code
+    m.add_constraint(m.sum({opaque_copy(m, u), y}));                             // 9
     m.add_constraint(m.sum({m.leq(x, y), u}));                     // 10: nested comparison
     m.add_constraint(m.sum({m.constant(1.0), m.constant(-2.0)}));  // 11: constant only
     m.close();

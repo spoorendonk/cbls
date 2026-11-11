@@ -1,6 +1,5 @@
 #include "cbls/dag.h"
 
-#include "cbls/custom_invariant.h"
 #include "cbls/model.h"
 
 #include <algorithm>
@@ -86,21 +85,6 @@ static double list_element(const ChildRef& ref, const Model& model, int idx) {
     return 0.0;
 }
 
-// The invariant behind a Custom node (#166). Kept out of the two dispatch tables
-// so their Custom cases stay one line each.
-//
-// Unlike `child_val` above, this is the CHECKED accessor -- `Model::custom_invariant`
-// range-tests the slot id and throws -- and deliberately so. The check could only
-// ever pass, since `Model::custom` writes `lambda_func_id` and appends the slot in
-// one call. But child_val's measurement was about one compare per DAG EDGE, and this
-// is one compare next to a virtual call into user code, where it is free. The assert
-// names the -1 a node left half-built by an allocation failure would carry, which
-// the range test alone would report only as "out of range".
-static CustomInvariant& custom_of(const ExprNode& node, const Model& model) {
-    assert(node.lambda_func_id >= 0);
-    return model.custom_invariant(node.lambda_func_id);
-}
-
 static int list_size(const ChildRef& ref, const Model& model) {
     if (ref.is_var) {
         return static_cast<int>(model.var(ref.id).elements.size());
@@ -122,8 +106,7 @@ static int32_t element_index(double v, int32_t n) {
 
 // The Element case of `evaluate`: one or two indices into the node's table, and
 // 0.0 when any of them is out of range -- `At`'s rule for a position past its
-// List. Kept out of the dispatch table, as `custom_of` is, to keep the case to
-// one line.
+// List. Kept out of the dispatch table to keep the case to one line.
 static double element_value(const ExprNode& node, ConstSpan<ChildRef> children,
                             const Model& model) {
     const ElementTable& tbl = model.element_table(node.lambda_func_id);
@@ -224,7 +207,7 @@ static double pair_lambda_extra_value(const ExprNode& node, ConstSpan<ChildRef> 
     return s;
 }
 
-// A flat dispatch table over NodeOp's 35 cases, suppressed deliberately rather
+// A flat dispatch table over NodeOp's 34 cases, suppressed deliberately rather
 // than split. What the score measures here is not compounded logic: it is the
 // eighteen small guards the individual cases carry -- a loop over a variadic
 // node's children, a divide-by-zero test, an overflow test -- each charged
@@ -468,11 +451,6 @@ double evaluate(const ExprNode& node, const Model& model) {
                                        child_is_const(children[0], model)) +
                    node.const_value;
 
-        case NodeOp::Custom:
-            // From scratch, which is what this entry point means: the
-            // incremental path is delta_evaluate's, and it never reaches here.
-            return custom_of(node, model).evaluate(InvariantInputs(model, children));
-
         case NodeOp::Element:
             return element_value(node, children, model);
 
@@ -515,7 +493,7 @@ static double extremum_share(const ExprNode& node, ConstSpan<ChildRef> children,
 }
 
 // The AD peer of evaluate() above, and suppressed for the same reason and by the
-// same argument: one flat `default:`-free dispatch table over the same 35 NodeOp
+// same argument: one flat `default:`-free dispatch table over the same 34 NodeOp
 // cases, where the score is the sum of each case's own guards against a
 // non-finite or non-differentiable point rather than any nesting between them.
 // It scores higher than evaluate() only because a derivative needs more such
@@ -526,8 +504,8 @@ static double extremum_share(const ExprNode& node, ConstSpan<ChildRef> children,
 // Non-finite partials. Every propagation pass multiplies the edges along a path
 // (`add_chain_term`), so one infinite edge makes the partial of every variable
 // below it on a live path infinite, and two such paths meeting with opposite
-// signs read `inf - inf` -- NaN (see the Custom case). A zero edge below it is
-// skipped, not multiplied, since #260. `Custom`, `Pow`, `SignPower`, and
+// signs read `inf - inf` -- NaN. A zero edge below it is
+// skipped, not multiplied, since #260. `Pow`, `SignPower`, and
 // since #205 `Div` and `Tan`, therefore fold a non-finite partial to 0; `Log`
 // and `Sqrt` return 0 on and below their singular point, where their value is
 // -inf or NaN. What stays finite but huge near a pole (`1/x` at x = 1e-15) is
@@ -720,22 +698,6 @@ double local_derivative(const ExprNode& node, int child_idx, const Model& model)
             // d/d(child0) of (child1 - child0 + margin) = -1, d/d(child1) = 1
             return child_idx == 0 ? -1.0 : 1.0;
 
-        case NodeOp::Custom: {
-            // NaN is the invariant's "unknown", which reads as 0.0 here -- the
-            // same answer the structural ops above give, and the one that leaves
-            // a Float input on FJ's non-gradient candidates.
-            //
-            // +/-inf reads as unknown TOO, and that is not pedantry: the chain
-            // rule multiplies it into the partial of every variable below this
-            // input, and two such paths meeting with opposite signs read
-            // `inf - inf` -- NaN. Same clamp-rather-than-propagate rule as
-            // clamped_node_violation and comparison_residual.
-            const double p =
-                custom_of(node, model)
-                    .partial(InvariantInputs(model, children), static_cast<int32_t>(child_idx));
-            return std::isfinite(p) ? p : 0.0;
-        }
-
         case NodeOp::Element:
         case NodeOp::Ceil:
         case NodeOp::Floor:
@@ -783,14 +745,12 @@ bool carries_slope(NodeOp op) noexcept {
         case NodeOp::Gt:
             return true;
         // No children to carry from, list/set structure rather than a value,
-        // user code whose partial would cost a virtual call per walk, and the
-        // breakpoint ops: piecewise constant, so a slope above one is 0.
+        // and the breakpoint ops: piecewise constant, so a slope above one is 0.
         case NodeOp::Const:
         case NodeOp::At:
         case NodeOp::Count:
         case NodeOp::Lambda:
         case NodeOp::PairLambda:
-        case NodeOp::Custom:
         case NodeOp::LambdaExtra:
         case NodeOp::PairLambdaExtra:
         case NodeOp::Element:

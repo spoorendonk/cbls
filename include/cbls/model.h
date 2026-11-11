@@ -1,6 +1,5 @@
 #pragma once
 
-#include "custom_invariant.h"
 #include "dag.h"
 
 #include <cassert>
@@ -264,7 +263,7 @@ struct ProbeUndo {
     std::vector<int32_t> vars;
     /// Every node of the probe's cone with its value before the probe, so the
     /// write-back is exact by construction -- an incremental Sum's drift (#188)
-    /// and a custom node's value (#166) included. (node id, value).
+    /// included. (node id, value).
     std::vector<std::pair<int32_t, double>> values;
     /// Armed by a `Probe`, spent by the `Rollback` and dropped by every other
     /// walk, `full_evaluate`, `reground_inc_sum`, `set_objective_bound` and
@@ -418,27 +417,6 @@ public:
                             std::function<double(int)> head, std::function<double(int)> tail,
                             PairMode mode = PairMode::Open);
 
-    /// A node whose value is computed by user code (#166).
-    ///
-    /// `inputs` are ordinary handles -- variables or nodes, in any mix -- and
-    /// become the node's children in the order given, which is the order
-    /// `InvariantInputs` indexes them in. The result is an ordinary node: usable
-    /// inside an expression, as the objective, or as a constraint body.
-    ///
-    /// `inv` must not be null. It is owned by THIS model and cloned into every
-    /// copy of it, so each portfolio worker gets its own -- see `freeze()`,
-    /// whose warning about a callable carrying mutable state applies to
-    /// `lambda_sum` precisely because it does NOT apply here.
-    ///
-    /// `name` is carried for the `.cbls` writer's refusal message; a model
-    /// holding a custom node cannot be serialised, because the format has no way
-    /// to express user code.
-    ///
-    /// Throws `std::invalid_argument` on a null invariant, `std::out_of_range`
-    /// on a handle naming nothing, and `std::logic_error` once frozen.
-    int32_t custom(const std::vector<int32_t>& inputs, std::unique_ptr<CustomInvariant> inv,
-                   const std::string& name = "");
-
     /// `table[index]`: a numeric table looked up by a decision (#186), e.g. a
     /// cost by vehicle type where the type is an Int variable.
     ///
@@ -489,8 +467,8 @@ public:
     ///
     /// Not serialisable: `func` is a function of continuous values and cannot
     /// be tabulated the way a plain `lambda_sum` is, so `save_model` refuses a
-    /// model holding one, before it writes anything -- as it refuses a custom
-    /// node. Shared by every portfolio worker, on the terms `freeze()` states.
+    /// model holding one, before it writes anything. Shared by every portfolio
+    /// worker, on the terms `freeze()` states.
     ///
     /// Throws `std::invalid_argument` unless `list_var_id` names a List or Set
     /// variable, `func` is non-empty and no `extra` handle names a List or Set
@@ -516,9 +494,6 @@ public:
               const std::string& name = "");
     Expr Set(int n, int min_size = 0, int max_size = -1, const std::string& name = "");
     Expr Constant(double val);
-    /// The `Expr` form of `custom()`, with the same contract.
-    Expr Custom(const std::vector<Expr>& inputs, std::unique_ptr<CustomInvariant> inv,
-                const std::string& name = "");
 
     // Overloaded constraint/objective accepting Expr
     void add_constraint(const Expr& e);
@@ -949,7 +924,7 @@ public:
         return s().element_tables[idx];
     }
     /// Whether any extra-lambda node exists: the O(1) test `save_model`'s
-    /// refusal starts from, as `has_custom_nodes` is for custom nodes.
+    /// refusal starts from.
     [[nodiscard]] bool has_lambda_extra_nodes() const noexcept {
         return !s().lambda_extra_funcs.empty() || !s().pair_lambda_extra_funcs.empty();
     }
@@ -961,92 +936,23 @@ public:
         return s().breakpoint_flags;
     }
 
-    /// Whether this model has any custom node at all (#166).
-    ///
-    /// Checked ONCE per `delta_evaluate`/`full_evaluate` call, not per node:
-    /// a model without one takes the pre-#166 evaluation loop verbatim, which
-    /// is what keeps its trajectories bit-identical and its hot path free of a
-    /// per-node test for an op almost no model has.
-    [[nodiscard]] bool has_custom_nodes() const noexcept { return !custom_invariants_.empty(); }
-    /// How many custom slots there are: the index space of `custom_invariant`.
-    [[nodiscard]] int32_t num_custom_invariants() const noexcept {
-        return static_cast<int32_t>(custom_invariants_.size());
-    }
-
-    /// The invariant instance of custom slot `id` -- an `ExprNode::lambda_func_id`
-    /// on a `NodeOp::Custom` node.
-    ///
-    /// Returns a MUTABLE reference from a const `Model` on purpose. The
-    /// invariant is per-model search state that `evaluate()` and
-    /// `local_derivative()` have to be able to update, and both take
-    /// `const Model&` because they must not touch the model itself. The
-    /// `unique_ptr` does not propagate constness, so this is the language's own
-    /// distinction between "the handle is const" and "the pointee is", not a
-    /// cast around one.
-    [[nodiscard]] CustomInvariant& custom_invariant(int32_t id) const {
-        if (id < 0 || id >= static_cast<int32_t>(custom_invariants_.size())) {
-            throw std::out_of_range("custom invariant id out of range");
-        }
-        return *custom_invariants_[id].invariant;
-    }
-    /// The name `custom()` was given for slot `id`, or "" if none. Same index
-    /// space and the same range check as `custom_invariant`.
-    [[nodiscard]] const std::string& custom_name(int32_t id) const {
-        if (id < 0 || id >= static_cast<int32_t>(custom_invariants_.size())) {
-            throw std::out_of_range("custom invariant id out of range");
-        }
-        return custom_invariants_[id].name;
-    }
-
-    // The probe bracket of `CustomInvariant`, driven by `delta_evaluate` and
-    // `full_evaluate` and by nothing else. Unchecked: every id comes from a node
-    // this model made, so the check could only ever pass -- the same argument
-    // `set_node_value_unchecked` makes.
-    void custom_begin_probe(int32_t id, double saved_value) noexcept {
-        CustomInvariantSlot& slot = custom_invariants_[id];
-        assert(!slot.probe_pending);  // one bracket at a time; see CustomInvariant
-        slot.probe_saved_value = saved_value;
-        slot.probe_pending = true;
-    }
-    [[nodiscard]] bool custom_probe_pending(int32_t id) const noexcept {
-        return custom_invariants_[id].probe_pending;
-    }
-    /// Close the pending probe on `id` and hand back the node value it was
-    /// opened at, for the caller to write into the value array.
-    double custom_end_probe(int32_t id) noexcept {
-        CustomInvariantSlot& slot = custom_invariants_[id];
-        slot.probe_pending = false;
-        return slot.probe_saved_value;
-    }
-    /// Drop every pending probe. `full_evaluate` calls this because it is about
-    /// to tell every invariant `evaluate()`, which is their reset point.
-    void clear_custom_probes() noexcept {
-        for (CustomInvariantSlot& slot : custom_invariants_) {
-            slot.probe_pending = false;
-        }
-    }
-
     // State snapshot/restore
     struct State {
         std::vector<double> values;
         std::vector<std::vector<int32_t>> elements;
     };
     [[nodiscard]] State copy_state() const;
-    /// Writes the VARIABLES only. Every node value -- and every `CustomInvariant`'s
-    /// committed state (#166) -- still describes the assignment this replaces, so a
-    /// `full_evaluate` is MANDATORY before anything reads a node value or calls
-    /// `delta_evaluate`. For a built-in op, skipping it merely recomputes late --
-    /// except an incremental Sum (#188), which `commit_scalar_move` would update
-    /// from its stale value; for a custom node it is wrong values, because the
-    /// next `delta()` is measured against a baseline that is no longer there.
+    /// Writes the VARIABLES only. Every node value still describes the assignment
+    /// this replaces, so a `full_evaluate` is MANDATORY before anything reads a
+    /// node value or calls `delta_evaluate`. For a built-in op, skipping it merely
+    /// recomputes late -- except an incremental Sum (#188), which
+    /// `commit_scalar_move` would update from its stale value.
     ///
     /// Every C++ caller in the tree pairs the two -- `src/lns.cpp`, `src/search.cpp`
     /// (three sites, one of them by way of `FeasibilityJump::perturb`'s trailing
     /// sweep), `src/cli.cpp`. **Python is the exception**: `python/bindings.cpp`
     /// exposes this method raw, with no sweep attached and nothing telling the
-    /// caller to add one. Harmless only because `Model::custom` is not bound, so no
-    /// Python caller can build a custom node; #132, which would bind one, is what
-    /// makes it wrong.
+    /// caller to add one.
     void restore_state(const State& state);
 
 private:
@@ -1101,12 +1007,6 @@ private:
     // Both weighted_violation_deltas: `second` null for the single-weight one.
     double probe_weighted_delta(int32_t var_id, double j, const std::vector<double>& weights,
                                 const std::vector<double>* second, double* second_delta);
-    /// One entry per custom node, indexed by its `ExprNode::lambda_func_id`
-    /// (#166). PER-MODEL, not structure: the instance is mutable state a search
-    /// writes, so a portfolio replica gets its own `clone()` of each -- which is
-    /// exactly the guarantee `lambda_funcs` cannot make. The copy constructor
-    /// clones them one by one; see the note there.
-    std::vector<CustomInvariantSlot> custom_invariants_;
     /// See `inc_sums()`. Last, after the members every walk reads: placed
     /// among them it pushed those onto more cache lines, which cost a
     /// probe-bound model ~5% (#188).

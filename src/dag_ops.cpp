@@ -1,6 +1,5 @@
 #include "cbls/dag_ops.h"
 
-#include "cbls/custom_invariant.h"
 #include "cbls/model.h"
 
 #include <algorithm>
@@ -75,25 +74,22 @@ namespace {
 
 // Is this thread already inside `full_evaluate` or `delta_evaluate`?
 //
-// `CustomInvariant` (#166) puts arbitrary user code inside the evaluation walk,
-// and its motivating use case -- a black-box or simulation value -- is exactly
-// the code that might reach for a sub-model. Re-entering from there is not merely
-// unsupported, it is SILENT PERMANENT CORRUPTION of this thread: the nested call
-// does `dirty_list.clear()` on the same `thread_local` vector that the outer
-// call's `DirtyFlagGuard` holds a reference to, so the guard then clears the
-// INNER call's ids and leaks the outer call's flags -- and a leaked flag makes
-// `delta_evaluate`'s seeding loop skip that node for the life of the process (see
-// `DirtyFlagGuard`). The symptom would be a node that quietly stops updating,
-// long after and nowhere near the cause. So it is refused rather than documented.
+// A `lambda_sum` functor is user code inside the evaluation walk. Re-entering
+// from there is not merely unsupported, it is SILENT PERMANENT CORRUPTION of
+// this thread: the nested call does `dirty_list.clear()` on the same
+// `thread_local` vector that the outer call's `DirtyFlagGuard` holds a reference
+// to, so the guard then clears the INNER call's ids and leaks the outer call's
+// flags -- and a leaked flag makes `delta_evaluate`'s seeding loop skip that node
+// for the life of the process (see `DirtyFlagGuard`). The symptom would be a node
+// that quietly stops updating, long after and nowhere near the cause. So it is
+// refused rather than documented.
 //
-// One `thread_local` test and one store per call, on both entry points -- the
-// price `Model::has_custom_nodes()` already pays per call. It changes no value and
-// draws no random number, so trajectories are unaffected; re-verified against main
-// with the #166 witness.
+// One `thread_local` test and one store per call, on both entry points. It
+// changes no value and draws no random number, so trajectories are unaffected.
 thread_local bool in_evaluation = false;
 
-// RAII, so that an exception out of user code inside the walk -- which
-// `CustomInvariant` documents as possible -- clears the flag on the way out
+// RAII, so that an exception out of user code inside the walk clears the flag
+// on the way out
 // instead of poisoning every later call on this thread.
 class EvaluationGuard {
 public:
@@ -102,9 +98,9 @@ public:
             // Not an assert: this is reachable from user code in a Release build,
             // and the silent wrong answer above is the thing being prevented.
             throw std::logic_error(std::string(entry) +
-                                   ": re-entered from inside an evaluation. A CustomInvariant's "
-                                   "evaluate/delta/partial must not call full_evaluate or "
-                                   "delta_evaluate, on this model or any other.");
+                                   ": re-entered from inside an evaluation. A lambda functor "
+                                   "must not call full_evaluate or delta_evaluate, on this "
+                                   "model or any other.");
         }
         in_evaluation = true;
     }
@@ -119,15 +115,7 @@ public:
 
 double full_evaluate(Model& model) {
     const EvaluationGuard guard("full_evaluate");
-    // A from-scratch pass is a `CustomInvariant`'s reset point (#166): every
-    // custom node below is about to be told `evaluate()`, which redefines its
-    // committed state, so a probe left open by a caller that never rolled back
-    // is discarded here rather than firing against an unrelated assignment. One
-    // predictable branch per call on a model that has no custom node.
-    if (model.has_custom_nodes()) {
-        model.clear_custom_probes();
-    }
-    // Likewise the probe's undo log (#270): every value is about to be rewritten.
+    // The probe's undo log (#270) is dropped: every value is about to be rewritten.
     model.probe_undo().pending = false;
     // Re-sums without the rounding check, so no incremental Sum is tracked
     // afterwards and none carries drift (#188); its first commit re-sums it,
@@ -167,9 +155,7 @@ namespace {
 // order and the same values.
 //
 // `eval_node` is a template parameter rather than a `std::function` so that the
-// built-in instantiation -- the one every model without a custom node takes --
-// inlines the plain `evaluate()` call and compiles to what this loop was before
-// #166. The custom-aware instantiation is a second, separate body.
+// plain instantiation inlines the `evaluate()` call.
 template <typename EvalNode>
 void evaluate_dirty_in_topo_order(Model& model, std::vector<int32_t>& dirty_list,
                                   const std::vector<uint8_t>& dirty_flags, size_t num_nodes,
@@ -195,51 +181,17 @@ void evaluate_dirty_in_topo_order(Model& model, std::vector<int32_t>& dirty_list
     }
 }
 
-// Which of a custom node's inputs this pass recomputed, as indices into its
-// children (#166).
-//
-// Derived from the dirty set the walk is already carrying rather than by
-// comparing values against a cached copy: comparing would cost O(|elements|)
-// per structured input, which is exactly the cost an incremental invariant
-// exists to avoid. The result is therefore a SUPERSET of the inputs that really
-// changed -- a node child that recomputed to the same value is still listed --
-// which is what `CustomInvariant::delta` documents.
-//
-// Cost is O(arity * count), from the linear `std::find` over the changed-variable
-// range per variable input. `count` is 1 on every path but the inner solver's
-// multi-variable Newton step, where it is the number of Float variables with a
-// usable partial -- so O(arity) in practice, against the O(sum of input sizes) a
-// value comparison would cost. A var-id -> input-index map would beat it only at
-// an arity and a `count` no caller has.
-void collect_changed_inputs(const Model& model, const ExprNode& node,
-                            const int32_t* changed_var_ids, size_t count,
-                            const std::vector<uint8_t>& dirty_flags, std::vector<int32_t>& out) {
-    out.clear();
-    const ConstSpan<ChildRef> children = model.children(node);
-    for (size_t i = 0; i < children.size(); ++i) {
-        const ChildRef& ref = children[i];
-        const bool changed = ref.is_var ? std::find(changed_var_ids, changed_var_ids + count,
-                                                    ref.id) != changed_var_ids + count
-                                        : dirty_flags[ref.id] != 0;
-        if (changed) {
-            out.push_back(static_cast<int32_t>(i));
-        }
-    }
-}
-
 // Clears the dirty flags the caller set, however the caller leaves.
 //
 // Not a tidiness wrapper: the flags are `thread_local`, and a LEAKED `1` is worse
 // than stale, because `delta_evaluate`'s seeding loop skips a node whose flag is
 // already set -- so the next call omits that node from its dirty list and never
 // recomputes it, silently, for the rest of the process. Only user code inside the
-// walk can throw (a `CustomInvariant`, a `lambda_sum` functor), so this was
-// unreachable in practice before #166 and is a documented surface after it;
-// `tests/test_custom_invariant.cpp`'s throwing-delta case fails without this.
-// The destructor cannot throw: every id in `list` already indexed `flags` on the
-// way in. `List` is the collected `std::vector`, read at destruction so that it
-// covers every id pushed after the guard was armed, or a cached cone's span
-// (#271), whose flags are all set before anything can throw.
+// walk can throw (a `lambda_sum` functor). The destructor cannot throw: every id
+// in `list` already indexed `flags` on the way in. `List` is the collected
+// `std::vector`, read at destruction so that it covers every id pushed after the
+// guard was armed, or a cached cone's span (#271), whose flags are all set
+// before anything can throw.
 template <typename List>
 struct DirtyFlagGuard {
     DirtyFlagGuard(std::vector<uint8_t>& f, const List& l) : flags(f), list(l) {}
@@ -256,70 +208,6 @@ struct DirtyFlagGuard {
     std::vector<uint8_t>& flags;
     const List& list;
 };
-
-// The custom-aware evaluator: one dirty node, under the caller's DeltaMode.
-// Built-in ops take the same `evaluate()` they always did; only a Custom node
-// reads the mode. See `DeltaMode` and `CustomInvariant` for the protocol.
-double evaluate_dirty_node(Model& model, int32_t nid, DeltaMode mode,
-                           const int32_t* changed_var_ids, size_t count,
-                           const std::vector<uint8_t>& dirty_flags,
-                           std::vector<int32_t>& changed_scratch, const EditJournal* journal) {
-    const ExprNode& node = model.nodes()[nid];
-    if (node.op != NodeOp::Custom) {
-        return evaluate(node, model);
-    }
-    const int32_t slot = node.lambda_func_id;
-    // Unreachable: `Model::custom` appends the slot and writes this id with nothing
-    // that can throw in between. Asserted rather than assumed, for the symmetry
-    // `custom_of` in src/dag.cpp keeps -- the three probe accessors below index the
-    // slot vector unchecked, so -1 would be a heap read one entry before it.
-    assert(slot >= 0);
-    if (mode == DeltaMode::Rollback && model.custom_probe_pending(slot)) {
-        // A paired Rollback never walks: it writes the probe's undo log back
-        // (`roll_back_probe`, #270). This is a Rollback whose log was dropped
-        // in between -- by a walk whose cone missed this node, or by a setter
-        // (see DeltaMode) -- so this node's probe is still open. The engine
-        // restores the node's VALUE; the invariant
-        // discards only its own staged state. Its parents recompute from the
-        // restored value below, in topological order.
-        model.custom_invariant(slot).rollback();
-        return model.custom_end_probe(slot);
-    }
-    // Whether this call's positional edits describe the change since the
-    // invariant's committed state (#172). They do unless a probe is still open:
-    // the invariant then never heard the commit or rollback that probe owed, so
-    // its committed state and the caller's "since" are no longer the same
-    // assignment, and neither `changed` nor any edit list bridges the gap.
-    bool positional_ok = true;
-    if (model.custom_probe_pending(slot)) {
-        positional_ok = false;
-        // A `Commit` or `Probe` pass reached a slot that still owes a rollback,
-        // which only an exception out of user code mid-probe can produce -- the two
-        // bracketed probes have nothing between their legs that can throw. Drop the
-        // stale stash: the assignment has moved on, so the value it holds is no
-        // longer anything to roll back TO, and leaving it would let a later
-        // `Rollback` restore a value from a different assignment. Defensive, with
-        // no observable effect on any non-throwing path.
-        (void)model.custom_end_probe(slot);
-    }
-    collect_changed_inputs(model, node, changed_var_ids, count, dirty_flags, changed_scratch);
-    CustomInvariant& inv = model.custom_invariant(slot);
-    const ConstSpan<int32_t> changed(changed_scratch.data(), changed_scratch.size());
-    // The two-argument form reports no positional information for any input,
-    // which is the honest answer on the stale-probe path above.
-    const InvariantInputs inputs =
-        positional_ok ? InvariantInputs(model, model.children(node), changed, journal)
-                      : InvariantInputs(model, model.children(node));
-    const double value = inv.delta(inputs, changed);
-    if (mode == DeltaMode::Probe) {
-        // Read BEFORE the caller writes `value`: this is still the value the
-        // probe is to be rolled back to.
-        model.custom_begin_probe(slot, model.node_values()[nid]);
-    } else {
-        inv.commit();
-    }
-    return value;
-}
 
 }  // namespace
 
@@ -483,9 +371,9 @@ public:
             case Rule::Commit:
                 if (!push_) {
                     // A walk without pushes re-reads a term only at its Sum's
-                    // turn, so anything throwing before that turn -- a custom
-                    // node, a plain or extra lambda (Python binds them as raw
-                    // callables), or anything else -- would leave the Sum stale
+                    // turn, so anything throwing before that turn -- a plain
+                    // or extra lambda (Python binds them as raw callables), or
+                    // anything else -- would leave the Sum stale
                     // while its state says it is tracked; the next commit would
                     // update the stale value. Untracked, it re-sums instead.
                     // Defensive: after a throw the contract already asks for a
@@ -570,7 +458,7 @@ private:
             return Rule::Probe;
         }
         // A Rollback reaches a walk only with no probe of its own pending,
-        // and is then a Commit, as it is for a custom node (see DeltaMode).
+        // and is then a Commit (see DeltaMode).
         return Rule::Commit;
     }
 
@@ -627,8 +515,7 @@ private:
     // turn, the flag would be cleared on the way out and the Sum -- which has
     // not taken this term's change -- must not be updated again from there.
     // (A throw mid-commit can also leave other Sums pushed but their readers
-    // not yet re-evaluated; that state is what CustomInvariant's contract already
-    // requires a full_evaluate after, which resets every Sum.)
+    // not yet re-evaluated; a full_evaluate after it resets every Sum.)
     static void force_resum(uint8_t& flag, IncSumState& st) {
         flag |= kDirtyResum;
         st.tracked = 0;
@@ -731,27 +618,10 @@ void arm_probe_undo(Model& model, ConstSpan<int32_t> dirty_list, const int32_t* 
 // evaluation: the log's values are written back, which is exact by
 // construction, where re-evaluating restored them only as far as every node's
 // value was what `evaluate()` gives -- not an incremental Sum carrying drift
-// (#188), which needed a stash of its own, nor a custom node (#166). A custom
-// node in the cone still has its probe closed and its invariant told
-// `rollback()`; the log's value is the one `custom_begin_probe` saved.
-//
-// The caller has dropped `pending` already, so a throwing `rollback()` leaves
-// no log to be written back twice. The writes come first: a value never waits
-// on user code.
+// (#188), which needed a stash of its own.
 void roll_back_probe(Model& model, const ProbeUndo& undo) {
     for (const auto& [nid, value] : undo.values) {
         model.set_node_value_unchecked(nid, value);
-    }
-    if (!model.has_custom_nodes()) {
-        return;
-    }
-    const std::vector<ExprNode>& nodes = model.nodes();
-    for (const auto& entry : undo.values) {
-        const ExprNode& node = nodes[entry.first];
-        if (node.op == NodeOp::Custom && model.custom_probe_pending(node.lambda_func_id)) {
-            model.custom_invariant(node.lambda_func_id).rollback();
-            (void)model.custom_end_probe(node.lambda_func_id);
-        }
     }
 }
 
@@ -768,28 +638,11 @@ ConstSpan<int32_t> span_of(const std::vector<int32_t>& list) {
 
 // Evaluates a walk's dirty nodes under the incremental-Sum rules, in the order
 // `walk` visits them: `walk(eval_node)` writes `eval_node(nid)` to each node.
-//
-// One test per CALL, not per node: a model with no custom node takes the
-// pre-#166 loop verbatim, which is what keeps criterion 4's bit-identical
-// trajectories bit-identical (#166).
 template <typename Walk>
-void evaluate_with_sums(Model& model, IncSumWalk& sums, DeltaMode mode,
-                        const int32_t* changed_var_ids, size_t count, const EditJournal* journal,
-                        const std::vector<uint8_t>& dirty_flags, Walk walk) {
-    if (model.has_custom_nodes()) {
-        thread_local std::vector<int32_t> changed_inputs;
-        walk([&](int32_t nid) {
-            return sums.eval(nid, [&](int32_t id) {
-                return evaluate_dirty_node(model, id, mode, changed_var_ids, count, dirty_flags,
-                                           changed_inputs, journal);
-            });
-        });
-    } else {
-        walk([&](int32_t nid) {
-            return sums.eval(nid,
-                             [&model](int32_t id) { return evaluate(model.nodes()[id], model); });
-        });
-    }
+void evaluate_with_sums(Model& model, IncSumWalk& sums, Walk walk) {
+    walk([&](int32_t nid) {
+        return sums.eval(nid, [&model](int32_t id) { return evaluate(model.nodes()[id], model); });
+    });
 }
 
 // A one-variable walk over its cached cone (#271): the cone `freeze()` already
@@ -797,15 +650,13 @@ void evaluate_with_sums(Model& model, IncSumWalk& sums, DeltaMode mode,
 // topological order `evaluate_dirty_in_topo_order` reaches by either route,
 // so every value is the one the collecting walk computes.
 //
-// A model with neither an incremental Sum nor a custom node sets no dirty flag
-// at all: only the scan route and those two read them. The others set every
-// flag of the cone up front -- `collect_changed_inputs` and the incremental-Sum
-// pushes read them -- under a guard armed first, as the collecting walk's is.
+// A model with no incremental Sum sets no dirty flag at all: only the scan
+// route and the incremental-Sum pushes read them. The others set every flag of
+// the cone up front, under a guard armed first, as the collecting walk's is.
 double walk_cached_cone(Model& model, const int32_t* var_id, DeltaMode mode,
-                        const EditJournal* journal, const double* old_values,
-                        std::vector<uint8_t>& dirty_flags) {
+                        const double* old_values, std::vector<uint8_t>& dirty_flags) {
     const ConstSpan<int32_t> cone = model.cached_cone(*var_id);
-    if (model.inc_sum_nodes().empty() && !model.has_custom_nodes()) {
+    if (model.inc_sum_nodes().empty()) {
         if (mode == DeltaMode::Probe) {
             arm_probe_undo(model, cone, var_id, 1);
         }
@@ -823,7 +674,7 @@ double walk_cached_cone(Model& model, const int32_t* var_id, DeltaMode mode,
         arm_probe_undo(model, cone, var_id, 1);  // before `prepare`'s pushes
     }
     sums.prepare(cone, var_id, 1, old_values);
-    evaluate_with_sums(model, sums, mode, var_id, 1, journal, dirty_flags, [&](auto eval_node) {
+    evaluate_with_sums(model, sums, [&](auto eval_node) {
         for (const int32_t nid : cone) {
             model.set_node_value_unchecked(nid, eval_node(nid));
         }
@@ -835,7 +686,7 @@ double walk_cached_cone(Model& model, const int32_t* var_id, DeltaMode mode,
 // previous value of each of `changed_var_ids` and switches the term updates on;
 // null re-sums every dirty incremental Sum, as `delta_evaluate` always did.
 double delta_walk(Model& model, const int32_t* changed_var_ids, size_t count, DeltaMode mode,
-                  const EditJournal* journal, const double* old_values) {
+                  const double* old_values) {
     const EvaluationGuard guard("delta_evaluate");
     // Any walk moves the assignment on from the pending probe's, so the log is
     // dropped here, whatever the mode; only the Rollback it belongs to spends it.
@@ -851,12 +702,9 @@ double delta_walk(Model& model, const int32_t* changed_var_ids, size_t count, De
             // the pairing, so the log's values are not known to match the
             // assignment in front of us -- the probed variables may not have
             // been put back. The honest reading is a commit of BOTH sets (see
-            // DeltaMode): the log is written back first, so every custom node's
-            // open probe gets its `rollback()`, then the walk below recomputes
-            // the union's cone from the assignment. The caller's journal
-            // describes its own set only, so it is not passed on; a custom node
-            // then gets inputs with no edit list, which is always correct.
-            // Out of contract, so sort-and-unique's O(n log n) is no concern.
+            // DeltaMode): the log is written back first, then the walk below
+            // recomputes the union's cone from the assignment. Out of contract,
+            // so sort-and-unique's O(n log n) is no concern.
             roll_back_probe(model, undo);
             thread_local std::vector<int32_t> merged;
             merged.assign(undo.vars.begin(), undo.vars.end());
@@ -864,11 +712,9 @@ double delta_walk(Model& model, const int32_t* changed_var_ids, size_t count, De
             std::sort(merged.begin(), merged.end());
             merged.erase(std::unique(merged.begin(), merged.end()), merged.end());
             // The walk below stays a Rollback, now with no log pending: a
-            // Commit, apart from a custom node outside the cone whose probe is
-            // still open.
+            // Commit.
             changed_var_ids = merged.data();
             count = merged.size();
-            journal = nullptr;
         }
     }
     const size_t num_nodes = model.num_nodes();
@@ -896,18 +742,18 @@ double delta_walk(Model& model, const int32_t* changed_var_ids, size_t count, De
     if (count == 1) {
         if (model.has_cached_cone(changed_var_ids[0])) {
             ++cone_cache_counts.cached_walks;
-            return walk_cached_cone(model, changed_var_ids, mode, journal, old_values, dirty_flags);
+            return walk_cached_cone(model, changed_var_ids, mode, old_values, dirty_flags);
         }
         ++cone_cache_counts.fallback_walks;
     }
 
-    // A model with neither an incremental Sum nor a custom node -- most of
-    // MINLPLib -- evaluates its cone with plain `evaluate()`, building no
-    // incremental-Sum rules (its Probe still arms the log, and its paired
-    // Rollback returned above without walking). Measured, not guessed: on
+    // A model with no incremental Sum -- most of MINLPLib -- evaluates its
+    // cone with plain `evaluate()`, building no incremental-Sum rules (its
+    // Probe still arms the log, and its paired Rollback returned above
+    // without walking). Measured, not guessed: on
     // gear4, whose probe cones are a handful of nodes, merely constructing the
     // incremental-Sum rules per walk cost ~10% of the run (#188).
-    if (model.inc_sum_nodes().empty() && !model.has_custom_nodes()) {
+    if (model.inc_sum_nodes().empty()) {
         const DirtyFlagGuard<std::vector<int32_t>> plain_guard(dirty_flags, dirty_list);
         collect_dirty_cone(model, changed_var_ids, count, dirty_flags, dirty_list);
         if (mode == DeltaMode::Probe) {
@@ -929,10 +775,9 @@ double delta_walk(Model& model, const int32_t* changed_var_ids, size_t count, De
         arm_probe_undo(model, span_of(dirty_list), changed_var_ids, count);
     }
     sums.prepare(span_of(dirty_list), changed_var_ids, count, old_values);
-    evaluate_with_sums(
-        model, sums, mode, changed_var_ids, count, journal, dirty_flags, [&](auto eval_node) {
-            evaluate_dirty_in_topo_order(model, dirty_list, dirty_flags, num_nodes, eval_node);
-        });
+    evaluate_with_sums(model, sums, [&](auto eval_node) {
+        evaluate_dirty_in_topo_order(model, dirty_list, dirty_flags, num_nodes, eval_node);
+    });
 
     // The flags are cleared by `flag_guard` on the way out, which is also what
     // covers a throw from user code inside the walk.
@@ -949,17 +794,16 @@ ConeCacheCounters& cone_cache_counters() noexcept {
     return cone_cache_counts;
 }
 
-double delta_evaluate(Model& model, const int32_t* changed_var_ids, size_t count, DeltaMode mode,
-                      const EditJournal* journal) {
-    return delta_walk(model, changed_var_ids, count, mode, journal, nullptr);
+double delta_evaluate(Model& model, const int32_t* changed_var_ids, size_t count, DeltaMode mode) {
+    return delta_walk(model, changed_var_ids, count, mode, nullptr);
 }
 
 double commit_scalar_move(Model& model, int32_t var_id, double old_value) {
-    return delta_walk(model, &var_id, 1, DeltaMode::Commit, nullptr, &old_value);
+    return delta_walk(model, &var_id, 1, DeltaMode::Commit, &old_value);
 }
 
 double probe_scalar_move(Model& model, int32_t var_id, double old_value) {
-    return delta_walk(model, &var_id, 1, DeltaMode::Probe, nullptr, &old_value);
+    return delta_walk(model, &var_id, 1, DeltaMode::Probe, &old_value);
 }
 
 void reground_inc_sum(Model& model, int32_t slot) {
@@ -995,14 +839,7 @@ namespace {
 
 // Scratch for the reverse sweep, shared by the three entry points below. Every
 // buffer is left all-zero / empty between calls; `AdjointScratchGuard` restores
-// that on the way out, including when a `CustomInvariant::partial` throws.
-//
-// `busy` refuses re-entry, the same way `EvaluationGuard` does for evaluation: a
-// `CustomInvariant::partial` that differentiated a sub-model through one of the
-// entry points would push onto `cone` while the outer sweep iterates it (UB),
-// and its guard would then clear the outer sweep's bookkeeping and leak its
-// adjoints into every later call on the thread. One thread_local test and store
-// per call.
+// that on the way out, including when an allocation throws.
 //
 // `adjoint` is flat: [0, num_nodes) for nodes, [num_nodes, num_nodes + num_vars)
 // for variables. It only ever grows, so a thread that sees a larger model keeps
@@ -1012,7 +849,6 @@ struct AdjointScratch {
     std::vector<int32_t> written;  // adjoint entries touched, for O(touched) cleanup
     std::vector<uint8_t> in_cone;  // node id -> collected into `cone`
     std::vector<int32_t> cone;     // nodes reachable from expr_id through children
-    bool busy = false;             // a sweep is in progress on this thread
 };
 
 AdjointScratch& adjoint_scratch() {
@@ -1022,17 +858,7 @@ AdjointScratch& adjoint_scratch() {
 
 class AdjointScratchGuard {
 public:
-    AdjointScratchGuard(AdjointScratch& scratch, const char* entry) : scratch_(scratch) {
-        if (scratch_.busy) {
-            // Thrown from the constructor, so the destructor -- which would clear
-            // the OUTER sweep's state -- never runs for the refused call.
-            throw std::logic_error(std::string(entry) +
-                                   ": re-entered from inside a reverse-mode AD sweep. A "
-                                   "CustomInvariant's partial must not call compute_partial, "
-                                   "compute_all_partials or compute_partials_sparse.");
-        }
-        scratch_.busy = true;
-    }
+    explicit AdjointScratchGuard(AdjointScratch& scratch) : scratch_(scratch) {}
     AdjointScratchGuard(const AdjointScratchGuard&) = delete;
     AdjointScratchGuard& operator=(const AdjointScratchGuard&) = delete;
     AdjointScratchGuard(AdjointScratchGuard&&) = delete;
@@ -1046,7 +872,6 @@ public:
             scratch_.in_cone[nid] = 0;
         }
         scratch_.cone.clear();
-        scratch_.busy = false;
     }
 
 private:
@@ -1166,7 +991,7 @@ void reverse_sweep(const Model& model, int32_t expr_id, AdjointScratch& s) {
 
 double compute_partial(const Model& model, int32_t expr_id, int32_t var_id) {
     AdjointScratch& s = adjoint_scratch();
-    const AdjointScratchGuard guard(s, "compute_partial");
+    const AdjointScratchGuard guard(s);
     reverse_sweep(model, expr_id, s);
     if (var_id < 0 || static_cast<size_t>(var_id) >= model.num_vars()) {
         return 0.0;
@@ -1197,24 +1022,12 @@ double up_edge_derivative(const Model& model, int32_t parent, const ChildRef& ch
 }
 
 bool UpConePartials::build(const Model& model, int32_t var_id, size_t max_nodes) {
-    // A CustomInvariant's partial runs inside the sweep; a nested build on this
-    // instance would clear and refill the cone the outer one is iterating.
-    if (busy_) {
-        throw std::logic_error(
-            "UpConePartials::build: re-entered from inside a forward up-cone pass. A "
-            "CustomInvariant's partial must not run feasibility jump on its own thread.");
-    }
-    busy_ = true;
-    bool built = false;
     try {
-        built = sweep(model, var_id, max_nodes);
+        return sweep(model, var_id, max_nodes);
     } catch (...) {
         next_epoch();  // the half-built cone must read 0, as a failed build does
-        busy_ = false;
         throw;
     }
-    busy_ = false;
-    return built;
 }
 
 void UpConePartials::next_epoch() {
@@ -1285,7 +1098,7 @@ bool UpConePartials::sweep(const Model& model, int32_t var_id, size_t max_nodes)
 
 std::vector<double> compute_all_partials(const Model& model, int32_t expr_id) {
     AdjointScratch& s = adjoint_scratch();
-    const AdjointScratchGuard guard(s, "compute_all_partials");
+    const AdjointScratchGuard guard(s);
     reverse_sweep(model, expr_id, s);
     const size_t num_nodes = model.num_nodes();
     const auto first = s.adjoint.begin() + static_cast<std::ptrdiff_t>(num_nodes);
@@ -1296,7 +1109,7 @@ void compute_partials_sparse(const Model& model, int32_t expr_id,
                              std::vector<std::pair<int32_t, double>>& out) {
     out.clear();
     AdjointScratch& s = adjoint_scratch();
-    const AdjointScratchGuard guard(s, "compute_partials_sparse");
+    const AdjointScratchGuard guard(s);
     reverse_sweep(model, expr_id, s);
     const auto num_nodes = static_cast<int32_t>(model.num_nodes());
     // `written` can list a variable twice -- its adjoint cancelled to 0.0 and was

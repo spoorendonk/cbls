@@ -204,12 +204,11 @@ def test_extra_is_keyword_only_in_both_lambda_forms() -> None:
         m.pair_lambda_sum(route, lambda a, b, x: float(a), [t])
 
 
-def test_the_node_op_enum_names_every_op_including_pair_lambda_and_custom() -> None:
+def test_the_node_op_enum_names_pair_lambda() -> None:
     m = cbls.Model()
     route = m.list_var(3)
     pair = m.pair_lambda_sum(route, lambda a, b: 0.0)
     assert m.node(pair).op == cbls.NodeOp.PairLambda
-    assert cbls.NodeOp.Custom.name == "Custom"
 
 
 def test_the_plain_lambda_forms_are_unchanged_by_the_extra_overloads() -> None:

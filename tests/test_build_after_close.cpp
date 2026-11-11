@@ -8,7 +8,6 @@
 //
 // `tests/python/test_build_after_close.py` is the binding half.
 
-#include "cbls/custom_invariant.h"
 #include "cbls/dag_ops.h"
 #include "cbls/expr.h"
 #include "cbls/feasibility_jump.h"
@@ -22,27 +21,11 @@
 #include <catch2/matchers/catch_matchers_string.hpp>
 #include <cmath>
 #include <functional>
-#include <memory>
 #include <vector>
 
 using namespace cbls;
 
 namespace {
-
-// A pure sum of its inputs: enough of a CustomInvariant to reach `Model::custom`.
-class InputSum : public CustomInvariant {
-public:
-    double evaluate(const InvariantInputs& in) override {
-        double total = 0.0;
-        for (int32_t i = 0; i < in.size(); ++i) {
-            total += in.value(i);
-        }
-        return total;
-    }
-    [[nodiscard]] std::unique_ptr<CustomInvariant> clone() const override {
-        return std::make_unique<InputSum>(*this);
-    }
-};
 
 void require_valid_topo_order(const Model& m) {
     const std::vector<int32_t>& order = m.topo_order();
@@ -231,8 +214,6 @@ TEST_CASE("every expression builder refuses a closed model", "[closed]") {
             f.l1, [](int a, int b) { return a + b; }, [](int e) { return e; },
             [](int e) { return e; });
     });
-    require_refused(f, [&] { (void)m.custom({x, y}, std::make_unique<InputSum>(), "c"); });
-    require_refused(f, [&] { (void)m.Custom({Expr{&m, x}}, std::make_unique<InputSum>(), "c"); });
     // The operator overloads reach the same builders.
     require_refused(f, [&] { (void)(Expr{&m, x} + Expr{&m, y}); });
     require_refused(f, [&] { (void)(Expr{&m, x} <= 3.0); });

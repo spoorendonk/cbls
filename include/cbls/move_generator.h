@@ -122,8 +122,7 @@ enum class StructuralSelection : std::uint8_t {
     /// universe in every row that node feeds. So what ships here is the
     /// variable-level form -- which variable to spend candidates on -- plus
     /// whatever element-level granularity a `NeighbourList` supplies. The
-    /// element-level form needs either a generator-supplied element scorer or
-    /// the custom-invariant work of #166.
+    /// element-level form needs a generator-supplied element scorer.
     ViolationGuided,
     /// `ViolationGuided`, with each `ListPartition` searched by the GRANULAR
     /// COMPLETE neighbourhood of one element per `generate` call instead of a

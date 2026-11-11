@@ -155,31 +155,24 @@ enum class NodeOp : uint8_t {
     Neq,
     Lt,
     Gt,
-    /// User code in the DAG: the node's value is whatever its `CustomInvariant`
-    /// says it is (#166). Appended LAST so that every existing enumerator keeps
-    /// its value.
-    ///
-    /// The `default:`-free dispatch tables in `src/dag.cpp` and `src/io.cpp` are
-    /// what make a missed case visible: since #171 the build compiles with -Wall
-    /// (GCC's -Wswitch) and clang-tidy reports `clang-diagnostic-switch`. No hook
-    /// blocks on either now; zero first-party warnings and zero clang-tidy
-    /// findings are checked by hand before a push (CLAUDE.md, Git Hooks).
-    /// `.githooks/tidy-probe.sh` proves the clang-tidy check still bites. Only a
-    /// `default:`-free switch is covered -- not an `if`/`==` chain, and not
-    /// `node_is_affine` in `src/feasibility_jump.cpp`, whose deliberate
-    /// `default:` classes a new op as non-affine without a word -- so
-    /// `grep -rn 'NodeOp::' src/ include/ python/` for the rest.
-    Custom,
-    // The six below are #186's, appended after `Custom` for the same reason
-    // `Custom` was appended last: every existing enumerator keeps its value.
+    // The `default:`-free dispatch tables in `src/dag.cpp` and `src/io.cpp` are
+    // what make a missed case visible: since #171 the build compiles with -Wall
+    // (GCC's -Wswitch) and clang-tidy reports `clang-diagnostic-switch`. No hook
+    // blocks on either now; zero first-party warnings and zero clang-tidy
+    // findings are checked by hand before a push (CLAUDE.md, Git Hooks).
+    // `.githooks/tidy-probe.sh` proves the clang-tidy check still bites. Only a
+    // `default:`-free switch is covered -- not an `if`/`==` chain, and not
+    // `node_is_affine` in `src/feasibility_jump.cpp`, whose deliberate
+    // `default:` classes a new op as non-affine without a word -- so
+    // `grep -rn 'NodeOp::' src/ include/ python/` for the rest.
     //
-    // Element/Ceil/Floor/Round are piecewise constant in their scalar children,
-    // and the two extra lambdas are opaque functors, so all six report a local
-    // derivative of 0 and none of them is affine. What FJ uses instead of a
-    // gradient is in `compute_var_jump` (src/feasibility_jump.cpp): the plateau
-    // edges of Ceil/Floor/Round and the index values of Element, reached from a
-    // variable through ops that carry a slope (`carries_slope`), are offered as
-    // jump candidates.
+    // The six below are #186's. Element/Ceil/Floor/Round are piecewise
+    // constant in their scalar children, and the two extra lambdas are opaque
+    // functors, so all six report a local derivative of 0 and none of them is
+    // affine. What FJ uses instead of a gradient is in `compute_var_jump`
+    // (src/feasibility_jump.cpp): the plateau edges of Ceil/Floor/Round and the
+    // index values of Element, reached from a variable through ops that carry a
+    // slope (`carries_slope`), are offered as jump candidates.
     /// `table[i]` or `table[i][j]` over a numeric table, each index any scalar,
     /// truncated toward zero -- 1 or 2 children, every one an index. The table
     /// is `ModelStructure::element_tables[lambda_func_id]`. See
@@ -248,8 +241,6 @@ struct ExprNode {
     ///
     ///  - `Lambda`, and a `PairLambda`'s head/tail: `ModelStructure::lambda_funcs`
     ///  - `PairLambda`: `pair_lambda_funcs` and the parallel `pair_lambda_specs`
-    ///  - `Custom`: `Model::custom_invariant(id)`, which is PER-MODEL rather
-    ///    than shared (#166) -- the index is structure, the instance is not.
     ///  - `Element`: `ModelStructure::element_tables` (#186)
     ///  - `LambdaExtra`: `lambda_extra_funcs`; `PairLambdaExtra`:
     ///    `pair_lambda_extra_funcs` and the parallel `pair_lambda_extra_modes`
@@ -277,7 +268,7 @@ enum class PairMode : uint8_t {
 ///
 /// It is a SIDE TABLE in `ModelStructure`, parallel to `pair_lambda_funcs` and
 /// keyed by the same `ExprNode::lambda_func_id`, rather than three more
-/// `NodeOp` enumerators. `src/dag.cpp`'s two dispatch tables are 35 cases wide
+/// `NodeOp` enumerators. `src/dag.cpp`'s two dispatch tables are 34 cases wide
 /// and already carry a cognitive-complexity suppression each; one variant per
 /// closing rule crossed with head/tail presence would be six more cases in both
 /// of them for no gain, since every variant evaluates through the same loop.

@@ -93,7 +93,6 @@ A one-screen map of the pipeline, its files, the extension points, build targets
 
 - **`InnerSolverHook`** — subclass for domain-specific continuous optimization; `FloatIntensifyHook` (`include/cbls/inner_solver.h`) is the reference. Its `solve()` gets a `StopRef stop` and **must** poll it if its work can outlast the budget, and return leaving every committed value delta-evaluated: the call cannot be pre-empted.
 - **New operations** — add to `NodeOp` in `dag.h`, implement `evaluate()` in `dag.cpp`, `local_derivative()` for AD, and `delta_evaluate` support in `dag_ops.cpp`.
-- **`CustomInvariant`** (`include/cbls/custom_invariant.h`, #166) — user code inside the DAG via `Model::custom(inputs, std::move(inv), name)`: optional incremental `delta`, a `commit`/`rollback` bracket, `clone()`d per portfolio worker. Not writable to `.cbls`, not exposed to Python (#132). Contract in footnote ² of [Expression Nodes](#expression-nodes), after the AD section.
 
 ### Build targets
 
@@ -189,15 +188,22 @@ of per-model state, which is roughly one per row on a MIP.
 | Trigonometric| Sin, Cos, Tan                                        |
 | Exponential  | Exp, Log, Sqrt, SignPower (`sign(x)·abs(x)^p`), Tanh |
 | Conditional  | If                                                   |
-| Rounding     | Ceil, Floor, Round (#186³)                           |
-| Table lookup | Element: `table[i]` or `table[i][j]`, each index any scalar, truncated toward zero (#186³) |
-| Collection   | At (indexing), Count, Lambda, PairLambda (functional aggregation¹), LambdaExtra, PairLambdaExtra (the same, with a functor that also reads scalar `extra` children, #186³) |
+| Rounding     | Ceil, Floor, Round (#186²)                           |
+| Table lookup | Element: `table[i]` or `table[i][j]`, each index any scalar, truncated toward zero (#186²) |
+| Collection   | At (indexing), Count, Lambda, PairLambda (functional aggregation¹), LambdaExtra, PairLambdaExtra (the same, with a functor that also reads scalar `extra` children, #186²) |
 | Comparison   | Leq, Eq, Geq, Neq, Lt, Gt                           |
-| User code    | Custom (a `CustomInvariant`², #166)                  |
 
-35 enumerators in all. The six #186 ones are appended after `Custom`; SignPower
+34 enumerators in all. The six #186 ones come after `Gt`; SignPower
 and Tanh (for MINLPLib) sit before `If`. Saved models name ops rather than
 number them, so the order is not a file format.
+
+**Custom nodes (#166), removed.** A `CustomInvariant` put user code inside the
+DAG as a `Custom` node: an optional incremental `delta`, a `commit`/`rollback`
+bracket under FJ's probe, a `clone()` per portfolio worker, and the
+positional-edit journal of #172 that told it where a structured input changed.
+It had no benchmark, example or binding user, and #384 removed it. The code
+(`include/cbls/custom_invariant.h`, `Model::custom`, `EditJournal`), its tests
+and its contract are in git history at `b9664171`.
 
 Comparison nodes evaluate to a **violation measure** (0 when satisfied,
 positive when violated):
@@ -278,10 +284,9 @@ and commit -- neither marks nor sorts its cone: `Model::freeze()` collected each
 variable's cone once and stored it sorted by `topo_pos`
 (`ModelStructure::cone_offsets`/`cone_ids`, CSR, shared by every replica).
 `topo_pos` is a total order, so the cached order is the one the walk sorts to
-and every value is bit-identical. A model with no incremental Sum and no custom
-node sets no dirty flag at all on that path; the others set the cone's flags
-from the span, since `collect_changed_inputs` and the incremental-Sum pushes
-read them. The cache costs 4 bytes per (variable, cone node) pair, O(nodes ×
+and every value is bit-identical. A model with no incremental Sum sets no dirty
+flag at all on that path; the others set the cone's flags from the span, since
+the incremental-Sum pushes read them. The cache costs 4 bytes per (variable, cone node) pair, O(nodes ×
 vars) on a deep shared chain, so it is capped (`SearchConfig::cone_cache_bytes`,
 256 MiB): variables are cached in id order up to the first whose cone would
 cross the cap, and that one and every later one walk as an unfrozen model's do
@@ -337,7 +342,7 @@ differences of its changed terms instead of re-summing it.
   - A Probe applies the commit's own updates, and logs its whole cone's values
     before its first write (`ProbeUndo`, #270). The Rollback writes the log
     back, Sums included, to the bit, without walking the cone again.
-  - A model with no incremental Sum and no custom node evaluates its cone
+  - A model with no incremental Sum evaluates its cone
     with plain `evaluate()` and builds no incremental-Sum rules; its Probe
     still arms the log, and its Rollback writes it back like any other.
 
@@ -383,20 +388,13 @@ only the nonzero ones, as `(var_id, partial)` pairs:
 3. For each node, propagate: `adjoint[child] += adjoint[node] * local_derivative(node, child_index)`
 4. Adjoints live in one flat per-thread scratch: `[0, num_nodes)` for nodes,
    `num_nodes + var_id` for variables. The three entry points share it, so none
-   may be called from inside another -- in particular not from a
-   `CustomInvariant::partial`; the nested call throws `std::logic_error`.
+   may be called from inside another.
 
 `local_derivative` computes per-operation partial derivatives (chain rule
 components). Discrete operations (At, Count, Lambda, PairLambda, LambdaExtra,
 PairLambdaExtra) and the piecewise-constant ones (Element, Ceil, Floor, Round)
 return 0 — FJ gets the latter's plateaus from their breakpoints instead (see
-[`compute_var_jump`](#compute_var_jump)). A
-`Custom` node asks its invariant's `partial`, whose NaN *or infinity* ("unknown")
-reads as 0 here — the same answer, so a custom node with no derivative is exactly
-as differentiable as a structural op. An infinity has to be folded too, not just
-propagated: the chain rule would multiply it into the partial of every variable
-below that input, and two such paths meeting with opposite signs read
-`inf - inf` — NaN. Every propagation pass, reverse and forward, takes its edges
+[`compute_var_jump`](#compute_var_jump)). Every propagation pass, reverse and forward, takes its edges
 through `add_chain_term` (`include/cbls/dag_ops.h`), which skips a zero edge
 rather than multiplying it, so an infinite adjoint or slope never reads
 `inf * 0` across an untaken If branch or a Min's unselected operand (#260).
@@ -421,127 +419,7 @@ closing pair and `"head"`/`"tail"` for the fixed-endpoint tables. Each is
 written only when it says something; the reader defaults an absent key to the
 open chain with no endpoints.
 
-² **Custom nodes: user code in the DAG (#166).**
-`Model::custom(inputs, std::unique_ptr<CustomInvariant>, name)` appends a node
-whose value is whatever that object says it is. It is an ordinary node
-afterwards: usable inside an expression, as the objective, or as a constraint
-body. The inputs are ordinary handles — variables or nodes, scalar or
-structured, in any mix — and reach the invariant through `InvariantInputs`,
-a view over the node's children (`value(i)`, `elements(i)`,
-`is_structured_input(i)`).
-
-**Where inside a structured input: positional edits (#172).** `changed` names
-the inputs that moved, never *where* inside one. `in.edits(i)` is the where: for
-a List/Set variable input, the ordered `PositionalEdit`s (Swap, Reverse,
-MoveSegment, Insert, Erase, Assign — each with the element an Erase or Assign
-displaced) that took it from the elements the invariant last **committed** to to
-the ones `elements(i)` returns now. With them a delta over a List is O(edits)
-rather than O(|elements|); `tests/test_custom_invariant_edits.cpp` carries an
-open-route-cost invariant written that way.
-
-*How the edits get there.* The structural batch records each candidate's
-positional `ElementEdit`s as they took effect (an edit the range guard ignores
-is not recorded, so the record replays and inverts exactly) into an
-`EditJournal`, and describes each transition to `delta_evaluate` as *the
-previous candidate's edits inverted, then this one's*, since the batch restores
-the sample baseline before every candidate. The two restores that close a
-sample are described the same way. `delta_evaluate` takes the journal as an
-optional last argument; every other caller passes none.
-
-*The fallback is unmistakable.* `edits(i)` returns an `InputEdits`; with no
-positional information `available()` is false and `list()` **throws** rather
-than returning an empty span that would read as "no changes". It is unavailable
-in `evaluate`/`partial`, for a scalar or node input, for any call whose caller
-recorded nothing (the diversification kick, LNS, the inner solver, Novelty
-Jump, a restore, a direct `var_mut`), for a variable that saw a `Replace`, and
-after an exception left a probe open. (A `delta()` that throws on a `Commit`
-pass is not detected; `full_evaluate` is the recovery.) An input *not* in
-`changed` reports an available, empty list, so a scalar move does not push a
-List invariant into a re-read.
-
-*Accumulation and lifetime.* Edits describe the change since the last committed
-state: on the batch every leg is a `Commit`; a `Probe` needs no edits on its
-`Rollback`; a stale probe withholds them. They are keyed per input, read only
-during the pass, and, like `changed`, valid for the one `delta()` call.
-
-*Opt in.* The batch records only while some invariant returns true from
-`wants_positional_edits()`, checked once per sweep. Not opting in is still
-correct and adds no allocation (#172 measured about 1% per structural
-candidate for a custom node, not isolated from code placement); opting in costs
-about 6% more and no allocation.
-
-The interface is six calls plus a clone:
-
-| Call | When | Contract |
-|---|---|---|
-| `evaluate(in)` | `full_evaluate` — `close()`, after `restore_state`, every restart | From scratch. Redefines the committed state. |
-| `delta(in, changed)` | `delta_evaluate`, per dirtied pass | Incremental. `changed` is the input indices the engine recomputed since the last committed state — a *superset* of those that actually differ. Defaults to `evaluate(in)`. |
-| `wants_positional_edits()` | once per structural sweep | Opt in to `in.edits(i)` being recorded by the structural batch. Default false; false is still correct. |
-| `commit()` | after a `delta` whose assignment is kept | The staged state becomes committed. |
-| `rollback()` | after a `delta` the caller has undone | Discard the staged state; the engine restores the node's cached *value* itself. |
-| `partial(in, i)` | reverse-mode AD | `d(value)/d(input i)`, or NaN **or ±inf** for unknown — both fold to 0, so one infinite edge cannot NaN a sibling's partial. |
-| `clone()` | `Model` copy, i.e. one per portfolio worker; entered CONCURRENTLY on the master | Must carry the current state — a copied `Model` needs no `full_evaluate`, so a caller may copy and `delta_evaluate` straight away. Must be safe to call from N threads on one instance: `ParallelSearch` replicates the master on each worker's own thread. |
-
-**Where the instance lives.** On the per-model side of the `ModelStructure`
-split: `ExprNode::lambda_func_id` indexes `Model::custom_invariant(id)`, a
-per-model `std::vector<CustomInvariantSlot>` that the copy constructor
-`clone()`s entry by entry. The *index* is structure and is shared; the
-*instance* is not. That is the difference from `lambda_funcs`, which every
-replica invokes concurrently and which therefore cannot carry state at all.
-
-**The probe bracket, and what is not bracketed.** `delta_evaluate` takes a
-`DeltaMode`: `Commit` (the default), `Probe` and `Rollback`. `Model::weighted_violation_delta` and
-`per_constraint_violation_delta` — the per-candidate scalar probe Feasibility
-Jump runs for every jump value — are bracketed as `Probe` then `Rollback`, so a
-custom node in one of those cones costs **one `delta` and one `rollback`** per
-candidate rather than two deltas. **Three** other sites score by evaluating
-forwards and evaluating back, and every leg of all three stays `Commit`: the
-structural batch (`src/structural_batch.cpp`), the inner solver's
-multi-variable Newton step (`src/inner_solver.cpp`; its coordinate probes are
-bracketed since #207), and Novelty Jump's backtracking compound-move search
-(`src/feasibility_jump.cpp`), which is on the same per-candidate path the
-bracketed probe is. All three are correct — each leg really is a new committed
-assignment, and the `changed` set each passes is a complete superset of what it
-moved — but **twice the cost** of the bracketed path, and an invariant caching a
-List's prefix sums updates it on both legs (O(edits) per leg on the structural
-batch for an invariant that opts in to positional edits, a re-read otherwise).
-Bracketing them is a separate change.
-
-**A model with no custom node is untouched.** `Model::has_custom_nodes()` is
-tested once per `delta_evaluate`/`full_evaluate` call, not per node; the false
-branch is the plain loop, and the dispatch is a template rather than a
-`std::function`, so it inlines the same `evaluate` call. The fence is
-`tests/test_structural_equivalence.cpp` and `tests/test_structured_trajectory.cpp`.
-
-**Serialisation refuses.** A `CustomInvariant` is C++ code, not a table of
-numbers the way a `Lambda` is, so `save_model` throws before writing its first
-line, naming the node and the invariant. Checked before the stream is opened:
-`std::ofstream` truncates on open, so a refusal after that point would replace
-an existing file with a prefix of a model.
-
-**One contract obligation the engine enforces, and two it only documents.** The
-enforced one: none of the five calls may re-enter `delta_evaluate` or
-`full_evaluate`. That throws `std::logic_error`, because the nested call clears the
-`thread_local` dirty list the outer one is holding, which would leak the outer
-call's flags and silently stop those nodes being recomputed for the rest of the
-process.
-
-The two that are documented and **not** checked anywhere in the engine. First, a
-custom node's value must be a pure function of its declared inputs — a node with
-no inputs, or only `Const` ones, never enters a dirty cone, so `delta()` is never
-called on it and its value only ever moves at `full_evaluate`. Nothing detects an
-impure one; `cbls::verify_model` is a verifier a caller opts into, not a gate, and
-an impure invariant otherwise shows up as trajectory divergence. Second,
-`Model::restore_state` writes variables only, so a `full_evaluate` before the next
-`delta_evaluate` is mandatory. Both are contracts on the caller, and the cost of
-breaking either is a wrong answer rather than an exception.
-
-**Not exposed to Python.** A Python-subclassable invariant needs the trampoline
-and GIL machinery of #132, so nothing here is bound: `Model::custom` is not
-exposed. `NodeOp::Custom` is in the binding enum only so that every op has a
-Python name.
-
-³ **Element, rounding, and lambdas that read other decisions (#186):**
+² **Element, rounding, and lambdas that read other decisions (#186):**
 
 | Op | Builder | Semantics | Workaround it replaces |
 |----|---------|-----------|------------------------|
@@ -555,14 +433,13 @@ any list edit does too. Both re-sum the list, exactly what a plain `Lambda` does
 on an edit.
 
 **A list edit is O(|list|), not O(edits)**, for every lambda form (a deviation
-from #186): only a `CustomInvariant` gets the positional-edit journal, and an
-incremental floating-point lambda sum would reopen the drift that #188 contains
+from #186): an incremental floating-point lambda sum would reopen the drift that #188 contains
 only for a `Sum` a row reads directly. #189 (incremental lambdas) is closed as
 not planned until a List benchmark asks for it.
 
 The two lambda forms cannot be written to `.cbls` — the functor takes
 continuous values and has no finite table — so `save_model` refuses a model
-holding one before it opens the stream, the same refusal a custom node gets. The
+holding one before it opens the stream. The
 builders refuse a List/Set handle where a scalar is read (an index, an extra, a
 rounding argument), and an empty, ragged or non-finite table. In Python `extra`
 is keyword-only in both forms, because `pair_lambda_sum`'s third positional
@@ -610,7 +487,7 @@ trigonometric (`sin_expr`, `cos_expr`, `tan_expr`), other (`exp_expr`,
 `log_expr`, `sqrt_expr`, `signpower_expr`, `tanh_expr`), conditional (`if_then_else`), rounding (`ceil_expr`, `floor_expr`,
 `round_expr`), table lookup (`element`), collection (`at`, `count`,
 `lambda_sum`, `pair_lambda_sum`, each also with an `extra` form — see footnote
-³ above), and comparisons (`leq`, `eq_expr`, `geq`,
+² above), and comparisons (`leq`, `eq_expr`, `geq`,
 `neq`, `lt`, `gt`). Each returns a non-negative node handle.
 
 `pair_lambda_sum` sums a function over a List's consecutive pairs and takes a
@@ -1377,9 +1254,9 @@ leave the total alone or raise it. Skipping cannot skip an improving move.
 It is, however, guidance at the **variable** level, not the element level:
 the DAG tracks incidence per variable, and a `Set` read through a single
 `Lambda` node puts every element of the universe in every row that node feeds.
-Element-level guidance needs either a generator-supplied element scorer or the
-custom-invariant work of #166; what is available today is the variable-level
-choice plus whatever granularity a neighbour list supplies.
+Element-level guidance needs a generator-supplied element scorer; what is
+available today is the variable-level choice plus whatever granularity a
+neighbour list supplies.
 
 `NeighbourList` is that granularity — Toth & Vigo's granular neighbourhood
 (INFORMS J. Computing 15(4), 2003; used throughout modern routing heuristics
