@@ -14,7 +14,7 @@ them from the campaign's own committed outputs and nothing else:
 It solves nothing. Usage, from the repository root:
 
     .venv/bin/python3 benchmarks/minlplib/campaign_report.py --budget 60 --seed 1 \\
-        [--machine "..."] [--json summary.json] [--markdown report.md] \\
+        [--machine "..."] [--json summary.json] \\
         [--write-readme README.md | --check-readme README.md]
 
 THE README IS GENERATOR-OWNED where it states a derived number: each such table
@@ -22,7 +22,7 @@ or paragraph sits between `<!-- campaign_report:begin NAME -->` / `end` markers,
 `README_RENDERERS` renders every block's whole body, `--write-readme` rewrites
 them and `--check-readme` (and the test suite) fails on a stale one.
 
-With neither output flag the Markdown report goes to stdout. `--budget` is
+With neither output flag the summary JSON goes to stdout. `--budget` is
 required unless `comparison.run.json` records it (#141; the committed table
 predates the record): it is the horizon the anytime
 score integrates over, and the output says it was supplied rather than read. It
@@ -1953,7 +1953,7 @@ def to_json(report: CampaignReport) -> str:
 
 
 # --------------------------------------------------------------------------
-# Markdown.
+# Number formatting shared by the README blocks.
 # --------------------------------------------------------------------------
 
 
@@ -1965,255 +1965,8 @@ def _g(value: float, digits: int = 3) -> str:
     return "NaN" if math.isnan(value) else f"{value:.{digits}g}"
 
 
-def _names(names: Iterable[str]) -> str:
-    listed = [f"`{n}`" for n in names]
-    return ", ".join(listed) if listed else "none"
-
-
 def _thresholds(values: Sequence[float]) -> list[str]:
     return [f"≤{t:g}%" for t in values]
-
-
-def _sourced(value: object, source: str) -> str:
-    return NOT_RECORDED if value is None else f"{value} ({source})"
-
-
-def _provenance_lines(p: Provenance, rule: str) -> list[str]:
-    out = [
-        "## Provenance",
-        "",
-        f"- engine commit: {p.engine_commit}",
-        f"- search config: {p.search_config}",
-        f"- budget: {p.budget_seconds:g}s per instance ({p.budget_source}); observed "
-        f"median CBLS wall {_g(p.observed_median_cbls_wall_seconds, 5)}s",
-        f"- seed: {_sourced(p.seed, p.seed_source)}",
-        f"- machine: {_sourced(p.machine, p.machine_source)}",
-        f"- feasibility tolerance: {p.feas_tol:g} ({p.feas_tol_source})",
-        f"- SCIP configuration: {p.scip_configuration}; SCIP machine: {p.scip_machine}",
-        "",
-    ]
-    for warning in p.warnings:
-        out += [f"**WARNING:** {warning}", ""]
-    return [*out, f"**Aggregation rule.** {rule}", ""]
-
-
-def _results_lines(res: ResultsSummary) -> list[str]:
-    c, v, gb, gs = res.counts, res.verdicts, res.gap_buckets, res.gap_buckets_strict
-    out: list[str] = []
-    if c.documented_failures_feasible:
-        out += [
-            f"**WARNING:** documented-failure instance(s) {_names(c.documented_failures_feasible)} "
-            "came back FEASIBLE. Check #110/#116 before publishing anything about them.",
-            "",
-        ]
-    out += [
-        "## Results tally",
-        "",
-        "| | count |",
-        "|---|---|",
-        f"| roster | {c.roster} |",
-        f"| parsed and built (closed-model rate) | {c.built} ({c.built_pct:.0f}%) |",
-        f"| of which mixed-integer (integrality enforced) | {c.mixed_integer} |",
-        f"| **feasible** | **{c.feasible}** |",
-        f"| — matching BKS (within the tie band) | {v.matches_bks} |",
-        f"| — better than BKS, but inside the tolerance slack | {v.within_tolerance} |",
-        f"| — worse than BKS | {v.worse} |",
-        f"| — better than BKS | {v.better} |",
-        f"| infeasible | {c.infeasible} ({_names(c.infeasible_instances)}) |",
-        f"| unsupported / read errors / non-finite | {c.coverage_gaps + c.errors + c.non_finite} |",
-        f"| integrality mismatches vs catalogue | {c.integrality_mismatches} |",
-        f"| verification failures | {c.verification_failures} |",
-        "",
-        f"Verdict rows are over the {v.denominator} feasible claim-set rows"
-        + (f"; {v.no_bks} had no published bound" if v.no_bks else "")
-        + (f"; unclassified: {_names(v.unclassified)}" if v.unclassified else "")
-        + ".",
-    ]
-    if c.errors:
-        out.append(f"Errors (no search completed): {_names(c.error_instances)}.")
-    out += [
-        "",
-        "## Gap distribution",
-        "",
-        f"Over {gb.denominator} of the {res.verdicts.denominator} feasible claim-set rows: "
-        + ", ".join(
-            f"**{n} within {t:g}%**" for n, t in zip(gb.counts, gb.thresholds_pct, strict=True)
-        )
-        + ".",
-        f"Zero-BKS rows (|BKS| < {ZERO_BKS:g}, gap cell is an absolute residual): "
-        f"{_names(res.zero_bks_instances)}; excluded {_names(gb.excluded_zero_bks)}, "
-        f"retained as exact zeros {_names(gb.retained_zero_bks)}.",
-        f"Excluding all of them: {' / '.join(str(n) for n in gs.counts)} "
-        f"over {gs.denominator} rows.",
-        "",
-        f"Earlier margin rule (gap % below -{LEGACY_MARGIN_PCT:g}) would have flagged as "
-        "better-than-bks: "
-        + (
-            ", ".join(
-                f"`{e.instance}` at {_g(-e.gap_pct, 2)} percent" for e in res.legacy_margin_ties
-            )
-            or "none"
-        )
-        + ".",
-        "Worse than BKS but inside the claim band (one band would have called them ties): "
-        + (
-            ", ".join(
-                f"`{e.instance}` (BKS {_g(e.primal_bks)}, {e.gap_pct:.2f}% worse)"
-                for e in res.single_band_false_ties
-            )
-            or "none"
-        )
-        + ".",
-        "",
-    ]
-    return out
-
-
-def _trace_lines(ts: TraceSummary) -> list[str]:
-    fp, it, at = ts.feasibility, ts.improvement, ts.anytime
-    out = [
-        "## Cumulative feasibility (roster count)",
-        "",
-        "| by | " + " | ".join(f"{t:g}s" for t in fp.checkpoints) + " |",
-        "|----|" + "|".join("----" for _ in fp.checkpoints) + "|",
-        "| feasible | " + " | ".join(str(n) for n in fp.counts) + " |",
-        "",
-        f"Of {fp.roster}. First feasible after {LATE_FEASIBLE_AFTER:g}s: "
-        + (", ".join(f"`{k}` ({t:.1f}s)" for k, t in fp.late_feasible.items()) or "none")
-        + ".",
-        "",
-        "## Improvement timing",
-        "",
-        f"Of the {it.denominator} feasible claim-set instances, {it.stopped_early} "
-        f"({_pct(it.stopped_early, it.denominator)}) last improved within "
-        f"{EARLY_STOP_SECONDS:g}s and {it.still_improving} "
-        f"({_pct(it.still_improving, it.denominator)}) were still improving in the final "
-        f"{LATE_WINDOW_SECONDS:g}s (printed-objective reading). Off the engine's "
-        f"`new_best` flag: {it.new_best_stopped_early} "
-        f"({_pct(it.new_best_stopped_early, it.denominator)}) and "
-        f"{it.new_best_still_improving} ({_pct(it.new_best_still_improving, it.denominator)}); "
-        f"{it.sub_resolution_new_best_rows} `new_best` rows print the same objective as "
-        "the row before.",
-    ]
-    if it.most_steps_instance is not None:
-        out.append(
-            f"Most improvements: `{it.most_steps_instance}`, {it.most_steps_incumbents} "
-            f"incumbents ({it.most_steps_incumbents - 1} steps) from "
-            f"{_g(it.most_steps_first, 6)} to {_g(it.most_steps_last, 6)}, median "
-            f"consecutive ratio {it.most_steps_median_ratio:.7f}."
-        )
-    out += [
-        "",
-        "## Anytime score (primal integral vs BKS)",
-        "",
-        f"Budget {at.budget_seconds:g}s. Over {at.denominator} claim-set instances: mean "
-        f"{_g(at.mean, 4)}, median {_g(at.median, 4)}, shifted geometric mean "
-        f"{_g(at.shifted_geometric_mean, 4)} (0 = at BKS immediately, "
-        f"{NO_SOLUTION_GAP:g} = never feasible). Unscored: {_names(at.unscored)}.",
-        "",
-    ]
-    return out
-
-
-def _per_instance_lines(figures: Sequence[InstanceFigures]) -> list[str]:
-    out = [
-        "## Per instance",
-        "",
-        "| instance | verdict | gap % | first feasible | last improvement | primal integral "
-        "| final primal gap | |",
-        "|---|---|---|---|---|---|---|---|",
-    ]
-    out += [
-        f"| `{f.instance}` | {f.verdict} | {_g(f.gap_pct, 4)} | "
-        f"{_g(f.first_feasible_seconds, 3)} | {_g(f.last_improvement_seconds, 3)} | "
-        f"{_g(f.primal_integral, 4)} | {_g(f.final_primal_gap, 4)} | "
-        f"{'excluded' if f.excluded else ''} |"
-        for f in figures
-    ]
-    return [*out, ""]
-
-
-def _head_to_head_lines(h2h: HeadToHead, budget: float) -> list[str]:
-    cb, sc = h2h.cbls, h2h.scip
-    out = [
-        "## SCIP head-to-head (roster counts)",
-        "",
-        "| | CBLS | SCIP |",
-        "|---|---|---|",
-        f"| feasible | {cb.feasible} / {cb.roster} | {sc.feasible} / {sc.roster} |",
-        f"| proved optimal | n/a (primal heuristic) | {sc.proved_optimal} / {sc.roster} |",
-        f"| hit the {budget:g}s limit | {cb.hit_limit} | {sc.hit_limit} |",
-        f"| total wall over the roster | {cb.total_wall_seconds:.0f}s | "
-        f"{sc.total_wall_seconds:.0f}s (median {sc.median_wall_seconds:.2f}s; "
-        f"{sc.under_one_second} instances under 1s) |",
-        f"| integrality mismatches vs catalogue | {cb.integrality_mismatches} | "
-        f"{sc.integrality_mismatches} |",
-        f"| verification failures | {cb.verification_failures} | {sc.verification_failures} |",
-        "",
-        "Disjoint failures (one solver feasible, the other not):",
-        "",
-        "| instance | CBLS | SCIP |",
-        "|---|---|---|",
-    ]
-    for d in h2h.disjoint_failures:
-        cbls_cell = (
-            f"{_g(d.cbls_objective, 6)} ({d.cbls_gap_pct:.2f}%)"
-            if d.cbls_feasible
-            else "infeasible"
-        )
-        scip_cell = (
-            f"{_g(d.scip_objective, 6)} ({d.scip_gap_pct:.2f}%), {d.scip_status} in "
-            f"{d.scip_wall_seconds:.2f}s"
-            if d.scip_feasible
-            else f"no feasible solution ({d.scip_status}); dual bound {_g(d.scip_dual_bound, 4)}"
-        )
-        out.append(f"| `{d.instance}` | {cbls_cell} | {scip_cell} |")
-    out += [
-        "",
-        f"Quality where both are feasible, over the {h2h.quality_denominator} claim-set instances "
-        f"with |BKS| >= {HEAD_TO_HEAD_MIN_ABS_BKS:g}:",
-        "",
-        "| | " + " | ".join(_thresholds(h2h.quality_thresholds_pct)) + " |",
-        "|---|" + "|".join("---" for _ in h2h.quality_thresholds_pct) + "|",
-        "| CBLS | " + " | ".join(str(n) for n in h2h.cbls_quality) + " |",
-        "| SCIP | " + " | ".join(str(n) for n in h2h.scip_quality) + " |",
-        "",
-        "CBLS ahead of SCIP by more than the claim band and the cell resolution:",
-        "",
-        "| instance | CBLS gap | SCIP gap | SCIP status |",
-        "|---|---|---|---|",
-    ]
-    out += [
-        f"| `{a.instance}` | {a.cbls_gap_pct:.4g}% | {a.scip_gap_pct:.4g}% | {a.scip_status} |"
-        for a in h2h.cbls_ahead
-    ]
-    return [*out, ""]
-
-
-def render_markdown(report: CampaignReport) -> str:
-    out: list[str] = ["# MINLPLib campaign report", ""]
-    out += _provenance_lines(report.provenance, report.results.rule)
-    out += _results_lines(report.results)
-    out += _trace_lines(report.trace)
-    out += _head_to_head_lines(report.head_to_head, report.provenance.budget_seconds)
-    out += ["## Free variables (#107, after column)", ""]
-    fv = report.free_variables
-    if fv is None:
-        out.append("Not derivable: a roster `.nl` file is missing.")
-    else:
-        out += [
-            "| | instances | eligible | within 10% |",
-            "|---|---|---|---|",
-            f"| ≥1 free variable | {fv.with_free} | {fv.with_free_eligible} | "
-            f"{fv.with_free_within_10pct} |",
-            f"| no free variables | {fv.without_free} | {fv.without_free_eligible} | "
-            f"{fv.without_free_within_10pct} |",
-        ]
-    out += [""]
-    out += _per_instance_lines(report.per_instance)
-    out += ["## Not regenerated", ""]
-    out += [f"- {line}" for line in report.not_regenerated]
-    return "\n".join(out) + "\n"
 
 
 # --------------------------------------------------------------------------
@@ -2837,7 +2590,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--machine", default=None, help="the campaign's machine, if known")
     parser.add_argument("--feas-tol", type=float, default=None)
     parser.add_argument("--json", type=Path, default=None, help="write the summary JSON here")
-    parser.add_argument("--markdown", type=Path, default=None, help="write the report here")
     parser.add_argument(
         "--seeds",
         action="store_true",
@@ -2972,7 +2724,6 @@ def _usage_error(args: argparse.Namespace) -> str | None:
                 ("--seed", args.seed),
                 ("--machine", args.machine),
                 ("--json", args.json),
-                ("--markdown", args.markdown),
                 ("--write-readme", args.write_readme),
                 ("--check-readme", args.check_readme),
             )
@@ -2982,9 +2733,9 @@ def _usage_error(args: argparse.Namespace) -> str | None:
             return (
                 f"--seeds prints the multi-seed summary only; {', '.join(ignored)} would be ignored"
             )
-    if args.check_readme is not None and (args.json is not None or args.markdown is not None):
+    if args.check_readme is not None and args.json is not None:
         # `_readme_action` returns the check's status before anything is written.
-        return "--check-readme only checks; --json/--markdown would not be written"
+        return "--check-readme only checks; --json would not be written"
     record = run_record_path(args.inst_dir / "comparison.csv")
     if not args.seeds and args.budget is None and not record.exists():
         return f"--budget is required: {record} does not exist to record the budget"
@@ -3024,13 +2775,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     status = _readme_action(args, report)
     if status is not None:
         return status
-    markdown = render_markdown(report)
     if args.json is not None:
         args.json.write_text(to_json(report))
-    if args.markdown is not None:
-        args.markdown.write_text(markdown)
-    if args.json is None and args.markdown is None and args.write_readme is None:
-        sys.stdout.write(markdown)
+    elif args.write_readme is None:
+        sys.stdout.write(to_json(report))
     return 0
 
 

@@ -59,7 +59,6 @@ from benchmarks.minlplib.campaign_report import (
     main,
     readme_blocks,
     readme_write_refusal,
-    render_markdown,
     render_seeds_text,
     run_record_path,
     seed_block_hashes,
@@ -248,26 +247,13 @@ def test_the_committed_tables_reproduce_the_readme() -> None:
     assert (fv.without_free, fv.without_free_eligible, fv.without_free_within_10pct) == (34, 28, 26)
 
 
-def test_the_report_states_its_rule_and_its_provenance() -> None:
-    report = build_report(DEFAULT_INST_DIR, budget=None, seed=None, machine=None, feas_tol=None)
-    text = render_markdown(report)
-    assert AGGREGATION_RULE in text
-    assert "engine commit: 4524460" in text
-    assert "budget: 60s per instance (comparison.run.json)" in text
-    assert "seed: 1 (comparison.run.json)" in text
-    assert "load 0.73 at start" in text
-    for line in report.not_regenerated:
-        assert line in text
-
-
 def test_a_table_without_a_record_states_what_it_does_not_record(tmp_path: Path) -> None:
     """The pre-#141 shape the committed table had until #123: stated, not recorded."""
     _write_campaign(tmp_path)
-    report = build_report(tmp_path, budget=60.0, seed=None, machine=None, feas_tol=None)
-    text = render_markdown(report)
-    assert f"seed: {NOT_RECORDED}" in text
-    assert f"machine: {NOT_RECORDED}" in text
-    assert "comparison.csv does not record the budget" in text
+    p = build_report(tmp_path, budget=60.0, seed=None, machine=None, feas_tol=None).provenance
+    assert (p.seed, p.seed_source) == (None, NOT_RECORDED)
+    assert (p.machine, p.machine_source) == (None, NOT_RECORDED)
+    assert "comparison.csv does not record the budget" in p.budget_source
 
 
 # --- the aggregation rule -------------------------------------------------------
@@ -490,9 +476,9 @@ def test_a_binary_nl_makes_the_free_variable_split_not_derivable(tmp_path: Path)
     assert free_variable_instances(tmp_path, ["free", "bin"]) is None
 
 
-def test_the_cli_writes_strict_json_and_markdown(tmp_path: Path) -> None:
+def test_the_cli_writes_strict_json(tmp_path: Path) -> None:
     _write_campaign(tmp_path)
-    json_out, md_out = tmp_path / "summary.json", tmp_path / "report.md"
+    json_out = tmp_path / "summary.json"
     code = main(
         [
             "--inst-dir",
@@ -503,8 +489,6 @@ def test_the_cli_writes_strict_json_and_markdown(tmp_path: Path) -> None:
             "7",
             "--json",
             str(json_out),
-            "--markdown",
-            str(md_out),
         ]
     )
     assert code == 0
@@ -517,7 +501,6 @@ def test_the_cli_writes_strict_json_and_markdown(tmp_path: Path) -> None:
     assert data["provenance"]["machine"] is None
     assert data["provenance"]["machine_source"] == NOT_RECORDED
     assert data["free_variables"] is None  # no .nl files in this fixture
-    assert "## SCIP head-to-head" in md_out.read_text()
 
 
 def test_the_cli_refuses_a_non_positive_budget(tmp_path: Path) -> None:
@@ -629,7 +612,6 @@ def test_a_budget_the_tables_contradict_is_warned_about(tmp_path: Path) -> None:
     warnings = " ".join(report.provenance.warnings)
     assert "median CBLS wall time is 60.00s" in warnings
     assert "SCIP's configuration records 60s" in warnings
-    assert "**WARNING:**" in render_markdown(report)
     clean = build_report(tmp_path, budget=60.0, seed=None, machine=None, feas_tol=None)
     assert clean.provenance.warnings == []
 
@@ -640,14 +622,13 @@ def test_the_cli_refuses_a_non_finite_or_negative_budget(tmp_path: Path, budget:
     assert main(["--inst-dir", str(tmp_path), "--budget", budget]) == 2
 
 
-def test_the_cli_prints_markdown_without_output_flags(
+def test_the_cli_prints_the_summary_json_without_output_flags(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     _write_campaign(tmp_path)
     assert main(["--inst-dir", str(tmp_path), "--budget", "60"]) == 0
-    out = capsys.readouterr().out
-    assert out.startswith("# MINLPLib campaign report")
-    assert "## Per instance" in out
+    report = build_report(tmp_path, budget=60.0, seed=None, machine=None, feas_tol=None)
+    assert capsys.readouterr().out == to_json(report)
 
 
 def test_a_duplicate_instance_row_is_refused(tmp_path: Path) -> None:
