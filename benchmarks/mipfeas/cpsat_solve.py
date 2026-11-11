@@ -139,10 +139,8 @@ UNRESTRICTED_ROLES = frozenset({"helper", "ignored"})
 PREFLIGHT_BUDGET_SECONDS = 2.0
 
 
-#: The one parameter defaults mode sets. Defaults mode is CP-SAT exactly as it
-#: ships -- presolve on, its own worker count and seed, the full portfolio
-#: (Simon, 2026-11-01, #255 and #87). The log is the only source of the
-#: incumbent trace, and logging does not steer the search.
+#: The one parameter defaults mode sets (#255, #87): the log is the only source
+#: of the incumbent trace, and logging does not steer the search.
 DEFAULTS_PARAMETERS = "log_search_progress:true"
 
 
@@ -231,14 +229,11 @@ def _announcement_failures(announced: dict[str, frozenset[str]]) -> list[Preflig
     """
     failures: list[PreflightFailure] = []
     block_parsed = bool(announced)
-    # BOTH expected roles missing while other roles parsed is the case the
-    # shape/content split cannot decide. A real unrestricted run still announces
-    # `first solution` -- captured against live 9.15, which logs
-    # `2 first solution subsolvers: [fj, fs_random_no_lp]` -- so losing both roles
-    # at once is as likely to be the role LABELS being renamed as the restriction
-    # being gone. Naming one check exonerates the other, and sends the reader to
-    # the wrong place; criterion 3 asks which broke, and the honest answer here is
-    # that the log cannot say. So both are named and the ambiguity is stated.
+    # Both expected roles missing while others parsed is undecidable from the log:
+    # an unrestricted 9.15 run still announces `first solution` (`2 first solution
+    # subsolvers: [fj, fs_random_no_lp]`), so it is as likely a role-label rename as
+    # a lifted restriction. Naming one check would exonerate the other, so both are
+    # named and the ambiguity is stated.
     both_absent = all(role not in announced for role in EXPECTED_SUBSOLVERS)
     ambiguous = block_parsed and both_absent
     for role, expected in EXPECTED_SUBSOLVERS.items():
@@ -310,8 +305,6 @@ def _restriction_failures(log_text: str) -> list[PreflightFailure]:
     *role* missing from it is the restriction having gone, not the parser having
     gone stale -- an unrestricted run announces `full problem` and neither of the
     two expected roles. Only a block that parsed nothing at all is a format break.
-    That keeps the shape/content split of the two checks checkable rather than a
-    guess: what is read is shape, what it says is content.
     """
     announced = parse_subsolvers(log_text)
     failures = _announcement_failures(announced)
@@ -439,10 +432,9 @@ def build_preflight_model() -> model_builder.ModelBuilder:
 def run_preflight(workers: int | None = None, seed: int | None = None) -> list[PreflightFailure]:
     """Solve the preflight model and report what the release broke, if anything.
 
-    Run once before a roster, not once per instance: an OR-Tools release that
-    renames a subsolver flag or reformats a log line does not crash, it silently
-    produces a degraded or empty baseline across every instance, discovered only
-    at scoring time. This is the same failure at second zero.
+    Run once before a roster, not once per instance: a release that renames a
+    subsolver flag or reformats a log line does not crash but silently degrades the
+    baseline on every instance, and this catches it at second zero, not at scoring.
     """
     model = build_preflight_model()
     solver = model_builder.ModelSolver("SAT")
@@ -539,10 +531,8 @@ def status_note(status_name: str, has_solution: bool, parameters: str) -> tuple[
     about. The precise verdict survives in `cpsat_status` and reaches the comparison
     table as `solver_status`.
 
-    Each carries a message, because the scorer publishes one per withheld row and a
-    row reading "no message recorded" is the least useful form of the most important
-    defect class this baseline has -- and it is the class the preflight exists to
-    catch before a roster rather than after it.
+    Each carries a message because the scorer publishes one per withheld row, and
+    this is the defect class the preflight exists to catch before a roster.
     """
     if status_name == "INVALID_SOLVER_PARAMETERS":
         return (
@@ -640,8 +630,6 @@ def solve(
             status = solver.solve(model)
         wall = time.monotonic() - started
         trace = parse_trace_file(log_path)
-        # The threads the baseline actually ran with: in defaults mode nothing
-        # asked for a count, so the log is the only record of it.
         n_started = workers_started_file(log_path)
     has_solution = status in (
         model_builder.SolveStatus.OPTIMAL,
@@ -829,10 +817,9 @@ def main() -> int:
         f"{float(record['wall_seconds']):8.2f}s"  # type: ignore[arg-type]
     )
     # A rejected parameter string or an unreadable instance is a harness fault, not
-    # a search outcome. An OR-Tools release renaming `filter_subsolvers` would
-    # otherwise score every CP-SAT instance at 2.0 across a 39 CPU-hour run, at exit
-    # 0. Matches the CBLS runner, which also exits 1 on a read error — and on a
-    # solution it could not write, which leaves a row nothing can verify.
+    # a search outcome: else a renamed `filter_subsolvers` scores every instance at
+    # 2.0 across a 39 CPU-hour run, at exit 0. Matches the CBLS runner, which also
+    # exits 1 on a read error and on an unwritten solution (a row nothing can verify).
     return (
         1 if record["status"] in ("invalid_parameters", "read_error", "solution_write_error") else 0
     )

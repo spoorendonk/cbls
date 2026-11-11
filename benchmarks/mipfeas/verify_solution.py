@@ -33,7 +33,7 @@ check               violation                            tolerance
 row activity        ``max(0, lower - a.x, a.x - upper)``  ``1e-6 + 1e-9 * row_scale``
 variable bound      ``max(0, lower - x, x - upper)``      ``1e-6 + 1e-9 * |bound|``
 integrality         ``|x - round(x)|``                    ``1e-6``
-objective           ``|reported - (c.x + offset)|``       ``1e-6 + 1e-9 * |objective|``
+objective           ``|reported - (c.x + offset)|``       ``1e-6 + 1e-6 * |objective|``
 ==================  ===================================  ==============================
 
 ``row_scale`` is ``max(|lower|, |upper|, sum |a_ij * x_j|)`` over the finite
@@ -106,13 +106,11 @@ INTEGRALITY_TOLERANCE = 1e-6
 #: Absolute and relative slack between the objective the engine published and the
 #: one this module computes from the solution vector and the instance file.
 #:
-#: The relative term is 1e-6, NOT the 1e-9 the row and bound checks use, and for
-#: the same reason those use 1e-6 absolutely: this check re-measures exactly the
-#: quantity the CBLS runner's own objective-drift gate accepts, at
-#: `1e-6 * (|objective| + 1)` (benchmarks/mipfeas/mipfeas.cpp, assess_result).
-#: A tighter rule downstream of that gate would not be more independent -- it
-#: would reject runs the engine was entitled to publish, and at |obj| = 1e6 a
-#: 1e-9 relative term is a thousand times tighter than the gate upstream of it.
+#: The relative term is 1e-6, not the rows' 1e-9: this re-measures the quantity
+#: the CBLS runner's objective-drift gate accepts at `1e-6 * (|objective| + 1)`
+#: (benchmarks/mipfeas/mipfeas.cpp, assess_result). A tighter rule is not more
+#: independent; it rejects runs the engine was entitled to publish (1000x tighter
+#: than that gate at |obj| = 1e6).
 OBJECTIVE_ABS_TOLERANCE = 1e-6
 OBJECTIVE_REL_TOLERANCE = 1e-6
 
@@ -438,10 +436,9 @@ def check(
         n_columns=len(instance.columns),
         n_rows=instance.n_rows,
     )
-    # Before anything else: every comparison against a NaN is False, so a NaN
-    # value would sail through every check below and verify as `pass`. This is
-    # the one module where failing open is the cardinal sin, so a value that is
-    # not a real number makes the file unusable rather than acceptable.
+    # First: every comparison against a NaN is False, so a NaN value would pass
+    # every check below. A non-finite value makes the file unusable, not acceptable,
+    # because this module must never fail open.
     unreal = sorted(name for name, value in values.items() if not math.isfinite(value))
     if unreal:
         return _error(

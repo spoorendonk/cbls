@@ -508,18 +508,15 @@ DRIVER_WRITTEN_VERDICT_REASONS = ("verifier_timeout", "verifier_died")
 
 #: How many times a driver-written verdict is retried before it sticks.
 #:
-#: The transient causes these reasons were introduced for -- a memory cap hit
-#: under load, a timeout on a busy machine -- clear on a second pass. The
-#: deterministic ones do not: a pyscipopt segfault, or an OOM on a model that
-#: simply does not fit the cap, reproduces every time, and retrying it forever
+#: Transient causes (a memory cap hit under load, a timeout on a busy machine)
+#: clear on a second pass. Deterministic ones (a pyscipopt segfault, an OOM on a
+#: model that does not fit the cap) reproduce every time, and retrying them forever
 #: re-pays the whole verification on every resume of a roster that can never
-#: converge. Two attempts is the smallest number that still recovers a transient
-#: failure; past that the verdict stands and the row stays withheld, which is the
-#: honest outcome.
+#: converge. Two is the smallest count that still recovers a transient failure;
+#: past it the verdict stands and the row stays withheld.
 #:
-#: A verdict written before this counter existed carries no `attempts` key and is
-#: read as zero, so such a directory gets one extra pass. One-off and
-#: self-healing: the first retry writes the key.
+#: A verdict with no `attempts` key is read as zero, so it gets one extra pass;
+#: the first retry writes the key.
 MAX_VERIFY_ATTEMPTS = 2
 
 
@@ -571,11 +568,11 @@ def run_job(job: Job, args: argparse.Namespace, results_dir: Path) -> str:
         return _run_job(job, args, results_dir)
     except Exception as exc:  # noqa: BLE001 - deliberate catch-all; see docstring
         with contextlib.suppress(OSError):
-            # Only when the job has no result of its own. This catch-all now spans
-            # the verification step too, and a failure there must not overwrite a
-            # finished search: resume, seeing a "killed" record, would never redo
-            # it, so a 600s solve would be discarded and the row scored 2.0. Left
-            # alone, the result is simply re-verified on the next pass.
+            # Only when the job has no result of its own. This catch-all spans the
+            # verification step, and a failure there must not overwrite a finished
+            # search: resume, seeing a "killed" record, would never redo it, so a
+            # 600s solve would be discarded and the row scored 2.0. Left alone, the
+            # result is re-verified on the next pass.
             if not job.result_path(results_dir).exists():
                 write_failure_result(
                     job,
@@ -600,19 +597,15 @@ def _run_job(job: Job, args: argparse.Namespace, results_dir: Path) -> str:
     if needs_solve(job, results_dir, args.verify):
         previous = read_json_object(job.result_path(results_dir)) or {}
         previous_losses = worker_loss_attempts(previous)
-        # The search is about to produce a new point, so any verdict sitting beside
-        # the old one would read as current. Dropped BEFORE the solve, not after
-        # it: a solve that fails still leaves a new row -- one that lost portfolio
-        # workers (#170) is written and exits 1 -- and the old verdict must not
-        # survive beside it.
+        # A verdict beside the old row would read as current for the new point.
+        # Dropped before the solve: a failed solve still leaves a new row (one that
+        # lost portfolio workers, #170, is written and exits 1).
         job.verification_path(results_dir).unlink(missing_ok=True)
-        # A re-run replaces the old row (lost workers #170, a solution write error,
-        # a feasible row without its solution), so the old one goes first. Left in
-        # place, a runner killed before it writes (the OOM killer, SIGKILL) would
-        # leave the previous row on disk -- `_judge_solve` records `killed` only
-        # when no result exists -- and `record_worker_loss` and `record_measured`
-        # would stamp it as this attempt. Its worker-loss count is already in
-        # `previous_losses`, which is all that is carried over.
+        # The old row goes first: if a runner is killed before it writes (the OOM
+        # killer, SIGKILL), `_judge_solve` records `killed` only when no result
+        # exists, and `record_worker_loss` and `record_measured` would stamp the
+        # old row as this attempt. Only its worker-loss count (`previous_losses`)
+        # carries over.
         job.result_path(results_dir).unlink(missing_ok=True)
         job.solution_path(results_dir).unlink(missing_ok=True)
         line, solved = _run_solver(job, args, results_dir)
@@ -643,19 +636,16 @@ def _verify(job: Job, args: argparse.Namespace, results_dir: Path) -> str:
         "--result-dir",
         str(results_dir / job.engine),
     ]
-    # The verdict this attempt is retrying, if any, and then out of the way. A
-    # stale file left in place is indistinguishable from one this run wrote: the
-    # verifier exits 1 both for "I checked it and it is wrong" and, as any Python
-    # program does, for an uncaught traceback that writes nothing -- and a
-    # traceback landing next to a previous attempt's `verifier_died` would be
-    # reported as a rejected solution, which is this benchmark's loudest alarm
-    # fired for a harness fault. Only a driver-written verdict can be here at all
-    # -- `needs_verification` is false for every verdict the verifier reached
-    # itself -- so a `fail` is never at risk of being removed.
+    # Read the verdict being retried, if any, then remove it: a stale file reads
+    # as one this run wrote. The verifier exits 1 both on a rejected solution and
+    # on an uncaught traceback that writes nothing, so a traceback beside an old
+    # `verifier_died` would report a rejected solution (this benchmark's loudest
+    # alarm) for a harness fault. Only a driver-written verdict can be here
+    # (`needs_verification` is false for every verdict the verifier wrote), so a
+    # `fail` is never removed.
     #
     # The attempt count lives in the file this removes, so a driver killed during
-    # the check restarts the budget. The cost is bounded re-work on the next
-    # resume, never a wrong verdict, which is the right way round.
+    # the check restarts the budget: bounded re-work on resume, never a wrong verdict.
     previous = read_json_object(job.verification_path(results_dir)) or {}
     attempts = previous.get("attempts")
     attempt = (attempts if isinstance(attempts, int) else 0) + 1
@@ -671,11 +661,9 @@ def _verify(job: Job, args: argparse.Namespace, results_dir: Path) -> str:
     if completed.returncode == 0:
         return f"verified {completed.stdout.strip()[:200]}"
     if completed.returncode == 1 and job.verification_path(results_dir).exists():
-        # Exit 1 is the verifier's "I checked it and it is wrong", and it wrote
-        # the verdict itself -- this attempt's, since any earlier one was removed
-        # above. A traceback exits 1 too and writes nothing, so it falls through
-        # to the error path below instead of being reported as a rejected
-        # solution.
+        # Exit 1 with a verdict on disk is the verifier's own rejection, and this
+        # attempt's: any earlier verdict was removed before the run. A traceback
+        # exits 1 too but writes nothing, so it falls through to the error path.
         return f"VERIFY-FAILED {completed.stdout.strip()[:200]}"
     if not job.verification_path(results_dir).exists():
         # A negative return code is a signal: the address-space cap or the OOM
@@ -922,14 +910,11 @@ def needs_verification(job: Job, results_dir: Path, verify: bool) -> bool:
     verdict = read_json_object(job.verification_path(results_dir))
     if verdict is None:
         return True
-    # The driver's own error verdicts describe a checker that died, not a solution
-    # that was checked. Without a retry the row is withheld for good, recoverable
-    # only by --force, which pays for the whole search again -- so a transient
-    # cause (a memory cap hit under load, a timeout on a busy machine) gets
-    # another pass. Only MAX_VERIFY_ATTEMPTS of them: the same reasons are written
-    # for deterministic causes too, and retrying a segfault on every resume of a
-    # 233-instance roster never converges. The verifier's own verdicts --
-    # including its `error`s -- are sticky from the first pass.
+    # The driver's own error verdicts describe a checker that died, not a checked
+    # solution; without a retry only --force, which pays for the whole search
+    # again, recovers the row. Retried up to MAX_VERIFY_ATTEMPTS (its comment says
+    # why the bound). The verifier's own verdicts, `error`s included, are sticky
+    # from the first pass.
     if verdict.get("reason") not in DRIVER_WRITTEN_VERDICT_REASONS:
         return False
     attempts = verdict.get("attempts")
@@ -1083,12 +1068,10 @@ def engine_commit(cbls_bin: Path, override: str | None = None) -> str:
         return override
     if cbls_bin.resolve() != DEFAULT_CBLS_BIN.resolve():
         if not cbls_bin.is_file():
-            # Same "unknown" as an unanswerable git below, and for the same
-            # reason: this stamp must not be the thing that first touches the
-            # binary. `main` refuses a cbls run with a missing one at exit 2 with
-            # a message naming the target to build, and a --engines cpsat run
-            # needs no cbls binary at all -- neither should get a traceback out
-            # of a provenance read.
+            # "unknown", like an unanswerable git, because this stamp must not be
+            # the first thing to touch the binary: `main` refuses a cbls run with a
+            # missing one at exit 2 naming the target to build, and a --engines
+            # cpsat run needs none. Neither should get a provenance traceback.
             return "unknown"
         return f"bin:{binary_digest(cbls_bin)}"
     try:

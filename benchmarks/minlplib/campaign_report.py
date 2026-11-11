@@ -1,9 +1,8 @@
 """Regenerate every run-derived number the MINLPLib README states (issue #142).
 
-The benchmark README used to carry ~15 derived quantities recomputed by hand
-after each campaign -- tallies, gap buckets, the cumulative-feasibility table,
-the SCIP head-to-head -- with nothing checking any of them. This module derives
-them from the campaign's own committed outputs and nothing else:
+It derives the README's ~15 derived quantities -- tallies, gap buckets, the
+cumulative-feasibility table, the SCIP head-to-head -- from the campaign's own
+committed outputs and nothing else, so none is recomputed by hand:
 
 * `comparison.csv`    -- the CBLS results table (one row per roster instance);
 * `anytime_trace.csv` -- the CBLS incumbent trace (feasible incumbents only);
@@ -31,11 +30,10 @@ budget in SCIP's configuration cell) and a disagreement is printed as a warning.
 
 THE AGGREGATION RULE is `AGGREGATION_RULE` below, stated once and printed in
 every output: the documented-failure instances (`runner.CLAIM_EXCLUDED`, #87)
-count in roster counts and are held out of quality aggregates. Before #142 the
-README's tally used the first denominator and the driver's summary the second,
-with nothing saying which a percentage used.
+count in roster counts and are held out of quality aggregates; printing the rule
+says which denominator a percentage used (#142).
 
-FOR #141 (per-seed reporting). Two entry points, each taking one seed's inputs:
+PER-SEED REPORTING (#141). Two entry points, each taking one seed's inputs:
 `summarize_results(rows)` for every aggregate of a results table, and
 `summarize_trace(rows, trace, budget)` for every aggregate of that table's
 anytime trace (cumulative feasibility, improvement timing, anytime scores).
@@ -43,12 +41,12 @@ anytime trace (cumulative feasibility, improvement timing, anytime scores).
 apply is a named constant or function here, so a per-seed median is a median of
 the same quantity this report publishes.
 
-#141 built on those: `summarize_seeds` runs `summarize_results` once per seed of
-the per-seed table (`SEEDS_TABLE_NAME`, read by `load_seed_results`) and takes
-the spread, under `SEED_AGGREGATION_RULE`; `--seeds` prints it. The driver also
-writes a run record beside every table it publishes (`RunRecord`,
-`run_record_path`), and when `comparison.csv` has one the budget, seed and
-machine are read from it rather than stated -- `--budget` is then optional.
+`summarize_seeds` runs `summarize_results` once per seed of the per-seed table
+(`SEEDS_TABLE_NAME`, read by `load_seed_results`) and takes the spread, under
+`SEED_AGGREGATION_RULE`; `--seeds` prints it. The driver also writes a run record
+beside every table it publishes (`RunRecord`, `run_record_path`), and when
+`comparison.csv` has one the budget, seed and machine are read from it rather
+than stated.
 """
 
 from __future__ import annotations
@@ -1790,7 +1788,7 @@ def _stated(
     The record is read, the caller's values are typed, so the record wins: a
     caller value that disagrees with it is a warning, not an override. Without a
     record -- every table published before #141 -- the caller's values are used
-    and labelled as stated, exactly as before.
+    and labelled as stated.
     """
     if record is None:
         if budget is None:
