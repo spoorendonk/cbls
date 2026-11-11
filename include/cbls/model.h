@@ -162,8 +162,8 @@ struct ModelStructure {
     std::vector<ElementTable> element_tables;
     /// Whether any node is an `Element`, `Ceil`, `Floor` or `Round` -- the ops
     /// whose plateaus `compute_var_jump` offers as jump candidates (#186). A
-    /// model without one skips the per-variable walk that would find nothing
-    /// to add.
+    /// model without one keeps its pre-#186 candidate generation unchanged and
+    /// skips the per-variable walk that would find nothing to add.
     bool has_breakpoint_nodes = false;
     /// Per node, rebuilt with the topological order: `kReachesBreakpoint` (only
     /// when `has_breakpoint_nodes`) on a breakpoint node and on every node that
@@ -646,10 +646,10 @@ public:
     // Change in total WEIGHTED violation if var_id <- j: sum_c weights[c]*delta_c,
     // accumulated PER CONSTRAINT rather than as a difference of two whole sums, so
     // a row clamped to kInfPenalty cancels exactly instead of absorbing the O(1)
-    // real rows (#100). Uses a member scratch
-    // buffer, so it is allocation-free once warmed up but not on the first calls;
-    // the per_constraint variant allocates on every call and is for sparse/tooling
-    // use. `weights` is indexed by constraint index (constraint_ids()). Scalar
+    // real rows (#100; the definition in src/model.cpp says why). Uses a member
+    // scratch buffer, so it is allocation-free once warmed up but not on the
+    // first calls; the per_constraint variant allocates on every call and is for
+    // sparse/tooling use. `weights` is indexed by constraint index (constraint_ids()). Scalar
     // variables only; same no-commit / precondition contract as above.
     double weighted_violation_delta(int32_t var_id, double j, const std::vector<double>& weights);
     // The same delta under `weights`, which it returns, and under `second`,

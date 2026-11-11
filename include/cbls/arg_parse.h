@@ -16,7 +16,8 @@ namespace cbls {
 // `src/cli.cpp`), and this header stays pure: no stream, no `std::exit`.
 //
 // The rule: `std::stod` / `std::stoll`, not `std::atof` / `std::atoll`, whose
-// missing error path turns a typo'd value into a silent 0
+// missing error path turns a typo'd value into a silent 0, so a run that never
+// searched reports like a solver result
 // (bugprone-unchecked-string-to-number-conversion). Trailing characters, which
 // `std::stod` alone accepts, are rejected, so `--time-limit 60s` cannot quietly
 // mean 60. An out-of-range value fails like a malformed one.
