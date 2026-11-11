@@ -12,10 +12,10 @@ process, `--jobs` at a time. `gm_ratio.py --scip-shards` reads the shards:
 * `<instance>.failed`: one line per failed attempt, `exit <rc> <utc>`, when the
   process ran past the wrapper cap (`timeout` exit 124, or 137 after `-k`), died
   by a signal or left a torn row. A retry appends; the scorer counts the lines
-  (#312). An exit with nothing written never reached a solve (`reference_solve.py`
-  turns solve errors into rows: this is a missing `pyscipopt`, a refusal, a broken
-  environment) and records no attempt, or a broken environment would make a
-  whole roster final (#323).
+  (#312). Any other exit with nothing written never reached a solve
+  (`reference_solve.py` turns solve errors into rows: this is a missing
+  `pyscipopt`, a refusal, a broken environment) and records no attempt, or a
+  broken environment would make a whole roster final (#323).
 * `<instance>.log`: the process's stdout and stderr.
 
 SCIP runs at its defaults (`--seed 0`: no `randomseedshift`) for `--time-limit`
@@ -137,7 +137,8 @@ def reset_on_new_stamp(shards: Path, stamp: str, *, restart: bool) -> list[str]:
     budget must not wipe a campaign's attempt records, nor count its own failures
     as the campaign's. Cleared before the stamp is written (whole or not at all),
     so a kill in between never counts an old attempt under the new stamp. A
-    directory without a stamp predates #312: its markers hold no attempt lines.
+    directory without a stamp predates #312: its markers hold no attempt lines,
+    so there is nothing to keep apart.
     """
     path = shards / SHARD_STAMP_NAME
     cleared: list[str] = []

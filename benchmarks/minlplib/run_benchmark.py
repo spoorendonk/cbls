@@ -63,10 +63,11 @@ Guards, because this file's output is published:
   whose `commit_sha` or thread count disagrees;
 * sets aside (`.rejected`) the staged row of any solve whose runner exited
   nonzero, so a resume re-solves it (`quarantine_staged`, #170);
-* leaves an instance with two recorded failed attempts alone on a resume
-  (`final_no_solutions`, #323) and then assembles no table, which would lack its
-  row; `--retry-final NAME` asks for another attempt, `--instances NAME` does
-  not, since a campaign runs one name per call;
+* leaves an instance with two recorded failed attempts alone on a resume, since
+  a third that succeeds would turn a final no-solution into solved depending on
+  how often someone re-runs (`final_no_solutions`, #323), and then assembles no
+  table, which would lack its row; `--retry-final NAME` asks for another
+  attempt, `--instances NAME` does not, since a campaign runs one name per call;
 * marks each row the independent check has passed (or demoted) with
   `<instance>.checked`, its CSV's sha256, so a scorer can tell it from one a
   killed driver left (#307);
@@ -1267,8 +1268,9 @@ def checked_digest(stage: Path, name: str) -> str | None:
 def staged_checked(stage: Path, name: str) -> bool:
     """Whether `name`'s staged row is the one `check_and_mark` checked, byte for byte.
 
-    The hash counts, not the marker's presence (`run_roster` also deletes the
-    marker before a re-solve), so a marker never vouches for an unseen row.
+    The hash counts, not the marker's presence: a re-solve rewrites the row, and
+    `run_roster` also deletes the marker before one, so a marker never vouches
+    for an unseen row.
     """
     row = stage / f"{name}.csv"
     return row.is_file() and checked_digest(stage, name) == campaign_report.file_sha256(row)

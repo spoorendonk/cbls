@@ -24,8 +24,8 @@ The #256 rule is one retry and then no-solution, recorded in the data (#312).
 Without `--partial`, a scored instance left with a lone `.rejected` row or a SCIP
 `.failed` marker needs two recorded failed attempts (`exit <rc> <utc>` lines, in
 `<instance>.failures` beside the rejected row and in the `.failed` marker itself);
-fewer is refused by name, so a campaign staged before #312 scores only with
-`--partial`. Both drivers leave a two-attempt instance alone on a resume, so
+fewer is refused by name, so a campaign staged before #312, which has no such
+lines, scores only with `--partial`. Both drivers leave a two-attempt instance alone on a resume, so
 re-running cannot turn a final no-solution into solved (#323); `--retry-final
 NAME` asks for another attempt.
 
