@@ -590,8 +590,9 @@ void tabulate_pair_lambda(const Model& model, const ExprNode& node, json& j) {
     }
     const auto& var = model.var(child_ref.id);
     // Sized by universe_size, as in tabulate_lambda: sizing by max_size makes
-    // a reload throw `table.at()` past it. A Set file sized by max_size thus
-    // throws on re-save, and a universe over the cap refuses to serialise.
+    // a reload throw `table.at()` past it. A Set file written sized by max_size
+    // (the pre-fix writer) thus throws on re-save, and a universe over the cap refuses to
+    // serialise.
     int n = var.universe_size;
     if (n > 1000) {
         throw std::runtime_error("PairLambda universe too large to tabulate (" + std::to_string(n) +

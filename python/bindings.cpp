@@ -188,7 +188,7 @@ private:
 // index per access, on a path that crosses the Python boundary anyway.
 //
 // OWNERSHIP: by value, keep_alive<0, 1> keeps the model alive, so `model`
-// cannot dangle. Bound as `Variable`, with the direct binding's attributes.
+// cannot dangle. Bound as `cbls.Variable`.
 struct VariableRef {
     Model* model;
     int32_t id;

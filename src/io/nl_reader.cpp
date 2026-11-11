@@ -250,9 +250,8 @@ private:
     bool binary_ = false;
 };
 
-// AMPL opcode -> operand count (ASL `opcode.hd`): 1, 2, 3, or 0 for nullary
-// constant ops; n-ary opcodes are is_nary()'s. Anything else returns
-// kUnknownArity and the parser throws an "NL_UNKNOWN_OPCODE" error, which the
+// AMPL opcode -> operand count (ASL `opcode.hd`): 1, 2 or 3; n-ary opcodes are is_nary()'s.
+// Anything else returns kUnknownArity and the parser throws an "NL_UNKNOWN_OPCODE" error, which the
 // MINLPLib runner buckets as unsupported (benchmarks/minlplib/nl_refusal.h).
 constexpr int kUnknownArity = -99;
 
