@@ -10,27 +10,17 @@
 
 namespace cbls {
 
-/// Implementation vocabulary, not API. `FunctionRef` below is safe only in the
-/// one shape this library uses it in -- a PARAMETER, invoked before the call
-/// returns -- and it cannot police that itself: an rvalue must bind, or
-/// `exec.parallel_for(0, n, [](int){})` would not compile, so the sibling trick
-/// `StopRef` uses (a deleted `const S&&` overload) is not available. Storing one
-/// (`detail::FunctionRef<void(int)> f = [](int){};`) is a dangling reference with no
+/// Implementation vocabulary, not API: `FunctionRef` is safe only as a PARAMETER
+/// invoked before the call returns, and cannot police that itself: an rvalue
+/// must bind, or `exec.parallel_for(0, n, [](int){})` would not compile, which
+/// rules out `StopRef`'s deleted `const S&&` overload. Storing one dangles with no
 /// diagnostic, which is why it is not in `cbls::`.
 namespace detail {
 
-/// A NON-OWNING view of a callable, for a parameter that is invoked before the
-/// call returns.
-///
-/// `std::function` would allocate and copy; a template parameter would make
-/// `ExecutorRef` a template, and the whole point of that class is to be a
-/// concrete type on a concrete API compiled into `cbls_lib`. This is the usual
-/// `function_ref` (as proposed for C++26): two pointers, no allocation, no
-/// ownership.
-///
-/// THE REFERENT MUST OUTLIVE THE CALL. Every use in this library passes a lambda
-/// as an argument to a function that invokes it synchronously, which is the only
-/// shape this is for. Storing one is a dangling reference waiting to happen.
+/// A NON-OWNING view of a callable (the C++26 `function_ref` shape: two
+/// pointers, no allocation, no ownership). `std::function` would allocate and
+/// copy; a template parameter would make `ExecutorRef`, a concrete type compiled
+/// into `cbls_lib`, a template. THE REFERENT MUST OUTLIVE THE CALL.
 ///
 /// Binds a non-const lvalue or a temporary; a `const` callable does not compile,
 /// deliberately, since the thunk has to be able to invoke a `mutable` lambda.
@@ -66,12 +56,10 @@ private:
 
 /// A NON-OWNING, type-erased view of a caller-owned thread pool (#169).
 ///
-/// WHY THIS EXISTS. `ParallelSearch` creates its own `std::thread`s. A host that
-/// already owns a pool -- another solver, a pipeline stage, a batch job -- then
-/// oversubscribes its cores the moment it runs cbls next to anything else, and
-/// has no way to say "use mine". Other optimisation libraries are converging on
-/// this same small executor shape for exactly that reason, so taking it makes
-/// cbls drop in beside them without an adapter.
+/// Without it `ParallelSearch` creates its own `std::thread`s, and a host that
+/// already owns a pool oversubscribes its cores with no way to say "use mine".
+/// Other optimisation libraries are converging on this small executor shape, so
+/// taking it lets cbls drop in beside them without an adapter.
 ///
 /// THE SHAPE. Anything with these four members, however spelled internally:
 ///
@@ -87,11 +75,10 @@ private:
 /// ranges are no-ops, short-circuited here so an adapted executor never sees one.
 ///
 /// A C++20 caller can check its type against the concept below at compile time
-/// (`static_assert(cbls::Executor<MyPool>)`). Under C++17 -- which this library
-/// is -- a mismatch is an ordinary template error inside the constructor instead.
-/// Note what that means for the concept: NO translation unit in this repository is
-/// C++20, so nothing here compiles it and no gate would catch a syntax error in
-/// it. It is checked by hand against a C++20 compiler when it changes.
+/// (`static_assert(cbls::Executor<MyPool>)`); under C++17 a mismatch is a
+/// template error inside the constructor. No translation unit here is C++20, so
+/// no gate compiles the concept: check it by hand with a C++20 compiler when it
+/// changes.
 ///
 /// OWNERSHIP AND LIFETIME. The CALLER owns the pool. This is a pointer plus a
 /// vtable pointer, copied by value; nothing in cbls owns, copies or destroys the
@@ -99,30 +86,23 @@ private:
 /// `StopRef`.
 ///
 /// EVERY `parallel_*` CALL IS A JOIN POINT: it must not return until every call
-/// or chunk it made has finished. This is not a preference. `src/pool.cpp` hands
-/// `parallel_for_chunked` a callable that holds references into
-/// `solve_portfolio`'s own stack frame -- the shared solution pool, the stop flag,
-/// the per-worker result vectors -- and that frame is gone the moment the call
-/// returns. An executor that ENQUEUES its chunks and returns, which is an
-/// ordinary design for a fire-and-forget pool, therefore reads freed stack in
-/// every worker. `parallel_invoke` says the same in its own words.
+/// or chunk it made has finished. `src/pool.cpp` hands `parallel_for_chunked` a
+/// callable holding references into `solve_portfolio`'s stack frame (the shared
+/// solution pool, the stop flag, the per-worker results), so an executor that
+/// ENQUEUES its chunks and returns reads freed stack in every worker.
 ///
-/// CONCURRENCY IS REQUIRED, not merely permitted. A portfolio worker is
-/// long-running and COOPERATIVE: it shares incumbents through the pool as it
-/// finds them and restarts from a peer's, so the workers have to run at the same
-/// time to be a portfolio at all. An executor that runs chunks SEQUENTIALLY is
-/// not an error, and what it degenerates to depends on the budget: under a WALL
-/// CLOCK it is a one-worker portfolio, because the first worker takes the whole
-/// shared deadline and every later one finds it already past and returns without
-/// searching. With `time_limit <= 0` there is no shared deadline to take, so each
-/// worker instead runs its full `max_iterations` budget one after another -- N
-/// solves in series, N times the wall time. Nothing detects either; both are
-/// properties of the executor the caller supplied.
+/// CONCURRENCY IS REQUIRED, not merely permitted: portfolio workers are
+/// long-running and COOPERATIVE (they share incumbents and restart from a
+/// peer's), so they must run at the same time. An executor that runs chunks
+/// SEQUENTIALLY is not an error but degenerates: under a WALL CLOCK to a
+/// one-worker portfolio, since the first worker takes the whole shared deadline
+/// and every later one finds it past and returns without searching; with
+/// `time_limit <= 0` to N full `max_iterations` solves in series, N times the
+/// wall time. Nothing detects either.
 class ExecutorRef {
 public:
     /// Non-explicit on purpose: `par_config.executor = my_pool;` is the call
-    /// shape this exists for. The `enable_if` keeps the copy constructor from
-    /// being hijacked.
+    /// shape. The `enable_if` keeps the copy constructor from being hijacked.
     template <typename E,
               typename = std::enable_if_t<!std::is_same_v<std::decay_t<E>, ExecutorRef>>>
     // Implicit by design; see above.
@@ -192,10 +172,8 @@ private:
         [](void* obj, detail::FunctionRef<void()> f, detail::FunctionRef<void()> g) {
             static_cast<E*>(obj)->parallel_invoke(f, g);
         },
-        // The return type is spelled on the lambda rather than cast inside it: an
-        // `n_threads()` that already returns `int` -- which every executor in
-        // this tree has -- would make the cast redundant, and a redundant cast is
-        // itself a lint finding.
+        // The return type is spelled on the lambda, not cast inside it: a cast of an
+        // `n_threads()` that already returns `int` is redundant, itself a lint finding.
         [](void* obj) -> int { return static_cast<E*>(obj)->n_threads(); },
     };
 
@@ -206,12 +184,9 @@ private:
 #if defined(__cpp_concepts) && __cpp_concepts >= 201907L
 /// The shape `ExecutorRef` adapts, as a concept, for a C++20 caller that wants
 /// the error at its own declaration rather than inside our constructor.
-///
-/// This library is C++17 (`CMAKE_CXX_STANDARD 17`), so nothing here uses it --
-/// it is compiled only when the INCLUDING translation unit is C++20 or later,
-/// which is why it is an `#if` rather than a hard requirement. `ExecutorRef`
-/// itself deliberately does not constrain on it: doing so would make the
-/// constructor's availability depend on the caller's language mode.
+/// Compiled only when the INCLUDING translation unit is C++20 or later.
+/// `ExecutorRef` does not constrain on it, so the constructor's availability
+/// does not depend on the caller's language mode.
 template <typename E>
 concept Executor = requires(E e, int n) {
     e.parallel_for(0, n, [](int) {});

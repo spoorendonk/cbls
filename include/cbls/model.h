@@ -16,7 +16,6 @@
 
 namespace cbls {
 
-// Forward declare Expr
 class Expr;
 
 struct VarSequence {
@@ -36,25 +35,17 @@ enum class Cover : uint8_t {
 /// A group of List variables over one shared universe whose membership is
 /// maintained BY THE MOVES rather than by a penalty row (#164).
 ///
-/// This is the standard choice in routing local search: "each customer served
-/// exactly once" as a soft row is a poor landscape for a jump-based search --
-/// every repair has to pass through a doubly-served or unserved state -- while
-/// every inter-list relocate, swap and 2-opt* preserves the invariant for free.
-/// So the engine never proposes a move that would break it: `list_moves` stops
-/// emitting `list_insert`/`list_remove` for a member (`Variable::partitioned`),
-/// and `generate_partition_moves` proposes the inter-list moves that keep it.
+/// As a soft row, "each element exactly once" forces every repair through a
+/// doubly-served or unserved state; inter-list relocate, swap and 2-opt*
+/// preserve it instead. So the engine never proposes a move that breaks it:
+/// `list_moves` emits no `list_insert`/`list_remove` for a member
+/// (`Variable::partitioned`), and `generate_partition_moves` proposes the
+/// inter-list moves that keep it.
 ///
-/// THERE IS NO `unassigned(partition)` VIEW, deliberately. #164 specified one --
-/// the elements currently in no list, readable as a Set -- so that a
-/// prize-collecting model could price a skipped element. It is not needed: the
-/// same quantity is an identity over terms the DAG already has,
-///
-///     skip penalty = sum_e p(e) - sum_{lists L} lambda_sum(L, p)
-///
-/// where the first term is a constant. A shadow Set variable would instead have
-/// to be excluded from randomisation, from the structural sweep, from the
-/// diversification kick, from LNS destroy and from `set_moves` -- five new
-/// exclusion sites for a quantity that is already expressible.
+/// There is no `unassigned(partition)` view, deliberately (#164): a skip
+/// penalty is already `sum_e p(e) - sum_{lists L} lambda_sum(L, p)`, the first
+/// term a constant, while a shadow Set variable would need excluding from
+/// randomisation, the structural sweep, the kick, LNS destroy and `set_moves`.
 struct ListPartition {
     std::vector<int32_t> list_ids;  ///< member variable IDs, in the order given
     Cover cover = Cover::Exact;
@@ -99,30 +90,22 @@ inline constexpr double kLogDomainFloor = 1e-9;
 
 /// Everything about a model that no search writes: the DAG's nodes and edges,
 /// the derived indices over them, the constraint list, the lambda tables and the
-/// variable sequences.
-///
-/// It is a type of its own so that a FROZEN model can hand it to every portfolio
-/// worker by reference instead of being deep-copied per worker (#157). On the
-/// largest MIPfeas instance that copy was the whole of the portfolio's memory
-/// growth: ~0.8 GiB per extra worker, which is what capped the thread count on
-/// ordinary hardware rather than the core count.
+/// variable sequences. A FROZEN model hands it to every portfolio worker by
+/// reference instead of deep-copying it per worker (#157).
 ///
 /// Reached only through `Model`'s accessors, and after `Model::freeze()` only
-/// through a `shared_ptr<const ModelStructure>` -- so a write to it from a search
+/// through a `shared_ptr<const ModelStructure>`, so a write to it from a search
 /// path does not compile rather than corrupting a peer's search.
 ///
-/// What is deliberately NOT here: every node's current value (`Model::
-/// node_values_`), every variable (`Model::vars_` -- see `Variable`, kept whole
-/// and per worker), the objective bound and the delta probe's scratch. Those are
-/// what a search writes. The structural SCALARS -- `objective_id_`,
-/// `is_maximizing_`, the three objective-row node ids, `closed_` -- stay in
-/// `Model` too: they are immutable after `freeze()` as well, but twenty bytes per
-/// worker is not worth an indirection on the paths that read them.
+/// NOT here: what a search writes (node values, variables, the objective bound,
+/// the probe scratch), and the structural scalars (`objective_id_`,
+/// `is_maximizing_`, the objective-row node ids, `closed_`): immutable after
+/// `freeze()` too, but twenty bytes per worker is not worth an indirection.
 struct ModelStructure {
     std::vector<ExprNode> nodes;
-    // The DAG's edges, flat (#156). Per-node and per-variable vectors made model
-    // build a few small allocations per node -- 2.66M on atlanta-ip's 540k nodes
-    // -- and a portfolio replica a deep copy of all of them.
+    // The DAG's edges, flat (#156): per-node and per-variable vectors cost a few
+    // small allocations per node at build and a deep copy of all of them per
+    // portfolio replica.
     //
     // `child_refs` is append-only: a node's children are written when the node
     // is made and addressed by its (child_begin, child_count), so they are
@@ -130,13 +113,11 @@ struct ModelStructure {
     // wholesale by `Model::rebuild_back_references`: the parents of node `i` are
     // `parent_ids[parent_offsets[i] .. parent_offsets[i + 1])`, and likewise
     // for variables. Once its owner array is non-empty, each offsets array holds
-    // at least one entry more -- creating a node or variable appends an empty
-    // range before the element itself -- so the accessors, which range-check the id against the
-    // owner first, need no "not built yet" branch, and a node made after a rebuild reads as
-    // parentless, exactly as it did when it owned an empty vector.
-    //
-    // That is also why Model hands out no mutable nodes or vars vector: a
-    // node or variable that bypassed push_node/alloc_var would have no range.
+    // at least one entry more (creating a node or variable appends an empty
+    // range first), so the accessors, which range-check the id against the
+    // owner first, need no "not built yet" branch, and a node made after a
+    // rebuild reads as parentless. Hence Model hands out no mutable nodes or
+    // vars vector: an element that bypassed push_node/alloc_var would have no range.
     std::vector<ChildRef> child_refs;
     std::vector<uint32_t> parent_offsets;
     std::vector<int32_t> parent_ids;
@@ -156,19 +137,15 @@ struct ModelStructure {
     int32_t num_domain_rows = 0;
     int32_t domain_node_begin = -1;
     int32_t domain_node_end = -1;
-    // var_id -> constraint indices (G_v), CSR like the back-references above: a
-    // per-variable vector here was the largest allocation site left once those
-    // were flat. Empty until close(), and then sized for the variables that
-    // existed at the last build -- unlike dependent_offsets it is NOT grown as
-    // variables are made by the builders, which is what keeps
+    // var_id -> constraint indices (G_v), CSR like the back-references above.
+    // Empty until close(), then sized for the variables that existed at the last
+    // build: unlike dependent_offsets it is NOT grown by the builders, which keeps
     // constraints_of_var's range check meaningful before close().
     std::vector<uint32_t> var_constraint_offsets;
     std::vector<int32_t> var_constraint_ids;
-    // Shared, and therefore invoked by every worker CONCURRENTLY once a model is
-    // frozen and replicated. A callable carrying mutable state of its own is a
-    // race: a NEW one where that state is captured by value, since each replica
-    // used to deep-copy the `std::function`, and an old one where it is captured
-    // by reference. `Model::freeze` says so where a caller will read it.
+    // Shared, so invoked by every worker CONCURRENTLY once a model is frozen and
+    // replicated: a callable carrying mutable state of its own is a data race,
+    // however that state is captured. `Model::freeze` states it for callers.
     std::vector<std::function<double(int)>> lambda_funcs;
     std::vector<std::function<double(int, int)>> pair_lambda_funcs;
     // Parallel to `pair_lambda_funcs` and the same length: entry i is the
@@ -176,17 +153,17 @@ struct ModelStructure {
     // `lambda_func_id` is i. See `PairLambdaSpec` in dag.h for why this is a
     // side table rather than more `NodeOp` enumerators.
     std::vector<PairLambdaSpec> pair_lambda_specs;
-    // #186. Shared exactly as `lambda_funcs` above is, with the same warning
-    // about a callable that carries mutable state. The mode table is parallel to
-    // `pair_lambda_extra_funcs` and kept the same length.
+    // #186. Shared as `lambda_funcs` is, with the same race on a callable's own
+    // mutable state. The mode table is parallel to `pair_lambda_extra_funcs`
+    // and kept the same length.
     std::vector<LambdaExtraFunc> lambda_extra_funcs;
     std::vector<PairLambdaExtraFunc> pair_lambda_extra_funcs;
     std::vector<PairMode> pair_lambda_extra_modes;
     std::vector<ElementTable> element_tables;
     /// Whether any node is an `Element`, `Ceil`, `Floor` or `Round` -- the ops
     /// whose plateaus `compute_var_jump` offers as jump candidates (#186). A
-    /// model without one takes the candidate generation it always did, with no
-    /// per-variable walk to find out that there is nothing to add.
+    /// model without one skips the per-variable walk that would find nothing
+    /// to add.
     bool has_breakpoint_nodes = false;
     /// Per node, rebuilt with the topological order: `kReachesBreakpoint` (only
     /// when `has_breakpoint_nodes`) on a breakpoint node and on every node that
@@ -277,46 +254,37 @@ class Model {
 public:
     Model();
 
-    /// Copying a model copies its per-model state -- the variables, the node
-    /// values -- and then either SHARES or deep-copies the structure:
+    /// Copies the per-model state (variables, node values) and either SHARES the
+    /// structure (a FROZEN model; the copy is frozen too, so it cannot change
+    /// what its peers read) or deep-copies it (an OPEN model, so the copy can be
+    /// built further independently). The delta probe's scratch is not copied: it is
+    /// overwritten before every read.
     ///
-    ///  - a FROZEN model shares it, which is what makes a portfolio replica
-    ///    cheap and is the point of `freeze()`. The copy is frozen too, so it
-    ///    cannot change what its peers read.
-    ///  - an OPEN model deep-copies it, exactly as it always did, so a model
-    ///    still being built can be copied and then built further independently.
-    ///
-    /// The delta probe's scratch buffer is not copied: it is overwritten before
-    /// it is read on every call, so its contents are not state.
-    /// Every member of this class must be handled in the copy constructor -- it
-    /// enumerates them explicitly, where the implicit one it replaced covered them
-    /// all. A member added later and forgotten there is default-initialised in
-    /// every portfolio replica while the master looks right, which shows up only
-    /// as a trajectory divergence.
+    /// The copy constructor enumerates every member explicitly: a member added
+    /// and forgotten there is default-initialised in every portfolio replica
+    /// while the master looks right, which shows only as a trajectory divergence.
     Model(const Model& other);
     Model& operator=(const Model& other);
-    /// A moved-from `Model` may only be destroyed or assigned to. It holds no
-    /// structure at all, so every accessor that reads the structure is undefined
-    /// on it -- unlike before the split, where it read as an empty model. `s()`
-    /// asserts, so a Debug or sanitizer build names it. Note in particular that
-    /// `is_frozen()` reports TRUE for one, so `if (!m.is_frozen()) m.freeze();`
-    /// silently does nothing.
+    /// A moved-from `Model` may only be destroyed or assigned to: it holds no
+    /// structure, so every accessor that reads the structure is undefined on it
+    /// (`s()` asserts, so a Debug or sanitizer build names it). `is_frozen()`
+    /// reports TRUE for one, so `if (!m.is_frozen()) m.freeze();` silently does
+    /// nothing.
     Model(Model&&) noexcept = default;
     Model& operator=(Model&&) noexcept = default;
     ~Model() = default;
 
-    // The builders below are for an OPEN model. On a closed one each throws
-    // `std::logic_error` (#173): before that refusal they appended nodes and rows
-    // that no evaluation ever reached. A closed model does not grow; build the
-    // whole model before `close()`. A frozen model is refused too, as before.
+    // The builders below are for an OPEN model: on a closed or frozen one each
+    // throws `std::logic_error` (#173; see `require_buildable`). Build the whole
+    // model before `close()`.
 
     // Variable creation — returns var ID
     int32_t bool_var(const std::string& name = "");
     int32_t int_var(int lb, int ub, const std::string& name = "");
     int32_t float_var(double lb, double ub, const std::string& name = "");
     /// A fixed-length permutation of `{0..n-1}`: `universe == min_len == max_len`
-    /// and `elements == [0..n-1]`. The only List there was before #164, and
-    /// exactly `list_var(n, n, n, ListInit::Identity, name)`.
+    /// and `elements == [0..n-1]`: exactly
+    /// `list_var(n, n, n, ListInit::Identity, name)` (#164).
     int32_t list_var(int n, const std::string& name = "");
     /// An ordered sequence of DISTINCT elements drawn from `{0..universe-1}`,
     /// whose length stays within `[min_len, max_len]` (#164).
@@ -398,9 +366,8 @@ public:
     ///
     /// `Cyclic` is the tour cost of a TSP over one List. `head`/`tail` are the
     /// depot legs of a CVRP route, where a cyclic sum over the customers alone
-    /// would wrongly add `func(e_{n-1}, e_0)`; the two are independent, so a
-    /// cyclic sum with endpoint terms is expressible even though no use case
-    /// here asks for it.
+    /// would wrongly add `func(e_{n-1}, e_0)`. The two are independent, so a
+    /// cyclic sum with endpoint terms is expressible too.
     ///
     /// A `Set` variable is accepted, but its `elements` carry no modelled
     /// order: the sum then reads whatever order they happen to be stored in,
@@ -539,69 +506,56 @@ public:
 
     void close();
 
-    /// Make the structure immutable, so that copies of this model can SHARE it
+    /// Make the structure immutable, so that copies of this model SHARE it
     /// instead of deep-copying the DAG per portfolio worker (#157).
-    ///
     /// `close()`s the model if it is still open, folds the objective into the
-    /// constraint set if there is one, and then drops the writable handle on the
-    /// structure. Idempotent.
+    /// constraint set if there is one, then drops the writable handle on the
+    /// structure. Idempotent. The builders refuse a closed model (#173), so the
+    /// structure it freezes is complete.
     ///
-    /// The freeze point is deliberately AFTER the objective row, not at
-    /// `close()`. The objective row appends two nodes and a constraint and
-    /// rebuilds the back-references, the topological order, `topo_pos` and G_v
-    /// -- so a structure frozen at `close()` would have N workers re-sorting one
-    /// shared DAG concurrently. `solve()` freezes whatever model it is handed
-    /// (#271), so a solved model comes back frozen, and its later copies share
-    /// its callables (below) whether or not the caller ever called `freeze()`.
+    /// The freeze point is AFTER the objective row, not at `close()`: that row
+    /// rebuilds the back-references, the topological order, `topo_pos` and G_v,
+    /// which N workers must not redo on one shared DAG. `solve()` freezes
+    /// whatever model it is handed (#271), so a solved model comes back frozen
+    /// and its later copies share its callables (below) whether or not the
+    /// caller ever called `freeze()`.
     ///
     /// Every structural method throws afterwards: variable and expression
     /// creation, `add_constraint`, `minimize`/`maximize`, `add_var_sequence`,
-    /// `reserve` and `close`. Not copy-on-write, deliberately -- a silent detach
-    /// would put that worker back on its own full copy, with every test still
-    /// green and the memory saving gone.
+    /// `reserve` and `close`. Not copy-on-write: a silent detach would put that
+    /// worker back on its own full copy, every test green, the memory saving gone.
     ///
     /// **`add_objective_soft_constraint` is the one intentional exception**: on a
-    /// frozen model it RETURNS, it does not throw. `freeze()` has already run it,
-    /// and a caller may still call it on a frozen replica -- `solve()` did on
-    /// every model it was handed until #271 -- so its idempotent early return
-    /// has to come before the frozen check. The `require_open` that follows
-    /// that return is therefore unreachable by construction and kept only as a
-    /// backstop against a future caller reaching it another way. Do not "fix" the
+    /// frozen model it RETURNS, it does not throw, because `freeze()` has already
+    /// run it and a caller may still call it on a frozen replica. So its
+    /// idempotent early return comes before the frozen check, and the
+    /// `require_open` after it is an unreachable backstop. Do not "fix" the
     /// order; `tests/test_model_share.cpp` pins it.
     ///
-    /// It does not need to re-derive anything a builder added after `close()`,
-    /// because the builders refuse a closed model (#173), so the structure it
-    /// freezes is complete.
-    ///
-    /// What a frozen model can still do is everything a search does: assign
-    /// variables, evaluate, snapshot and restore state, tighten and release the
-    /// objective bound.
-    ///
-    /// Two consequences of sharing, both about the copies:
+    /// A frozen model can still do everything a search does: assign variables,
+    /// evaluate, snapshot and restore state, tighten and release the objective
+    /// bound. For its copies:
     ///
     ///  - a copy starts from THIS model's node values, verbatim, so it is already
     ///    consistent with its variables and needs no `full_evaluate`;
     ///  - the `lambda_sum`/`pair_lambda_sum` callables are shared, so several
-    ///    workers invoke the same callable object at once. One that carries
-    ///    mutable state of its own is a data race -- a NEW one where that state is
-    ///    captured by value, since each replica used to deep-copy the
-    ///    `std::function`, and an old one where it is captured by reference.
+    ///    workers invoke the same callable object at once: one that carries
+    ///    mutable state of its own is a data race, whether that state is
+    ///    captured by value or by reference.
     ///
     /// It also caches every variable's dirty cone in topological order (#271),
     /// so a one-variable walk neither collects nor sorts it: up to
     /// `cone_cache_bytes` of node ids, shared by every replica like the rest of
     /// the structure. Variables are cached in id order up to the first whose
     /// cone would cross the cap; it and every later one walk as an unfrozen
-    /// model's do. 0 caches nothing. The cap of the FIRST call holds -- a later
-    /// one is the no-op above. `solve()` freezes the model it is handed with
-    /// `SearchConfig::cone_cache_bytes`.
+    /// model's do. 0 caches nothing. The FIRST call's cap holds; a later call is
+    /// the no-op above. `solve()` freezes with `SearchConfig::cone_cache_bytes`.
     void freeze(size_t cone_cache_bytes = kDefaultConeCacheBytes);
     [[nodiscard]] bool is_frozen() const noexcept { return open_structure_ == nullptr; }
     /// `freeze()`'s default cone-cache cap: 256 MiB of node ids. A memory guard
     /// against an O(nodes x vars) cache on a deep shared chain, not a tuned
     /// value: the cache changes no trajectory, only walk cost. Measured caches
-    /// (#271) are far below it -- atlanta-ip 3.3 MB over 48,738 variables,
-    /// ucp200-168p 10.2 MB over 67,200, every variable cached.
+    /// are far below it (#271: atlanta-ip 3.3 MB, ucp200-168p 10.2 MB).
     static constexpr size_t kDefaultConeCacheBytes = size_t{256} << 20;
     /// Whether `freeze()` cached `var_id`'s cone; false on an unfrozen model
     /// and for any id outside the cached prefix, a negative one included.
@@ -637,12 +591,10 @@ public:
     }
     // Tighten/relax the objective bound (RHS). Recomputes the objective
     // constraint node in place; caller invalidates any violation cache.
-    //
     // Per-model state, NOT structure: each portfolio worker tightens its own
-    // bound on its own incumbents, so the value lives here and `evaluate()`'s
-    // `Const` arm reads it back through `objective_bound_node()` rather than from
-    // the shared node's `const_value` (#157). Allowed on a frozen model --
-    // tightening the bound is what a search does.
+    // bound, so `evaluate()`'s `Const` arm reads it through
+    // `objective_bound_node()`, not the shared node's `const_value` (#157).
+    // Allowed on a frozen model.
     void set_objective_bound(double bound);
     [[nodiscard]] double objective_bound() const noexcept { return objective_bound_; }
     /// The `Const` node carrying the objective row's RHS, or -1 when there is no
@@ -694,7 +646,7 @@ public:
     // Change in total WEIGHTED violation if var_id <- j: sum_c weights[c]*delta_c,
     // accumulated PER CONSTRAINT rather than as a difference of two whole sums, so
     // a row clamped to kInfPenalty cancels exactly instead of absorbing the O(1)
-    // real rows (#100 — see the comment on the definition). Uses a member scratch
+    // real rows (#100). Uses a member scratch
     // buffer, so it is allocation-free once warmed up but not on the first calls;
     // the per_constraint variant allocates on every call and is for sparse/tooling
     // use. `weights` is indexed by constraint index (constraint_ids()). Scalar
@@ -737,14 +689,13 @@ public:
         }
         return node_values_[id];
     }
-    /// Write node `id`'s value WITHOUT a range check -- the evaluation loops'
+    /// Write node `id`'s value WITHOUT a range check: the evaluation loops'
     /// write, paired with the unchecked reads `node_values()` hands out. Their
-    /// ids come from `topo_order()`, so the check could only ever pass, and
-    /// `full_evaluate` performs one write per node: 4.3M of them per call on the
-    /// largest MIPfeas instance.
-    ///
-    /// Deliberately NOT bound to Python: an index supplied from there would be
-    /// an unguarded heap write (#156). `node_value` is the checked reader.
+    /// ids come from `topo_order()`, so a check could only pass, yet would run
+    /// once per node per `full_evaluate` (4.3M per call on the largest MIPfeas
+    /// instance).
+    /// NOT bound to Python: an index from there would be an unguarded heap
+    /// write (#156). `node_value` is the checked reader.
     void set_node_value_unchecked(int32_t id, double value) noexcept { node_values_[id] = value; }
     /// The incremental Sums' per-model state (#188): see `IncSums`. Sized and
     /// reset by every `full_evaluate`; empty before the first. Not bound to
@@ -838,12 +789,9 @@ public:
     /// caller already knows how big the model will be. `n_child_refs` is the
     /// total number of children over all nodes, i.e. the DAG's edge count.
     ///
-    /// This is not a micro-optimisation on a large model; it is what stops a
-    /// multi-gigabyte array being copied to grow it. A reader that appends a
-    /// node per matrix entry grows `nodes_` and `child_refs_` by doubling, and
-    /// every doubling copies everything built so far. Building the largest
-    /// MIPfeas instance allocated 6.9 GB cumulatively against a 3.3 GB peak when
-    /// nodes still owned their child vectors; the difference was that copying.
+    /// On a large model this is what stops a multi-gigabyte array being copied
+    /// to grow it: a reader appending a node per matrix entry grows the node
+    /// and child arrays by doubling, each doubling copying everything so far.
     /// Over-reserving costs address space and nothing else, so an estimate that
     /// is merely close is worth making.
     void reserve(size_t n_vars, size_t n_nodes, size_t n_child_refs = 0) {
@@ -859,10 +807,8 @@ public:
     [[nodiscard]] const std::vector<int32_t>& topo_order() const noexcept { return s().topo_order; }
     /// Where `id` sits in `topo_order()`, so a caller holding a handful of nodes
     /// can put them in evaluation order without walking the whole order to find
-    /// them. `delta_evaluate` is the caller that matters: scanning `topo_order()`
-    /// and testing a flag made it O(all nodes) per call on a model whose dirty
-    /// set is typically a few dozen -- ~2M nodes walked per move on the largest
-    /// MIPfeas instance.
+    /// them: `delta_evaluate`'s dirty set is typically a few dozen nodes, where a
+    /// scan of `topo_order()` is O(all nodes) per call.
     [[nodiscard]] int32_t topo_position(int32_t id) const noexcept { return s().topo_pos[id]; }
     [[nodiscard]] const std::vector<Variable>& variables() const noexcept { return vars_; }
     [[nodiscard]] const std::vector<ExprNode>& nodes() const noexcept { return s().nodes; }
@@ -946,31 +892,23 @@ public:
     /// this replaces, so a `full_evaluate` is MANDATORY before anything reads a
     /// node value or calls `delta_evaluate`. For a built-in op, skipping it merely
     /// recomputes late -- except an incremental Sum (#188), which
-    /// `commit_scalar_move` would update from its stale value.
-    ///
-    /// Every C++ caller in the tree pairs the two -- `src/lns.cpp`, `src/search.cpp`
-    /// (three sites, one of them by way of `FeasibilityJump::perturb`'s trailing
-    /// sweep), `src/cli.cpp`. **Python is the exception**: `python/bindings.cpp`
-    /// exposes this method raw, with no sweep attached and nothing telling the
-    /// caller to add one.
+    /// `commit_scalar_move` would update from its stale value. Every C++ caller
+    /// pairs the two; **Python does not**: the binding exposes this method raw,
+    /// with no sweep attached, so a Python caller must add one.
     void restore_state(const State& state);
 
 private:
-    /// The structure, for reading -- const, which is what makes a write to the
-    /// shared side a compile error (#157). Non-null on every `Model` that was not
-    /// moved from; the assert is there for the one that was, on the same argument
-    /// `ConstSpan::operator[]` makes -- it costs nothing under NDEBUG and turns an
-    /// otherwise unreportable read into a named abort in the Debug and sanitizer
-    /// builds.
+    /// The structure, for reading: const, which makes a write to the shared side
+    /// a compile error (#157). Null only on a moved-from `Model`; the assert costs
+    /// nothing under NDEBUG and turns that read into a named abort in the Debug
+    /// and sanitizer builds.
     [[nodiscard]] const ModelStructure& s() const noexcept {
         assert(structure_ != nullptr);
         return *structure_;
     }
     /// The structure, for writing. Throws once `freeze()` has run: the structure
     /// is then shared with every replica, so a structural change would mutate a
-    /// peer's model. Deliberately NOT copy-on-write -- a silent detach would put
-    /// that worker back on its own full copy with every test still green and the
-    /// memory saving gone, which is a failure that reports nothing.
+    /// peer's model. NOT copy-on-write, for the reason `freeze()` gives.
     ModelStructure& mut() {
         if (open_structure_ == nullptr) {
             throw std::logic_error("model is frozen: its structure is shared and cannot change");
@@ -979,8 +917,8 @@ private:
     }
 
     std::vector<Variable> vars_;
-    /// Node id -> its current value. Was `ExprNode::value`; moved out so that the
-    /// node array holds nothing a search writes (#157). Kept exactly as long as
+    /// Node id -> its current value, kept out of the node array so that it holds
+    /// nothing a search writes (#157). Kept exactly as long as
     /// `s().nodes` by `push_node`, the one place a node is made.
     std::vector<double> node_values_;
     /// The immutable side (#157). Both handles point at the same object while the
@@ -1023,9 +961,9 @@ private:
     /// Throws if the model is frozen (as `require_open`) or CLOSED (#173). Every
     /// public builder takes it -- variable and expression creation,
     /// `add_constraint`, `minimize`/`maximize`, `add_var_sequence`,
-    /// `add_list_partition` -- because a node or row they appended to a closed
-    /// model was never placed in the topological order: no evaluation computed
-    /// it and `solve()` reported feasible over it. The one internal post-close
+    /// `add_list_partition` -- because a node or row appended to a closed model
+    /// is never placed in the topological order: no evaluation computes it and
+    /// `solve()` would report feasible over it. The one internal post-close
     /// addition, `add_objective_soft_constraint`, uses the private allocators
     /// below, which do not take it, and rebuilds the derived indices itself.
     /// `reserve`, `close` and the per-model writes (`var_mut`,

@@ -9,28 +9,24 @@ namespace cbls {
 
 // Strict numeric parsing for command-line flag values.
 //
-// The parsing rule lives here; the diagnostic and the exit code do not. Those
-// differ per program -- the benchmark runners' wording and exit 2 are pinned by
-// their drivers' tests, while the CLI has its own `Error: ...`/exit 1
-// convention -- so each caller keeps its own policy (see
-// `benchmarks/common/runner_args.h` and `src/cli.cpp`) and only the rule is
-// shared. That also keeps this header pure: no stream, no `std::exit`, nothing
-// a library header has any business doing.
+// The parsing rule lives here; the diagnostic and the exit code do not. They
+// differ per program (the benchmark runners' wording and exit 2 are pinned by
+// their drivers' tests; the CLI prints `Error: ...` and exits 1), so each
+// caller keeps its own policy (`benchmarks/common/runner_args.h`,
+// `src/cli.cpp`), and this header stays pure: no stream, no `std::exit`.
 //
-// The rule itself: `std::stod` / `std::stoll` rather than `std::atof` /
-// `std::atoll`, because the ato* family has no error path at all, so a typo'd
-// value silently became 0 and a run that never searched reported like a solver
-// result (bugprone-unchecked-string-to-number-conversion). Trailing characters
-// are rejected as well, which `std::stod` alone accepts, so `--time-limit 60s`
-// cannot quietly mean 60. An out-of-range value fails like a malformed one.
+// The rule: `std::stod` / `std::stoll`, not `std::atof` / `std::atoll`, whose
+// missing error path turns a typo'd value into a silent 0
+// (bugprone-unchecked-string-to-number-conversion). Trailing characters, which
+// `std::stod` alone accepts, are rejected, so `--time-limit 60s` cannot quietly
+// mean 60. An out-of-range value fails like a malformed one.
 //
 // All three return false on failure and leave `out` untouched. The `*_status`
-// forms additionally say *which* way the text failed, so a caller can tell a
-// value that is not a number from one that is a number too large to hold --
-// `--threads 99999999999999999999999` is the latter, and reporting it as a typo
-// sends the reader hunting for one that is not there. The `try_parse_*` forms
-// collapse the distinction, which is what the benchmark runners want: their
-// wording and exit codes are pinned by their drivers' tests.
+// forms also say *which* way the text failed, so a caller can tell a
+// non-number from a number too large to hold
+// (`--threads 99999999999999999999999`), rather than report a typo that is not
+// there. The `try_parse_*` forms collapse the distinction, which is what the
+// benchmark runners' pinned wording wants.
 
 enum class ParseStatus : std::uint8_t { kOk, kMalformed, kOutOfRange };
 
