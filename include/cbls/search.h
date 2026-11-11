@@ -246,16 +246,6 @@ struct SearchConfig {
     //
     int64_t unproductive_iterations = 300;
 
-    // OR-Tools' diversification kick (#217), off by default: forwarded to
-    // GFJConfig::perturb_near_value. Each scalar is redrawn with probability
-    // 0.05 to a value near its current one (log-uniform within 20% of the side
-    // of the domain it moves into; a binary flips ~1%), instead of with
-    // `perturbation_probability` uniformly over the whole domain. The List/Set
-    // half of the kick is unchanged. Off is today's kick, draw for draw. Which
-    // OR-Tools path this ports, and why the mipfeas CP-SAT arm does not run it,
-    // is in GFJConfig's comment.
-    bool perturb_near_value = false;
-
     // OR-Tools' use of the objective before the first feasible point (#218),
     // forwarded to GFJConfig::objective_tie_break, whose comment says what it
     // does. Needs an affine objective and does nothing on any other. ON by

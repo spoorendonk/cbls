@@ -59,8 +59,8 @@ constexpr double kLnsFraction = 0.3;
 // The shared search flags (benchmarks/common/search_config_flags.h) this runner
 // takes, for `xk tune` (#267). Only these: the rest of the common and scalar
 // families either duplicate this runner's own flags (--compound-moves,
-// --perturb-near-value, --no-objective-tie-break, each recorded under its own
-// JSON key since before the shared table had them) or do not fit its protocol
+// --no-objective-tie-break, each recorded under its own JSON key since before
+// the shared table had them) or do not fit its protocol
 // (--no-time-limit and --max-iterations against a Primal Integral over a wall
 // budget; --no-float-hook, which no MIPfeas arm has asked for). A shared flag
 // not listed here falls through to "Unknown argument", as before.
@@ -90,11 +90,9 @@ struct Args {
     // Feasibility Jump against their Feasibility Jump plus Novelty Jump and call
     // the difference a reimplementation gap.
     bool compound_moves = true;
-    // OR-Tools' near-value kick (#217), off as the engine's default is. Recorded
-    // on every row so the scorer refuses to average an on-arm with an off-arm.
-    bool perturb_near_value = false;
     // OR-Tools' objective tie-break/scan (#218), on as the engine's default is
-    // since #226, and recorded on every row likewise.
+    // since #226. Recorded on every row so the scorer refuses to average an
+    // on-arm with an off-arm.
     bool objective_tie_break = true;
     // #239's two restart arms, off as the engine's defaults are, and recorded on
     // every row likewise.
@@ -152,7 +150,7 @@ void print_usage() {
         "                    [--inf-clamp B] [--no-propagate-bounds]\n"
         "                    [--max-propagation-passes N]\n"
         "                    [--no-compound-moves]\n"
-        "                    [--perturb-near-value] [--no-objective-tie-break]\n"
+        "                    [--no-objective-tie-break]\n"
         "                    [--restart-randomization] [--luby-restart-unit N]\n"
         "                    [--no-lns] [--lns-interval N] [--novelty-prob P]\n"
         "                    [--unproductive-iters N] [--perturbation-period N]\n"
@@ -217,8 +215,6 @@ bool parse_search_flag(cbls::bench::ArgCursor& c, Args& a) {
         a.compound_moves = true;
     } else if (s == "--no-compound-moves") {
         a.compound_moves = false;
-    } else if (s == "--perturb-near-value") {
-        a.perturb_near_value = true;
     } else if (s == "--objective-tie-break") {
         a.objective_tie_break = true;
     } else if (s == "--no-objective-tie-break") {
@@ -439,7 +435,6 @@ void write_result(const Args& args, const nlohmann::json& extra) {
     j["seed"] = args.seed;
     j["feasibility_tolerance"] = args.feas_tol;
     j["compound_moves"] = args.compound_moves;
-    j["perturb_near_value"] = args.perturb_near_value;
     j["objective_tie_break"] = args.objective_tie_break;
     j["restart_randomization"] = args.restart_randomization;
     j["luby_restart_unit"] = args.luby_restart_unit;
@@ -765,7 +760,6 @@ int run_benchmark(int argc, char** argv) {
     cbls::SearchConfig cfg;
     cfg.feasibility_tolerance = args.feas_tol;
     cfg.use_compound_moves = args.compound_moves;
-    cfg.perturb_near_value = args.perturb_near_value;
     cfg.fj_objective_tie_break = args.objective_tie_break;
     cfg.restart_randomization = args.restart_randomization;
     cfg.luby_restart_unit = args.luby_restart_unit;

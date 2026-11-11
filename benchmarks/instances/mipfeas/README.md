@@ -617,7 +617,7 @@ by measurement on exactly those 11, so on them a row is in-sample:
 | Novelty Jump on, and the `1e7` clamp | the A/B table under "What the wiring check found" | the runner's flags |
 | FJ-or-Novelty redrawn every batch | #209's pre-registered A/B, 10 seeds at 30s | `143c8da` |
 | objective tie-break on | #226 Run A, 5 seeds at 10s; gap at first feasible 0.748 | `9e1cce9` (#220) |
-| near-value kick off | #226 Run B on MINLPLib; Run A on this roster passed it | default kept since #217 (#219) |
+| near-value kick off | #226 Run B on MINLPLib; Run A on this roster passed it | default kept since #217 (#219); removed by #382, in git history at `8803b404` |
 
 #209 and #226 carry the numbers. The `xk tune` study (#264) then tuned on 11 more
 roster instances, and it confirmed no setting, so no default changed. #331 then
@@ -653,7 +653,7 @@ the run:
 | Propagation during search | none; the opt-in `--compound-propagation` (#340, kept off by #331's measurement) was removed (#380; in git history at `57cdbfba`) | its own, as part of its default portfolio |
 | Feasibility tolerance | `1e-6`, stated explicitly | CP-SAT's own |
 | Unbounded column falls back to | `1e7` (`--inf-clamp`), where propagation derives nothing | not clamped |
-| Recorded per result | commit SHA, seed, tolerance, clamp + columns it still narrows, columns declared unbounded, columns tightened, propagation verdict and pass cap, compound-move, exact-Int-jump (#216, until #381 removed it; in git history at `1330cd2c`), near-value-perturbation (#217, off by default), objective tie-break (#218, on by default since #226), propagation flags, the point's own check against the instance file (`original_*` ratios), peak RSS, read/build/setup seconds, trace point count and trace source | OR-Tools version, seed, full parameter string, workers started (at its defaults), solver verdict, peak RSS, read/setup seconds, free-row count, trace source |
+| Recorded per result | commit SHA, seed, tolerance, clamp + columns it still narrows, columns declared unbounded, columns tightened, propagation verdict and pass cap, compound-move, exact-Int-jump (#216, until #381 removed it; in git history at `1330cd2c`), near-value-perturbation (#217, until #382 removed it; in git history at `8803b404`), objective tie-break (#218, on by default since #226), propagation flags, the point's own check against the instance file (`original_*` ratios), peak RSS, read/build/setup seconds, trace point count and trace source | OR-Tools version, seed, full parameter string, workers started (at its defaults), solver verdict, peak RSS, read/setup seconds, free-row count, trace source |
 | Solution verified against the instance file | yes, by SCIP | yes, by SCIP |
 
 Two of those are deliberate choices, made to keep the two sides comparable

@@ -308,7 +308,6 @@ def build_run_record(
             "force": args.force,
             "inf_clamp": args.inf_clamp,
             "compound_moves": args.compound_moves,
-            "perturb_near_value": args.perturb_near_value,
             "objective_tie_break": args.objective_tie_break,
             "propagate_bounds": args.propagate_bounds,
             "large_bytes": args.large_bytes,
@@ -425,7 +424,6 @@ def build_command(job: Job, args: argparse.Namespace, results_dir: Path) -> list
             "--inf-clamp",
             str(args.inf_clamp),
             "--compound-moves" if args.compound_moves else "--no-compound-moves",
-            *(["--perturb-near-value"] if args.perturb_near_value else []),
             *([] if args.objective_tie_break else ["--no-objective-tie-break"]),
             "--threads",
             str(args.cbls_threads),
@@ -467,7 +465,6 @@ def arm_keys(engine: str, args: argparse.Namespace) -> dict[str, object]:
     keys: dict[str, object] = {
         "threads": args.cbls_threads,
         "compound_moves": args.compound_moves,
-        "perturb_near_value": args.perturb_near_value,
         "objective_tie_break": args.objective_tie_break,
     }
     return keys
@@ -966,12 +963,10 @@ def check_resume_configuration(
 
     Returns the exit code to fail with, or None to proceed.
     """
-    # What a row without a key ran: `perturb_near_value` and
-    # `objective_tie_break` are back-read as off, since
-    # every row from before a flag ran its off arm; any other missing key is
-    # unknown and left alone.
+    # What a row without a key ran: `objective_tie_break` is back-read as off,
+    # since every row from before the flag ran its off arm; any other missing
+    # key is unknown and left alone.
     back_read_off = {
-        "perturb_near_value",
         "objective_tie_break",
     }
     for job in jobs:
@@ -1319,13 +1314,6 @@ def main() -> int:
         action="store_false",
         help="disable CBLS Novelty Jump; on by default here because roughly half of "
         "CP-SAT's incumbents on this roster come from its compound-move subsolvers",
-    )
-    parser.add_argument(
-        "--perturb-near-value",
-        action="store_true",
-        help="CBLS diversification kick draws near the current value, as OR-Tools does "
-        "(#217); off by default, as in the engine. Not a configuration to publish "
-        "before its own A/B",
     )
     parser.add_argument(
         "--no-objective-tie-break",

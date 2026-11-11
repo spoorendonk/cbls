@@ -260,14 +260,12 @@ recorded in each row's `search_config` cell (#136):
 --perturbation-period N    batches without improvement before a kick
 --max-iterations N         GLS iteration budget (0 = unlimited)
 --no-time-limit            disable the wall clock; requires --max-iterations
---perturb-near-value       OR-Tools' near-value kick (#217)
 --no-objective-tie-break   drop the FJ objective tie-break (#218; on since #226)
 ```
 
-`--perturb-near-value` and `--no-objective-tie-break`
-are recorded only off the engine default, so a default row's cell is the one
-the committed tables hold (they predate #226 and ran the tie-break off; only
-the commit tells them apart). Compound moves are on by default since
+`--no-objective-tie-break` is recorded only off the engine default, so a
+default row's cell is the one the committed tables hold (they predate #226 and
+ran the tie-break off; only the commit tells them apart). Compound moves are on by default since
 2026-10-07; the published tables record `compound_moves=off` and so are an
 off-default arm until regenerated. Two pairs are refused, because the engine
 never reads the second flag and the row would record an arm the run did not
@@ -1006,7 +1004,7 @@ published on them is in-sample for each one:
 |---|---|---|
 | unproductive-batch exit at 300 iterations | #102 | a grid {100, 300, 1000} over the fifty, one seed at 2s; #145 checked the transfer at 10s only (HELDOUT.md) |
 | compound moves (Novelty Jump) on | `79a694a` | one seed at 5s at `b8f52f4`: 16 instances better, 7 worse |
-| near-value kick off | #226 Run B, #219 | 3 seeds at 5s: gap ratio 1.225, `nvs01` lost on seed 1 |
+| near-value kick off (removed by #382; in git history at `8803b404`) | #226 Run B, #219 | 3 seeds at 5s: gap ratio 1.225, `nvs01` lost on seed 1 |
 | quadratic roots and equality balance removed | #226 Run B, #223, #224 | 3 seeds at 5s: neutral or worse |
 
 The objective tie-break (on since `9e1cce9`, #220) was decided on MIPfeas's

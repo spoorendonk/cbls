@@ -352,7 +352,6 @@ def _driver_args(**overrides: object) -> argparse.Namespace:
         "seed": 42,
         "inf_clamp": 1.0e7,
         "compound_moves": True,
-        "perturb_near_value": False,
         "objective_tie_break": True,
         "propagate_bounds": True,
         "cpsat_workers": 1,
@@ -388,8 +387,6 @@ def _driver_args(**overrides: object) -> argparse.Namespace:
         ),
         ("cbls", {"propagate_bounds": False}, {"--no-propagate-bounds": None}, []),
         ("cbls", {"compound_moves": False}, {"--no-compound-moves": None}, ["--compound-moves"]),
-        ("cbls", {}, {}, ["--perturb-near-value"]),
-        ("cbls", {"perturb_near_value": True}, {"--perturb-near-value": None}, []),
         ("cbls", {}, {}, ["--no-objective-tie-break", "--objective-tie-break"]),
         ("cbls", {"objective_tie_break": False}, {"--no-objective-tie-break": None}, []),
         ("cbls", {"cbls_threads": 4}, {"--threads": "4"}, []),
@@ -404,8 +401,6 @@ def _driver_args(**overrides: object) -> argparse.Namespace:
         "cbls-defaults",
         "no-bound-propagation",
         "no-compound-moves",
-        "perturb-near-value-off-by-default",
-        "perturb-near-value",
         "objective-tie-break-on-by-default",
         "no-objective-tie-break",
         "cbls-threads",
@@ -519,8 +514,8 @@ def test_resuming_at_a_different_thread_count_is_refused(tmp_path: Path) -> None
 
 
 def test_resuming_under_a_different_search_arm_is_refused(tmp_path: Path) -> None:
-    # The same hole for CBLS's search-arm flags: a --perturb-near-value re-run
-    # over an off-arm directory would skip every job and score a uniform off table.
+    # The same hole for CBLS's search-arm flags: a --no-compound-moves re-run
+    # over an on-arm directory would skip every job and score a uniform on table.
     (tmp_path / "cbls").mkdir()
     result = tmp_path / "cbls" / "a.json"
     jobs = [Job("cbls", "a")]
@@ -531,16 +526,12 @@ def test_resuming_under_a_different_search_arm_is_refused(tmp_path: Path) -> Non
     # The rows below carry the tie-break, on by default since #226, so that each
     # part tests only its own flag; the tie-break's own part is further down.
     tie = {"objective_tie_break": True}
-    result.write_text(
-        json.dumps({"instance": "a", "threads": 1, "perturb_near_value": False, **tie})
-    )
+    result.write_text(json.dumps({"instance": "a", "threads": 1, "compound_moves": True, **tie}))
     assert check() is None
-    assert check(perturb_near_value=True) == 2
-    # A row from before the flag (#217) ran the off arm, so it is read as off,
-    # not skipped.
+    assert check(compound_moves=False) == 2
+    # A row without the key predates it: nothing to contradict.
     result.write_text(json.dumps({"instance": "a", "threads": 1, **tie}))
-    assert check() is None
-    assert check(perturb_near_value=True) == 2
+    assert check(compound_moves=False) is None
     # And the objective tie-break (#218), on by default since #226: a row from
     # before ran it off, so a default run cannot resume onto one.
     result.write_text(json.dumps({"instance": "a", "threads": 1, "objective_tie_break": False}))

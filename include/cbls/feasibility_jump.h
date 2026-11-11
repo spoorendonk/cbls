@@ -241,26 +241,6 @@ struct GFJConfig {
     // SearchConfig::feasibility_tolerance, so FJ's "feasible" and the search's
     // agree (#211); it was a fixed 1e-9 before.
     double tolerance = kDefaultFeasibilityTolerance;
-    // Opt-in OR-Tools-style kick (#217), off by default: perturb() redraws each
-    // jumpable variable with probability `perturb_near_value_probability`
-    // (OR-Tools' feasibility_jump_var_randomization_probability, 0.05) to a
-    // value NEAR its current one, `random_near_value` at
-    // `perturb_range_ratio` (feasibility_jump_var_perburbation_range_ratio,
-    // 0.2), instead of with the caller's probability to a uniform draw over the
-    // whole domain -- which under a 1e7 inf-clamp throws a column anywhere in
-    // [-1e7, 1e7]. A binary then flips w.p. 0.05 * 0.2 = 1% where today's kick
-    // flips 5%. The List/Set half of the kick keeps the caller's probability.
-    // It ports PerturbateCurrentSolution, which OR-Tools runs only in a
-    // no-restart LS state (use_restart = index % 16 != 15, so the first is
-    // state 15); its restart states redraw near zero or the objective bound
-    // instead. The mipfeas head-to-head's CP-SAT arm, below 16 workers on one
-    // state set, therefore never takes this path (#234). Off is today's kick,
-    // draw for draw. solve() sets it from SearchConfig::perturb_near_value,
-    // which stays off by #219 / #226's smoke A/B; it is kept as an arm
-    // faithful to OR-Tools' no-restart kick.
-    bool perturb_near_value = false;
-    double perturb_near_value_probability = 0.05;
-    double perturb_range_ratio = 0.2;
     // OR-Tools' use of the objective before the first feasible solution (#218).
     // Off in a bare GFJConfig, where off is the pre-#218 path bit for bit; on in
     // solve() since #226, which sets it from SearchConfig::fj_objective_tie_break
@@ -344,9 +324,7 @@ public:
     // scalar if any can move, else a structure — so the kick is never a no-op
     // (#109). The fallback leaves large models bit-identical to plain p-draws,
     // and a model without List/Set variables keeps its exact draw sequence.
-    // With GFJConfig::perturb_near_value the scalar half draws near the current
-    // value at that config's own probability instead (#217); see there. Ends in
-    // reset_weights(random_weights).
+    // Ends in reset_weights(random_weights).
     void perturb(double probability, bool random_weights = false);
     void set_rho(double rho) { config_.rho = rho; }
     // Armed by the search loop once it has stagnated; see solve().

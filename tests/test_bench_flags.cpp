@@ -370,19 +370,17 @@ TEST_CASE("the usage line documents exactly the recorded flags", "[bench][flags]
     }
 }
 
-TEST_CASE("an opt-in flag is recorded only when it is on (#226)", "[bench][flags]") {
+TEST_CASE("an opt-in flag is recorded only off its default (#226)", "[bench][flags]") {
+    // The tie-break is on by default, so the cell records it only when the flag
+    // turns it off.
     const std::string base = cbls::bench::search_config_string(SearchFlags{}, kScalar);
-    REQUIRE(cbls::bench::search_config_string(parse({"--perturb-near-value"}).flags, kScalar) ==
-            base + ";perturb_near_value=on");
-    // It is a scalar flag: a List runner refuses it.
-    std::string error;
-    REQUIRE_FALSE(cbls::bench::validate_search_flags(parse({"--perturb-near-value"}).flags,
-                                                     kStructural, false, error));
-    REQUIRE(error.find("--perturb-near-value") != std::string::npos);
-    // An opt-out is the same rule from the other side: on by default, so the
-    // cell records it only when the flag turns it off.
     REQUIRE(cbls::bench::search_config_string(parse({"--no-objective-tie-break"}).flags, kScalar) ==
             base + ";objective_tie_break=off");
+    // It is a scalar flag: a List runner refuses it.
+    std::string error;
+    REQUIRE_FALSE(cbls::bench::validate_search_flags(parse({"--no-objective-tie-break"}).flags,
+                                                     kStructural, false, error));
+    REQUIRE(error.find("--no-objective-tie-break") != std::string::npos);
 }
 
 TEST_CASE("a non-default arm is named for the published-table guard", "[bench][flags]") {
@@ -403,7 +401,6 @@ TEST_CASE("a non-default arm is named for the published-table guard", "[bench][f
         {"--structural-selection", "violation_guided"},
         {"--structural-sample-size", "4"},
         {"--neighbours", "5"},
-        {"--perturb-near-value"},
         {"--no-objective-tie-break"},
     };
     REQUIRE(arms.size() == cbls::bench::kSearchFlagCount);
@@ -580,48 +577,6 @@ TEST_CASE("the --unproductive-iters flag changes when a batch gives up", "[bench
                                      build_stagnant_model, /*batch_iterations=*/50);
     REQUIRE(early.perturbations > 0);
     REQUIRE(never.perturbations == 0);
-}
-
-/// The stagnant model plus eight wide Ints nothing reads: FJ never moves them,
-/// so where they end up is exactly what the kicks drew.
-void build_stagnant_with_free_model(Model& m) {
-    std::vector<int32_t> vars;
-    vars.reserve(8);
-    for (int i = 0; i < 8; ++i) {
-        vars.push_back(m.int_var(0, 10));
-    }
-    for (int i = 0; i < 8; ++i) {
-        m.int_var(0, 1000);
-    }
-    std::vector<int32_t> args(vars.begin(), vars.end());
-    args.push_back(m.constant(-2500.0));
-    m.add_constraint(m.abs_expr(m.sum(args)));
-    m.minimize(m.sum(vars));
-    m.close();
-}
-
-TEST_CASE("the --perturb-near-value flag changes the kick", "[bench][flags][probe]") {
-    // Every batch of the stagnant model ends in a kick, and the free Ints keep
-    // whatever the kicks drew, so the two kicks leave two different assignments.
-    std::array<std::vector<double>, 2> finals;
-    for (const bool on : {false, true}) {
-        std::vector<std::string> args = {"--no-lns", "--perturbation-period", "1",
-                                         "--max-iterations", "300"};
-        if (on) {
-            args.emplace_back("--perturb-near-value");
-        }
-        const ParseOutcome parsed = parse(args);
-        REQUIRE(parsed.unmatched.empty());
-        Model m;
-        build_stagnant_with_free_model(m);
-        const SearchResult r = run_arm(m, parsed.flags, /*batch_iterations=*/1);
-        REQUIRE(r.perturbations > 0);
-        finals[static_cast<size_t>(on)].reserve(m.num_vars());
-        for (int32_t v = 0; v < static_cast<int32_t>(m.num_vars()); ++v) {
-            finals[static_cast<size_t>(on)].push_back(m.var(v).value);
-        }
-    }
-    REQUIRE(finals[0] != finals[1]);
 }
 
 /// x >= 5 and x <= 4 cannot both hold, so the run never becomes feasible and the

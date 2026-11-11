@@ -127,7 +127,6 @@ CONFIG_KEYS = (
     "share_objective_bound",
     "feasibility_tolerance",
     "compound_moves",
-    "perturb_near_value",
     "objective_tie_break",
     "restart_randomization",
     "luby_restart_unit",
@@ -160,9 +159,8 @@ TUNABLE_DEFAULTS: dict[str, object] = {
 def config_string(result: dict[str, object]) -> str:
     """The `config` cell: every CONFIG_KEYS entry the result carries.
 
-    One key is back-filled, and the opt-in engine flags (`perturb_near_value`,
-    #217; `objective_tie_break`, #218;
-    `restart_randomization` and `luby_restart_unit`, #239) dropped when off,
+    One key is back-filled, and the opt-in engine flags (`objective_tie_break`,
+    #218; `restart_randomization` and `luby_restart_unit`, #239) dropped when off,
     and #267's tunable knobs (TUNABLE_DEFAULTS) dropped at their defaults;
     see their lines.
     `share_objective_bound` (#179) did not exist before
@@ -175,17 +173,15 @@ def config_string(result: dict[str, object]) -> str:
     cells = dict(result)
     if "share_objective_bound" not in cells and cells.get("threads") == 1:
         cells["share_objective_bound"] = True
-    # `perturb_near_value` (#217) and the objective tie-break (#218) the other
-    # way round: their off arm is what every row from before the flag ran, so
-    # off is DROPPED rather than back-filled. Off rows old and new then share
-    # one cell, which also keeps every table scored before the flag
-    # byte-identical, and only an on-arm row carries the key. The tie-break has
-    # been on by default since #226, so a new default row carries
+    # The objective tie-break (#218) the other way round: its off arm is what
+    # every row from before the flag ran, so off is DROPPED rather than
+    # back-filled. Off rows old and new then share one cell, which also keeps
+    # every table scored before the flag byte-identical, and only an on-arm row
+    # carries the key. The tie-break has been on by default since #226, so a new default row carries
     # `objective_tie_break=True` and does not match a table scored before it --
     # which is the point: that table was measured on the old default and must
     # be regenerated, not averaged in.
     for opt_in in (
-        "perturb_near_value",
         "objective_tie_break",
         "restart_randomization",
     ):

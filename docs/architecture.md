@@ -1069,13 +1069,12 @@ The ViolationLS outer loop owns the iteration clock and calls:
   hook/structural mutation outside the engine's bookkeeping).
 - `perturb(probability)` — randomise each scalar var w.p. `probability` and
   apply `max(1, round(probability * |elements|))` random structural moves to
-  each List/Set var, full-evaluate, reset weights. With
-  `GFJConfig::perturb_near_value` (`SearchConfig::perturb_near_value`; default
-  **off**, #217) the scalar half is OR-Tools' kick instead: each scalar w.p.
-  0.05 (not `probability`) to `random_near_value`, the reference's
-  `RandomValueNearValue` — a side of the value chosen by size, then a
-  log-uniform offset within 20% of that side — OR-Tools' no-restart path
-  (`PerturbateCurrentSolution`). The List/Set half is unchanged.
+  each List/Set var, full-evaluate, reset weights. OR-Tools' no-restart kick
+  (`PerturbateCurrentSolution`: each scalar w.p. 0.05 to a value near its
+  current one, `RandomValueNearValue`) was an opt-in arm, off by default and
+  kept off by #219 / #226's smoke A/B (#217); #382 removed it. The code
+  (`random_near_value`), its tests and the `--perturb-near-value` runner flag
+  are in git history at `8803b404`.
 
 **The objective before the first feasible point (#218), on by default.**
 Without help FJ ignores the objective until the first feasible point: the
@@ -2500,7 +2499,6 @@ solve(model, time_limit, seed, use_fj, hook, lns, lns_interval, callback, config
 | `structural_neighbours` | null | `SearchConfig` | k-nearest neighbour list for the built-in generators; setting it makes `Auto` `GranularBest` (#203) |
 | `cone_cache_bytes` | 256 MiB (`Model::kDefaultConeCacheBytes`) | `SearchConfig` | cap on the frozen model's cone cache (#271) |
 | `unproductive_iterations` | 300 | `SearchConfig` → `GFJConfig` | end an FJ batch after this many GLS iterations without a new real-violation low, and take the kick as due (#102); `<= 0` = fixed cadence |
-| `perturb_near_value` | false | `SearchConfig` | OR-Tools' near-value diversification kick (#217) |
 | `fj_objective_tie_break` | true | `SearchConfig` | OR-Tools' affine-objective tie-break before the first feasible point (#218, #226) |
 | `restart_randomization` | false | `SearchConfig` | CP-SAT's restart randomisation as an arm (#239) |
 | `luby_restart_unit` | 0 (off) | `SearchConfig` | Luby kick schedule in place of #102's trigger (#239) |

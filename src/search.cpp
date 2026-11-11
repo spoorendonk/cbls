@@ -2211,7 +2211,6 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
     gfj.max_iterations = 0;
     gfj.unproductive_iterations = config.unproductive_iterations;
     gfj.tolerance = config.feasibility_tolerance;  // one meaning of "satisfied" (#211)
-    gfj.perturb_near_value = config.perturb_near_value;
     gfj.objective_tie_break = config.fj_objective_tie_break;
     FeasibilityJump fj(model, vm, rng, gfj);
     fj.begin(/*set_initial_x=*/!config.skip_init);
