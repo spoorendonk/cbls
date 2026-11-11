@@ -40,8 +40,8 @@ SolutionPool::SolutionPool(int capacity) : capacity_(std::max(1, capacity)) {}
 
 bool SolutionPool::submit(Solution sol) {
     std::scoped_lock lock(mutex_);
-    // Under the mutex so two submitters cannot interleave a load and a store and
-    // lose the better value; see best_feasible_objective().
+    // Under the mutex, so concurrent submitters cannot interleave load and store
+    // and lose the better value.
     if (sol.feasible && std::isfinite(sol.objective) &&
         sol.objective < best_feasible_objective_.load(std::memory_order_relaxed)) {
         best_feasible_objective_.store(sol.objective, std::memory_order_relaxed);
@@ -88,20 +88,11 @@ size_t SolutionPool::size() const {
 }
 
 uint64_t portfolio_worker_seed(uint64_t base_seed, int worker, int restart) {
-    // splitmix64's finalizer, over a combination that separates the three
-    // inputs before mixing.
-    //
-    // For a FIXED base the combination is injective over every (worker, restart)
-    // range that occurs: a collision needs A*dworker + B*drestart == 0 (mod
-    // 2^64), and with these two odd multipliers the smallest such pair has
-    // |dworker| ~ 2^58 at drestart <= 32, and still ~2^41 at drestart <= 2^20.
-    //
-    // Across DIFFERENT bases it is only a sum, so a triple CAN in principle be
-    // matched by shifting the base -- portfolio_worker_seed(0, 1, 0) equals
-    // portfolio_worker_seed(A, 0, 0). That needs a base difference of A*dworker,
-    // which no adjacent --seed can reach, and it is not a property anything
-    // relies on. The finalizer then decorrelates neighbours, which is the
-    // property that was missing.
+    // For a fixed base the pre-mix sum is injective over every (worker, restart)
+    // range that occurs: a collision needs A*dworker + B*drestart == 0 (mod 2^64),
+    // whose smallest solution has |dworker| ~ 2^58 at drestart <= 32, ~2^41 at
+    // drestart <= 2^20. Across bases it is only a sum (seed(0, 1, 0) ==
+    // seed(A, 0, 0)), unreachable by adjacent seeds and relied on by nothing.
     uint64_t x = base_seed;
     x += 0x9E3779B97F4A7C15ULL * (static_cast<uint64_t>(worker) + 1);
     x += 0xBF58476D1CE4E5B9ULL * (static_cast<uint64_t>(restart) + 1);
@@ -121,10 +112,7 @@ int effective_pool_capacity(int requested, int n_threads) {
     if (requested > 0) {
         return requested;
     }
-    // 0 or negative means auto. Negative is folded in here rather than clamped
-    // to 1: a negative capacity is a caller error, and silently giving them a
-    // one-solution pool -- which is what SolutionPool's own max(1, ...) clamp
-    // used to do -- is the least useful reading of it.
+    // <= 0 is auto; a negative capacity gets auto, not a one-solution pool.
     return std::max(10, 2 * n_threads);
 }
 
@@ -136,7 +124,6 @@ int ParallelSearch::effective_threads(const ParallelConfig& pc) const {
     return std::max(1, n);
 }
 
-// Backward-compatible simple solve
 SearchResult ParallelSearch::solve(std::function<Model()> model_factory, double time_limit,
                                    uint64_t seed) {
     ParallelConfig pc;
@@ -147,7 +134,6 @@ SearchResult ParallelSearch::solve(std::function<Model()> model_factory, double 
                            effective_threads(pc), pc);
 }
 
-// Full-featured solve
 SearchResult ParallelSearch::solve(
     std::function<Model()> model_factory, double time_limit, uint64_t seed,
     const SearchConfig& config,
@@ -160,18 +146,11 @@ SearchResult ParallelSearch::solve(
 
 // --- Master-model overloads: one structure, N workers ---
 //
-// `freeze()` runs here, on the calling thread and before any worker exists, so
-// the one structural rebuild `add_objective_soft_constraint` performs happens
-// once rather than N times on a DAG N workers are already reading.
-//
-// The factory then simply copies the frozen master. That copy shares the
-// structure and duplicates only what a search writes (see Model's copy
-// constructor), and it is safe to run on several worker threads at once:
-// nothing here writes to `master`, and copying a shared_ptr is atomic.
-// Both delegate to the matching factory overload rather than repeating its
-// argument list: a `std::function<Model()>` prvalue cannot bind to `Model&`, so
-// the delegation is unambiguous, and one place then decides the default
-// SearchConfig, the thread count and the pool capacity.
+// `freeze()` runs on the calling thread before any worker exists, so the
+// objective-row rebuild happens once, not on a DAG workers are reading. The
+// factory's copy shares structure and is safe on concurrent threads: nothing
+// writes `master`, and copying a shared_ptr is atomic. Delegating to the factory
+// overload (a prvalue cannot bind `Model&`) keeps the defaults in one place.
 SearchResult ParallelSearch::solve(Model& master, double time_limit, uint64_t seed) {
     master.freeze();
     return solve(std::function<Model()>([&master]() { return master; }), time_limit, seed);
@@ -187,23 +166,12 @@ SearchResult ParallelSearch::solve(
                  std::move(hook_factory), std::move(lns_factory), callback, par_config);
 }
 
-// Portfolio workers are homogeneous — same model, same budget, different seed —
-// so their termination reasons almost always agree, and this only has to break
-// ties. Precedence: a worker that actually finished the job (Feasible) outranks
-// everything, because that is the one exit that answers the question rather than
-// running out of something. The Stopped branch below is DEFENSIVE and
-// unreachable as the code stands -- the flag is raised only by a worker whose
-// own run ended Feasible, and Feasible short-circuits this loop before
-// any_stopped is consulted. It is kept so that a future second reason to raise
-// the flag surfaces as "a peer ended this" rather than being reported as a
-// budget exit. Cancelled sits directly below Feasible: a host that cancelled
-// needs to read that back whatever its workers' own budgets did in the same
-// instant, and a cancelled portfolio's `time_seconds` must not be read as an
-// expired budget. Among budget exits the shared wall clock outranks the per-worker
-// iteration budget, because the portfolio's answer is clock-limited as soon as
-// any worker ran the clock out. NoBudget is last: it is also what a worker that
-// threw leaves behind, and one crashed thread should not relabel a run the
-// others budget-limited.
+// Breaks ties among workers' reasons. Feasible first: the one exit that answers
+// the question. Cancelled next, so a host reads back its cancel whatever budgets
+// did, and its `time_seconds` is not read as an expired budget. Stopped (a raised
+// flag with no Feasible worker) is reported as a peer's stop, not a budget exit.
+// TimeLimit over IterationLimit: one worker running out the shared clock makes
+// the answer clock-limited. NoBudget last: a worker that threw leaves it too.
 static TerminationReason aggregate_termination(const std::vector<SearchResult>& results) {
     bool any_cancelled = false;
     bool any_stopped = false;
@@ -230,11 +198,8 @@ static TerminationReason aggregate_termination(const std::vector<SearchResult>& 
     return any_iterations ? TerminationReason::IterationLimit : TerminationReason::NoBudget;
 }
 
-// ~thread calls std::terminate on a thread that is still joinable, so every
-// launch loop below has to join what it managed to create even when the loop
-// itself fails: threads.emplace_back can throw std::system_error at the process
-// thread limit, or bad_alloc. Unwinding past a half-filled vector would abort
-// the process instead of reporting the failure.
+// ~thread on a joinable thread is std::terminate, so a failed launch loop must
+// still join what it created (see launch_workers).
 static void join_all(std::vector<std::thread>& threads) {
     for (auto& t : threads) {
         if (t.joinable()) {
@@ -245,55 +210,33 @@ static void join_all(std::vector<std::thread>& threads) {
 
 namespace {
 
-// One worker's running total across its restarts. A restart is a fresh
-// `cbls::solve()` on the SAME model, so the honest aggregate of two solves is
-// the sum of their iterations and the better of their solutions -- not the last
-// one's, which may be a restart that spent its remaining milliseconds finding
-// nothing.
+// One worker's total across its restarts (fresh solve()s on the same model):
+// work summed, the better solution kept, not the last restart's.
 struct WorkerAccumulator {
     SearchResult result;
     bool any_run = false;
 
-    // `started_at` is when the restart being absorbed BEGAN, on the portfolio
-    // clock. Every time on a worker's SearchResult is relative to its own
-    // solve() start, so the pair below has to be shifted onto the shared clock
-    // or a restart that began at t=19.9s reports "feasible at 0.001s".
+    // `started_at`: when this restart began on the portfolio clock, to shift
+    // the first-feasible time off the restart's own solve() clock.
     void absorb(const SearchResult& r, double started_at) {
         result.iterations += r.iterations;
-        // Summed, not maxed, for the same reason iterations are: a worker's
-        // restarts run BACK TO BACK on its own thread, so the wall time it held
-        // is their total. The max would report the longest single restart --
-        // milliseconds of a multi-second run under a tight max_iterations --
-        // and solve_portfolio's max ACROSS workers would then publish that as
-        // the run's duration.
+        // Summed: restarts run back to back, so the worker's wall time is their
+        // total; a max would publish the longest single restart as the run's.
         result.time_seconds += r.time_seconds;
-        // Every restart's reason overwrites the previous one: the reason that
-        // matters is the one that ended the worker, and the loop below breaks on
-        // exactly the reasons worth reporting (Feasible, then Cancelled or
-        // Stopped through `ends_worker`, then NoBudget) -- plus the two it decides
-        // for itself between restarts, a raised stop and an exhausted shared
-        // clock.
+        // Overwritten: the reason that matters is the one that ended the worker.
         result.termination = r.termination;
-        // Work done across the restarts, summed with the iterations above.
         result.perturbations += r.perturbations;
         result.lns_repairs += r.lns_repairs;
         result.lns_repairs_accepted += r.lns_repairs_accepted;
-        // Same rule, one struct over. Both aggregation sites go through
-        // SearchCounters::merge -- this one across a worker's restarts, and
-        // solve_portfolio's loop across the workers -- so the two cannot drift
-        // apart the way a hand-written sum per site would.
+        // Both aggregation sites (restarts here, workers in solve_portfolio) use
+        // SearchCounters::merge, so they cannot drift apart.
         result.counters.merge(r.counters);
-        // Every absorbed run after the first is a restart. Derived from
-        // `any_run` rather than from the loop's `restart` index, because a
-        // restart whose solve THREW never reaches here: counting loop turns would
-        // report a worker that failed once and then succeeded as having run a
-        // solve and a restart, when it ran one solve. See
-        // SearchCounters::portfolio_restarts.
+        // Every absorbed run after the first is a restart; from `any_run`, not
+        // the loop index, since a restart that threw never reaches here.
         if (any_run) {
             ++result.counters.portfolio_restarts;
         }
-        // The earliest restart to reach feasibility, with the objective it
-        // reached -- both from that same restart.
+        // The earliest restart to reach feasibility, both values from it.
         const double reached = started_at + r.time_to_first_feasible;
         if (!std::isnan(reached) && (std::isnan(result.time_to_first_feasible) ||
                                      reached < result.time_to_first_feasible)) {
@@ -307,42 +250,20 @@ struct WorkerAccumulator {
             result.objective = r.objective;
             result.feasible = r.feasible;
             result.best_state = r.best_state;
-            // Belongs to `best_state`, so it moves with it. `escape_probe_armed`
-            // deliberately does NOT: it is a latch on one worker's END state,
-            // and the state being returned came from the pool, which carries no
-            // worker identity to attribute it to. The portfolio leaves it false
-            // and include/cbls/search.h says so.
+            // Moves with `best_state`. `escape_probe_armed` does not: a latch on
+            // one worker's end state cannot be attributed (search.h).
             result.best_violation = r.best_violation;
         }
         any_run = true;
     }
 };
 
-// The portfolio's progress stream.
-//
-// Every worker reports through this, not only worker 0. A consumer's subject is
-// the PORTFOLIO's incumbent, and worker 0's own trajectory is neither the best
-// of them nor, once it restarts, monotone in time -- so a benchmark harness
-// integrating the callback as a step function of wall time was integrating the
-// wrong function, and the CLI could print a last progress row worse than the
-// result it went on to report. Two things are corrected here and nowhere else:
-//
-//  - `time_seconds` is rewritten to the PORTFOLIO clock. A worker's solve()
-//    times from its own start, so a restarted worker's rows otherwise walk
-//    backwards through the stream.
-//  - `objective` is the GLOBAL incumbent. A row is forwarded when it improves
-//    on that -- from any worker -- or when it is worker 0's periodic
-//    no-new-best tick, which is what keeps the CLI's once-a-second liveness
-//    row. Either way it carries the portfolio's best rather than a stale peer
-//    value, so the stream stays monotone.
-//
-// Everything else on the row (iteration, violation, perturbations, feasible)
-// remains the REPORTING worker's own, and is read as such: no worker has a view
-// of any other's counters.
-//
-// Serialized on its own mutex, and the consumer is called under it: workers
-// report concurrently, and a callback writing to one stream or file is not
-// thread-safe on its own.
+// The portfolio's progress stream; every worker reports through it. Rewrites
+// `time_seconds` to the portfolio clock (a restarted worker's would run
+// backwards) and `objective` to the global incumbent; forwards a row only when it
+// improves that, or as worker 0's heartbeat tick, so the stream is monotone.
+// Other fields stay the reporting worker's (see SolveProgress). The consumer is
+// called under the mutex, since workers report concurrently.
 class PortfolioProgress {
 public:
     PortfolioProgress(SolveCallback* inner, std::function<double()> elapsed)
@@ -383,73 +304,47 @@ private:
     bool heartbeat_;
 };
 
-// Everything one worker is and does, gathered so `solve_portfolio` below is
-// about running N of them and combining their answers rather than about both at
-// once. Held by reference: it lives on the calling thread's stack for the whole
-// call, and every member is either shared on purpose (the pool, the stop flag)
-// or read-only.
+// What every worker shares. Held by reference: it lives on the calling thread's
+// stack for the whole call, and every member is shared on purpose (the pool,
+// the stop flag) or read-only.
 struct PortfolioContext {
     std::function<Model()>& model_factory;
     std::function<std::shared_ptr<InnerSolverHook>(Model&)>& hook_factory;
     std::function<std::shared_ptr<LNS>()>& lns_factory;
     const SearchConfig& config;
-    // Worker 0's end of the portfolio stream, and every other worker's. Both
-    // null when the caller passed no callback. See `PortfolioProgress`.
+    // Worker 0's end of the stream and every other's; null without a callback.
     SolveCallback* heartbeat_callback;
     SolveCallback* peer_callback;
     SearchCoordination& coord;
-    // Seconds left on the SHARED deadline -- one clock for the whole portfolio,
-    // so a worker that restarts gets the time its predecessor left rather than
-    // a fresh full budget. Returns 0.0 when there is no wall clock at all, in
-    // which case `has_deadline` is false and the value is not a budget.
+    // Seconds left on the shared deadline, so a restart gets what its
+    // predecessor left. 0.0 without a wall clock (`has_deadline` false), where
+    // it is not a budget.
     std::function<double()> remaining;
-    /// Seconds since the portfolio started. One clock for every worker, so a
-    /// time reported by one of them means the same thing as a time reported by
-    /// another -- which a worker's own solve() clock does not, least of all
-    /// across restarts.
+    /// Seconds since the portfolio started: one clock for every worker.
     std::function<double()> elapsed;
-    /// Builds one Tracer per worker, or empty. See
-    /// ParallelConfig::tracer_factory for why it is per worker rather than one
-    /// instance shared through the progress wrapper.
+    /// Builds one Tracer per worker, or empty (ParallelConfig::tracer_factory).
     const std::function<std::unique_ptr<Tracer>(int)>& tracer_factory;
     bool has_deadline;
     uint64_t seed;
 };
 
-// One worker: its own model, its own hook and LNS, and a restart loop over the
-// shared deadline. Returns nullopt when it produced no result at all -- it was
-// handed no budget, or every attempt threw; every other outcome is a result
-// worth aggregating.
-//
-// Throws nothing of its own -- the caller's catch is what keeps an exception off
-// a thread function -- but the factories it calls may.
-
-// How many times in a row a worker's `solve()` may throw before the worker
-// gives up. Small on purpose: the case this exists for is a transient failure
-// (a bad_alloc under memory pressure that the next restart does not hit), and a
-// deterministic one must not spend the portfolio's whole budget re-raising.
+// Consecutive solve() throws before a worker gives up. Small: it is for a
+// transient failure (a bad_alloc the next restart does not hit), and a
+// deterministic one must not spend the budget re-raising.
 constexpr int kMaxWorkerRetries = 3;
 
-// The two cancellation channels a caller may set -- ParallelConfig::stop and
-// SearchConfig::stop -- behind one StopRef, OR-ed. A caller may set either or
-// both; branching on which would put the question at every poll site instead of
-// once at setup. An instance lives on solve_portfolio's frame for the whole
-// call, and the workers are joined before it returns, so the StopRef the workers
-// hold never outlives it.
+// ParallelConfig::stop OR SearchConfig::stop behind one StopRef. Lives on
+// solve_portfolio's frame, and workers are joined before it returns, so their
+// StopRef never outlives it.
 struct CombinedStop {
     StopRef host;
     StopRef search;
     [[nodiscard]] bool requested() const { return host.requested() || search.requested(); }
 };
 
-// How many workers a portfolio actually runs.
-//
-// Without a caller-owned executor it is what the caller asked for. WITH one it
-// is capped by the executor's own width: a chunk is what a worker runs on, so
-// asking for more workers than the pool can run at once would produce workers
-// that only start as earlier ones finish -- and a portfolio worker holds its
-// core for the whole shared deadline, so the late ones would get no budget at
-// all. Floored at 1, because a zero-worker portfolio returns no result.
+// Workers a portfolio runs: capped by an executor's width, since a worker holds
+// its chunk for the whole deadline and a late one would get no budget. Floored at
+// 1: a zero-worker portfolio returns no result.
 int portfolio_workers(int requested, const std::optional<ExecutorRef>& executor) {
     if (!executor.has_value()) {
         return std::max(1, requested);
@@ -458,42 +353,24 @@ int portfolio_workers(int requested, const std::optional<ExecutorRef>& executor)
 }
 
 // Run `run_one(i)` for every worker index in `[0, n_workers)`, concurrently.
+// `run_one` swallows worker exceptions, so only a launch failure reaches here.
 //
-// Two launch paths, one meaning. `run_one` swallows every exception a worker can
-// raise (see its definition), so the only thing either path here has to handle
-// is a failure to LAUNCH -- and the two differ in what that is.
+// With an executor (#169): no thread is created; any chunking works (grouped
+// indices run serially, each on the deadline as it stands); workers are keyed by
+// index, not `chunk_idx`. An executor exception is the caller's, so uncaught.
 //
-// With a caller-owned executor (#169) this creates no thread at all. Worker `i`
-// runs as index `i`, and the loop over [begin, end) is written for ANY chunking
-// rather than assuming one index per chunk: `parallel_for_chunked` does not
-// promise a partition of one, and a chunking that groups several indices runs
-// those workers one after another, which is correct and merely less parallel --
-// each is handed the shared deadline as it stands when it starts. `chunk_idx` is
-// unused on purpose: it indexes the CHUNK, while a worker is identified by its
-// index, which is what `results`, `failures` and `portfolio_worker_seed` key on.
-// Nothing is caught around the executor call, because an exception from there is
-// the CALLER's own failure to report rather than a worker's to absorb, and the
-// executor is responsible for having finished or abandoned its chunks before it
-// returns.
-//
-// On our own threads, `threads.emplace_back` can throw (the process thread
-// limit, or bad_alloc). The stop flag is raised and whatever was created is
-// joined before rethrowing -- ~thread on a joinable thread is std::terminate, so
-// unwinding past a half-filled vector would abort the process instead of
-// reporting the failure.
+// On our own threads, emplace_back can throw (thread limit, bad_alloc): raise
+// the stop flag and join what exists before rethrowing, since ~thread on a
+// joinable thread is std::terminate.
 void launch_workers(int n_workers, const std::optional<ExecutorRef>& executor,
                     std::atomic<bool>& stop, detail::FunctionRef<void(int)> run_one) {
     if (executor.has_value()) {
         executor->parallel_for_chunked(
             0, n_workers, [n_workers, run_one](int begin, int end, int /*chunk_idx*/) {
-                // Clamped to the range that was ASKED for. `run_one` indexes
-                // `results` and `failures` by `i`, and those bounds come from a
-                // pool this library does not own -- so an executor that mis-chunks,
-                // or that ignores the requested range, would write past two heap
-                // vectors. This is the C++ shape of the #156 hazard class; the
-                // adapted executor's contract forbids it, and a compare per WORKER
-                // (workers are seconds long) turns a violation into a dropped
-                // worker instead of heap corruption.
+                // Clamped to the requested range: `run_one` indexes two heap
+                // vectors by `i`, and a mis-chunking executor would write past
+                // them (#156's hazard class). One compare per worker turns that
+                // into a dropped worker, not heap corruption.
                 for (int i = std::max(0, begin); i < std::min(end, n_workers); ++i) {
                     run_one(i);
                 }
@@ -513,48 +390,24 @@ void launch_workers(int n_workers, const std::optional<ExecutorRef>& executor,
     join_all(threads);
 }
 
-// What a portfolio that produced no result at all reports.
-//
-// A cancelled portfolio reaches that path too, and must NOT be reported as
-// NoBudget: a stop raised before the first worker got going leaves every worker
-// breaking out of its restart loop without ever calling solve(), so nothing is
-// submitted and nothing throws. That run did not lack a budget -- the host took
-// it away (#169).
+// What a portfolio with no result reports. A cancel before any worker started
+// lands here too and is Cancelled, not NoBudget (#169).
 TerminationReason empty_portfolio_reason(bool cancelled) {
     return cancelled ? TerminationReason::Cancelled : TerminationReason::NoBudget;
 }
 
-// Whether this restart's exit ends the worker rather than earning it another
-// one. A peer answered the question, or the host cancelled; either way there is
-// nothing left for this worker to do.
+// Whether this exit ends the worker rather than earning another restart: a
+// peer's stop or the host's cancel.
 bool ends_worker(TerminationReason reason) {
     return reason == TerminationReason::Stopped || reason == TerminationReason::Cancelled;
 }
 
-// A host cancel outranks a per-worker ITERATION budget in the aggregate.
-//
-// `WorkerAccumulator::absorb` overwrites a worker's reason per restart, and a
-// worker can finish a restart's iteration budget and only then see the cancel --
-// the window between two restarts, and also the loop's own "shared clock
-// exhausted" exit. Such a worker reports IterationLimit for a run whose budget
-// the host took away, which inverts the precedence
-// TerminationReason::Cancelled documents.
-//
-// Applied HERE, to the aggregate, rather than inside the worker loop. Two
-// reasons, and the second is the one that decided it:
-//
-//  - it covers strictly more: both loop-top exits, and a cancel that lands after
-//    the loop but before the portfolio reports;
-//  - it is OBSERVABLE. Everything a host supplies -- callback, hook, LNS, tracer
-//    -- runs inside `cbls::solve`, so nothing can catch a worker between two
-//    restarts, and a relabel inside that loop is code no test can reach. This
-//    one is reached by any run that ends on an iteration budget with the stop
-//    raised (tests/test_stop.cpp).
-//
-// TimeLimit is deliberately NOT relabelled: the shared clock expiring is its own
-// cause, and `ViolationLSLoop::run` resolves the same ambiguity the same way, by
-// asking the clock first. Feasible is not either -- a worker that answered the
-// question finished, it did not stop.
+// A host cancel outranks an IterationLimit or NoBudget aggregate: a worker can
+// finish an iteration budget and only then see the cancel, between restarts.
+// Applied to the aggregate, not in the worker loop, because it covers strictly
+// more (a cancel after the loop too) and is testable (tests/test_stop.cpp); no
+// host code runs between restarts. TimeLimit stays (the clock is its own cause,
+// as in ViolationLSLoop::run), and so does Feasible.
 TerminationReason with_host_cancel(TerminationReason aggregate, bool cancelled) {
     if (!cancelled) {
         return aggregate;
@@ -572,10 +425,8 @@ bool worker_should_stop(const PortfolioContext& ctx) {
     return ctx.coord.stop->load(std::memory_order_relaxed) || ctx.config.stop.requested();
 }
 
-// One tracer for this worker, or none. Called on the worker's own thread, ONCE
-// rather than once per restart: a restarted worker carries on with the same
-// tracer, exactly as it carries on with the same model, hook and LNS. See
-// ParallelConfig::tracer_factory, including why it is per worker.
+// One tracer for this worker, or none; called once on its thread, spanning its
+// restarts like its model, hook and LNS.
 std::unique_ptr<Tracer> make_worker_tracer(const PortfolioContext& ctx, int index) {
     if (!ctx.tracer_factory) {
         return nullptr;
@@ -583,21 +434,11 @@ std::unique_ptr<Tracer> make_worker_tracer(const PortfolioContext& ctx, int inde
     return ctx.tracer_factory(index);
 }
 
-// The SearchConfig for ONE of a worker's restarts.
-//
-// Two things differ from the portfolio's own config, and both are per restart
-// rather than per worker, which is why this is not folded into worker_config:
-//
-//  - the worker's own tracer, whenever a factory exists AT ALL -- including when
-//    that factory returned null for this worker. Assigning only a NON-null tracer
-//    would leave a declining worker on whatever single `SearchConfig::tracer` the
-//    caller set, i.e. N workers calling one unsynchronised sink on their own
-//    threads: exactly the data race `ParallelConfig::tracer_factory` exists to
-//    remove, in the one configuration that mixes the two knobs;
-//  - skip_init on every restart after the first, so the worker keeps the
-//    assignment it already holds -- its own incumbent, or a peer's if it adopted
-//    one -- instead of throwing the run away and starting from the
-//    closest-to-zero point again.
+// The SearchConfig for one restart:
+//  - the worker's tracer whenever a factory exists, null included: otherwise a
+//    declining worker would share the caller's `SearchConfig::tracer` across
+//    threads, the race tracer_factory removes;
+//  - skip_init after the first, so the worker keeps the assignment it holds.
 SearchConfig restart_config(const PortfolioContext& ctx, Tracer* tracer, int restart) {
     SearchConfig cfg = ctx.config;
     if (ctx.tracer_factory) {
@@ -609,32 +450,20 @@ SearchConfig restart_config(const PortfolioContext& ctx, Tracer* tracer, int res
     return cfg;
 }
 
-// Whether a worker's restart loop ends after the solve that returned `r` -- and,
-// when that solve answered the question outright, raises the shared stop flag
-// on the way out. Lifted out of run_worker because "is this worker done" is one
-// responsibility with an ordered list of reasons, and the order is the content.
+// Whether the restart loop ends after the solve that returned `r`; raises the
+// shared stop flag when it answered the question. The order of tests matters.
 bool worker_finished(const PortfolioContext& ctx, const SearchResult& r) {
     if (r.termination == TerminationReason::Feasible) {
-        // A pure-feasibility model: the first feasible solution IS the answer,
-        // so every other worker is now searching a settled question. Stop them
-        // rather than leaving them to run their budget out.
-        //
-        // Raised BEFORE the no-deadline exit below, and the order is the whole
-        // point: an iteration-budgeted portfolio has no clock to run out, so its
-        // peers would otherwise grind their full iteration budgets on a question
-        // already answered -- which is exactly what pool.h promises does not
-        // happen, unqualified.
+        // Pure feasibility: the answer is found, so stop every peer. Before the
+        // no-deadline exit below, or an iteration-budgeted portfolio's peers
+        // would run their full budgets (pool.h promises they stop).
         ctx.coord.stop->store(true, std::memory_order_relaxed);
         return true;
     }
     if (!ctx.has_deadline) {
-        // No SHARED wall clock, so there is no "time the predecessor left" for a
-        // restart to run on: the worker's iteration budget IS the whole budget it
-        // was given, and restarting would hand it that budget again, forever. An
-        // IterationLimit return is not one of the exits below, so without this
-        // the loop never ends -- and `time_limit <= 0` with
-        // SearchConfig::max_iterations set is a supported call shape, reachable
-        // from C++ and from Python.
+        // No shared clock: the iteration budget is the whole budget, and a
+        // restart would grant it again forever (IterationLimit is not an exit
+        // below). `time_limit <= 0` with max_iterations is a supported call.
         return true;
     }
     // Neither a wall clock nor an iteration budget (NoBudget): restarting would
@@ -645,31 +474,26 @@ bool worker_finished(const PortfolioContext& ctx, const SearchResult& r) {
 // How a worker ended, for the result's worker accounting (#170, see
 // SearchResult::workers_completed).
 struct WorkerEnd {
-    // The exception that ENDED the worker -- the one its last solve attempt
-    // threw -- or null when that attempt returned normally (or no attempt ran). A
-    // throw followed by a successful retry is cleared by the retry, so a worker
-    // that recovered is not reported as failed; one that returned results and
-    // then died on a later restart is.
+    // What the last solve attempt threw, or null if it returned (or none ran).
+    // A successful retry clears it; a later fatal restart sets it even after
+    // earlier results.
     std::exception_ptr failure;
-    // The shared deadline had passed before the worker's FIRST attempt, so it
-    // never searched. Distinct from a peer's stop or a host cancel, which end a
-    // worker that has nothing left to do: this one had work and no time, which
-    // happens when a caller's executor runs workers one after another, or when
-    // the budget expires during launch.
+    // The deadline passed before the first attempt: work but no time (a serial
+    // executor, or a budget that expired during launch), unlike a stop or cancel.
     bool starved = false;
 };
 
+// One worker: its own model, hook and LNS, and a restart loop over the shared
+// deadline. nullopt when it produced no result (no budget, or every attempt
+// threw). Throws nothing itself, but the factories it calls may.
 std::optional<SearchResult> run_worker(const PortfolioContext& ctx, int index, WorkerEnd& end) {
     std::exception_ptr& failure = end.failure;
-    // Built ONCE per worker, not once per restart: a restart carries on with
-    // the model it already holds, which is also what makes `skip_init` below
-    // mean "keep the assignment this worker converged to".
+    // Once per worker: restarts continue on this model, which is what makes
+    // `skip_init` keep the converged assignment.
     Model m = ctx.model_factory();
 
-    // Both die at the end of this function, i.e. on the worker thread. For a
-    // factory that came from Python that is where the last reference to the
-    // returned object is dropped, and nanobind's shared_ptr deleter takes the
-    // GIL to do it.
+    // Both die on the worker thread; for a Python factory nanobind's
+    // shared_ptr deleter takes the GIL there.
     std::shared_ptr<InnerSolverHook> hook;
     if (ctx.hook_factory) {
         hook = ctx.hook_factory(m);
@@ -681,39 +505,29 @@ std::optional<SearchResult> run_worker(const PortfolioContext& ctx, int index, W
     // Dies with this function, on this worker's thread. See make_worker_tracer.
     const std::unique_ptr<Tracer> tracer = make_worker_tracer(ctx, index);
 
-    // Every worker reports, through the portfolio stream that serializes them
-    // and reconciles their clocks; worker 0 additionally carries the heartbeat.
+    // Worker 0 also carries the heartbeat.
     SolveCallback* cb = (index == 0) ? ctx.heartbeat_callback : ctx.peer_callback;
 
     WorkerAccumulator acc;
     int consecutive_failures = 0;
-    // No idle threads while budget remains. A single solve() can return with
-    // time left -- an exhausted SearchConfig::max_iterations is the case that
-    // exists today -- and the core it was using would then sit out the rest of
-    // the run. Restart it instead, on the time its predecessor left.
+    // A solve() that returns with time left (e.g. max_iterations exhausted) is
+    // restarted on the time it left, so no core idles while budget remains.
     for (int restart = 0;; ++restart) {
-        // A peer answered the question, or the HOST cancelled (#169). The second
-        // is checked here as well as inside `cbls::solve` so that a cancel
-        // arriving between two restarts ends the worker rather than launching one
-        // more solve that immediately returns Cancelled.
+        // Checked here as well as in cbls::solve, so a cancel between restarts
+        // launches no solve that returns Cancelled at once (#169).
         if (worker_should_stop(ctx)) {
             break;
         }
-        // ONE read of the shared clock per restart, reused as this solve's
-        // budget. Reading it twice lets the deadline pass between the guard and
-        // the call: the second read then returns exactly 0.0, which
-        // make_budget reads as "no wall clock at all" -- and a worker carrying
-        // a SearchConfig::max_iterations budget would then run that budget
-        // whole, past the deadline the portfolio set, with join_all waiting on
-        // it.
+        // One clock read, reused as the budget: a second read could return 0.0,
+        // which make_budget takes as "no wall clock", and the solve would run
+        // its max_iterations whole past the deadline.
         const double budget = ctx.remaining();
         if (ctx.has_deadline && budget <= 0.0) {
             end.starved = restart == 0;
             break;
         }
         const SearchConfig cfg = restart_config(ctx, tracer.get(), restart);
-        // Distinct per (worker, restart), and decorrelated ACROSS base seeds --
-        // see portfolio_worker_seed.
+        // Distinct per (worker, restart); see portfolio_worker_seed.
         const uint64_t run_seed = portfolio_worker_seed(ctx.seed, index, restart);
 
         SearchResult r;
@@ -722,18 +536,10 @@ std::optional<SearchResult> run_worker(const PortfolioContext& ctx, int index, W
             r = cbls::solve(m, budget, run_seed, cfg.use_fj, hook.get(), lns.get(),
                             cfg.lns_interval, cb, cfg, &ctx.coord);
         } catch (...) {
-            // The model, hook and LNS are already built, so this throw came from
-            // the SEARCH -- a bad_alloc on a large model, a throwing custom
-            // hook -- not from a factory that would throw again identically.
-            // Leaving the worker dead would idle its core for the rest of the
-            // run while its peers continue, which is exactly the property this
-            // class claims not to have. So retry, bounded: a search that fails
-            // this many times consecutively is failing deterministically and
-            // retrying it only burns the shared budget.
-            //
-            // The factory is NOT retried, deliberately -- it is called once per
-            // worker, above this loop, and a factory that cannot build its model
-            // will not build it on the second ask either.
+            // The search threw (bad_alloc, a throwing hook), not a factory:
+            // retry, bounded by kMaxWorkerRetries, so the core does not idle.
+            // The factories ran once above and are not retried: one that failed
+            // would fail again.
             failure = std::current_exception();
             if (++consecutive_failures >= kMaxWorkerRetries) {
                 break;
@@ -755,9 +561,8 @@ std::optional<SearchResult> run_worker(const PortfolioContext& ctx, int index, W
     return acc.result;
 }
 
-// The text a WorkerFailure carries. Called on the calling thread after every
-// worker has joined; a parked nanobind python_error takes the GIL inside its own
-// what(), as it does in its destructor (see PySolveCallback in
+// The text a WorkerFailure carries; called after every worker joined. A parked
+// python_error takes the GIL in its what() and destructor (PySolveCallback in
 // python/bindings.cpp).
 std::string describe_failure(const std::exception_ptr& failure) {
     try {
@@ -773,10 +578,8 @@ std::string describe_failure(const std::exception_ptr& failure) {
 constexpr const char* kStarvedReason =
     "the shared deadline had passed before this worker's first solve";
 
-// Fill the result's worker accounting (#170) from what each worker left behind:
-// whether it produced a result, the exception that ended it, and whether the
-// deadline starved it. The definition of "completed" is on
-// SearchResult::workers_completed; this is the one place that applies it.
+// The result's worker accounting (#170): the one place that applies
+// SearchResult::workers_completed's definition.
 void report_workers(const std::vector<char>& produced,
                     const std::vector<std::exception_ptr>& ended_by,
                     const std::vector<char>& starved, SearchResult& result) {
@@ -806,25 +609,14 @@ SearchResult ParallelSearch::solve_portfolio(
     std::function<std::shared_ptr<InnerSolverHook>(Model&)>& hook_factory,
     std::function<std::shared_ptr<LNS>()>& lns_factory, SolveCallback* callback, int n_threads,
     const ParallelConfig& par_config) {
-    // What the caller asked for, capped by a caller-owned executor's width. Every
-    // per-worker vector below, and the aggregation at the end, is sized on this
-    // rather than on the request -- a slot for a worker that never ran would
-    // contribute a default SearchResult to the aggregate and read as a worker
-    // that searched and found nothing.
+    // Every per-worker vector and the aggregate are sized on this, not the
+    // request: a never-run slot would read as a worker that found nothing.
     const int n_workers = portfolio_workers(n_threads, par_config.executor);
     validate_search_config(config);
 
-    // A tracer set on the SearchConfig and no factory to replace it is a data
-    // race, not a configuration: every worker would call that one object from its
-    // own thread with nothing between them. Refused LOUDLY rather than silently
-    // repaired, because either repair is worse -- dropping the tracer loses events
-    // the caller asked for, and keeping it is the race. The cold review closed the
-    // mirror-image hole (a factory that DECLINED one worker used to leave it on
-    // this same shared pointer); this is the one a host reaches first, since
-    // setting the field is the obvious thing to try and it works single-threaded.
-    //
-    // Which is exactly why a ONE-worker portfolio is allowed through: there is no
-    // peer to race with, and `cbls::solve()` itself takes a tracer this way.
+    // One SearchConfig::tracer without a factory would be called from every
+    // worker thread: refused, since dropping it loses events and keeping it races.
+    // A one-worker portfolio has no peer to race, so it is allowed.
     if (config.tracer != nullptr && !par_config.tracer_factory && n_workers > 1) {
         throw std::invalid_argument(
             "ParallelSearch: SearchConfig::tracer is set with no ParallelConfig::tracer_factory; "
@@ -837,23 +629,16 @@ SearchResult ParallelSearch::solve_portfolio(
     SearchConfig worker_config = config;
     worker_config.stop = combined;
 
-    // Sized on the workers that actually run, like every per-worker structure
-    // below: an 8-thread request on a 2-wide executor is a 2-worker portfolio, and
-    // auto capacity means `max(10, 2 * workers)`. A capacity the caller asked for
-    // explicitly is still honoured -- see effective_pool_capacity.
+    // Auto capacity over the workers that run; an explicit one is honoured.
     SolutionPool pool(effective_pool_capacity(par_config.pool_capacity, n_workers));
     std::atomic<bool> stop{false};
     SearchCoordination coord{&pool, &stop, par_config.share_objective_bound};
 
     const bool has_deadline = time_limit > 0.0;
     const auto portfolio_start = std::chrono::steady_clock::now();
-    // Saturated before the integer-tick cast, exactly as search.cpp's
-    // make_budget does and for the same reason: callers pass a very large limit
-    // to mean "effectively unbounded", and casting 1e12 seconds to nanoseconds
-    // overflows int64 and yields a deadline already in the past. Here that
-    // would make every worker break before its first solve and hand the caller
-    // a NoBudget result with an empty state -- where make_budget's own
-    // saturation would have run the search.
+    // Saturated before the integer-tick cast, as in make_budget: a huge limit
+    // would overflow into a past deadline, starving every worker into an empty
+    // NoBudget result.
     constexpr double kMaxPortfolioSeconds = 1.0e9;  // ~31 years
     const auto deadline =
         portfolio_start + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
@@ -872,9 +657,7 @@ SearchResult ParallelSearch::solve_portfolio(
             std::chrono::duration<double>(deadline - std::chrono::steady_clock::now()).count());
     };
 
-    // The caller's callback reaches the workers only through this: one stream,
-    // one clock, one monotone objective. Null in, null out -- a portfolio with
-    // no callback pays for nothing.
+    // The callback's only route to the workers; unused without a callback.
     PortfolioProgress progress(callback, elapsed);
     WorkerProgress heartbeat(progress, /*heartbeat=*/true);
     WorkerProgress peer(progress, /*heartbeat=*/false);
@@ -893,44 +676,25 @@ SearchResult ParallelSearch::solve_portfolio(
                          seed};
 
     std::vector<SearchResult> results(n_workers);
-    // One slot per worker, left null unless that worker threw. Sized up front so
-    // the lambdas below only ever write their own index.
-    //
-    // A slot may own a Python object -- a raising Python callback or factory
-    // arrives as nanobind's python_error -- and this vector dies on the calling
-    // thread, which reached here through a binding that released the GIL. That is
-    // safe only because python_error takes the GIL in its own destructor; see
-    // PySolveCallback in python/bindings.cpp before changing what gets parked.
+    // Null unless that worker threw and left no result (or its end-of-run copy
+    // or submit threw); decides the all-failed rethrow. Sized up front so each
+    // worker writes only its own index. It may hold a python_error and dies on
+    // this GIL-released thread, safe only because python_error takes the GIL in
+    // its destructor (PySolveCallback in python/bindings.cpp).
     std::vector<std::exception_ptr> failures(n_workers);
-    // Which workers produced a result, for the result's worker accounting (#170).
+    // Which workers produced a result (#170).
     std::vector<char> produced(n_workers, 0);
-    // The exception that ENDED each worker, null for one whose last solve attempt
-    // returned (or that never ran one). Unlike `failures`, which decides the
-    // all-failed rethrow below and is set for a worker that left no result behind
-    // (and, predating #170, for one whose end-of-run copy or submit threw), this
-    // is set for a worker that produced results and died LATER too: it is what
-    // the result's worker accounting reports (#170).
-    //
-    // A throw OUTSIDE a solve attempt -- `absorb`'s copy of a best state, say --
-    // escapes run_worker into run_one's catch, which reports the worker with
-    // `produced_result` false even if earlier attempts returned. Those attempts'
-    // counters are lost with it; the worker is still counted as failed, which is
-    // the part a thread count depends on.
+    // The exception that ended each worker, also after earlier results; what
+    // the worker accounting reports (#170). A throw outside a solve attempt
+    // reaches run_one's catch with `produced_result` false, its counters lost;
+    // it still counts as failed.
     std::vector<std::exception_ptr> ended_by(n_workers);
-    // Workers the shared deadline starved before their first attempt; see
-    // WorkerEnd::starved. Reported, never rethrown: no exception exists.
+    // Workers the deadline starved (WorkerEnd::starved); reported, not rethrown.
     std::vector<char> starved(n_workers, 0);
 
-    // One worker, whichever thing is running it. Written once and used by both
-    // launch paths below, so the two cannot come to mean different things:
-    // everything that distinguishes a caller's executor from our own threads is
-    // in HOW this is invoked, not in what it does.
-    //
-    // It catches everything, which is what lets an executor run it: a thread
-    // function that lets an exception escape is std::terminate, and an executor
-    // is free to do anything at all with one -- rethrow it on the calling
-    // thread, swallow it, abort. Parking it here means the portfolio's own
-    // failure handling is the same either way.
+    // One worker, for both launch paths. Catches everything: an escaping
+    // exception is std::terminate on a thread and anything at all on an
+    // executor, so parking it keeps failure handling the same either way.
     auto run_one = [&ctx, &failures, &results, &pool, &produced, &ended_by, &starved](int i) {
         try {
             WorkerEnd end;
@@ -946,11 +710,8 @@ SearchResult ParallelSearch::solve_portfolio(
             results[i] = *r;
             produced[i] = 1;
 
-            // The end-of-run submit still matters even though every incumbent
-            // was shared as it was found: on a run that never reached
-            // feasibility nothing was ever recorded, and this is what puts the
-            // closest approach in the pool so the aggregate below has something
-            // to return.
+            // Incumbents were shared as found; this puts an infeasible run's
+            // closest approach in the pool, so the aggregate has a result.
             Solution sol;
             sol.state = r->best_state;
             sol.objective = r->objective;
@@ -958,9 +719,7 @@ SearchResult ParallelSearch::solve_portfolio(
             sol.violation = r->best_violation;
             pool.submit(sol);
         } catch (...) {
-            // One worker failing is not a reason to lose the others' work. Park
-            // it rather than drop it; whether it is rethrown is decided below,
-            // once every worker has reported.
+            // Parked; whether to rethrow is decided once every worker reported.
             failures[i] = std::current_exception();
             ended_by[i] = failures[i];
         }
@@ -968,21 +727,10 @@ SearchResult ParallelSearch::solve_portfolio(
 
     launch_workers(n_workers, par_config.executor, stop, run_one);
 
-    // Every worker either submits a solution or parks its exception, and the
-    // pool keeps the best `pool_capacity`, so an empty pool means every one of
-    // them threw. Report that: a default SearchResult would say "searched, found
-    // nothing feasible" about a run that never searched. A partial failure does
-    // not reach here -- the survivors submitted, which is the point of catching.
-    //
-    // The lowest-index failure is the one reported. Portfolio workers are
-    // homogeneous -- same model, same budget, different seed -- so when all of
-    // them fail they have almost always failed the same way, and aggregating N
-    // copies of one message would buy nothing.
-    // "Every worker threw" is the contract, and the pool alone can no longer
-    // decide it: a worker now shares incumbents DURING its run and may throw on
-    // a later restart, leaving a non-empty pool behind. Ask the failures
-    // directly, so a portfolio in which nothing survived reports that rather
-    // than returning one dead worker's mid-run snapshot as a result.
+    // Rethrow when every worker failed (from `failures`, not the pool, which
+    // may hold a dead worker's mid-run incumbent) or nothing was submitted: a
+    // default SearchResult would read "searched, found nothing feasible". The
+    // lowest-index failure is rethrown; homogeneous workers fail alike.
     const bool all_failed =
         !failures.empty() && std::all_of(failures.begin(), failures.end(),
                                          [](const std::exception_ptr& f) { return f != nullptr; });
@@ -993,15 +741,9 @@ SearchResult ParallelSearch::solve_portfolio(
                 std::rethrow_exception(f);
             }
         }
-        // Reached with no failure only when every worker found the shared
-        // deadline already past before its first solve -- a positive time limit
-        // so small it expired during thread creation -- so none of them ran and
-        // none of them submitted. That is the same "did no work" case a single
-        // solve() reports as NoBudget. Say so rather than returning a
-        // feasible-looking default. (A NON-positive time limit does not reach
-        // here: it disables the wall clock, the worker runs exactly one solve,
-        // and that solve's result is submitted.)
-        // A cancelled portfolio reaches here too; see empty_portfolio_reason.
+        // No failure: every worker was starved (a tiny positive limit expired
+        // during launch) or cancelled first, so nothing ran. Report it as
+        // empty_portfolio_reason says, not as a feasible-looking default.
         SearchResult empty;
         empty.termination = empty_portfolio_reason(combined.requested());
         report_workers(produced, ended_by, starved, empty);
@@ -1012,18 +754,12 @@ SearchResult ParallelSearch::solve_portfolio(
     result.objective = best->objective;
     result.feasible = best->feasible;
     result.best_state = best->state;
-    // Of the state being returned, not of whatever worker 0 ended on. Left at
-    // its +inf default this reported "the answer violates something by
-    // infinity" for EVERY portfolio run, which any caller that gates publication
-    // on the residual reads as a defective solution -- benchmarks/mipfeas does,
-    // and refused every parallel row it was handed.
+    // The returned state's residual, not +inf: callers may gate on it.
     result.best_violation = best->violation;
-    // Sum iterations and take max time across threads
+    // Work done (iterations, kicks, repairs, counters) sums over workers; time is
+    // the max.
     int64_t total_iters = 0;
     double max_time = 0.0;
-    // The counters below describe work DONE, so they sum over the portfolio the
-    // way iterations do; a portfolio that reported zero perturbations and zero
-    // LNS repairs while its workers ran thousands is an ablation measured wrong.
     for (const auto& r : results) {
         total_iters += r.iterations;
         max_time = std::max(max_time, r.time_seconds);
@@ -1031,9 +767,7 @@ SearchResult ParallelSearch::solve_portfolio(
         result.lns_repairs += r.lns_repairs;
         result.lns_repairs_accepted += r.lns_repairs_accepted;
         result.counters.merge(r.counters);
-        // The portfolio reached feasibility when its FIRST worker did, and the
-        // objective reported beside that time is the one that worker reached --
-        // the pair has to come from the same worker to mean anything.
+        // The earliest worker's pair, both values from that worker.
         if (!std::isnan(r.time_to_first_feasible) &&
             (std::isnan(result.time_to_first_feasible) ||
              r.time_to_first_feasible < result.time_to_first_feasible)) {
@@ -1043,9 +777,6 @@ SearchResult ParallelSearch::solve_portfolio(
     }
     result.iterations = total_iters;
     result.time_seconds = max_time;
-    // See with_host_cancel: a worker can exhaust its iteration budget and only
-    // then see the cancel, and the aggregate must not report that as the engine's
-    // own choice to stop.
     result.termination = with_host_cancel(aggregate_termination(results), combined.requested());
     report_workers(produced, ended_by, starved, result);
     return result;

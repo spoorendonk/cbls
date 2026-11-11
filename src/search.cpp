@@ -6,9 +6,8 @@
 #include "cbls/randomize.h"
 #include "cbls/structural_batch.h"
 #include "cbls/tracer.h"
-// search.h only forward-declares SearchCoordination, deliberately -- see the
-// declaration there. This translation unit is one of the few that needs the
-// definition, because ViolationLSLoop reads both of its channels.
+// The SearchCoordination definition search.h forward-declares: ViolationLSLoop
+// reads both of its channels.
 #include "cbls/solution_pool.h"
 
 #include <algorithm>
@@ -30,27 +29,18 @@ SearchAuditor::~SearchAuditor() = default;
 
 namespace {
 
-// Is `v` the member at which its partition gets laid out?
-//
-// A partition is filled as a WHOLE -- "every element in exactly one list" is not
-// a property any single list has -- and exactly once, at its lowest-numbered
-// member, which is the one a sweep in variable order reaches first. `list_ids`
-// keeps the caller's order rather than an ascending one, so this is a
-// `min_element` rather than a `front()` test.
+// Whether `v` is its partition's lowest-numbered member, where the sweep lays the
+// whole partition out once. `list_ids` keeps the caller's order, hence
+// `min_element`, not `front()`.
 bool is_partition_anchor(const ListPartition& part, int32_t v) {
     return !part.list_ids.empty() &&
            *std::min_element(part.list_ids.begin(), part.list_ids.end()) == v;
 }
 
-// The shared body of the two initialisers, over whichever variables `want`
-// accepts. A partition member NEVER goes through `randomize_var`: that follows
-// the member's own `ListInit` with no account of its siblings, which puts an
-// element in several lists at once or in none -- and under `Cover::Exact` no
-// move can repair it, since Exact admits no insert or remove that is not half of
-// an inter-list move (#164).
-//
-// A model with no partition never reaches the lookup, so its draw sequence is
-// what it always was, variable for variable.
+// Both initialisers, over the variables `want` accepts. A partition member never
+// goes through `randomize_var`, which ignores its siblings and can put an element
+// in several lists or none: under `Cover::Exact` no move repairs that (#164). A
+// model with no partition skips the lookup, so its draw sequence is unchanged.
 template <typename Want>
 void initialize_over(Model& model, RNG& rng, Want want) {
     const bool has_partitions = !model.list_partitions().empty();
@@ -96,14 +86,11 @@ const char* termination_reason_name(TerminationReason reason) {
         case TerminationReason::Cancelled:
             return "cancelled";
     }
-    // Unreachable for any value of the enum; keeps the function total so a
-    // caller can print the result unconditionally.
+    // Unreachable for any enum value; keeps the function total.
     return "unknown";
 }
 
-// Construction heuristic: Generalised Feasibility Jump (ViolationLS). Refines
-// the model's current assignment toward feasibility. Delegates to
-// FeasibilityJump; see src/feasibility_jump.cpp.
+// Refines the current assignment toward feasibility with FeasibilityJump.
 int64_t fj_nl_initialize(Model& model, ViolationManager& vm, int max_iterations, RNG* rng_ptr,
                          double time_limit, double tolerance) {
     RNG local_rng(42);
@@ -114,31 +101,23 @@ int64_t fj_nl_initialize(Model& model, ViolationManager& vm, int max_iterations,
     config.time_limit = time_limit;
     config.set_initial_x = false;  // refine the current (already-initialised) assignment
     config.tolerance = tolerance;
-    // As an SA/LNS warm-start (not the full solver), the two-phase linear-first
-    // pass over-commits the linear submodel to cost-pessimal feasibility-boundary
-    // values; single-phase gives a better start. Two-phase stays the default for
-    // GFJ-as-solver.
+    // As a warm start, two-phase over-commits the linear submodel to
+    // cost-pessimal boundary values; single-phase starts better. Two-phase stays
+    // GFJ-as-solver's default.
     config.two_phase = false;
     FeasibilityJump fj(model, vm, rng, config);
     fj.run();
 
-    // Hand the caller a clean penalty landscape: GLS leaves per-constraint
-    // weights skewed.
+    // Reset the GLS weights FJ skewed, so the caller starts unweighted.
     std::fill(vm.weights.begin(), vm.weights.end(), 1.0);
     vm.invalidate_cache();
     return fj.iterations();
 }
 
-// The STRUCTURAL batch moved to StructuralBatch (include/cbls/structural_batch.h,
-// src/structural_batch.cpp) in #165, where it became a sweep over registered
-// MoveGenerators rather than a hard-coded generate_standard_moves loop. The
-// deadline argument, the sweep order and the accept rule are unchanged; the
-// header carries the notes that used to live here.
-
 namespace {
 
-// The wall-clock budget, computed in solve() because FeasibilityJump has to be
-// handed it at construction, and then carried into the loop below.
+// The wall-clock budget, computed in solve() because FeasibilityJump takes it at
+// construction, then carried into the loop.
 struct Budget {
     std::chrono::steady_clock::time_point start;
     std::chrono::steady_clock::time_point deadline;
@@ -149,42 +128,28 @@ struct Budget {
 Budget make_budget(double time_limit) {
     Budget b;
     b.start = std::chrono::steady_clock::now();
-    // time_limit <= 0 means "no wall-clock budget": the run is bounded by
-    // config.max_iterations alone and is therefore fully deterministic, which is
-    // what tests need. Any positive limit is a hard deadline enforced at every
-    // sub-step below, not just between batches.
+    // A positive limit is a hard deadline checked at every sub-step, not just
+    // between batches; <= 0 leaves max_iterations alone, so runs are deterministic.
     b.has_deadline = time_limit > 0.0;
-    // Saturate before converting to the clock's integer tick type: callers pass
-    // very large limits to mean "effectively unbounded", and casting e.g.
-    // double::max() seconds to nanoseconds overflows int64 and yields a deadline
-    // already in the past, which would end the search immediately.
+    // Saturate before the integer-tick cast: a huge limit (e.g. double::max())
+    // overflows int64 nanoseconds into a past deadline that ends the run at once.
     constexpr double kMaxBudgetSeconds = 1.0e9;  // ~31 years
-    // Saturate once and reuse for FJ's deadline: FeasibilityJump::begin()
-    // performs the same integer-tick duration_cast, so handing it the raw value
-    // would reintroduce exactly the overflow this saturation prevents.
+    // Reused for FJ's deadline: FeasibilityJump::begin() does the same cast, so
+    // the raw value would overflow there.
     b.seconds = b.has_deadline ? std::min(time_limit, kMaxBudgetSeconds) : 0.0;
     b.deadline = b.start + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
                                std::chrono::duration<double>(b.seconds));
     return b;
 }
 
-// Whether a Feasibility-Jump (or Novelty-Jump) batch has anything to move: a
-// variable FJ's whitelist admits (FeasibilityJump::jumpable -- Bool, Int,
-// Float) whose domain holds at least two values and which some row reads. A
-// variable in no row has an empty G_v, so FJ never scores a jump for it and a
-// batch over it is as empty as one over nothing (#201). False on a model whose
-// only decisions are List/Set variables, and on a mixed one whose every scalar
-// is fixed or unread.
+// Whether an FJ/Novelty batch has anything to move: a Bool/Int/Float variable
+// (FeasibilityJump::jumpable) with >= 2 domain values that some row reads; one in
+// no row has an empty G_v, so FJ never scores it (#201).
 //
-// The objective counts as a row: solve() folds it into the constraint set
-// (`obj <= bound`) before the loop is built, so a scalar read only by the
-// objective has a non-empty G_v and counts as work. That is deliberate -- FJ
-// is the only thing that optimises such a scalar -- and it leaves a residual:
-// once FJ has driven that scalar to its best value, the FJ batches are empty
-// in all but name, report themselves stuck and take the unproductive kick,
-// and the List-thrash this function exists to prevent returns. The same holds
-// for any mixed model whose scalars FJ settles early. See
-// SearchConfig::structural_batch_probability.
+// The folded `obj <= bound` row counts, since FJ is the only thing that optimises
+// a scalar read only by the objective. Residual: once FJ settles such scalars,
+// FJ batches report stuck, take the unproductive kick, and the List-thrash this
+// prevents returns (see SearchConfig::structural_batch_probability).
 bool fj_has_work(const Model& model) {
     const auto& vars = model.variables();
     for (size_t i = 0; i < vars.size(); ++i) {
@@ -201,26 +166,10 @@ bool fj_has_work(const Model& model) {
 
 // Whether the structural batch will hold at least one generator.
 bool structural_batch_has_work(const Model& model, const SearchConfig& config) {
-    // A REGISTERED generator counts as structure in its own right (#165). Its
-    // moves may touch scalar variables only -- an ejection chain over assignment
-    // Bools, a block move over Int start times -- and the structural batch is
-    // the only thing that would ever propose them, so keying this purely on
-    // List/Set presence turns such a registration into a silent no-op with no
-    // error and no warning. Inert by default: `move_generators` is empty unless
-    // a caller filled it, so no unconfigured model changes trajectory.
-    //
-    // The built-ins are what a List/Set variable implies, so they only count
-    // when they are actually going to be built: with
-    // `default_structural_generators = false` and nothing registered, the batch
-    // would construct zero generators and `run()` would return on its first
-    // line, burning ~33% of outer-loop iterations on a guaranteed no-op. That is
-    // the mirror image of the silent no-op the registered-generator clause above
-    // exists to prevent.
-    //
-    // Null entries are skipped by StructuralBatch's constructor, so they are
-    // counted out here too: the predicate is exactly "the batch will hold at
-    // least one generator", and a vector of nothing but nullptrs is the same
-    // guaranteed no-op as the two cases above.
+    // A non-null registered generator counts on its own (#165): its moves may
+    // touch only scalars, and keying on List/Set presence would silently drop it.
+    // The built-ins count only when they will be built, else ~33% of batches
+    // would be no-ops. Nulls are skipped, as StructuralBatch's constructor does.
     return std::any_of(
                config.move_generators.begin(), config.move_generators.end(),
                [](const std::shared_ptr<const MoveGenerator>& g) { return g != nullptr; }) ||
@@ -229,13 +178,8 @@ bool structural_batch_has_work(const Model& model, const SearchConfig& config) {
                         [](const Variable& v) { return is_structured(v.type); }));
 }
 
-// Effective structural-batch probability: explicit config overrides; <0 means
-// auto (0.33 when the batch has anything to do, 0 otherwise). Zeroed on a model
-// with neither a List/Set variable nor a registered move generator, which skips
-// the structural batch -- and its per-variable generator scan -- entirely.
-// Auto resolves to 1.0 when the structural batch has work and FJ has none (#201).
-//
-// `fj_idle`: the structural batch has work and FJ has none (see fj_has_work).
+// Resolves SearchConfig::structural_batch_probability. 0 without structural work
+// skips the batch and its generator scan. `fj_idle`: FJ has no work (fj_has_work).
 double effective_structural_probability(bool has_structural, double configured, bool fj_idle) {
     if (!has_structural) {
         return 0.0;
@@ -243,135 +187,53 @@ double effective_structural_probability(bool has_structural, double configured, 
     if (configured >= 0.0) {
         return configured;
     }
-    // Automatic, and nothing for FJ to jump (#201): every batch is structural.
-    // At 0.33 the other two thirds of batches would be FJ batches over an empty
-    // jumpable set, each spinning its GLS loop to the iteration limit bumping
-    // weights; maybe_diversify used to take #102's unproductive kick after
-    // almost every one, re-randomising every List, so the structural batches
-    // never held progress. Measured on CVRP X-n101-k25 (30 partitioned Lists,
-    // 10 s, seed 1, LNS off, engine 1304c43): the auto 0.33 arm took 114632
-    // kicks and never reached feasibility; 0.33 with the kick neutralised was
-    // feasible at 4.36 s (objective 49633); 1.0 was feasible at 0.006 s
-    // (40216). So the kicks are what kept it infeasible, and the empty batch
-    // share is what cost the rest.
-    //
-    // An EXPLICIT probability is honoured -- it is the in-engine control arm --
-    // but its empty FJ batches no longer kick or count toward stagnation; see
-    // `empty_batch` in run().
-    //
-    // Keyed on the MODEL, not on the batch kind: evaluated once, and
-    // pick_batch_kind still draws its one `random()` per batch whatever this
-    // returns, so a model FJ has work in keeps its mix and RNG draws exactly.
+    // Auto with nothing for FJ to jump: every batch is structural (#201). At 0.33
+    // the empty FJ batches spun to their limit and kicked, re-randomising every
+    // List; on CVRP X-n101-k25 (10 s, seed 1, engine 1304c43) 0.33 never reached
+    // feasibility, 1.0 did at 0.006 s. Keyed on the model, evaluated once:
+    // pick_batch_kind still draws once per batch, so other models keep their RNG
+    // stream.
     if (fj_idle) {
         return 1.0;
     }
     return 0.33;
 }
 
-// Second arming condition for the Float escape probe (#117).
-// `perturbation_period` counts BATCHES, and a batch is `batch_iterations`
-// GLS iterations: microseconds on a small model, seconds on an expensive
-// one, so the threshold is a wall-clock duration that varies by orders of
-// magnitude across a roster. Measured on MINLPLib elec25 at a 60s budget a
-// batch costs ~1.2s, so the run gets 52 batches against a threshold of 100
-// and the probe is never armed at all — the stagnation gate that makes it a
-// last resort (#107) is dead code on any model whose batches cost seconds.
-// Arm on whichever comes first: the batch count, or this fraction of the
-// wall-clock budget with no new best — the latter only while the run is
-// projected to fall short of the batch count (see the gate at the arming
-// site below, which is what keeps this from starving diversification).
-//
-// Guarded on has_deadline below: with no wall-clock budget no clock read may
-// influence control flow, or iteration-budgeted runs stop being
-// bit-reproducible. Deliberately does NOT also diversify — the kick cadence
-// is a tuned parameter, and making it time-aware is a separate question that
-// wants its own measurement.
+// Second arming condition for the Float escape probe (#117): this fraction of
+// the wall-clock budget with no new best. Batches can cost seconds (elec25:
+// ~1.2 s, 52 batches in 60 s), so the batch count alone would never arm it. Only
+// with a deadline: an iteration-budgeted run must not read the clock, to stay
+// bit-reproducible. The kick cadence stays batch-counted (see
+// maybe_arm_escape_probe).
 constexpr double kEscapeArmFraction = 0.25;
 
-// Second witness for #102's unproductive-batch exit. FeasibilityJump ends a
-// batch on ITS measure -- the real rows' unweighted violation -- and that
-// measure cannot see the artificial objective row at all. Before the first
-// feasible solution that is the whole point. After it, the search's work is
-// a trade between the two: the bound is tightened on every new best, FJ
-// pulls the assignment off the real-feasible set to chase the objective row,
-// and the real rows settle at a strictly positive equilibrium. Since the
-// measure's reference is a running MINIMUM over the batch, "no new all-time
-// low" is then the normal state of a search that is working, and the exit
-// fires unconditionally -- on MINLPLib ex8_6_1 it fired on a run improving
-// its incumbent on 152 of 162 batches, and the three LNS kicks that followed
-// took 4.7s of a 10s budget (#102).
-//
-// So arm the exit only once THIS loop's own stagnation count agrees the
-// search has stopped improving. That makes the mechanism an acceleration of
-// the stagnation window rather than a replacement for it: the kick arrives
-// after this many non-improving batches plus one unproductive one, instead
-// of after `perturbation_period` batches -- a 20x shortening at the default,
-// where leaving it unwitnessed shortened it by ~300x and turned a stall
-// detector into a diversification schedule.
-//
-// A FRACTION of `perturbation_period` rather than a fresh constant, so the
-// two windows keep their ratio when a caller retunes the one knob that
-// already exists; floored at 1, since 0 is "always armed", the regime this
-// is here to end.
-//
-// The divisor is the honest part to argue with, and it is tuned: a sweep of
-// {5, 10, 20} batches on MINLPLib at a 10s budget over four paired seeds.
-// All three remove the ex8_6_1 regression completely -- it matches or beats
-// main on 4/4 seeds at every one of them, because a search that improves
-// this often simply never reaches the threshold. They differ on the
-// instance the mechanism exists for: st_e40 reaches its BKS on 4/4 seeds at
-// 5 and on 2/4 at 10 or 20, since after the first feasible solution it needs
-// the accelerated kick to move between its 52 feasible integer combinations.
-// #158 was expected to cost some of that back and, measured properly, does
-// not: at 10s over four PAIRED seeds st_e40 is 0.00 gap and 4/4 feasible both
-// before and after kicks began departing from kick_origin(). An earlier pass
-// here claimed 8/8 -> 6/8; that came from re-measuring the largest movers of a
-// two-seed run, which selects for noise. See diversify() and
-// SearchConfig::unproductive_iterations.
-// nvs01 is feasible on 4/4 at all three (main solves it on none) with
-// objective quality too noisy to separate them. So the smallest of the three
-// is chosen, which is also the one closest to the unwitnessed behaviour on
-// the instances that want it. Nothing here establishes that 20 transfers off
-// MINLPLib; it is the same standing complaint GFJConfig::
-// unproductive_iterations records against its own 300.
-// A fraction of perturbation_period rather than a fresh knob, so the two
-// windows keep their ratio when a caller retunes the one that already
-// exists. The max(1, ...) floor is also where that ratio stops holding: at
-// perturbation_period < kUnproductiveArmDivisor the window is 1 batch and
-// the shortening is whatever perturbation_period happens to be, not 20x.
+// Second witness for #102's unproductive-batch exit: arm it only after
+// perturbation_period / this non-improving batches (floored at 1; 0 would be
+// "always armed"). FJ's measure ignores the objective row, so after feasibility
+// it reports stuck on a search still improving (ex8_6_1: 152 of 162 batches).
+// The kick then comes 20x sooner than perturbation_period at the default, not
+// ~300x; below perturbation_period 20 the window is 1 batch and the ratio breaks.
+// Tuned over windows of {5, 10, 20} batches on MINLPLib (10 s, four paired
+// seeds): all fix ex8_6_1; st_e40 reaches its BKS on 4/4 seeds at 5, on 2/4 at 10
+// or 20, so 5 (divisor 20) is chosen. Not shown to transfer off MINLPLib.
 constexpr int kUnproductiveArmDivisor = 20;
 
-// The objective bound a feasible objective `obj` earns: strictly below it. One
-// rule for every writer -- record_best, an adoption's re-grounding, the shared
-// bound (#179) and the stall re-grounding below -- because "never loosen" across
-// them rests on it: at any one `rel_step` the bound must be strictly increasing
-// in `obj`, so a better objective always gives a tighter bound, whichever writer
-// derived it. Both branches are (slope 1, and 1 +- rel_step):
-//
-//  - An INTEGRAL objective (Model::is_integral) takes `obj - 1`, as CP-SAT
-//    tightens one to best - 1: the next integer below is the only improvement
-//    there is, and it is exactly reachable (#211). A relative step hid every
-//    improvement under it -- at obj = 1e4 and 1e-3, the integer objectives
-//    9,990-9,999 kept the objective row violated.
-//  - Any other takes `obj - rel_step * (|obj| + 1)`. The step is a trade-off:
-//    an improvement smaller than it is never asked for, so a continuous
-//    objective is only pulled to that resolution; and it is the descent's pace
-//    -- FJ's Newton candidate on the objective row lands on the bound, so each
-//    incumbent improves by about one step: eg_all_s walks from 1e9 to 14.4 in
-//    15,892 of them (benchmarks/instances/minlplib/README.md), and a 1e-6 step
-//    would need ~1000x as many. So the loop ADAPTS it (#241): it starts at
-//    kObjStepMax, a full perturbation_period stall with an incumbent divides it
-//    by kObjStepShrink down to kObjStepMin and re-grounds the bound on the
-//    incumbent, and each incumbent record_best records multiplies it by
-//    kObjStepGrow back up to kObjStepMax -- every recording, so a batch whose
-//    float hook improves on FJ's point grows it twice (the A/B below ran with
-//    the hook, so that is what it measured), and under a portfolio a best
-//    behind a peer's grows it too (unmeasured). That keeps the 1e-3 pace far
-//    from the optimum and resolves to 1e-6 near it. #241's held-out A/B
-//    (10 s, 3 seeds, 50 instances): the adaptive step was better than a fixed
-//    1e-3 on 2 instances beyond the noise floor and worse on none (raw means
-//    17 better / 5 worse), where a fixed 1e-4 was worse on 10 and a fixed 1e-6
-//    on 16 -- the descents stall.
+// The bound a feasible objective `obj` earns, strictly below it. Every writer
+// (record_best, adoption, the shared bound #179, the stall re-grounding) uses it,
+// since "never loosen" needs the bound strictly increasing in `obj` at one
+// `rel_step`; both branches are.
+//  - Integral (Model::is_integral): `obj - 1`, as CP-SAT does; the next integer
+//    is the only improvement and is reachable, which a relative step hid (#211).
+//  - Otherwise `obj - rel_step * (|obj| + 1)`: the step is both the resolution
+//    (a smaller improvement is never asked for) and the pace (FJ's Newton move
+//    lands on the bound; eg_all_s takes 15,892 steps from 1e9 to 14.4, see
+//    benchmarks/instances/minlplib/README.md). So it adapts (#241): starts at
+//    kObjStepMax, a full-period stall divides it by kObjStepShrink down to
+//    kObjStepMin, each recorded incumbent multiplies it by kObjStepGrow back up
+//    to kObjStepMax (twice when the hook improves FJ's point; also on a best
+//    behind a peer's, unmeasured). Held-out A/B (10 s, 3 seeds, 50 instances):
+//    better than fixed 1e-3 on 2 beyond noise, worse on none; fixed 1e-4 and
+//    1e-6 were worse on 10 and 16, their descents stalling.
 double objective_bound_below(double obj, bool integral, double rel_step) {
     if (integral) {
         // nextafter keeps the bound strictly below obj past 2^53, where obj - 1
@@ -381,21 +243,16 @@ double objective_bound_below(double obj, bool integral, double rel_step) {
     return obj - (rel_step * (std::abs(obj) + 1.0));
 }
 
-// The continuous objective step's range and its two moves; see
-// objective_bound_below. Chosen before #241's A/B and fitted on nothing: the
-// range is the two fixed steps #241 weighed, the factors the A/B's only setting.
+// The continuous step's range and moves (objective_bound_below). Fitted on
+// nothing: the range is the two fixed steps #241 weighed, the factors its A/B's
+// only setting.
 constexpr double kObjStepMax = 1e-3;
 constexpr double kObjStepMin = 1e-6;
 constexpr double kObjStepShrink = 10.0;
 constexpr double kObjStepGrow = 2.0;
 
-// The ViolationLS outer loop: its state, and the steps of one pass over it. Every
-// member below was a local of solve(), most of them closed over by one of its
-// lambdas -- which is why the complexity metric charged the whole loop for each
-// of them. They are gathered into one object rather than threaded through free
-// functions because the steps genuinely share this state; what the split buys is
-// that each step of docs/architecture.md's "Main Loop" can be read on its own,
-// under the name that section already gives it.
+// The ViolationLS outer loop: shared state, and one method per step of
+// docs/architecture.md's "Main Loop".
 class ViolationLSLoop {
 public:
     ViolationLSLoop(Model& model, ViolationManager& vm, RNG& rng, FeasibilityJump& fj,
@@ -406,14 +263,10 @@ public:
 
 private:
     // ---- observations of the current assignment ----
-    // Largest violation over the *real* constraints (the artificial objective
-    // constraint excluded); 0.0 when every real constraint holds. Unweighted, so
-    // it is comparable across the run regardless of the GLS weight dynamics.
-    //
-    // NaN maps to +inf, not 0: a non-convex body can evaluate to NaN (inf-inf,
-    // 0*inf, log of a negative), and a bare `value > tol` test would read that
-    // as satisfied and hand back a "feasible" solution we have no evidence for.
-    // This mirrors the guard in ViolationManager's clamped_node_violation.
+    // Largest unweighted violation over the real constraints (objective row
+    // excluded), so comparable across GLS weight changes; 0.0 when all hold. NaN
+    // maps to +inf, else `value > tol` would call a NaN row satisfied (as
+    // ViolationManager's clamped_node_violation guards).
     [[nodiscard]] double max_real_violation() const;
     [[nodiscard]] bool real_feasible() const {
         return max_real_violation() <= config_.feasibility_tolerance;
@@ -421,26 +274,20 @@ private:
     [[nodiscard]] double current_obj() const {
         return has_obj_ ? model_.node_value(model_.objective_id()) : 0.0;
     }
-    // Whether a peer worker has answered the question. Relaxed is the right
-    // ordering: the flag guards no data -- the pool has its own mutex -- and
-    // the only cost of observing it a batch late is that batch.
+    // Whether the shared stop flag is raised. Relaxed: the flag guards no data
+    // (the pool has its own mutex); seeing it a batch late costs that batch.
     [[nodiscard]] bool peer_stopped() const {
         return coord_ != nullptr && coord_->stop != nullptr &&
                coord_->stop->load(std::memory_order_relaxed);
     }
-    // Whether the HOST cancelled (#169). Kept apart from peer_stopped() rather
-    // than folded into it because the two report different TerminationReasons,
-    // and a host integrating cbls as a component has to be able to tell its own
-    // cancel from a peer worker finishing the job. One null compare when
-    // nothing is attached, which is every call site that does not use the
-    // feature.
+    // Whether the host cancelled (#169); apart from peer_stopped() because they
+    // report different TerminationReasons. One null compare when unattached.
     [[nodiscard]] bool cancel_requested() const { return config_.stop.requested(); }
     [[nodiscard]] bool clock_expired() const {
         return has_deadline_ && std::chrono::steady_clock::now() >= deadline_;
     }
-    // Read by the loop condition and by every mid-batch "is there budget left"
-    // guard, so a raised stop flag -- a peer's or the host's -- halts the search
-    // everywhere the clock would.
+    // Read by the loop condition and every mid-batch budget guard, so a peer's
+    // or the host's stop halts the search everywhere the clock would.
     [[nodiscard]] bool past_deadline() const {
         return cancel_requested() || peer_stopped() || clock_expired();
     }
@@ -467,26 +314,18 @@ private:
     //
     // PRECONDITION: the caller has established real_feasible().
     bool record_best();
-    // Latch the first feasible point's objective and the time it took to reach
-    // it (#149). Called from both of record_best's have_feasible_ transitions;
-    // a no-op after the first. Observational only -- nothing reads the latched
-    // values back, so the trajectory is unchanged by their being recorded.
+    // Latch the first feasible point's objective and time (#149); a no-op after
+    // the first. Nothing reads them back, so the trajectory is unchanged.
     void note_first_feasible(double obj);
-    // Seconds since solve() started. finish() reports the same quantity as
-    // SearchResult::time_seconds.
+    // Seconds since solve() started; SearchResult::time_seconds.
     [[nodiscard]] double elapsed() const {
         return std::chrono::duration<double>(std::chrono::steady_clock::now() - start_).count();
     }
-    // On stagnation: restore kick_origin() (#158), then LNS diversification
-    // every lns_interval-th time, else perturb.
-    // `allow_lns` is false only for #102's unproductive route once a feasible
-    // solution exists. The kick itself is microseconds and st_e40 needs it to
-    // hop between its 52 feasible integer combinations; what cost ex8_6_1 its
-    // budget was the LNS half -- three repairs, each bounded by min(2.0,
-    // remaining()), took 4.7s of a 10s run and the search never used a result.
-    // Suppressing the repair rather than the kick keeps the cheap half of the
-    // mechanism for the models it helps, and removes the expensive half from the
-    // regime where the measure that triggers it has gone blind.
+    // On stagnation: restore kick_origin() (#158), then LNS every
+    // lns_interval-th time, else perturb. `allow_lns` is false only for #102's
+    // unproductive route once feasible: the perturb costs microseconds and helps
+    // (st_e40), while a repair costs up to min(2.0, remaining()) s and its trigger
+    // is blind after feasibility (ex8_6_1 lost 4.7 s of 10 s to three).
     void diversify(bool allow_lns = true);
     // Hand a new incumbent to the shared pool, if there is one. No-op for a
     // single-threaded solve. Called from both of record_best's recording arms.
@@ -505,12 +344,10 @@ private:
     // On a full-period stall: shrink the continuous step and re-ground the bound
     // on the incumbent (#241). See the definition.
     void shrink_objective_step();
-    // The tightest bound the shared global best `global` (a global_best() read)
-    // entitles this worker to, or +inf when sharing is off or there is nothing
-    // to share. Every writer of the bound takes the min with it, which is what
-    // keeps a shared tightening from being undone by the worker's own later,
-    // worse incumbent (see record_best), and records `global` in bound_global_
-    // with the bound.
+    // The bound the shared best `global` (a global_best() read) entitles us to,
+    // or +inf when sharing is off or nothing is shared. Every bound writer takes
+    // the min with it and records `global` in bound_global_, so our own later,
+    // worse incumbent cannot undo a shared tightening (see record_best).
     [[nodiscard]] double shared_bound_cap(double global) const {
         return coord_ != nullptr && coord_->share_objective_bound && std::isfinite(global)
                    ? bound_below(global)
@@ -531,42 +368,22 @@ private:
     void reground_objective_bound_after_adoption(bool feasible_here, double obj);
     // Whether `state` is the assignment this model currently holds.
     [[nodiscard]] bool holds_assignment(const Model::State& state) const;
-    // Whether the NEXT diversification kick is the one that draws LNS -- the
-    // same test diversify() makes, asked before the fact. Adoption stands down
-    // on those kicks, and advances `lns_slot_` on the ones it does take, so the
-    // `lns_interval` cadence keeps running (see the call site in
-    // maybe_diversify and the counter bump in adopt_from_pool).
+    // Whether the next kick draws LNS (diversify()'s test, asked beforehand).
+    // Adoption stands down on those and advances `lns_slot_` on the ones it
+    // takes, so the `lns_interval` cadence keeps running.
     [[nodiscard]] bool lns_kick_due() const {
         return lns_ != nullptr && lns_interval_ > 0 &&
                (lns_slot_ % lns_interval_ == lns_interval_ - 1);
     }
 
-    // The point a diversification kick departs from, or null when there is none
-    // and the kick fires from wherever the search stands (#158).
-    //
-    // Normally our own incumbent. It is `adopted_origin_` instead while the
-    // search is standing on a state adopt_from_pool installed that did not
-    // become our incumbent -- a peer's point drawn from the better half rather
-    // than the best, which is how the portfolio keeps its workers spread. The
-    // next new incumbent clears it, because at that moment our own best IS where
-    // the search got to.
-    //
-    // Both "is there an origin at all" tests live on the WRITE side rather than
-    // here, and deliberately: `adopted_origin_` is only ever set from a draw
-    // that this model found feasible with a finite objective, so the two rules
-    // below cannot be short-circuited past by an adoption. Guarding on the read
-    // instead would not even express the rule -- the witness test keys off
-    // `best_feasible_obj_`, which says nothing about the adopted point.
-    //
-    // Null before the first feasible point: best_state_ is still the initial
-    // assignment there, which is not a point to return to, so that regime keeps
-    // the trajectory it always had. Also null while the only feasible point on
-    // record is #100's non-finite-objective witness -- a feasibility witness
-    // with no objective to descend, where the bound is the loosest one there is
-    // and the useful thing is for the search to wander off and find a
-    // finite-objective point rather than be pulled back to the degenerate
-    // configuration every kick. Same rule adopt_from_pool applies to the bound:
-    // never derive from a non-finite objective.
+    // The point a kick departs from, or null to kick from where the search
+    // stands (#158). Normally our incumbent; `adopted_origin_` while we stand on
+    // an adopted peer point that did not become our incumbent (the next
+    // incumbent clears it). `adopted_origin_` is only set from a draw feasible
+    // here with a finite objective, so the null rules below need no read-side
+    // check for it. Null before the first feasible point (best_state_ is the
+    // initial assignment), and while the only feasible point is #100's
+    // non-finite witness: never derive from a non-finite objective.
     [[nodiscard]] const Model::State* kick_origin() const {
         if (has_adopted_origin_) {
             return &adopted_origin_;
@@ -596,18 +413,16 @@ private:
     void maybe_diversify(BatchKind kind, bool improved);
     void maybe_emit_periodic_progress();
     // ---- the host's event stream (#169), no-ops without a tracer ------------
-    // One null test per event, and every one of them is at batch, kick or
-    // inner-solver granularity -- never per GLS iteration. See `Tracer`.
+    // One null test per event, at batch, kick or inner-solver granularity, never
+    // per GLS iteration.
     void trace_batch_end(BatchKind kind, bool improved) {
         if (tracer_ != nullptr) {
             tracer_->batch_end(kind, fj_.iterations(), improved);
         }
     }
-    // `objective` is what share() was given, so the two agree about the #100
-    // witness (which is shared, and traced, as +inf rather than as its NaN).
-    // The clock read is why this is a method and not a call site: it happens
-    // only when a tracer is attached. See docs/architecture.md's determinism
-    // note.
+    // `objective` is what share() was given, so both report the #100 witness as
+    // +inf. The clock is read only with a tracer attached (determinism note in
+    // docs/architecture.md).
     void trace_new_best(double objective) {
         if (tracer_ != nullptr) {
             tracer_->new_best(objective, elapsed());
@@ -629,13 +444,11 @@ private:
     LNS* lns_;
     int lns_interval_;
     SolveCallback* callback_;
-    // The host's event sink (SearchConfig::tracer), or null. Held rather than
-    // read through config_ at each site so the null test is one load; per
-    // WORKER under a portfolio, which ParallelConfig::tracer_factory arranges.
+    // SearchConfig::tracer, held so the null test is one load; per worker under
+    // a portfolio.
     Tracer* tracer_;
-    // Non-null only under ParallelSearch. Null here means the search touches
-    // nothing shared, which is what keeps a single-threaded solve's trajectory
-    // exactly what it was before this parameter existed.
+    // Non-null only under ParallelSearch; null touches nothing shared, so a
+    // single-threaded trajectory is unaffected.
     SearchCoordination* coord_;
 
     const std::chrono::steady_clock::time_point start_;
@@ -649,79 +462,60 @@ private:
     // The continuous objective's relative bound step, adapted between
     // kObjStepMin and kObjStepMax (#241). Unused on an integral objective.
     double obj_step_ = kObjStepMax;
-    // The global best the live bound last took its shared cap from. Every writer
-    // of the bound sets it. A shared tightening is made (sync_shared_bound) and
-    // counted (there and in record_best) only past it: a step change re-derives
-    // the cap from the same global best, and that is no peer moving the bound
-    // (#241). +inf until the first write.
+    // The global best the live bound last took its shared cap from; set by every
+    // bound writer, +inf until the first. A shared tightening is made and counted
+    // only past it: a step change re-deriving the cap from the same global best
+    // is no peer moving the bound (#241).
     double bound_global_ = std::numeric_limits<double>::infinity();
     const int32_t obj_ci_;
     const std::vector<int32_t>& cids_;
-    // The structural batch has work and FJ/Novelty batches have none (#201);
-    // see fj_has_work. False on every model without structure, so a scalar-only
-    // model -- even one with no movable scalar at all -- is never touched by it.
+    // The structural batch has work and FJ/Novelty have none (#201). False on
+    // any model without structure, even one with no movable scalar.
     const bool fj_idle_;
     const double structural_probability_;
     const int unproductive_arm_stagnation_;
-    // Owns this search's OWN clone of every registered move generator, so a
-    // portfolio worker shares no mutable generator state with its peers (#157,
-    // #165). Built empty on a model with no structured variable.
+    // Owns this search's clone of every registered generator, so portfolio
+    // workers share no mutable generator state (#157, #165).
     StructuralBatch structural_;
 
     double best_feasible_obj_ = std::numeric_limits<double>::infinity();
     Model::State best_state_;
     bool have_feasible_ = false;
-    // Closest approach to the feasible region, tracked so an infeasible run
-    // returns something diagnosable (which constraint is left violated, and by
-    // how much) instead of the untouched initial assignment.
+    // Closest approach to feasibility, so an infeasible run returns a
+    // diagnosable state instead of the initial assignment.
     double best_violation_ = std::numeric_limits<double>::infinity();
     Model::State closest_state_;
-    // The state adoption installed, held only while it is NOT best_state_; see
-    // kick_origin(). Portfolio-only: adopt_from_pool is the sole writer and it
-    // returns false immediately without a pool, so a single-threaded run never
-    // sets the flag and never pays for the copy.
+    // The state adoption installed, held only while it is not best_state_ (see
+    // kick_origin()). Only adopt_from_pool writes it, so a run without a pool
+    // never pays for the copy.
     Model::State adopted_origin_;
     bool has_adopted_origin_ = false;
     int perturbations_ = 0;
     int lns_repairs_ = 0;
-    // The subset of lns_repairs_ that destroy_repair reported as accepted.
-    // Instrumentation only: the value is recorded and never branched on, so the
-    // trajectory is byte-identical to the run that discarded this return (#150).
+    // Repairs destroy_repair accepted (#150); never branched on.
     int lns_repairs_accepted_ = 0;
-    // #149's pair. NaN until the first feasible point; see
-    // SearchResult::first_feasible_objective for what each NaN means.
+    // #149's pair; NaN until the first feasible point.
     double first_feasible_obj_ = std::numeric_limits<double>::quiet_NaN();
     double first_feasible_time_ = std::numeric_limits<double>::quiet_NaN();
-    // Counts only the kicks ELIGIBLE for an LNS repair, which is what
-    // `lns_interval` has always meant. Kept apart from `perturbations` because
-    // #102's route can be refused its LNS half: letting a refused kick advance
-    // the slot would shift -- and at some kick counts permanently freeze -- the
-    // phase at which the perturbation_period route runs LNS, making that route's
-    // cadence depend on how often the unproductive one fired.
+    // Kicks eligible for an LNS repair, the unit of `lns_interval`. Apart from
+    // `perturbations`: if #102's LNS-refused kicks advanced it, the
+    // perturbation_period route's LNS phase would shift, at some counts freeze.
     int lns_slot_ = 0;
     int stagnation_ = 0;
     int64_t batches_ = 0;
-    // Where the run spent its work (#169). Observational only: no field here is
-    // ever read back by the loop, so a run that fills it takes the trajectory it
-    // would have taken without it. `batches_` above stays a separate counter
-    // because `budget_exhausted()` branches on it -- this one must not be
-    // reachable from control flow at all.
+    // Where the run spent its work (#169). Never read by control flow, so it
+    // cannot change the trajectory; hence `batches_` above, which
+    // budget_exhausted() branches on, is kept separate.
     SearchCounters counters_;
-    // Set by sync_shared_bound when the batch about to run has a bound looser
-    // than the portfolio's best -- only ever with sharing off, since sharing
-    // closes the gap at the same boundary -- and consumed by
-    // account_behind_batch. The start time is read only then, and only on a run
-    // with a wall clock, so neither arm of a clockless run reads one (#179).
+    // Set by sync_shared_bound when the coming batch's bound is looser than the
+    // portfolio's best (only with sharing off); consumed by account_behind_batch.
+    // The start time is read only then and only with a wall clock (#179).
     bool batch_behind_global_ = false;
     std::chrono::steady_clock::time_point behind_batch_start_;
     std::chrono::steady_clock::time_point last_callback_;
     std::chrono::steady_clock::time_point last_improvement_;
-    // Which budget ends the run. Assigned at every loop exit so it always
-    // describes the exit actually taken; the `while` condition below is the only
-    // exit that is not a `break`, so it seeds the value and each `break`
-    // overwrites it. Reported on SearchResult so callers — and the regression
-    // tests for the deadline bounds — can tell a budget-limited run from a
-    // converged one without timing the call (#104).
+    // Which budget ended the run (#104). The `while` condition's exit seeds it;
+    // each `break` overwrites it, so it names the exit actually taken.
     TerminationReason termination_ = TerminationReason::TimeLimit;
 };
 
@@ -794,10 +588,8 @@ void ViolationLSLoop::emit_progress(bool new_best) {
 }
 
 void ViolationLSLoop::note_first_feasible(double obj) {
-    // The time is the latch, not the objective: `obj` is allowed to be NaN here
-    // (the #100 witness path can hand us one), so testing it would re-arm the
-    // latch on every later feasible point and record the last one instead of
-    // the first.
+    // Latch on the time, not `obj`: the #100 witness may pass NaN, which would
+    // re-arm the latch and record the last point instead of the first.
     if (!std::isnan(first_feasible_time_)) {
         return;
     }
@@ -807,20 +599,11 @@ void ViolationLSLoop::note_first_feasible(double obj) {
 
 bool ViolationLSLoop::record_best() {
     double obj = current_obj();
-    // Feasibility is a property of the constraints alone. A non-convex
-    // objective can overflow to +inf/NaN on part of the feasible region
-    // (the Thomson problem's coincident-point configurations, say), and
-    // such a point is still a feasible point of the model — refusing to
-    // record it left have_feasible false and reported the whole instance
-    // infeasible (issue #100).
-    //
-    // It cannot serve as an objective incumbent, though: it must never
-    // become best_feasible_obj (nothing could ever beat +inf under the
-    // relative-improvement test), and the bound must never be DERIVED from
-    // it — `obj - eps` on a non-finite obj is +inf or NaN, and a NaN bound
-    // makes the `obj <= bound` row permanently and unfixably violated. So
-    // it is kept strictly as the first feasibility witness, and any later
-    // finite-objective feasible point displaces it.
+    // A feasible point whose objective is +inf/NaN is still feasible (#100), so
+    // it is recorded as the first feasibility witness. It never becomes
+    // best_feasible_obj_ (nothing beats +inf) and no bound is derived from it (a
+    // NaN bound violates the objective row forever); any later finite-objective
+    // feasible point displaces it.
     if (!std::isfinite(obj)) {
         if (have_feasible_) {
             return false;  // already have a witness, and possibly a better one
@@ -828,112 +611,49 @@ bool ViolationLSLoop::record_best() {
         have_feasible_ = true;
         note_first_feasible(obj);
         best_state_ = model_.copy_state();
-        // Both have_feasible_ transitions release the adopted origin, not just
-        // the finite one below: this is still "the search got somewhere of its
-        // own", and leaving it set would keep kicking from a peer's point while
-        // best_state_ holds a witness this run found itself (#158).
+        // Both have_feasible_ transitions release the adopted origin: kicking
+        // from a peer's point while best_state_ holds our own witness is wrong
+        // (#158).
         has_adopted_origin_ = false;
         adopted_origin_ = Model::State{};
-        // Leaving the bound at +inf as well, though, left the search with
-        // no objective signal at all (issue #116). `obj <= +inf` is vacuous
-        // by construction — comparison_residual reads a *written* +inf as
-        // "this side is absent" and returns residual 0 (#100) — so with the
-        // bound still at its initial value the objective row can never be
-        // violated, no jump candidate scores anything through it, and every
-        // later batch returns "feasible" having done no work.
+        // A +inf bound is vacuous (a written +inf reads as "side absent",
+        // residual 0), leaving no objective signal (#116). So install the
+        // loosest finite bound, kInfPenalty (1e30, violation.h's clamp for +inf
+        // and NaN): it violates only a non-number objective and admits every
+        // finite one (a finite objective above 1e30 reads as +inf, as before).
+        // A tighter sentinel could exclude feasible finite points. Only when the
+        // bound is still +inf, so it never overwrites a real incumbent's bound.
         //
-        // So install a finite bound that is NOT derived from obj: the
-        // loosest one there is. Its only job is to make "the objective is
-        // not a number" a violated row, so it sits at the violation
-        // machinery's own blowup clamp — 1e30 is what clamped_node_violation
-        // maps +inf and NaN to (kInfPenalty, shared from violation.h so the two
-        // cannot drift apart), i.e. the largest objective value that machinery can
-        // still tell apart from a blowup — and every finite objective under
-        // it satisfies the row. A feasible point whose objective is finite
-        // but *above* 1e30 is therefore indistinguishable from +inf here;
-        // that is pre-existing kInfPenalty behaviour, not new.
+        // The `return true` is load-bearing: the caller then calls
+        // fj.reset_weights(), rebuilding FJ's violated set; without it the new
+        // row stays invisible to the jump table.
         //
-        // Why the loosest rather than something tighter (e.g. the largest
-        // finite objective evaluated so far): a finite bound that some
-        // feasible point can meet is the whole safety property here, and
-        // this one is met by *every* finite-objective assignment, so the
-        // only points it rules out are the ones with no objective value at
-        // all. A tighter sentinel would keep pressure on after the
-        // objective goes finite, but it can rule out feasible
-        // finite-objective points, and it buys only the handful of batches
-        // until the first finite-objective feasible point tightens the
-        // bound properly through the path below.
-        //
-        // Guarded on the bound still being +inf, so this replaces "no bound
-        // at all" and never overwrites one derived from a real incumbent.
-        // (has_obj is implied — current_obj() returns a finite 0.0 when
-        // there is no objective — but it is kept as the guard on
-        // set_objective_bound's precondition.)
-        //
-        // Returning true below is load-bearing: the caller reads a new best
-        // as an improvement and calls fj.reset_weights(), which rebuilds
-        // FeasibilityJump's violated set. Without that rebuild the row just
-        // installed stays invisible to the jump table. The baseline already
-        // returned true from this same witness path, so nothing else on it
-        // changes.
-        //
-        // One consequence this DOES introduce, confined to the window where
-        // the sentinel is installed and the objective is still non-finite:
-        //
-        //   * progress reports pair feasible = true with total_violation
-        //     ~1e30 until the objective goes finite. Documented on
-        //     SolveProgress::total_violation rather than suppressed: that
-        //     field is the weighted total over *all* rows including this
-        //     artificial one, and feasible-with-positive-violation is
-        //     already the steady state after any bound tightening, so no
-        //     consumer can be reading it as "zero whenever feasible". Only
-        //     the magnitude is new.
-        //
-        // The invariant this row imposes on the rest of the window: anything
-        // that compares two assignments by violation must difference PER
-        // CONSTRAINT, because a row clamped to 1e30 swallows every O(1) real
-        // row when whole sums are subtracted instead. FJ's jump scoring
-        // already did (#100); the structural batch did not, and was blind for the
-        // whole window until #118 gave it the same treatment. LNS::state_key
-        // and max_real_violation are safe by exclusion — neither looks at the
-        // objective row at all.
-        //
-        // One deliberate interaction: with this row violated and its
-        // gradient non-finite, float_jump_candidates reports "gradient
-        // unusable" at a coincident-point configuration, which makes the
-        // Float escape probe eligible there for the first time. When the
-        // probe actually arms is #117's subject, so elec25 has to be
-        // measured with both changes in.
+        // While the sentinel holds and the objective is non-finite: progress
+        // reports feasible = true with total_violation ~1e30
+        // (SolveProgress::total_violation); anything comparing assignments by
+        // violation must difference per constraint, since a 1e30 row swallows
+        // the real rows in a summed difference (FJ #100, structural batch #118);
+        // and float_jump_candidates reports "gradient unusable", which makes the
+        // Float escape probe eligible (#117).
         if (has_obj_ && !std::isfinite(model_.objective_bound())) {
             model_.set_objective_bound(kInfPenalty);  // the shared clamp; see violation.h
         }
-        // Shared as +inf, not as `obj`: `obj` is non-finite here and the pool
-        // sorts on the objective, where a NaN would make the comparator
-        // inconsistent and the sort undefined. +inf is what best_feasible_obj_
-        // still reads, and it puts the witness last among the feasible entries
-        // -- which is exactly its standing.
+        // Shared as +inf, not `obj`: a NaN would make the pool's sort undefined,
+        // and +inf ranks the witness last among feasible entries.
         share(std::numeric_limits<double>::infinity());
         emit_progress(/*new_best=*/true);
         trace_new_best(std::numeric_limits<double>::infinity());
         return true;
     }
-    // isfinite(best_feasible_obj) guards the case where the incumbent is the
-    // +inf witness above: the relative-improvement test would compute
-    // `inf - inf` = NaN and decide by NaN comparison.
-    //
-    // The test is against this worker's OWN best, not against the shared bound
-    // (#179), deliberately. best_feasible_obj_ is the objective of best_state_,
-    // which is what finish() returns, and a peer's better objective is not a
-    // point this worker holds -- so it does not move when the bound is tightened
-    // from the pool. A feasible point between the global best and our own is
-    // therefore still recorded: it IS our new best, and returning it is correct.
-    // What it must not do is loosen the bound, which is the min below.
+    // isfinite guards the +inf witness incumbent, where `inf - inf` is NaN. The
+    // test is against our own best, not the shared bound (#179): best_state_ is
+    // what finish() returns, so a point between the global best and ours is
+    // recorded; the min below keeps it from loosening the bound.
     if (have_feasible_ && std::isfinite(best_feasible_obj_) &&
         obj >= best_feasible_obj_ - (1e-12 * (std::abs(best_feasible_obj_) + 1.0))) {
         return false;
     }
-    // Read before share() below, which would fold `obj` itself into it. +inf
-    // without a pool, so the comparison is false on a single-threaded run.
+    // Read before share() folds `obj` into it; false without a pool (+inf).
     const bool behind_global = obj > global_best();
     const bool sharing = coord_ != nullptr && coord_->share_objective_bound;
     if (behind_global) {
@@ -944,90 +664,55 @@ bool ViolationLSLoop::record_best() {
     best_feasible_obj_ = obj;
     best_state_ = model_.copy_state();
     bool bound_moved = true;  // no objective row: nothing to move, keep the old return
-    // Wherever the search was told to explore from, it has now got somewhere
-    // better, so the incumbent is the kick origin again (#158) and the adopted
-    // one is released.
+    // The new incumbent is the kick origin again (#158).
     has_adopted_origin_ = false;
     adopted_origin_ = Model::State{};
     if (has_obj_) {
-        // The bound step doubles as the Newton step size toward the objective
-        // (the float jump chases obj <= bound), so it must be non-trivial for
-        // hook-less continuous descent.
-        //
-        // Capped by the shared bound (#179). Without the cap a worker behind the
-        // portfolio would RAISE a bound the pool had tightened, every time it
-        // recorded an own-best worse than the global one -- the loosening
-        // reground_objective_bound_after_adoption's comment rules out. The cap
-        // is +inf without a pool or with sharing off, and min(x, +inf) is x for
-        // the finite x here, so those runs set exactly what they always did.
+        // Capped by the shared bound (#179), else a worker behind the portfolio
+        // would raise a bound the pool tightened. The cap is +inf without a pool
+        // or with sharing off, so those runs set `own` unchanged.
         const double own = bound_below(obj);
         const double global = global_best();
         const double cap = shared_bound_cap(global);
         const double previous = model_.objective_bound();
-        // Counted only when the cap MOVED the bound -- a peer improved since
-        // this worker's last sync -- not when the sync had already put it there,
-        // nor when only the step changed since the bound took its cap.
+        // Counted only when a peer improved since the bound took its cap, not
+        // when the sync already put it there or only the step changed.
         const bool peer_moved = global < bound_global_;
         if (cap < own && cap < previous && peer_moved) {
             ++counters_.shared_bound_tightenings;
         }
-        // A behind own best with sharing on, and no peer improved since the
-        // bound took its cap from G: it leaves the bound where it is. Both
-        // `own` and `cap` are taken at the step record_best grew after that
-        // write (#241), so either can sit below `previous` -- `cap` whenever
-        // it grew, `own` for a best within about one old step of G -- and
-        // moving there would be a step change, not a peer's tightening,
-        // returning true below. Everywhere else the min as before: sharing off and without a
-        // pool the cap is +inf; an own best at or ahead of G moves it through
-        // `own`. On an integral objective, whose step is fixed, the min is the
-        // cap and every writer left `previous` at or under it, so this differs
-        // only where an adoption re-grounded below the cap -- and there the min
-        // would have loosened the bound.
+        // A behind own best, sharing on, no peer improvement since the cap was
+        // taken: keep the bound. `own` and `cap` use the step record_best grew
+        // since (#241), so either may sit below `previous`, and moving there
+        // would be a step change read as a tightening (returning true below).
+        // Otherwise the min. On an integral objective this differs only where an
+        // adoption re-grounded below the cap, where the min would loosen.
         const double next = behind_global && sharing && !peer_moved ? previous : std::min(own, cap);
         bound_moved = next < previous;
         model_.set_objective_bound(next);
         bound_global_ = global;
-        // A recorded incumbent is the step's success: grow it back toward the
-        // descent's pace (#241), on every recording -- see objective_bound_below.
-        // After the bound is set, so this best is bounded at the step that
-        // found it.
+        // Grow the step on every recorded incumbent (#241), after setting the
+        // bound, so this best is bounded at the step that found it.
         obj_step_ = std::min(kObjStepMax, obj_step_ * kObjStepGrow);
     }
     share(obj);
     emit_progress(/*new_best=*/true);
     trace_new_best(obj);
-    // With sharing on, an own best the portfolio had already beaten, recorded
-    // under a bound that did not move, is NOT an improvement to the loop. It is
-    // still this worker's incumbent -- recorded, shared and returned above --
-    // but returning true would buy what a new best buys in apply_batch_outcome:
-    // fresh GLS weights, a new rho, a disarmed escape probe and a zeroed
-    // stagnation count. The paper ties those to a new bound, and there is none
-    // here; the stagnation reset in particular would postpone the adoption kick
-    // that would move this worker onto the better region. With sharing off
-    // (the control arm) and without a pool this branch cannot be taken, so
-    // those runs return exactly what they did before #179.
-    //
-    // Two KNOWN ASYMMETRIES, both part of the treatment arm #179 measured and
-    // so left as they are (change either only with a re-measurement):
-    //  - a TIE, obj == global best, is not "behind", so it returns true and
-    //    buys the resets although the bound -- already at the cap -- does not
-    //    move. Pinned by "an own best that ties the shared bound still counts as
-    //    an improvement".
-    //  - a behind own best returns true exactly when bound_moved, i.e. a peer
-    //    improved mid-batch and the cap moved the bound here. That true is
-    //    load-bearing rather than incidental: apply_batch_outcome's
-    //    reset_weights is then the only FJ rebuild after the bound moved.
+    // Sharing on, an own best behind the portfolio's under an unmoved bound is
+    // recorded and shared but not an improvement: true would buy
+    // apply_batch_outcome's resets (weights, rho, probe, stagnation), which the
+    // paper ties to a new bound, and would postpone the adoption kick. Without
+    // sharing or a pool, true as before #179. Two asymmetries #179 measured
+    // (re-measure before changing): a tie with the global best returns true
+    // (pinned by "an own best that ties the shared bound still counts as an
+    // improvement"); a behind best returns true when bound_moved, and that
+    // reset_weights is then the only FJ rebuild after the move.
     return !behind_global || bound_moved || !sharing;
 }
 
-// Requirement: submit when found, not at the end. The cost is ONE Model::State
-// copy -- `best_state_` is the loop's own incumbent and must survive, so it is
-// copied here and then MOVED into the pool's vector -- plus one
-// uncontended-in-the-common-case mutex, plus the O(#constraints) residual scan
-// the pooled solution's `violation` needs, per NEW BEST, i.e. per improving batch
-// of 1000 GLS iterations. Nowhere near the hot path. The move matters at
-// 32 workers on a large model: `submit` takes its argument by value precisely
-// so the second copy happens out here rather than inside the critical section.
+// Submits when found, not at the end. Per new best: one State copy (moved into
+// the pool, so no copy inside the critical section), one mutex, one
+// O(#constraints) residual scan; off the hot path.
 void ViolationLSLoop::share(double objective) {
     if (coord_ == nullptr || coord_->pool == nullptr) {
         return;
@@ -1036,46 +721,23 @@ void ViolationLSLoop::share(double objective) {
     sol.state = best_state_;
     sol.objective = objective;
     sol.feasible = true;  // record_best's precondition
-    // The model still holds `best_state_` -- record_best copies the state out of
-    // it immediately above every call to this -- so the live residual is the
-    // residual of the state being shared.
+    // The model still holds `best_state_` (record_best copies it just before
+    // every call), so the live residual is the shared state's.
     sol.violation = max_real_violation();
     coord_->pool->submit(std::move(sol));
 }
 
-// #179. At a BATCH boundary, not per iteration: the load is one relaxed atomic,
-// but a tightening costs a violated-set and jump-table rebuild, and a batch is
-// already the granularity at which every other change to the bound lands.
+// #179: per batch, not per iteration, since a tightening costs an FJ rebuild and
+// every other bound change lands per batch too. A tightening keeps the
+// assignment, best_state_ (finish() returns only points we found) and the GLS
+// weights (resync, not reset_weights: a reset per peer improvement is another
+// mechanism). It also reaches a worker with no feasible point, putting its row
+// in play early, as CP-SAT does; the per-worker cost is unmeasured. The row's
+// weight is never zeroed: solve() runs FJ single-phase.
 //
-// What a tightening does and does not touch:
-//  - the ASSIGNMENT is unchanged. The worker now violates a tighter `obj <=
-//    bound` row, which is ViolationLS's normal state after any new best.
-//  - best_feasible_obj_ and best_state_ are unchanged: the worker did not find
-//    the peer's point, and finish() must return one it did. See record_best.
-//  - the GLS weights are KEPT -- fj_.resync(), not reset_weights(). This is the
-//    one bound tightening that keeps them: an own new best resets them (the
-//    paper's "new best: fresh weights") and so does an adoption, which moves the
-//    assignment. Here nothing the weights encode changed except the one row, and
-//    a reset would hand every worker a fresh-weights restart each time any peer
-//    improved, which is a different mechanism from the one being measured.
-//  - it reaches a worker with NO feasible point of its own too. Its bound is
-//    +inf (or #100's sentinel) until then, so the first peer to go feasible puts
-//    every other worker's objective row in play: a behaviour change against
-//    single-threaded ViolationLS, where the row is vacuous until the worker's own
-//    first feasible point. Deliberate -- it is what "share the bound" means, and
-//    CP-SAT's workers do the same. Its cost cannot show as lost PORTFOLIO
-//    feasibility: G exists only once some worker is feasible, and that worker's
-//    incumbent is the portfolio's. It can only show as a worse Primal Integral
-//    or gap, from the workers it diverts; the per-worker effect is unmeasured.
-//  - the objective row's weight is never zeroed: solve() runs FJ single-phase
-//    (gfj.two_phase = false), so there is no phase mask for the row to fall
-//    under, and set_objective_bound's precondition is has_obj_, tested first.
-//
-// Never loosens: the test is `target < bound`, strictly. Every other writer of
-// the bound takes the min with shared_bound_cap(), which is bound_below(global
-// best) at the worker's CURRENT step -- so shrink_objective_step's deliberate
-// loosening re-derives a peer's tightening at the shrunk step too, giving up
-// the part of it that was the step, never the peer's improvement.
+// Never loosens (`target < bound`, strictly). The other writers take the min
+// with shared_bound_cap() at the current step, so shrink_objective_step gives up
+// only the step, never a peer's improvement.
 void ViolationLSLoop::sync_shared_bound() {
     batch_behind_global_ = false;
     if (!has_obj_) {
@@ -1085,12 +747,10 @@ void ViolationLSLoop::sync_shared_bound() {
     if (!std::isfinite(global)) {
         return;  // no pool, or nothing feasible in it yet
     }
-    // The global best is our own (or no better): nothing to tighten towards.
-    // Not left to the comparison below, because the bound was set at the step
-    // the best was found at, and record_best grew the step after (#241), so
-    // bound_below(global) now sits below it. Reading that as a peer would
-    // tighten against this worker's own best, and a lone worker on a continuous
-    // objective would leave its sharing-off trajectory.
+    // The global best is no better than ours. Tested explicitly: record_best grew
+    // the step after setting the bound (#241), so bound_below(global) sits below
+    // it, and a lone worker would tighten against itself and leave its
+    // sharing-off trajectory.
     if (have_feasible_ && global >= best_feasible_obj_) {
         return;
     }
@@ -1099,23 +759,17 @@ void ViolationLSLoop::sync_shared_bound() {
         return;  // already at least as tight: our own best, or an earlier sync
     }
     if (coord_->share_objective_bound) {
-        // No peer improved since the bound took its cap: the gap is the step
-        // record_best grew after that write (#241), not a tightening to make.
+        // No peer improved since the cap was taken: the gap is the grown step
+        // (#241), not a tightening.
         if (!(global < bound_global_)) {
             return;
         }
         model_.set_objective_bound(target);
         bound_global_ = global;
-        // set_objective_bound rewrites the row's node value in place, and FJ's
-        // violated set and jump table were computed against the old one. That
-        // matters most where the row was SATISFIED before -- a worker with no
-        // feasible point of its own, bound +inf: without the rebuild the row
-        // stays out of V until a move happens to touch an objective variable,
-        // and FJ can declare the batch feasible with the new bound ignored.
-        //
-        // No vm_.invalidate_cache(): ViolationManager::total_violation() diffs
-        // every row against the node values on each call, so its cache cannot
-        // be stale in value, and nothing in the loop reads it before then.
+        // FJ's violated set and jump table predate the rewritten row; without
+        // the resync a previously satisfied row stays out of V and FJ can call
+        // the batch feasible. No vm_.invalidate_cache(): total_violation()
+        // re-diffs every row on each call, so its cache cannot be stale.
         fj_.resync();
         ++counters_.shared_bound_tightenings;
         return;
@@ -1138,15 +792,11 @@ void ViolationLSLoop::account_behind_batch() {
     }
 }
 
-// Requirement: restart a stalled worker from the SHARED pool rather than only
-// from its own assignment. Returns false having changed nothing when there is
-// nothing to adopt, so the caller falls through to the ordinary kick.
 bool ViolationLSLoop::holds_assignment(const Model::State& state) const {
     const auto& vars = model_.variables();
     for (size_t i = 0; i < vars.size(); ++i) {
-        // Bit equality, not a tolerance: this asks "is this literally the state
-        // we are sitting on", which is what a restored copy of our own snapshot
-        // is. A near-miss is a different point and a legitimate restart.
+        // Bit equality: a restored copy of our own snapshot matches exactly; a
+        // near-miss is a different point and a legitimate restart.
         if (vars[i].value != state.values[i] || vars[i].elements != state.elements[i]) {
             return false;
         }
@@ -1154,60 +804,36 @@ bool ViolationLSLoop::holds_assignment(const Model::State& state) const {
     return true;
 }
 
-// #241's adaptive step, at a full perturbation_period stall: the bound asked for
-// an improvement of one step and a whole period did not find it, so ask for a
-// tenth of that. The bound is re-grounded on the incumbent at the new step --
-// the one writer that LOOSENS it, on purpose: the bound stays strictly below
-// best_feasible_obj_, and the shared cap still bounds it, so it never gives back
-// an improvement anyone found; what it gives up is a demand that went unmet for
-// a period. A no-op at kObjStepMin, without an incumbent and on an integral
-// objective, whose step is not relative.
-//
-// No FJ resync here, though the row's node value changes under FJ's violated
-// set and jump table: the caller's kick follows at once and every kick rebuilds
-// them -- adopt_from_pool and diversify's LNS and restart branches by
-// reset_weights, its perturb branch inside perturb(). Cost: one bound rewrite
-// per stall that shrinks.
-//
-// Unmeasured under a portfolio: #241's A/B ran single-threaded. There the
-// shrink runs right before every adoption, and adopt_from_pool never grows the
-// step, so a better adopted point descends at the shrunk step until this worker
-// records a best of its own.
+// #241: a full-period stall divides the step and re-grounds the bound on the
+// incumbent, the one writer that loosens it. It stays strictly below
+// best_feasible_obj_ and under the shared cap, so no found improvement is given
+// back. No-op at kObjStepMin, without an incumbent, or on an integral objective.
+// No FJ resync: the caller's kick follows at once, and every kick rebuilds FJ
+// (reset_weights, or inside perturb()). Unmeasured under a portfolio, where an
+// adopted point descends at the shrunk step until we record our own best.
 void ViolationLSLoop::shrink_objective_step() {
     if (!has_obj_ || obj_integral_ || !have_feasible_ || !std::isfinite(best_feasible_obj_) ||
         obj_step_ <= kObjStepMin) {
         return;
     }
-    // 1e-3 / 10^3 rounds to just above kObjStepMin, so the floor takes a fourth
-    // shrink, which moves the bound by ~1e-22 relative. Left as measured.
+    // 1e-3 / 10^3 rounds just above kObjStepMin, so the floor takes a fourth
+    // shrink (~1e-22 relative). Left as measured.
     obj_step_ = std::max(kObjStepMin, obj_step_ / kObjStepShrink);
     const double global = global_best();
     model_.set_objective_bound(std::min(bound_below(best_feasible_obj_), shared_bound_cap(global)));
     bound_global_ = global;
 }
 
-// The objective-bound half of an adoption, lifted out of adopt_from_pool: it is
-// a self-contained responsibility with its own rule, and leaving it inline put
-// that function over the cognitive-complexity threshold once the kick-origin
-// bookkeeping joined it. `feasible_here` and `obj` are this model's verdict on
-// the adopted point, not the submitter's.
+// The objective-bound half of an adoption. `feasible_here` and `obj` are this
+// model's verdict on the adopted point, not the submitter's.
 void ViolationLSLoop::reground_objective_bound_after_adoption(bool feasible_here, double obj) {
     if (!has_obj_) {
         return;
     }
-    // Never LOOSEN it. record_best rewrites the bound only on a STRICT
-    // improvement over best_feasible_obj_ (it returns early otherwise),
-    // shrink_objective_step only ever loosens it, and sync_shared_bound
-    // tightens it only towards a peer's better best, so a bound loosened here
-    // stays loose until this worker or a peer beats this worker's all-time
-    // best -- and the draw that got us here is frequently one of our own
-    // earlier, worse incumbents. Loosening on every such kick would leave the
-    // worker searching with the objective row satisfied and no pressure at all.
-    //
-    // LNS is the precedent, and it is unambiguous: destroy_repair replaces
-    // the assignment wholesale and does not touch the bound. A row reading
-    // `obj <= best - eps` that is violated at the point we just arrived on
-    // is ViolationLS's normal steady state, not a problem to fix.
+    // Never loosen: only a strict own improvement or a peer's better best
+    // tightens it again, and the draw is often one of our own worse incumbents,
+    // so loosening would leave the row satisfied with no pressure. As with LNS,
+    // a violated `obj <= best - eps` at the new point is the normal state.
     double target = std::numeric_limits<double>::infinity();
     if (feasible_here && std::isfinite(obj)) {
         target = obj;
@@ -1215,9 +841,8 @@ void ViolationLSLoop::reground_objective_bound_after_adoption(bool feasible_here
     if (have_feasible_ && std::isfinite(best_feasible_obj_)) {
         target = std::min(target, best_feasible_obj_);
     }
-    // The shared cap (#179), for the same reason record_best takes it: `target`
-    // is this worker's view, and a bound the pool had tightened past it must not
-    // be loosened by re-grounding on it. +inf with sharing off.
+    // The shared cap (#179), as in record_best: re-grounding on our view must
+    // not loosen a bound the pool tightened. +inf with sharing off.
     const double global = global_best();
     const double bound = std::min(
         std::isfinite(target) ? bound_below(target) : std::numeric_limits<double>::infinity(),
@@ -1226,10 +851,8 @@ void ViolationLSLoop::reground_objective_bound_after_adoption(bool feasible_here
         model_.set_objective_bound(bound);
         bound_global_ = global;
     } else if (!std::isfinite(model_.objective_bound())) {
-        // No usable objective anywhere yet -- an infeasible or non-finite
-        // adopted point with no incumbent of our own. Install the finite
-        // sentinel so the row is not vacuous, under record_best's own guard
-        // so it can never overwrite a real incumbent's bound.
+        // No usable objective yet: install record_best's finite sentinel so the
+        // row is not vacuous, only over a +inf bound.
         model_.set_objective_bound(kInfPenalty);  // the shared clamp; see violation.h
     }
 }
@@ -1242,123 +865,68 @@ bool ViolationLSLoop::adopt_from_pool() {
     if (!sol.has_value()) {
         return false;
     }
-    // The pool is shared across workers whose models come from one factory, so
-    // the shapes agree by construction -- but the factory is caller-supplied
-    // and nothing makes it return the same model twice. A mismatched state
-    // would be restored element-wise into the wrong variables and silently
-    // searched from, so refuse it instead. Model::restore_state throws on a
-    // width mismatch and elements is indexed without one, so this is the
-    // difference between a refused restart and a worker lost to an exception.
+    // The caller's factory may return differently shaped models; refuse a
+    // mismatched state: restore_state throws on a width mismatch (losing the
+    // worker) and `elements` is indexed unchecked.
     if (sol->state.values.size() != model_.num_vars() ||
         sol->state.elements.size() != model_.num_vars()) {
         return false;
     }
 
-    // A draw equal to the assignment we already hold is not a kick: restoring
-    // where you already are moves nothing, while zeroing stagnation_ and so
-    // denying the ordinary kick its turn. Refusing here makes the caller fall
-    // through to diversify().
-    //
-    // Against the LIVE assignment, deliberately, not against best_state_: the
-    // question is whether this restore would move the search, and after
-    // perturbation_period non-improving batches the model generally sits
-    // somewhere FJ left it rather than on its own recorded incumbent. Comparing
-    // against best_state_ would refuse draws that are genuine moves.
-    //
-    // How often it fires is model-dependent and NOT the common case, though an
-    // earlier version of this comment claimed it was. Measured on a 20-variable
-    // integer model over 12 seeds, a worker whose pool receives only its own
-    // submissions declined the draw in 3 of 12 runs; on an easier asymmetric
-    // variant it declined every time. So this is a guard against a degenerate
-    // kick, not a routine path.
+    // A draw equal to the live assignment moves nothing yet would zero
+    // stagnation_, so refuse it and let the caller diversify(). Live, not
+    // best_state_: after a stall the model usually sits where FJ left it, and
+    // comparing with best_state_ would refuse genuine moves.
     if (holds_assignment(sol->state)) {
         return false;
     }
 
     model_.restore_state(sol->state);
-    // Mandatory: restore_state writes the VARIABLES, leaving every DAG node at
-    // the previous assignment. Everything below -- the violation manager, FJ's
-    // violated set and scan set -- reads node values. Same sequence LNS uses
-    // either side of a repair (src/lns.cpp:107,118).
+    // Required: restore_state writes only the variables, and everything below
+    // reads node values (as LNS does around a repair).
     full_evaluate(model_);
 
-    // THIS model's verdict, not the submitter's. `sol->feasible` describes
-    // whatever model the submitting worker searched, and the factory is
-    // caller-supplied -- nothing makes two workers' models identical, which is
-    // the same reason the shape guard above exists. Trusting the flag would set
-    // have_feasible_ (and with it best_state_, which finish() returns) on a
-    // point that violates this model's constraints. The full_evaluate above is
-    // what makes the local check both correct and cheap.
+    // This model's verdict, not `sol->feasible`: workers' models may differ, and
+    // trusting the flag could make finish() return a point violating ours.
     const bool feasible_here = real_feasible();
     const double obj = current_obj();
 
-    // The bound is a Const node, so Model::State does not carry it and we are
-    // still holding the one our own incumbent earned. Left alone it would put
-    // the artificial `obj <= bound` row in violation the instant we arrive on a
-    // point worse than our own best, and FJ would spend the restart climbing
-    // straight back to the basin we just left. So re-ground it on the adopted
-    // point, exactly as record_best does -- under both of that function's
-    // rules: a bound is derived only from a FEASIBLE point, and never from a
-    // non-finite objective. An infeasible point (the pool also holds
-    // closest-approach states, submitted at the end of a run that never reached
-    // feasibility) typically has a *better* objective than any feasible one, so
-    // deriving from it would install a bound nothing feasible can meet and
-    // leave the artificial row violated for the rest of the run. The loosest
-    // finite bound is the honest answer there.
+    // Model::State does not carry the bound (a Const node). Re-ground it under
+    // record_best's rules: only from a feasible point, never from a non-finite
+    // objective. The pool's infeasible closest-approach states often beat every
+    // feasible objective, so a bound from one no feasible point could meet.
     reground_objective_bound_after_adoption(feasible_here, obj);
 
-    // Only when it IMPROVES. A worker ahead of the pool restarts from a
-    // diverse point without losing the incumbent it will return: finish()
-    // hands back best_state_, so overwriting it with a worse adopted point
-    // would throw away this worker's own best work.
+    // Only an improvement replaces best_state_, which finish() returns.
     if (feasible_here && std::isfinite(obj) &&
         (!have_feasible_ || !std::isfinite(best_feasible_obj_) || obj < best_feasible_obj_)) {
         have_feasible_ = true;
         note_first_feasible(obj);
         best_feasible_obj_ = obj;
-        // Moved: `sol` is a by-value optional from get_restart_point and its
-        // state was last read by the restore above, so this saves a whole
-        // Model::State copy -- one vector<double> plus one vector<vector<int32_t>>
-        // per variable -- on a model the size of atlanta-ip.
+        // Moved: `sol` is a by-value copy last read by the restore above.
         best_state_ = std::move(sol->state);
-        // It IS the incumbent now, so kick_origin() finds it there.
+        // It is the incumbent now, so kick_origin() finds it there.
         has_adopted_origin_ = false;
         adopted_origin_ = Model::State{};
     } else if (feasible_here && std::isfinite(obj)) {
-        // Not an improvement, so best_state_ is still ours -- but the search now
-        // stands on the adopted point, and that is what a later kick must depart
-        // from. Without this the next kick restores our own incumbent and the
-        // draw is discarded within a few batches, which is the whole of what the
-        // pool bought (#158, #135).
-        //
-        // Under the SAME two rules the improvement branch above applies, and
-        // they are load-bearing rather than symmetry: the pool also holds
-        // closest-approach states submitted with feasible = false at the end of
-        // a run that never got there (see run_worker), and #100's witness is
-        // shared with a non-finite objective. Either would anchor ~98% of this
-        // worker's remaining kicks -- only the full-period route adopts, and
-        // that route is 2% of kicks -- to a point that is infeasible or has no
-        // objective, while the incumbent finish() returns would never be kicked
-        // from again. That is the inverse of replacing the starting point with a
-        // known-GOOD state.
+        // Not an improvement, but later kicks must depart from the adopted
+        // point, or the next kick restores our incumbent and discards the draw
+        // (#158, #135). The same feasible-and-finite rule is load-bearing: the
+        // pool holds infeasible closest-approach states and #100's witness,
+        // which would anchor most later kicks to a point with no objective.
         adopted_origin_ = std::move(sol->state);  // moved, as above
         has_adopted_origin_ = true;
     } else {
-        // An infeasible or non-finite-objective draw is a legitimate diverse
-        // restart -- adopt_from_pool has already installed it as the live
-        // assignment -- but it is not a point to keep returning to. Release any
-        // older origin so kick_origin() falls back to the incumbent.
+        // A legitimate restart but not a point to return to: release any older
+        // origin so kick_origin() falls back to the incumbent.
         has_adopted_origin_ = false;
         adopted_origin_ = Model::State{};
     }
 
     if (!has_obj_ && feasible_here) {
-        // Pure feasibility: the point we just adopted IS the answer, and this
-        // worker can no longer reach apply_batch_outcome's Feasible exit --
-        // have_feasible_ is now true and current_obj() is a constant 0.0, so
-        // record_best's improvement test refuses every later batch. Say so
-        // here, and raise the flag for the same reason run_worker does: the
-        // question is settled for everyone.
+        // Pure feasibility: the adopted point is the answer. Say so here, since
+        // record_best now refuses every later batch (objective constant 0.0) and
+        // the Feasible exit is unreachable; stop the peers as run_worker does.
         termination_ = TerminationReason::Feasible;
         if (coord_->stop != nullptr) {
             coord_->stop->store(true, std::memory_order_relaxed);
@@ -1366,138 +934,45 @@ bool ViolationLSLoop::adopt_from_pool() {
     }
 
     vm_.invalidate_cache();
-    // reset_weights, not resync: the GLS weights we hold were shaped by the
-    // basin we are leaving, and this is the "state mutated outside GFJ" case
-    // the LNS call site uses reset_weights for. NOT fj_.begin() -- that zeroes
-    // iterations() (breaking the iteration budget and the reported count) and
-    // re-arms a full fresh wall clock past solve()'s own deadline.
+    // reset_weights: the weights were shaped by the basin we leave. Not
+    // fj_.begin(), which zeroes iterations() (breaking the budget and count) and
+    // re-arms a fresh wall clock past solve()'s deadline.
     fj_.reset_weights();
-    // The caller armed the Float escape probe just before calling us, on the
-    // diagnosis that some variable sits at a stationary point of every violated
-    // constraint. That diagnosis was about the assignment we have just left; it
-    // says nothing about the one we adopted, and the probe is not free. Disarm
-    // it and let the two documented arming routes re-earn it from the new
-    // point. (A kick that adoption declines keeps the armed probe. Before the
-    // first feasible point that is diversify() perturbing the stuck assignment
-    // itself, as it always did; after it, diversify() restores kick_origin()
-    // first (#158), so the probe is armed on a diagnosis about the assignment
-    // being left and applied from the point the search departs from. Harmless
-    // rather than justified by the two being one basin -- the drift measurement
-    // at diversify() says they are NOT: a post-kick assignment holds a
-    // real-feasible point only 5.3% of the time. It is harmless because the flag
-    // only ENABLES the probe: compute_var_jump re-tests `!gradient_usable` at the
-    // live point, so the probe re-earns itself at the restored one.
-    // test_parallel's self-draw case pins it staying armed there.)
+    // The caller's probe arming diagnosed the assignment we left, so disarm and
+    // let the arming routes re-earn it here. A kick adoption declines keeps it
+    // armed, harmlessly: the flag only enables the probe, and compute_var_jump
+    // re-tests `!gradient_usable` at the live point (pinned in test_parallel).
     fj_.set_escape_probe(false);
-    // ...and re-ground the clock the TIME-based route arms on, or the disarm
-    // above lasts exactly one batch: last_improvement_ still describes the
-    // stall we just left, so maybe_arm_escape_probe re-arms on the next batch.
-    // That would also falsify the "at most 1/kEscapeArmFraction arms per run"
-    // bound that route's own comment rests on, since adoption is a disarm with
-    // no matching improvement.
+    // Re-ground the time route's clock too, or it re-arms next batch and breaks
+    // its "at most 1/kEscapeArmFraction arms per run" bound.
     if (has_deadline_) {
         last_improvement_ = std::chrono::steady_clock::now();
     }
     sample_rho();
     ++perturbations_;
-    // The slot counts kicks ELIGIBLE for an LNS repair, and this was one: the
-    // full-period route always advances it, whether the kick was served by
-    // adoption or by diversify(). Not advancing it starves the cadence rather
-    // than preserving it -- lns_slot_ would sit at 0 forever, lns_kick_due()
-    // would never come true, and the stand-down above would never fire. (This
-    // is not the case the counter's separation from `perturbations` guards
-    // against: that is about #102's route being REFUSED its LNS half, which is
-    // a different route and still does not advance the slot.)
+    // This was an LNS-eligible full-period kick, so advance the slot; otherwise
+    // lns_slot_ stays 0 and lns_kick_due() never comes true.
     ++lns_slot_;
     stagnation_ = 0;
     return true;
 }
 
 void ViolationLSLoop::diversify(bool allow_lns) {
-    // KICK FROM THE INCUMBENT, not from wherever the last kick left the search
-    // (#158).
+    // Kick from kick_origin(), not from where the last kick left the search
+    // (#158): otherwise failed kicks compose into a walk away from the best
+    // point (mipfeas smoke, 60 s: post-kick assignments were real-feasible 5.3%
+    // of the time). A deliberate divergence from Davies et al. Algorithm 6,
+    // whose line 12 perturbs X in place and whose only restore (line 6) is a new
+    // pool best (adopt_from_pool). Justified because #102's route kicks ~50x the
+    // reference rate (98% of kicks); cost on #158: MINLPLib within noise, LNS
+    // acceptance 27.3% -> 7.5%. If that outweighs the gain, attack the kick rate,
+    // not this restore. kick_origin(), not best_state_, so the next kick does not
+    // undo an adoption. Null before the first feasible point: no restore.
     //
-    // A diversification kick exists to leave the basin the search has settled
-    // into, and both halves of it are written as though the assignment it acts
-    // on were that settled point: perturb() randomises a fraction of it and
-    // expects the rest to be worth keeping, and LNS::destroy_repair scores its
-    // repair against the key of the state it was handed. That assumption holds
-    // for the FIRST kick after an improvement and for nothing after it, because
-    // nothing in a single-threaded run ever restores best_state_. Once a kick
-    // fails to recover, the next one starts from the failure, and the kicks
-    // compose into a random walk AWAY from the best solution found -- which is
-    // drift, not diversification.
-    //
-    // Measured on the mipfeas smoke instances at 60s, 7 instances x 2 seeds
-    // (#158): 13 487 kicks, of which 98% come from the unproductive-batch route
-    // and land a median of 2 batches apart; over the batches following a kick
-    // the assignment holds a real-feasible point only 5.3% of the time; and over
-    // 1 216 windows of >= 5 batches the MEDIAN of (closest approach back to the
-    // pre-kick point) / (kick distance) is 1.00 -- on at least half the windows
-    // the assignment never got any nearer than the kick itself left it. So on
-    // the typical kick the search left the feasible region and did not come
-    // back: on binkar10_1 it reaches a real violation <= 1 at 26% of kicks and
-    // lands feasible on 3 of 567 post-kick batches.
-    //
-    // THIS IS A DELIBERATE DIVERGENCE FROM THE REFERENCE, not a bug fix, and
-    // CLAUDE.md's Reference Correctness rule governs it -- so read the paper
-    // first. Davies et al., Algorithm 6 (docs/) has exactly one restore:
-    //
-    //     5   if a new best solution S is available in the shared pool then
-    //     6       X <- S
-    //    11   if No new solutions found or imported for 100 iterations then
-    //    12       Perturb X, randomising each variable's value with probability 0.1
-    //
-    // Line 12 perturbs X IN PLACE. Line 6 is pool-sourced and conditioned on a
-    // new BEST arriving, which is what adopt_from_pool implements. There is no
-    // step that restores an incumbent before a kick, so kicks composing into a
-    // walk is the reference's actual behaviour and not an oversight in this
-    // port. What this makes the outer loop is elitist ILS with a
-    // strict-improvement acceptance criterion -- and since perturb() ends in
-    // reset_weights(), neither the assignment nor the GLS landscape carries
-    // across a kick.
-    //
-    // The case for diverging is that the port ALREADY diverges in the direction
-    // that makes the walk pathological. Algorithm 6 kicks once per 100 stagnant
-    // batches; #102's unproductive route kicks at a median of 2, which is ~50x
-    // the reference rate, and 98% of kicks come through it. A walk sampled 50x
-    // more often is a much longer walk, and the measurement above is what it
-    // does. `adopt_from_pool()` is the same replace-the-starting-point move in
-    // the one place the paper sanctions it, and it needs a pool; this is that
-    // move where there is none. Gated on have_feasible_ because before the
-    // first feasible point best_state_ is still the initial assignment, which
-    // is not a point to return to; that regime keeps the trajectory it had.
-    //
-    // What it costs is recorded rather than argued, on #158: MINLPLib stays
-    // inside the noise, and LNS acceptance falls from 27.3% to 7.5%. If that
-    // cost ever outweighs the gain, the more faithful thing to attack is the
-    // kick RATE, not this restore.
-    //
-    // WHICH point, in a portfolio, is `kick_origin()`: our own incumbent
-    // normally, and the state adoption installed when the search is standing on
-    // a peer's point instead. Restoring best_state_ unconditionally would undo
-    // adopt_from_pool on the very next kick -- the pool draws from the better
-    // HALF so that workers stay spread, and a non-improving draw deliberately
-    // does not become best_state_, so an adopted point would survive about five
-    // batches and the portfolio would degenerate to N elitist searches. See
-    // kick_origin().
-    //
-    // The restore is cheap enough for #102's fast-recurring route, which is what
-    // maybe_diversify's "not the unproductive one" note is about: what it prices
-    // there is an ADOPTION -- a pool draw under a mutex, a restore, a
-    // full_evaluate and an FJ rebuild. This is the restore alone. The
-    // full_evaluate below belongs to the LNS branch and not to this one, and the
-    // FJ rebuild was already being paid: perturb() ends with reset_weights().
-    //
-    // restore_state writes the VARIABLES and leaves every DAG node on the
-    // previous assignment, so whoever reads node values next needs a
-    // full_evaluate first. Only one of the two branches is such a reader:
-    // LNS::destroy_repair keys the state it is about to destroy off node values.
-    // perturb() reads none -- it draws from the DOMAINS, and apply_move only
-    // writes -- and it ends with a full_evaluate of its own, so a sweep here too
-    // would be a second whole-DAG walk per kick on the route that takes 98% of
-    // them, computing values nothing reads. Skipping it changes no trajectory:
-    // full_evaluate draws no random numbers and writes no variable.
+    // restore_state writes only the variables. Only the LNS branch reads node
+    // values, so only it pays a full_evaluate; perturb() draws from domains and
+    // ends with its own, and skipping one changes no trajectory (no RNG draw, no
+    // variable write).
     const Model::State* origin = kick_origin();
     if (origin != nullptr) {
         model_.restore_state(*origin);
@@ -1506,36 +981,18 @@ void ViolationLSLoop::diversify(bool allow_lns) {
         (lns_slot_ % lns_interval_ == lns_interval_ - 1)) {
         if (origin != nullptr) {
             full_evaluate(model_);  // see above: destroy_repair reads node values
-            // violation.h's rule: the cached total is stale after a
-            // full_evaluate. Immaterial to the built-in LNS, which keys off node
-            // values directly, but destroy_repair is a documented extension
-            // point and must not be handed a model and a cache that disagree.
+            // The cached total is stale after a full_evaluate (violation.h); an
+            // overriding destroy_repair must not see the two disagree.
             vm_.invalidate_cache();
         }
-        // Bound the repair by whatever budget is left, so an LNS kick near
-        // the deadline cannot run its own independent 2s.
-        // Floored at a tiny positive value while a deadline exists:
-        // remaining() returns exactly 0.0 if the clock crossed the deadline
-        // since the past_deadline() check above, and 0 means "no wall-clock
-        // limit" downstream in fj_nl_initialize — the opposite of intent.
+        // At most the remaining budget, floored above 0 with a deadline: 0.0
+        // means "no wall-clock limit" in fj_nl_initialize.
         const double repair_limit =
             has_deadline_ ? std::max(1e-9, std::min(2.0, remaining())) : 0.0;
-        // What the built-in LNS now scores against: the restore above means
-        // `old_key` is the kick origin's key, so a repair is kept only if it
-        // beats the point the kick departed from rather than a drifted one it
-        // was handed. That is the rule SearchResult::lns_repairs_accepted has
-        // always been documented as recording, and it is a strictly higher bar.
-        //
-        // What a REJECTION does is worth stating precisely, because it inverted
-        // with this change. Before, destroy_repair snapshotted the drifted point
-        // the kick started from, so a rejection put the search back exactly
-        // where it already was: a genuine no-op. Now the restore above has
-        // already happened, so the snapshot IS the origin, and a rejection moves
-        // the search from wherever it had drifted back to the origin and
-        // perturbs nothing. Not a no-op -- but not a diversification either: FJ
-        // re-descends from a point it has already converged on. Whether such a
-        // kick should fall through to a perturb is a trajectory change and so a
-        // separate measurement, not a tidy-up.
+        // After the restore, the built-in LNS keeps a repair only if it beats
+        // the kick origin. A rejection leaves the search on the origin with
+        // nothing perturbed; falling through to a perturb would be a trajectory
+        // change needing its own measurement.
         trace_kick(KickKind::LNS);
         lns_->set_feasibility_tolerance(config_.feasibility_tolerance);
         lns_->set_neighbours(config_.structural_neighbours);
@@ -1559,20 +1016,15 @@ void ViolationLSLoop::diversify(bool allow_lns) {
 }
 
 bool ViolationLSLoop::budget_exhausted() {
-    // Count *actual* GLS iterations, which is what the config documents and
-    // what SearchResult::iterations reports. Using batches *
-    // batch_iterations over-counts whenever a batch exits early on
-    // feasibility, so the budget expired after far less work than asked for.
+    // Actual GLS iterations; batches * batch_iterations over-counts any batch
+    // that exits early.
     if (config_.max_iterations > 0 && fj_.iterations() >= config_.max_iterations) {
         termination_ = TerminationReason::IterationLimit;
         return true;
     }
-    // Structural batches do not charge fj.iterations(), so on a
-    // List/Set model with no wall clock the iteration budget alone cannot
-    // guarantee termination (structural_batch_probability = 1.0 would spin
-    // forever). A batch that charges nothing -- every Structural batch, or an
-    // FJ or Novelty batch that starts with V empty -- is the only way batches
-    // can outrun iterations, so this only bites when iterations have stalled.
+    // Batches that charge no iteration (Structural, or FJ/Novelty starting with
+    // V empty) would otherwise spin forever without a clock; this bites only
+    // when iterations stall.
     if (config_.max_iterations > 0 && batches_ >= config_.max_iterations) {
         termination_ = TerminationReason::IterationLimit;
         return true;
@@ -1585,9 +1037,8 @@ bool ViolationLSLoop::budget_exhausted() {
     return false;
 }
 
-// Bucket a batch by kind. Exactly one arm runs per batch, which is what makes
-// fj + novelty + structural == batches an identity rather than an approximation
-// (tests/test_counters.cpp pins it).
+// Exactly one arm per batch, so fj + novelty + structural == batches
+// (tests/test_counters.cpp).
 void ViolationLSLoop::count_batch(BatchKind kind) {
     ++counters_.batches;
     switch (kind) {
@@ -1603,28 +1054,14 @@ void ViolationLSLoop::count_batch(BatchKind kind) {
     }
 }
 
-// The FJ/Novelty choice is redrawn EVERY batch. This is a deliberate deviation
-// from ViolationLS §5 / Algorithm 6, which draws A at the start, on a new best
-// and on a perturbation, and keeps it in between. #209 implemented that sticky
-// draw and settled it with a pre-registered paired A/B (committed before either
-// arm ran; #209 has the protocol): MIPfeas smoke roster, 30s,
-// seeds 1-10, engine a19b222, primal integral per (instance, seed). Sticky minus
-// per-batch: mean +0.031, 95% CI [+0.016, +0.046] over 110 pairs; per-batch won
-// 72, sticky 8, 30 ties (the three instances neither arm solves); sgm 0.2018
-// per-batch against 0.2467 sticky; 80/110 feasible in both. The CI excludes zero,
-// so the rule shipped the winner. The mechanism is visible on binkar10_1: a
-// productive FJ stretch ends at its next new best while a Novelty one runs to
-// perturbation_period, so the sticky draw drifts toward the less productive
-// algorithm.
-//
-// Per-batch redraw is also the closer of the two to OR-Tools, the reference
-// implementation mipfeas is compared against: its ls worker interleaves several
-// states, almost all of which restart on a shared Luby schedule
-// (restart_factor * SUniv: 1, 1, 2, 1, 1, 2, 4, ... batches;
-// SharedLsStates::ConfigureNextLubyRestart), and LsOptions::Randomize redraws
-// use_compound_moves at every restart and every new best -- so its choice is
-// short-lived, not held to a perturbation period. Without compound moves
-// nothing is drawn. The structural draw is this engine's extension.
+// The FJ/Novelty choice is redrawn every batch, a deliberate deviation from
+// ViolationLS §5 / Algorithm 6, which holds it until a new best or perturbation.
+// #209's pre-registered paired A/B (MIPfeas smoke, 30 s, seeds 1-10, engine
+// a19b222, primal integral) favoured per-batch: sticky minus per-batch +0.031,
+// 95% CI [+0.016, +0.046], 110 pairs. A sticky draw drifts toward Novelty, whose
+// stretches run to perturbation_period while FJ's end at a new best. OR-Tools'
+// ls worker likewise redraws use_compound_moves at each Luby restart and new
+// best. No draw without compound moves; the structural draw is our extension.
 BatchKind ViolationLSLoop::pick_batch_kind() {
     if (rng_.random() < structural_probability_) {
         return BatchKind::Structural;
@@ -1640,8 +1077,7 @@ bool ViolationLSLoop::run_batch(BatchKind kind) {
         case BatchKind::Structural:
             return structural_.run(model_, vm_, rng_, has_deadline_, deadline_);
         case BatchKind::NoveltyJump:
-            // A whole GLS batch over ApplyNoveltyJump at FJ's batch size, which
-            // hands FJ's scan set and jump table back current (#209).
+            // Leaves FJ's scan set and jump table current (#209).
             fj_.novelty_batch(config_.batch_iterations);
             return false;
         case BatchKind::FeasibilityJump:
@@ -1652,12 +1088,9 @@ bool ViolationLSLoop::run_batch(BatchKind kind) {
 }
 
 void ViolationLSLoop::note_closest_approach(double batch_violation) {
-    // Only tracked until the first feasible solution: after that both the
-    // final restore and the returned state use best_state, so the snapshot
-    // would be pure allocation on every improving batch. The `batches == 1`
-    // clause guarantees one capture even on an all-NaN run (violation stays
-    // +inf, so `<` never fires) without re-snapshotting on every batch of a
-    // violation plateau — the common infeasible case.
+    // Only until the first feasible point, after which finish() uses best_state_.
+    // `batches == 1` captures once even on an all-NaN run (+inf never compares
+    // `<`) without re-snapshotting on every batch of a plateau.
     if (!have_feasible_ && (batch_violation < best_violation_ || batches_ == 1)) {
         best_violation_ = batch_violation;
         closest_state_ = model_.copy_state();
@@ -1668,37 +1101,20 @@ bool ViolationLSLoop::polish_and_record(double batch_violation, bool& resync) {
     if (batch_violation > config_.feasibility_tolerance) {
         return false;
     }
-    // Record the feasible point we already have *before* polishing. The
-    // hook descends the penalty-method objective and can land outside
-    // the feasible region; recording only afterwards silently threw away
-    // genuinely feasible solutions (an instance would be reported
-    // infeasible despite the search having visited a feasible point).
+    // Record before polishing: the hook can leave the feasible region, and a
+    // visited feasible point must not be lost.
     bool improved = record_best();
-    // The hook is unbounded in *time* — a custom InnerSolverHook may do
-    // arbitrary work, and even FloatIntensifyHook sweeps every Float
-    // max_sweeps times. Don't start one we have no budget for.
+    // The hook's time is unbounded; don't start one with no budget left.
     if (hook_ != nullptr && !past_deadline()) {
         ++counters_.inner_solver_calls;
-        // Gated on has_deadline_ for exactly the reason last_improvement_ is: an
-        // iteration-budgeted run must read NO clock at all, not merely no clock
-        // that reaches control flow, or it stops being bit-reproducible on any
-        // machine (docs/architecture.md's determinism claim, and #169's own
-        // "no additional clock read" criterion). The consequence is stated on
-        // SearchCounters::inner_solver_seconds: the call COUNT is always right,
-        // the seconds read 0.0 on a run with no wall clock.
-        //
-        // A tracer widens the gate -- `Tracer::hook` carries the duration, so a
-        // host that asked for events gets them on a clockless run too. That is
-        // stated on `Tracer`: an attached tracer costs clock reads, and no
-        // tracer costs none.
+        // An iteration-budgeted run reads no clock at all (#169, the determinism
+        // note in docs/architecture.md), so inner_solver_seconds reads 0.0 there.
+        // An attached tracer widens the gate: Tracer::hook carries the duration.
         const bool time_the_hook = has_deadline_ || tracer_ != nullptr;
         const auto hook_started = time_the_hook ? std::chrono::steady_clock::now()
                                                 : std::chrono::steady_clock::time_point{};
-        // The hook gets the loop's own stop condition (#191): before it had none,
-        // and FloatIntensifyHook on a 12k-Float model ran a 20s solve ~10s over
-        // budget. past_deadline() reads no clock on a run without one, so an
-        // iteration-budgeted run stays bit-reproducible, and a hook that
-        // finishes within budget sees nothing but unraised polls.
+        // The hook gets the loop's stop condition (#191). past_deadline() reads
+        // no clock on a clockless run, so it stays bit-reproducible.
         const LoopStop stop{this};
         // continuous-objective polish (mutates floats)
         hook_->solve(model_, vm_, {}, StopRef(stop));
@@ -1731,16 +1147,13 @@ bool ViolationLSLoop::apply_batch_outcome(bool improved, bool resync, bool count
         }
         return true;
     }
-    // Gated so an iteration-budgeted run reads no clock AT ALL, not merely
-    // no clock that reaches control flow: this is the only writer of
-    // last_improvement and its only reader is the has_deadline-gated
-    // arming block below. Keeps architecture.md's "the loop reads no
-    // clock at all" literally true.
+    // Gated so a clockless run reads no clock at all; the only reader is the
+    // has_deadline_-gated arming route.
     if (has_deadline_) {
         last_improvement_ = std::chrono::steady_clock::now();
     }
     stagnation_ = 0;
-    // Making progress: the Float escape probe is not needed and is not free.
+    // Progress: the escape probe is not needed and not free.
     fj_.set_escape_probe(false);
     // new best: fresh GLS weights (paper) + new rho
     fj_.reset_weights();
@@ -1754,25 +1167,11 @@ bool ViolationLSLoop::apply_batch_outcome(bool improved, bool resync, bool count
 }
 
 void ViolationLSLoop::maybe_arm_escape_probe() {
-    // Time-based arming (#117); see kEscapeArmFraction above. Tested on every
-    // batch, not only stagnant ones, and costs ONE steady_clock::now() per
-    // batch on top of the loop's own deadline reads — immaterial against a
-    // batch of batch_iterations GLS iterations. Skipped entirely once the
-    // probe is armed: arming again would be a no-op, and a new best clears
-    // the flag and re-enables the check.
-    //
-    // This route carries no diversification kick, unlike the stagnation route
-    // below, and an earlier revision gated it on the run being projected to
-    // fall short of perturbation_period batches for fear of starving
-    // diversify(). That gate was removed: the drip it defended against cannot
-    // run away, because the improvement that resets `stagnation` also disarms
-    // the probe (see the `improved` branch above), so re-arming costs another
-    // kEscapeArmFraction of the budget and the route can arm at most
-    // 1/kEscapeArmFraction times per run. #107's measured 9x regression came
-    // from an always-on probe with no disarm, which is a different regime.
-    // The gate was also measured to cost objective quality on a probe-
-    // sensitive model while preventing nothing, and it is the ungated form
-    // that #117's roster numbers describe.
+    // Time-based arming (#117; kEscapeArmFraction): one clock read per batch,
+    // skipped while armed. It carries no kick and is not gated on a projected
+    // batch shortfall: a new best disarms the probe and restarts the clock, so it
+    // arms at most 1/kEscapeArmFraction times per run, unlike #107's always-on
+    // probe (9x regression). #117's roster numbers describe this ungated form.
     if (has_deadline_ && !fj_.escape_probe()) {
         const auto now = std::chrono::steady_clock::now();
         if (now < deadline_ && std::chrono::duration<double>(now - last_improvement_).count() >=
@@ -1783,112 +1182,46 @@ void ViolationLSLoop::maybe_arm_escape_probe() {
 }
 
 void ViolationLSLoop::maybe_diversify(BatchKind kind, bool improved) {
-    // A Feasibility-Jump batch that reported itself unproductive stopped
-    // reducing the real rows' violation at all (GFJConfig::
-    // unproductive_iterations). Waiting out the rest of perturbation_period
-    // would be waiting for a batch that has already said it has nothing
-    // left, so the kick is due now (#102).
-    //
-    // Gated on !improved. FeasibilityJump ends a batch on ITS measure, the
-    // real rows; the outer loop's `improved` is a new best on the objective.
-    // After the first feasible point those come apart routinely: a batch
-    // satisfies every real row, keeps iterating because any_active_violated()
-    // still sees the artificial objective row, plateaus on the real rows and
-    // exits stuck -- having just recorded a new best. Without this guard that
-    // batch is kicked anyway, three lines after the `improved` block set
-    // stagnation to 0 and disarmed the escape probe. That would also falsify
-    // the reasoning the time-based arming route above rests on ("the
-    // improvement that resets stagnation also disarms the probe"), by
-    // re-arming the probe on the very batch that just improved.
-    //
-    // batch_stuck() can now only be true when the batch started with
-    // `stagnation >= unproductive_arm_stagnation`, so this is the second of
-    // two gates rather than the only one; it is kept because it reads on the
-    // state AFTER the batch, which the arming decision could not.
-    //
-    // And gated on fj_idle_ (#201): an FJ batch over an empty jumpable set
-    // is "stuck" by construction, having had nothing to do, and the kick it
-    // would buy re-randomises every List the structural batch is working on.
-    // Only reachable at an explicit structural probability -- the automatic one
-    // schedules no FJ batch on such a model -- and constant false on any model
-    // FJ has work in, or that has no structure, so those keep their
-    // trajectories.
+    // An FJ batch that reported itself unproductive (GFJConfig::
+    // unproductive_iterations) has nothing left, so the kick is due now (#102).
+    // Gated on !improved: after feasibility a batch can record a new best on the
+    // objective yet exit stuck on the real rows, and kicking it would undo the
+    // `improved` resets. That is the second gate after
+    // unproductive_arm_stagnation, kept because it reads the post-batch state.
+    // Gated on fj_idle_ (#201): an FJ batch with nothing to jump is stuck by
+    // construction, and its kick would re-randomise every List. Reachable only
+    // at an explicit structural probability; false wherever FJ has work.
     const bool unproductive_kick =
         kind == BatchKind::FeasibilityJump && !improved && fj_.batch_stuck() && !fj_idle_;
     if (stagnation_ >= config_.perturbation_period && !past_deadline()) {
-        // Genuinely stuck. Arm the Float escape probe: a variable sitting at a
-        // stationary point of every violated constraint has no other candidate
-        // that can move it, and diversification alone cannot rescue it because
-        // the search re-converges to the same point. Disarmed again on the next
-        // improvement, so a productive search never pays for it.
+        // Arm the Float escape probe: a variable at a stationary point of every
+        // violated row has no other candidate, and a kick re-converges there.
+        // The next improvement disarms it.
         fj_.set_escape_probe(true);
         // Before the kick, so an adoption re-grounds at the shrunk step too.
         shrink_objective_step();
-        // Under ParallelSearch, restarting from a PEER's incumbent is MEANT to
-        // be a better use of a full-period kick than re-perturbing our own
-        // assignment: the pool holds points this worker has not seen, drawn
-        // from the better half rather than the best so the workers stay spread.
-        // Nothing here measures that, and it should not be read as settled --
-        // "cooperative vs non-cooperative sharing at a fixed worker count" was
-        // left unmeasured when issue #135 closed, and a null
-        // SearchCoordination* is exactly how to run the control arm. adopt_from_pool() performs the
-        // kick itself -- it disarms the probe it just armed, resamples rho, counts the perturbation
-        // and zeroes stagnation -- so diversify() is skipped when it succeeds. With no pool it
-        // returns false immediately and this is the same single-threaded code path it always was.
+        // Under ParallelSearch, try a peer's point instead (#135; whether that
+        // beats perturbing is unmeasured, a null coord is the control arm).
+        // adopt_from_pool() performs the whole kick; without a pool it returns
+        // false at once. Only on this route: an adoption (lock, restore,
+        // full_evaluate, FJ rebuild) on the every-batch unproductive route would
+        // thrash, while #158's restore there costs one copy.
         //
-        // Deliberately only this route, not the unproductive one below: that
-        // kick fires on an iteration count, can recur every batch, and is
-        // valuable precisely because it is cheap. An adoption is a pool draw
-        // under a mutex plus a state restore plus a full_evaluate plus an FJ
-        // rebuild, and putting it on the fast-recurring route would turn a stall
-        // accelerator into a thrash.
-        //
-        // #158 put a restore on that route, which is NOT the same move and the
-        // difference is the whole of this paragraph: it takes no lock, draws
-        // nothing, needs no full_evaluate on the perturb branch, and the FJ
-        // rebuild was already being paid by perturb()'s own reset_weights. What
-        // is left is one per-variable copy. See diversify().
-        //
-        // `lns_kick_due()` FIRST, and it is load-bearing rather than a nicety.
-        // diversify() is the only caller of LNS::destroy_repair and the only
-        // writer of lns_slot_, and this route is the only one that may draw LNS
-        // once a feasible solution exists (the other passes
-        // allow_lns = !have_feasible_). So letting adoption take every kick
-        // would silently switch LNS off for the whole of every portfolio
-        // worker's life from its own first incumbent onward -- `cbls --lns 0.3`,
-        // now multi-threaded by default, would build an LNS per worker and
-        // never repair with it, with `lns_repairs` among the fields the parallel
-        // compose drops so nothing would say so. Adoption replaces the PERTURB
-        // half of the kick, not the destroy-repair half.
+        // `lns_kick_due()` first, load-bearing: this is the only route that may
+        // draw LNS once feasible, so adoption taking every kick would switch LNS
+        // off for every portfolio worker. Adoption replaces only the perturb.
         if (lns_kick_due() || !adopt_from_pool()) {
             diversify();
         } else {
-            // Adoption REPLACED the kick, so it is the kick this batch took --
-            // the one KickKind a single-threaded run can never report, since
-            // adopt_from_pool returns false at once without a pool.
+            // Adoption was this batch's kick; never reported without a pool.
             trace_kick(KickKind::Adopt);
         }
     } else if (unproductive_kick && !past_deadline()) {
-        // Kick early, but do NOT arm the escape probe and do NOT reset the
-        // stagnation counter.
-        //
-        // Not the probe: this route fires on an ITERATION count, so on a
-        // model with no reachable feasible point the very first batch trips
-        // it and every batch after it does too. Arming here would put the
-        // probe on from ~300 iterations into the run onward and leave it on
-        // -- the always-on regime #107 measured at a 9x regression -- and
-        // the mitigation that makes arming safe elsewhere (disarm on the
-        // next improvement) is worth nothing against a condition that
-        // recurs every batch. The probe keeps its two documented routes.
-        //
-        // Not the counter: diversify() zeroes `stagnation`, and an
-        // unproductive batch is by definition a non-improving one, so
-        // letting it zero the counter would mean a model that is
-        // unproductive every batch never reaches perturbation_period --
-        // which is the probe's own arming clock, and on an iteration-
-        // budgeted run (no wall clock) the only one it has. Carrying the
-        // count across keeps "100 non-improving batches" meaning what it
-        // says while still buying the early kick.
+        // Kick early, but arm no probe and keep the stagnation count. This
+        // route can fire every batch, so arming would be #107's always-on probe
+        // (9x regression). Zeroing the count would keep an always-unproductive
+        // model from ever reaching perturbation_period, the probe's only arming
+        // clock on a clockless run.
         const int carried = stagnation_;
         diversify(/*allow_lns=*/!have_feasible_);
         stagnation_ = carried;
@@ -1905,19 +1238,16 @@ void ViolationLSLoop::maybe_emit_periodic_progress() {
 }
 
 SearchResult ViolationLSLoop::finish() {
-    // On a feasible run the best-objective assignment is the answer; on an
-    // infeasible one, hand back the closest approach rather than the initial
-    // assignment (which carries no information about where the search got to).
+    // The incumbent, or on an infeasible run the closest approach.
     model_.restore_state(have_feasible_ ? best_state_ : closest_state_);
-    // Release the artificial objective bound so post-solve feasibility checks
-    // (verifiers iterating model constraints) don't see it violated by ~eps.
+    // Release the objective bound so post-solve checks over the model's
+    // constraints don't see it violated by ~eps.
     if (has_obj_) {
         model_.set_objective_bound(std::numeric_limits<double>::infinity());
     }
     full_evaluate(model_);
 
-    // Sampled here rather than at the assignment below, so the reported wall
-    // time does not depend on how many cheap fields the record grows.
+    // Sampled before filling the record, so its size does not move the time.
     const double run_seconds = elapsed();
 
     SearchResult result;
@@ -1925,16 +1255,10 @@ SearchResult ViolationLSLoop::finish() {
         have_feasible_ ? best_feasible_obj_ : std::numeric_limits<double>::infinity();
     result.feasible = have_feasible_;
     result.best_state = have_feasible_ ? best_state_ : closest_state_;
-    // Residual of the assignment actually being returned, from the fresh
-    // full_evaluate above rather than the incrementally-maintained node values.
+    // The returned assignment's residual, from the fresh full_evaluate above.
     result.best_violation = max_real_violation();
-    // The unit max_iterations is charged in (#201): GLS iterations, or the
-    // outer batch count when that is larger. budget_exhausted() stops on
-    // either reaching the limit, i.e. on this max reaching it, so the reported
-    // count and the budget agree by construction. On any model FJ has work in,
-    // a batch charges up to batch_iterations GLS iterations and the max is the
-    // GLS count; on a structural-only run, where no GLS iteration is ever
-    // charged, it is the batch count rather than a 0 that hides the work done.
+    // budget_exhausted() stops when either count reaches the limit, so this max
+    // agrees with the budget (#201); a structural-only run reports batches, not 0.
     result.iterations = std::max(fj_.iterations(), batches_);
     result.time_seconds = run_seconds;
     result.termination = termination_;
@@ -1948,10 +1272,8 @@ SearchResult ViolationLSLoop::finish() {
     result.counters.novelty_moves = fj_.novelty_moves();
     result.counters.novelty_commits = fj_.novelty_commits();
     result.counters.novelty_weight_bumps = fj_.novelty_weight_bumps();
-    // The structural sweep keeps its own per-generator tallies, since it is the
-    // only thing that knows which generator scored which candidate. Copied out
-    // here rather than accumulated per batch: the batch outlives no solve, and
-    // one copy of a handful of entries at exit is cheaper than a merge per batch.
+    // Per-generator tallies live in the sweep; one copy at exit, not a merge per
+    // batch.
     result.counters.by_generator = structural_.generator_counters();
     for (const GeneratorCounters& g : result.counters.by_generator) {
         result.counters.structural_moves_tried += g.moves_tried;
@@ -1967,34 +1289,17 @@ SearchResult ViolationLSLoop::run() {
         }
 
         const BatchKind kind = pick_batch_kind();
-        // Re-decided every batch, from the count as it stands BEFORE the batch
-        // runs; see unproductive_arm_stagnation above. Disarming also stops the
-        // batch ENDING early, which matters on its own: on ex8_6_1 the early
-        // exits cost about six gap points even with every kick suppressed.
-        //
-        // The rule is the stagnation count ALONE. Feasibility does not gate
-        // arming or the kick; it decides only whether the kick may draw LNS (see
-        // the kick site). Two alternatives were implemented and measured and both
-        // are worse, so do not "restore" either from these notes:
-        //
-        //  - Gating the kick on !have_feasible bounds the misfire completely, but
-        //    st_e40 then reaches its BKS on 2 of 4 seeds instead of 4 -- it uses
-        //    post-feasible kicks to move between its 52 feasible combinations.
-        //  - Rate-limiting the kick (arming on the advance since the last one)
-        //    starves it the other way: infeasible at seed 2 on the 15 000-
-        //    iteration regression budget.
-        //
-        // Note what this count does NOT do: it does not bound the number of
-        // kicks. The kick site restores `stagnation` deliberately, so once the
-        // count first crosses the threshold every later batch is armed until an
-        // improvement or a full-period diversify resets it. That is a DELAY on
-        // the first misfire, not a cap on the rate; what makes the misfire cheap
-        // is that the kick drops its LNS half once a feasible solution exists.
+        // From the pre-batch stagnation count alone (kUnproductiveArmDivisor);
+        // disarmed, the batch also cannot end early (on ex8_6_1 early exits cost
+        // ~6 gap points with kicks suppressed). Measured worse, don't restore:
+        // gating the kick on !have_feasible (st_e40 BKS 2/4 seeds, not 4/4), and
+        // rate-limiting it (infeasible at seed 2 on the 15 000-iteration budget).
+        // A delay, not a rate cap: the kick keeps the count, so every batch after
+        // the threshold is armed until a reset; dropping LNS once feasible is
+        // what keeps a misfire cheap.
         fj_.set_watch_progress(stagnation_ >= unproductive_arm_stagnation_);
 
-        // A no-op without a pool, so a single-threaded solve is untouched. After
-        // pick_batch_kind so the kind is drawn from the RNG exactly as before
-        // either way -- the sync itself draws nothing.
+        // A no-op without a pool; draws no RNG, so the kind's draw is unchanged.
         sync_shared_bound();
         if (config_.auditor != nullptr) {
             config_.auditor->audit(AuditPoint::BeforeBatch, fj_);
@@ -2013,16 +1318,12 @@ SearchResult ViolationLSLoop::run() {
         const double batch_violation = max_real_violation();
         note_closest_approach(batch_violation);
         const bool improved = polish_and_record(batch_violation, resync);
-        // Before apply_batch_outcome, which can end the run: the last batch of a
-        // pure-feasibility solve is a batch like any other and has to be
-        // reported as one.
+        // Before apply_batch_outcome, which can end the run, so the last batch
+        // is reported too.
         trace_batch_end(kind, improved);
-        // An FJ or Novelty batch on a model FJ has no work in (#201) moved
-        // nothing, so it is not a non-improving batch either: counting it would
-        // let empty batches alone run up perturbation_period and fire full
-        // diversification kicks at the structural search. Only reachable at an
-        // explicit structural probability; false on every model FJ has work in
-        // and on every model without structure.
+        // An FJ/Novelty batch on an fj_idle_ model moved nothing (#201);
+        // counting it would let empty batches alone fire full-period kicks.
+        // Only at an explicit structural probability.
         const bool empty_batch = kind != BatchKind::Structural && fj_idle_;
         if (!apply_batch_outcome(improved, resync, /*count_stagnation=*/!empty_batch)) {
             break;
@@ -2031,24 +1332,11 @@ SearchResult ViolationLSLoop::run() {
         maybe_diversify(kind, improved);
         maybe_emit_periodic_progress();
     }
-    // The while-condition is the only exit that does not assign termination_,
-    // so reaching here with the seeded TimeLimit means the loop condition ended
-    // the run -- and that condition has two causes now. The clock is asked
-    // first: a run whose budget genuinely expired is time-limited whether or
-    // not a peer happened to raise the flag in the same instant. Every other
-    // exit is a `break` that already wrote its own reason (Feasible above all:
-    // a worker that solved the model did not stop, it finished).
-    //
-    // The host's cancel is asked before the peer flag: when both are true the
-    // outer cause is the one the caller asked about, which is what
-    // TerminationReason::Cancelled documents.
-    //
-    // The two flags are INDEPENDENT. `ParallelSearch` does not mirror a host
-    // cancel onto `coord.stop`: its only writers are a worker whose own run ended
-    // Feasible and the thread-creation failure path (src/pool.cpp), plus
-    // adopt_from_pool's pure-feasibility branch. So both can be true at once, and
-    // this order is what decides which one a worker reports when a peer finishes
-    // in the same instant the host cancels.
+    // A seeded TimeLimit means the loop condition ended the run; every `break`
+    // wrote its own reason. Precedence: an expired clock, then the host's cancel
+    // (the outer cause), then a peer's stop. The two flags are independent
+    // (ParallelSearch does not mirror a cancel onto `coord.stop`), so both can
+    // be true at once.
     if (termination_ == TerminationReason::TimeLimit && !clock_expired()) {
         if (cancel_requested()) {
             termination_ = TerminationReason::Cancelled;
@@ -2061,11 +1349,6 @@ SearchResult ViolationLSLoop::run() {
 
 }  // namespace
 
-// ViolationLS (paper Algorithm 6): the objective is folded into the constraint
-// set as `obj <= bound`; GFJ batches drive the assignment to feasibility while
-// the bound is tightened on each new (real-)feasible solution. On stagnation the
-// assignment is perturbed (or diversified via LNS). The InnerSolverHook polishes
-// continuous variables (objective descent) on each feasible solution.
 void validate_search_config(const SearchConfig& config) {
     if (config.batch_iterations <= 0) {
         throw std::invalid_argument("SearchConfig::batch_iterations must be positive, got " +
@@ -2083,59 +1366,34 @@ SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
     validate_search_config(config);
     RNG rng(seed);
 
-    // An unclosed model is closed here rather than refused: callers have always
-    // handed solve() one, and on an objective model the objective row's rebuild
-    // used to close it as a side effect. Without an objective nothing did, and
-    // the run read an unbuilt variable-to-constraint index ("var id out of
-    // range"). Closing it explicitly makes both cases the same, and makes the
-    // model refuse later builders (#173) instead of accepting unevaluated rows.
-    //
-    // And frozen (#271): `freeze()` is that close plus the objective row, the
-    // last structural changes a closed model can take, then the cone cache
-    // every one-variable walk reads. A closed model refuses every builder
-    // already (#173), so the model a caller gets back can do what it could
-    // before, bar `reserve` and `close`.
+    // Frozen here (#271); an unclosed model is closed, not refused. freeze()
+    // closes it (later builders are refused, #173; the variable-to-constraint
+    // index is built), adds the objective row, then builds the cone cache.
     model.freeze(config.cone_cache_bytes);
     const ConeCacheCounters cones_at_entry = cone_cache_counters();
     const bool has_obj = model.objective_id() >= 0;
     if (has_obj) {
         model.set_objective_bound(std::numeric_limits<double>::infinity());  // reset for re-solves
     }
-    // Before anything reads a row: a domain row's step is set from this solve's
-    // tolerance, not the one the model was closed or last solved at (#258).
+    // Before anything reads a row: domain rows use this solve's tolerance (#258).
     model.set_domain_tolerance(config.feasibility_tolerance);
     ViolationManager vm(model);
 
     const Budget budget = make_budget(time_limit);
 
-    // Exactly one path initialises each variable (#108). FeasibilityJump owns the
-    // scalar start — `begin(set_initial_x)` below sets every Bool/Int/Float to the
-    // domain value closest to zero, per the published Feasibility Jump — so this
-    // call covers only the types FJ cannot initialise (List, Set).
-    //
-    // Randomising the scalars here too, as this used to, was worse than merely
-    // redundant: `begin()` overwrote every one of them a dozen lines later, so the
-    // draws were dead but still consumed, and the code read as though the seed
-    // varied the starting point when it did not. It also hid a live hazard --
-    // `rng.uniform(lb, ub)` returns NaN on an infinite-width domain and +inf on a
-    // half-infinite one, and `rng.integers` casts an infinite bound to INT64_MIN.
-    //
-    // The seed still drives everything else: List/Set initialisation here,
-    // scan-set sampling, perturbation kicks, GLS rho, LNS destroy sets. Only the
-    // initial *scalar* point is seed-independent, and deliberately so. A caller
-    // who wants a randomised scalar start composes the two public pieces:
-    // `initialize_random(model, rng)` followed by `solve(..., {.skip_init = true})`,
-    // which keeps the assignment it was handed.
+    // One path per variable (#108): FJ's begin() sets the scalars to their
+    // closest-to-zero value (published Feasibility Jump), so only List/Set are
+    // randomised here. The initial scalar point is thus seed-independent; for a
+    // random one, call initialize_random and pass skip_init = true.
     if (!config.skip_init) {
         initialize_structured_random(model, rng);
     }
 
     GFJConfig gfj;
     gfj.two_phase = false;  // batches reuse weights across calls; single-phase GLS
-    // Hand FJ the same absolute deadline (its own is armed in begin(), called
-    // immediately below). A batch is 1000 GLS iterations, so without this a
-    // batch entered just before the deadline runs to completion and overruns it
-    // — measured at +45% on the largest MINLPLib instance.
+    // The same deadline (armed in begin() below), else a batch entered just
+    // before it runs to completion and overruns (+45% on the largest MINLPLib
+    // instance).
     gfj.time_limit = budget.seconds;  // saturated: begin() casts to integer ticks
     gfj.max_iterations = 0;
     gfj.unproductive_iterations = config.unproductive_iterations;
