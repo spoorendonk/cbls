@@ -285,31 +285,24 @@ bool LinearJumpScorer::row_eligible(int32_t ci) const {
 // node's own partial -- one sweep of the node, the same `reverse_sweep` that
 // `compute_partial(node, v)` runs, hence bit-identical to it (`newton_exact`).
 //
-// Eq: the node's partial is sign(p - q) * r, sign-dependent and 0 when
-// satisfied, so it cannot be cached; r = s0 - s1 comes from sweeping each child.
-// That equals the Eq node's sweep up to the factor sign exactly -- negation
-// commutes with every rounding -- only when one side is a literal Const, so that
-// no variable's adjoint mixes paths from both sides. Otherwise the Newton step
-// keeps calling compute_partial for this row; the jump SCORE still uses r.
+// Eq: the node's partial sign(p - q) * r is sign-dependent, so not cached;
+// r = s0 - s1 from sweeping each child. It equals the Eq sweep up to sign
+// exactly only when one side is a literal Const (no adjoint mixes both sides);
+// otherwise Newton keeps calling compute_partial, while the jump score uses r.
 //
-// Bare body (#190, any non-comparison op its owner classified affine): the
-// residual is `body - 0`, so r is again the node's own partial and the row is
-// built like Leq's with q the literal zero.
+// Bare body (#190): residual `body - 0`, built like Leq's with q the literal 0.
 //
-// Every slope must be finite, or the row goes back to ineligible: an affine cone
-// through Prod by an infinite constant has no linear model. (Div by a constant
-// below 1e-15 is the opposite case -- local derivative 0, value +/-inf or NaN,
-// never finite (`div_value` in dag.cpp) -- and is caught in `prepare` by its
-// non-finite side, not here.)
+// Every slope must be finite, else the row is ineligible (Prod by an infinite
+// constant). Div by a constant below 1e-15 (slope 0, value never finite) is
+// caught in `prepare` by its non-finite side.
 const LinearJumpScorer::BuiltRow* LinearJumpScorer::build_row(int32_t ci) {
     const int32_t nid = model_.constraint_ids()[static_cast<size_t>(ci)];
     const ExprNode& nd = model_.nodes()[static_cast<size_t>(nid)];
     const bool bare = !is_comparison_op(nd.op);
     const auto [p, q] = residual_sides(model_, nd, nid);
     // A domain row (#258) steps by domain_margin() where its residual turns
-    // positive, so `p + r D` must match the DAG's sign there exactly, not to a
-    // rounding: only a bare variable argument (q, after the Geq swap) gives a
-    // residual `delta` can compute as `evaluate` does. Any other goes to the probe.
+    // positive, so `p + r D` must match the DAG's sign exactly: only a bare
+    // variable argument (q, after the Geq swap) allows that. Others probe.
     if (model_.is_domain_node(nid) && !q.is_var) {
         slots_[static_cast<size_t>(ci)] = kIneligible;
         return nullptr;
@@ -362,11 +355,9 @@ double* LinearJumpScorer::slope_table() {
     if (slope_at_) {
         return slope_at_.get();
     }
-    // calloc, not a zero-filled vector: a block large enough to be mapped fresh
-    // comes back as zero pages the kernel maps on first touch, so the slots of
-    // rows never built cost address space only (a smaller one may be memset;
-    // see the header). At least one element, so that a model with no
-    // incidences still gets a non-null block.
+    // calloc, not a zeroed vector: a large block comes back as lazily mapped
+    // zero pages, so unbuilt rows cost address space only (a small one may be
+    // memset; see the header). At least one element, so the block is non-null.
     const size_t len = std::max<size_t>(model_.num_var_constraint_incidences(), 1);
     slope_at_.reset(static_cast<double*>(std::calloc(len, sizeof(double))));
     if (!slope_at_) {
@@ -378,10 +369,8 @@ double* LinearJumpScorer::slope_table() {
 
 void LinearJumpScorer::write_slopes(int32_t ci) {
     double* const slopes = slope_table();
-    // Each nonzero slope into its variable's slot for this row. A zero one is
-    // left as the +0.0 the block was zeroed to, which is what the per-row pool
-    // this replaced reported for a variable it did not hold -- keeping a -0.0
-    // out of residual_partial_at's result.
+    // Each nonzero slope into its variable's slot. A zero one stays the block's
+    // +0.0, keeping -0.0 out of residual_partial_at's result.
     for (const auto& e : merged_) {
         if (e.second == 0.0) {
             continue;
@@ -489,13 +478,10 @@ bool LinearJumpScorer::prepare_impl(int32_t var_id, const std::vector<double>& w
         // literal side may be the +/-inf bound sentinel (the objective row's
         // bound opens at +inf) but not NaN.
         //
-        // Checked BEFORE the zero-slope skip below: `Div` by a constant below
-        // 1e-15 has local derivative 0 yet evaluates to an infinity signed by
-        // num * denom, or NaN when the numerator is 0 (`div_value` in dag.cpp),
-        // so a zero slope alone does not make the row constant -- but that side
-        // is never finite, which this catches. At exactly 1e-15 both `evaluate`
-        // and `local_derivative` divide (#205 aligned the derivative's
-        // threshold), so that divisor gets an ordinary slope.
+        // Must precede the zero-slope skip: `Div` by a constant below 1e-15 has
+        // slope 0 but evaluates to +/-inf or NaN (`div_value`, dag.cpp), never
+        // finite, which this catches. At exactly 1e-15 both `evaluate` and
+        // `local_derivative` divide (#205), giving an ordinary slope.
         if ((p_literal ? std::isnan(p) : !std::isfinite(p)) ||
             (q_literal ? std::isnan(q) : !std::isfinite(q))) {
             ok = false;
@@ -549,11 +535,9 @@ double LinearJumpScorer::delta_impl(double j) const {
     double sum = 0.0;
     for (size_t i = 0; i < terms_.size(); ++i) {
         const Term& t = terms_[i];
-        // The whole move lands on p. Which side carries it matters only where a
-        // side is infinite, and there it does not either: the computed sides are
-        // finite (prepare), so an infinite side is a literal, and a literal
-        // +/-inf plus any finite step is itself -- the residual comes out as the
-        // DAG's whichever side moves. Elsewhere the two differ in rounding only.
+        // The whole move lands on p. Computed sides are finite (prepare), so an
+        // infinite side is a literal and absorbs any step: the residual matches
+        // the DAG's either way, up to rounding.
         const double p = t.p + (t.slope * d);
         const double q = t.q;
         double residual = 0.0;

@@ -82,9 +82,8 @@ double ViolationManager::augmented_objective() const {
 }
 
 void ViolationManager::snapshot_violations(std::vector<double>& out) const {
-    // total_violation() brings cached_violations_ up to the current node values
-    // (it diffs every constraint against the cache on each call), so the snapshot
-    // is a copy of work that has to happen anyway rather than a second scan.
+    // total_violation() brings cached_violations_ up to date, so the snapshot is
+    // a copy, not a second scan.
     total_violation();
     out = cached_violations_;
 }
@@ -95,16 +94,12 @@ double ViolationManager::weighted_delta_from(const std::vector<double>& snapshot
     if (snapshot.size() != cids.size()) {
         throw std::invalid_argument("weighted_delta_from: snapshot size != constraint count");
     }
-    // Per-constraint differencing, for the reason spelled out on
-    // Model::weighted_violation_delta: `1e30 + 3` rounds back to `1e30`, so
-    // subtracting two whole sums loses every real row the moment one row is
-    // clamped, whereas `1e30 - 1e30` cancels to exactly 0 here. It also keeps an
-    // *unchanged* row at an exact 0 rather than at the last-ulp disagreement two
-    // readings of the incrementally maintained cached_total_ can show (#118).
+    // Per-constraint differencing, as in Model::weighted_violation_delta (a
+    // clamped 1e30 row cancels exactly), and an unchanged row contributes an
+    // exact 0, not cached_total_'s last-ulp drift (#118).
     //
-    // Deliberately does not update the cache: the caller's candidate move is
-    // usually rolled back, and total_violation() self-corrects against whatever
-    // the node values are when it is next called either way.
+    // Does not update the cache: the candidate is usually rolled back, and
+    // total_violation() resyncs on its next call.
     double delta = 0.0;
     for (size_t i = 0; i < cids.size(); ++i) {
         const double now = clamped_node_violation(model_.node_value(cids[i]));
@@ -123,10 +118,8 @@ double ViolationManager::weighted_delta_from(const std::vector<double>& snapshot
     if (snapshot.size() != cids.size()) {
         throw std::invalid_argument("weighted_delta_from: snapshot size != constraint count");
     }
-    // Deliberately the same body as the full scan above, term for term and
-    // guard for guard, including the `now != snapshot[i]` skip: the point of
-    // this overload is that it produces the SAME double, and a divergence here
-    // would show up as a trajectory change rather than as a wrong answer.
+    // Must match the full scan term for term, `now != snapshot[i]` skip
+    // included, to produce the SAME double; a divergence changes trajectories.
     double delta = 0.0;
     for (int32_t ci : rows) {
         if (ci < 0 || static_cast<size_t>(ci) >= cids.size()) {
@@ -146,10 +139,8 @@ double ViolationManager::weighted_delta_from(const std::vector<double>& snapshot
 
 bool ViolationManager::is_feasible(double tol) const {
     const std::vector<int32_t>& cids = model_.constraint_ids();
-    // A NaN node value is not <= tol, so all_of rejects it -- which is what we
-    // want. Writing the predicate the other way round, as `> tol`, would let
-    // NaN through silently. A domain row is held to 0, as `verify_model` holds
-    // it (#258): it reads > 0 exactly when its argument misses its floor.
+    // Written as `<= tol` so NaN is rejected (`> tol` would pass it). A domain
+    // row is held to 0, as in `verify_model` (#258).
     return std::all_of(cids.begin(), cids.end(), [&](int32_t cid) {
         return model_.node_value(cid) <= (model_.is_domain_node(cid) ? 0.0 : tol);
     });
@@ -176,12 +167,8 @@ void ViolationManager::bump_weights(double factor) {
 
 double ViolationManager::weighted_violation_delta(int32_t var_id, double j) const {
     require_row_count();  // the probe indexes `weights` by the moved variable's G_v rows
-    // Delegate to the allocation-free Model probe. NOT the engine's hot path,
-    // despite what this wrapper looks like: FJ calls
-    // `Model::weighted_violation_delta(v, j, vm_.weights)` directly once per jump
-    // candidate and bypasses it, leaving python/bindings.cpp and the tests as the
-    // only callers. Which is also why the size check above is free here, and why
-    // the unguarded reads of `weights` are the direct ones.
+    // Not the hot path: FJ calls `Model::weighted_violation_delta` directly, so
+    // only bindings and tests come here and the size check costs nothing.
     return model_.weighted_violation_delta(var_id, j, weights);
 }
 

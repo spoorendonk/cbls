@@ -21,9 +21,8 @@ namespace detail {
 std::vector<int32_t> compute_topo_order(const Model& model);
 }
 
-// The structure is heap-allocated from the start, and both handles point at it,
-// so every accessor is unconditional: there is no "not allocated yet" state to
-// branch on, and `freeze()` is the one thing that changes which handles exist.
+// Both handles point at a structure allocated here, so accessors never branch on
+// "not allocated"; only `freeze()` changes which handles exist.
 Model::Model() {
     auto structure = std::make_shared<ModelStructure>();
     open_structure_ = structure;
@@ -42,17 +41,15 @@ Model::Model(const Model& other)
       domain_margin_(other.domain_margin_),
       closed_(other.closed_),
       inc_sums_(other.inc_sums_) {
-    // probe_old_violation_ is deliberately left empty: it is resized and
-    // overwritten before it is read on every call, so it carries no state.
+    // probe_old_violation_ is left empty: every call resizes and overwrites it
+    // before reading.
     if (other.open_structure_ == nullptr) {
-        // Frozen: share. This is the whole point -- a portfolio replica costs the
-        // variables and the node values, not the DAG (#157). Reading `other`
-        // concurrently from N worker threads is safe: nothing here writes to it,
-        // and a shared_ptr copy is atomic.
+        // Frozen: share the DAG, so a replica costs only variables and node
+        // values (#157). Safe from N threads: `other` is only read, and a
+        // shared_ptr copy is atomic.
         structure_ = other.structure_;
     } else {
-        // Open: deep-copy, exactly as the implicit copy did before the split, so
-        // that a half-built model can be copied and then built further on its own.
+        // Open: deep-copy, so the copy can be built further on its own.
         auto structure = std::make_shared<ModelStructure>(*other.structure_);
         open_structure_ = structure;
         structure_ = std::move(structure);
@@ -67,14 +64,13 @@ void Model::freeze(size_t cone_cache_bytes) {
         close();
     }
     if (objective_id_ >= 0) {
-        // Idempotent, and the reason the freeze point is here rather than at
-        // close(): see the comment on freeze() in the header.
+        // Idempotent; why it is here and not in close(): freeze() in the header.
         add_objective_soft_constraint();
     }
-    // After the objective row, the last structural change there is (#271).
+    // After the objective row, the last structural change (#271).
     build_cone_cache(cone_cache_bytes);
-    // Dropping the writable handle is what makes every structural method throw,
-    // and it leaves `structure_` -- a const handle -- as the only way in.
+    // Without the writable handle every structural method throws; only the
+    // const `structure_` remains.
     open_structure_.reset();
 }
 
@@ -113,9 +109,8 @@ int32_t Model::alloc_var(VarType type, double lb, double ub, const std::string& 
     v.lb = lb;
     v.ub = ub;
     v.name = name;
-    // The variable's empty dependents range goes in FIRST: if the push below
-    // throws, the offsets are merely one entry longer than needed (still an
-    // empty range) rather than one short.
+    // Offsets first: if the push below throws they are one entry long (an
+    // empty range), never one short.
     if (st.dependent_offsets.empty()) {
         st.dependent_offsets.push_back(0);
     }
@@ -124,10 +119,9 @@ int32_t Model::alloc_var(VarType type, double lb, double ub, const std::string& 
     return vars_.back().id;
 }
 
-// Append a node whose children are `st.child_refs[child_begin ..]`, already
-// written by the caller. The one place a node is made, so the two invariants the
-// flat storage rests on are kept in one place: the child slice fits the 32-bit
-// offsets ExprNode carries, and st.parent_offsets stays one longer than st.nodes.
+// Append a node over `st.child_refs[child_begin ..]`, written by the caller. The
+// only place a node is made, so it keeps both flat-storage invariants: the slice
+// fits ExprNode's 32-bit offsets, and parent_offsets is one longer than nodes.
 int32_t Model::push_node(NodeOp op, size_t child_begin) {
     ModelStructure& st = mut();
     if (st.child_refs.size() > std::numeric_limits<uint32_t>::max()) {
@@ -144,11 +138,8 @@ int32_t Model::push_node(NodeOp op, size_t child_begin) {
         st.parent_offsets.push_back(0);
     }
     st.parent_offsets.push_back(st.parent_offsets.back());
-    // The value array is grown here, with the node, so the two can never drift:
-    // every accessor indexes both by the same id. BEFORE the node, for the
-    // reason alloc_var gives -- if this throws nothing was added at all, and if
-    // the push below throws the array is merely one entry long for a node that
-    // does not exist, which nothing can index.
+    // Values grow with the node (both indexed by one id), and before it, as in
+    // alloc_var: a throw leaves at most one unindexable extra entry.
     node_values_.push_back(0.0);
     st.nodes.push_back(nd);
     return nd.id;
@@ -165,19 +156,16 @@ int32_t Model::alloc_node(NodeOp op, std::initializer_list<ChildRef> children) {
 // the caller's handles, with no intermediate ChildRef vector.
 int32_t Model::alloc_node_over_handles(NodeOp op, const std::vector<int32_t>& handles) {
     ModelStructure& st = mut();
-    // No reserve(size + n) here: libstdc++ reserves exactly what is asked, so
-    // doing it per node would defeat geometric growth and copy the whole array
-    // on every call.
+    // No reserve(size + n): libstdc++ reserves exactly, so per node it would
+    // defeat geometric growth and copy the whole array each call.
     const size_t begin = st.child_refs.size();
     try {
         for (const int32_t h : handles) {
             st.child_refs.push_back(wrap(h));
         }
     } catch (...) {
-        // A rejected node leaves no children behind. Nothing can observe the
-        // difference -- every node addresses its own slice, so orphaned entries
-        // are inert -- but a caller that catches and retries would otherwise
-        // grow the array without bound.
+        // A rejected node leaves no children behind, else a catch-and-retry
+        // caller grows the array without bound (orphans are otherwise inert).
         st.child_refs.resize(begin);
         throw;
     }
@@ -187,13 +175,9 @@ int32_t Model::alloc_node_over_handles(NodeOp op, const std::vector<int32_t>& ha
 // Handle encoding: var handles = -(var_id + 1) (negative), node handles = node_id
 // (non-negative).
 //
-// Validated here, when the node naming the handle is made, because nothing later
-// can be: the back-reference rebuild counts every child into a CSR offsets array
-// indexed by its id, so an id past the end is a silent heap write, not an
-// exception (#156 -- the per-node vectors it replaced were reached through
-// throwing accessors). Python passes raw integers, so this is reachable from a
-// typo. It also rules out naming a node before it exists, which the topological
-// sort never supported.
+// Must be validated here, at node creation: the back-reference rebuild indexes a
+// CSR array by id unchecked, so a bad id is a silent heap write (#156), and
+// Python passes raw integers. Also rules out naming a not-yet-made node.
 ChildRef Model::wrap(int32_t handle) const {
     const ModelStructure& st = s();
     ChildRef ref;
@@ -246,19 +230,14 @@ int32_t Model::list_var(int universe, int min_len, int max_len, ListInit init,
         throw std::invalid_argument("list_var: require 0 <= min_len <= max_len <= universe");
     }
     if (init == ListInit::Empty && min_len > 0) {
-        // Empty is only a legal assignment when zero is a legal length. Allowing
-        // it otherwise gives a List that starts -- and that every later
-        // `randomize_var(Regenerate)` returns to -- below its own min_len, which
-        // no constraint row prices and no move guard reports: `list_remove`
-        // refuses to shrink it further and `list_insert` grows it one element
-        // per candidate. `ListInit::Random` is the one that respects a minimum.
+        // Else the List starts (and `randomize_var(Regenerate)` returns it)
+        // below min_len, which no row prices and no move guard reports.
+        // `ListInit::Random` respects a minimum.
         throw std::invalid_argument("list_var: ListInit::Empty requires min_len == 0");
     }
     if (init == ListInit::Identity && (min_len != universe || max_len != universe)) {
-        // Identity means "every element, in order", which is only a legal
-        // assignment when the length is pinned at the universe. Rejecting it
-        // here is what lets `randomize_structured_var` read Identity as exactly
-        // the pre-#164 permutation draw.
+        // Identity is "every element, in order": legal only at length ==
+        // universe, which `randomize_structured_var` relies on (#164).
         throw std::invalid_argument(
             "list_var: ListInit::Identity requires min_len == max_len == universe");
     }
@@ -274,11 +253,9 @@ int32_t Model::list_var(int universe, int min_len, int max_len, ListInit init,
             v.elements[i] = i;
         }
     } else {
-        // Empty and Random both start empty; `initialize_structured_random`
-        // fills a Random list (and any Exact-partition member) before the search
-        // reads it. A model that never calls it -- a bare `full_evaluate` on a
-        // freshly built model -- therefore sees an empty list, which is a legal
-        // assignment whenever min_len is 0 and the honest answer otherwise.
+        // Empty and Random start empty; `initialize_structured_random` fills a
+        // Random list (and any Exact-partition member) before the search reads
+        // it. Without that call an evaluation sees an empty list.
         v.elements.clear();
     }
     return -(vid + 1);
@@ -498,8 +475,8 @@ IntegralRule integral_rule(const Model& model, const ExprNode& nd, ConstSpan<Chi
         case NodeOp::Abs:
             r = IntegralRule{false, false, 0, kids.size()};
             break;
-        // Not known integral. Listed rather than `default:`ed, so that a new
-        // op is a -Wswitch finding here, not a silent "no".
+        // Not known integral. Listed, not `default:`, so a new op is a -Wswitch
+        // finding.
         case NodeOp::Div:
         case NodeOp::Sin:
         case NodeOp::Cos:
@@ -527,8 +504,8 @@ IntegralRule integral_rule(const Model& model, const ExprNode& nd, ConstSpan<Chi
 
 }  // namespace
 
-// Iterative, memoised per call: the expression is a DAG, and a recursion
-// without a memo would revisit a shared subexpression once per path to it.
+// Iterative, memoised per call: without the memo a shared subexpression is
+// revisited once per path to it.
 bool Model::is_integral(int32_t handle) const {
     if (handle < 0) {
         return integral_var_type(var(-(handle + 1)).type);
@@ -593,9 +570,8 @@ int32_t Model::pair_lambda_sum(int32_t list_var_id, std::function<double(int, in
     ModelStructure& st = mut();
     const ChildRef child = wrap(list_var_id);  // reject a bad handle before registering
 
-    // An empty callable means "no endpoint term", which is what -1 records.
-    // Registering an empty std::function instead would cost a
-    // std::bad_function_call on the evaluation path.
+    // An empty callable is "no endpoint term", recorded as -1; registering it
+    // would throw std::bad_function_call at evaluation.
     PairLambdaSpec spec;
     spec.mode = mode;
     if (head) {
@@ -607,10 +583,8 @@ int32_t Model::pair_lambda_sum(int32_t list_var_id, std::function<double(int, in
         spec.tail_id = static_cast<int32_t>(st.lambda_funcs.size() - 1);
     }
 
-    // The two tables are addressed by one id, so they must stay the same
-    // length. Reserving first is what makes the second push unable to throw
-    // after the first has happened: a bad_alloc between them would leave every
-    // LATER pair node indexing a spec table one short.
+    // Both tables share one id, so must stay the same length: reserving first
+    // means the second push cannot throw once the first has happened.
     st.pair_lambda_specs.reserve(st.pair_lambda_funcs.size() + 1);
     st.pair_lambda_funcs.push_back(std::move(func));
     st.pair_lambda_specs.push_back(spec);
@@ -625,10 +599,9 @@ int32_t Model::pair_lambda_sum(int32_t list_var_id, std::function<double(int, in
 // #186: Element, Ceil/Floor/Round, and the lambdas that read other decisions.
 // ---------------------------------------------------------------------------
 
-// A handle the op reads as a SCALAR. A List or Set variable carries its content
-// in `elements` and a `value` of 0.0 that no move ever changes, so reading one as
-// an index or an extra would silently freeze that input; refused instead. The
-// handle itself is validated by `wrap` here, before anything is registered.
+// A handle read as a SCALAR, validated by `wrap` before anything is registered.
+// A List or Set is refused: its `value` is a constant 0.0, so the input would
+// silently freeze.
 ChildRef Model::wrap_scalar(int32_t handle, const char* what) const {
     const ChildRef ref = wrap(handle);
     if (ref.is_var && is_structured(vars_[ref.id].type)) {
@@ -640,20 +613,16 @@ ChildRef Model::wrap_scalar(int32_t handle, const char* what) const {
 
 namespace {
 
-// How many representative indices one line of an Element table (#186) offers:
-// its distinct values when there are at most this many, else this many picked at
-// evenly spaced ranks of the sorted distinct values, the smallest and the largest
-// always among them. A representative is a jump candidate `compute_var_jump`
-// offers for an index whose table is too large to enumerate: the index set that
-// reaches the VALUES the line holds, which is what an index is chosen for. 32 is
-// the Int grid's point count (`kJumpGridPoints` in src/feasibility_jump.cpp), the
-// probe budget the grid already spends.
+// Representative indices per Element-table line (#186): one per distinct value
+// when at most this many, else this many at evenly spaced ranks of the sorted
+// distinct values, smallest and largest included. They are the jump candidates
+// `compute_var_jump` offers for an index too large to enumerate. 32 matches
+// `kJumpGridPoints` (src/feasibility_jump.cpp), the Int grid's probe budget.
 constexpr size_t kElementRepresentatives = 32;
 
-// The representatives of one line: `line[i]` is the value at index i. Sorting
-// (value, index) pairs puts each distinct value's FIRST index at the head of its
-// run, so the first index of every distinct value falls out of one sort, with no
-// search per value. O(m log m) for a line of m.
+// The representatives of one line (`line[i]` is the value at index i). One sort
+// of (value, index) pairs puts each distinct value's first index at the head of
+// its run: O(m log m) for a line of m, no search per value.
 std::vector<int32_t> line_representatives(const std::vector<double>& line) {
     std::vector<std::pair<double, int32_t>> cells;
     cells.reserve(line.size());
@@ -682,11 +651,9 @@ std::vector<int32_t> line_representatives(const std::vector<double>& line) {
     return reps;
 }
 
-// Fill `tbl.row_reps_by_col` (the representatives of every column, as rows) and,
-// for a two-index table, `tbl.col_reps_by_row`. Once, at build: O(R C log R +
-// R C log C) for an R x C table, and at most 32 (R + C) stored indices -- the
-// price of offering, per call, the representatives of the line the OTHER index
-// currently selects rather than of the whole table.
+// Fill `tbl.row_reps_by_col` and, for a two-index table, `tbl.col_reps_by_row`.
+// Once, at build: O(R C (log R + log C)) for R x C, at most 32 (R + C) indices
+// stored, so a call can offer the line the OTHER index currently selects.
 void compute_representatives(ElementTable& tbl, bool two_index) {
     const auto rows = static_cast<size_t>(tbl.rows);
     const auto cols = static_cast<size_t>(tbl.cols);
@@ -720,9 +687,8 @@ void require_finite_table(const std::vector<double>& values) {
 
 }  // namespace
 
-// Register `tbl` and make the Element node over `kids`. The table goes into the
-// side table first so the node never names a missing one, and comes back out if
-// the node cannot be made, so a failed call leaves no orphan behind.
+// Register `tbl`, then make the Element node over `kids`: the node never names a
+// missing table, and a failed node pops the table, leaving no orphan.
 int32_t Model::push_element(ElementTable tbl, const std::vector<ChildRef>& kids) {
     ModelStructure& st = mut();
     require_finite_table(tbl.values);
@@ -861,8 +827,7 @@ int32_t Model::pair_lambda_sum(int32_t list_var_id, PairLambdaExtraFunc func, Pa
         throw std::invalid_argument("pair_lambda_sum: func must not be empty");
     }
     const std::vector<ChildRef> kids = lambda_extra_children(list_var_id, extra, "pair_lambda_sum");
-    // Reserved first for the reason the plain form gives: the two tables share
-    // one id, so the second push must not be able to throw after the first.
+    // Reserved first, as in the plain form: the second push must not throw.
     st.pair_lambda_extra_modes.reserve(st.pair_lambda_extra_funcs.size() + 1);
     st.pair_lambda_extra_funcs.push_back(std::move(func));
     st.pair_lambda_extra_modes.push_back(mode);
@@ -962,12 +927,9 @@ void Model::add_var_sequence(const std::vector<int32_t>& var_ids, int min_block_
     seq.min_block_on = min_block_on;
     seq.min_block_off = min_block_off;
 
-    // Callers pass var handles, as returned by bool_var() etc.; decode each to
-    // the internal var id that seq.var_ids holds. The decode leaves a
-    // non-negative value alone, so a raw var id survives it, but that is a
-    // property of the encoding rather than a supported second calling
-    // convention -- a non-negative value is indistinguishable from a node id
-    // elsewhere in this API, so do not document it as one.
+    // Takes var handles, decoded to var ids. A non-negative value passes
+    // through unchanged, but that is not a supported convention (elsewhere it
+    // means a node id); don't document it as one.
     seq.var_ids.reserve(var_ids.size());
     for (int32_t h : var_ids) {
         int32_t vid = (h < 0) ? -(h + 1) : h;  // decode var handle
@@ -986,11 +948,9 @@ void Model::add_var_sequence(const std::vector<int32_t>& var_ids, int min_block_
     st.var_sequences.push_back(std::move(seq));
 }
 
-// A partition is a structural declaration, so it lives in ModelStructure -- but
-// it also flips `Variable::partitioned`, which lives in the per-model variable
-// array. Both are written here, once, so a member can never be in the structure
-// without the flag that stops `list_moves` proposing a move which would break
-// the invariant.
+// Writes both the partition (ModelStructure) and `Variable::partitioned`
+// (per-model), so no member lacks the flag that stops `list_moves` from
+// proposing a move that breaks the partition.
 int32_t Model::add_list_partition(const std::vector<int32_t>& lists, Cover cover) {
     require_buildable("add_list_partition");
     if (lists.empty()) {
@@ -1002,14 +962,9 @@ int32_t Model::add_list_partition(const std::vector<int32_t>& lists, Cover cover
     int64_t min_total = 0;
     int64_t max_total = 0;
     for (int32_t handle : lists) {
-        // Var handles, as every other public entry point takes them. The decode
-        // leaves a non-negative value alone, so a raw var id survives it -- but
-        // that is a property of the encoding rather than a second calling
-        // convention, exactly as `add_var_sequence` says of itself: a
-        // non-negative value is indistinguishable from a NODE id elsewhere in
-        // this API. `.cbls`'s partition record resolves names through a table
-        // that yields node ids, which is where that would actually bite, so the
-        // loader refuses a non-negative handle before it reaches here.
+        // Var handles; a non-negative pass-through is not a convention (see
+        // `add_var_sequence`). The `.cbls` loader, whose name table yields node
+        // ids, must refuse a non-negative handle before reaching here.
         const int32_t vid = (handle < 0) ? handle_to_var_id(handle) : handle;
         if (vid < 0 || vid >= static_cast<int32_t>(vars_.size())) {
             throw std::invalid_argument("add_list_partition: variable handle out of range");
@@ -1075,28 +1030,25 @@ std::pair<int, int> Model::var_sequence_for(int32_t var_id) const {
     return {-1, -1};
 }
 
-// The inverse permutation of `st.topo_order`, rebuilt wherever that is. Its own
-// function because the two call sites must not drift: a stale `st.topo_pos` would
-// evaluate a dirty set out of dependency order, which is silent wrong values
-// rather than a crash.
+// The inverse of `st.topo_order`, rebuilt wherever that is, by both call sites:
+// a stale `topo_pos` evaluates a dirty set out of order, silently wrong.
 void Model::rebuild_topo_positions() {
     ModelStructure& st = mut();
     st.topo_pos.assign(st.nodes.size(), 0);
     for (size_t i = 0; i < st.topo_order.size(); ++i) {
         st.topo_pos[st.topo_order[i]] = static_cast<int32_t>(i);
     }
-    // Derived from the same order, at the same two sites (close() and the
-    // objective row), so it cannot go stale against it either.
+    // Same order, same two sites (close() and the objective row), so it cannot
+    // go stale either.
     classify_breakpoint_reach();
 }
 
 namespace {
 
 // Collects `var_id`'s cone into `cone`, unsorted, as `collect_dirty_cone` does:
-// its dependents, then every ancestor, each once (`mark[n] == var_id` once a
-// node is taken). Gives up as soon as the cone holds more than `room` nodes and
-// returns false, so a cone too big to cache costs at most `room` nodes plus one
-// node's parents.
+// dependents, then every ancestor, each once (`mark[n] == var_id` once taken).
+// Returns false once it exceeds `room`, so an uncachable cone costs at most
+// `room` nodes plus one node's parents.
 bool collect_cone_within(const Model& model, int32_t var_id, size_t room,
                          std::vector<int32_t>& mark, std::vector<int32_t>& cone) {
     cone.clear();
@@ -1126,25 +1078,19 @@ bool collect_cone_within(const Model& model, int32_t var_id, size_t room,
 }  // namespace
 
 // `ModelStructure::cone_offsets`/`cone_ids` (#271): per variable, the nodes a
-// one-variable `delta_evaluate` recomputes -- its dependents and every ancestor
-// -- each once, sorted by topological position. The walk's own collection
-// (`collect_dirty_cone`), done once per variable here instead of on every walk:
-// O(sum of |cone| log |cone|) once, where a search pays the collect-and-sort on
-// each of its millions of probes and commits. The sort is by `topo_pos`, a
-// total order, so the cached order is the one the walk sorts to and every value
-// it computes is bit-identical.
+// one-variable `delta_evaluate` recomputes (dependents and every ancestor, each
+// once), sorted by `topo_pos`. Wins time: O(sum |cone| log |cone|) once instead
+// of a collect-and-sort per probe and commit; `topo_pos` is a total order, so
+// values are bit-identical to the walk's.
 //
-// It loses on memory where cones are large and many: the cache is the sum of
-// |cone| over the variables, O(nodes * vars) on a deep shared chain. Hence the
-// cap, which bounds the build as well as the cache:
-//  - Variables are taken in id order up to the first whose cone would cross
-//    the cap, which ends the cache. Trying the later ones too could cost a
-//    walk of up to the whole remaining room per variable, O(vars * cap).
-//  - A first pass only sizes that prefix; the second collects it again into
-//    an exactly reserved array. Twice the collection, where growing the array
-//    and shrinking it after held up to three times the cap at once.
-// So the build does O(cap) collection work plus the sort, and at its peak holds
-// the cache, one cone and 4 bytes per node of scratch.
+// Loses memory where cones are large and many (O(nodes * vars) on a deep shared
+// chain), hence the cap, bounding build and cache:
+//  - Variables in id order up to the first whose cone would cross the cap;
+//    trying later ones could cost O(vars * cap).
+//  - Pass 1 sizes that prefix, pass 2 collects into an exactly reserved array;
+//    growing then shrinking would hold up to three times the cap.
+// Build: O(cap) collection plus the sort; peak: the cache, one cone and 4 bytes
+// per node of scratch.
 void Model::build_cone_cache(size_t cap_bytes) {
     ModelStructure& st = mut();
     // Reset first, so a build that throws leaves no cached prefix behind.
@@ -1181,12 +1127,11 @@ void Model::build_cone_cache(size_t cap_bytes) {
     st.cone_prefix = prefix;
 }
 
-// `ModelStructure::breakpoint_flags` (#186). One reverse-topological pass, on a
-// model with a breakpoint node only: a node reaches a breakpoint op if it is one,
-// or if it carries a slope and a parent reaches one. Then, on every Sum, a
-// last-writer stamp finds a child named twice: FJ's forward partials read that
-// on any model (#249), not only the breakpoint walk. O(nodes + parent edges +
-// the children of Sums).
+// `ModelStructure::breakpoint_flags` (#186). On a model with a breakpoint node,
+// one reverse-topological pass: a node reaches a breakpoint op if it is one, or
+// carries a slope and a parent reaches one. Then on every Sum a last-writer
+// stamp flags a repeated child, which FJ's forward partials read on any model
+// (#249). O(nodes + parent edges + children of Sums).
 void Model::classify_breakpoint_reach() {
     ModelStructure& st = mut();
     std::vector<uint8_t>& flags = st.breakpoint_flags;
@@ -1225,25 +1170,17 @@ void Model::classify_breakpoint_reach() {
     }
 }
 
-// Rebuild the DAG's back-references: every node's parents and every variable's
-// dependents. These are what delta_evaluate walks to find the nodes a changed
-// variable dirties, and what the topological sort walks; they are pure derived
-// state, so they are recomputed wholesale rather than patched.
+// Rebuild the back-references (node parents, variable dependents) that
+// delta_evaluate and the topological sort walk. Derived state: recomputed
+// wholesale, not patched.
 //
-// Two passes over the edges into CSR -- count, then fill -- so the arrays are
-// sized exactly once and nothing is allocated per node. Both passes visit
-// parents in ascending id and each parent's children in order, which is the
-// order the per-node vectors this replaced were appended in, so every list is
-// the same sequence it was.
+// Two CSR passes, count then fill, so arrays are sized once with no per-node
+// allocation. Lists are in ascending parent id, each parent's children in order.
 //
-// Deduplicated by a last-writer stamp, not by searching the list being built.
-// A duplicate can only ever come from ONE parent naming the same child twice
-// (`prod(x, x)`), because a parent is visited once -- so "already recorded by
-// this parent" is the whole condition, and a stamp answers it in O(1) where the
-// search was O(degree) per edge. That difference is not academic on a real
-// matrix: the search made this O(sum of degree^2), which on square47 (95k
-// columns in ~288 rows each) was ~3.9 BILLION comparisons and 68% of its model
-// build. Each pass needs the stamps fresh, since both skip the same duplicates.
+// Deduplicated by a last-writer stamp: a parent is visited once, so a duplicate
+// only comes from one parent naming a child twice (`prod(x, x)`). O(1) per edge;
+// searching the list is O(sum of degree^2), the bulk of a wide matrix's build
+// (square47). Both passes need fresh stamps, as both skip the same duplicates.
 void Model::rebuild_back_references() {
     ModelStructure& st = mut();
     const size_t n_nodes = st.nodes.size();
@@ -1270,10 +1207,8 @@ void Model::rebuild_back_references() {
     std::partial_sum(st.parent_offsets.begin(), st.parent_offsets.end(), st.parent_offsets.begin());
     std::partial_sum(st.dependent_offsets.begin(), st.dependent_offsets.end(),
                      st.dependent_offsets.begin());
-    // reserve() first because it allocates exactly, where a growing resize()
-    // may double -- on a replica's rebuild that would be the whole array again.
-    // clear() first because pass 2 overwrites every entry, and reserve() on a
-    // non-empty vector copies the stale contents into the new block.
+    // reserve() allocates exactly where a growing resize() may double; clear()
+    // first so reserve() does not copy stale contents pass 2 overwrites anyway.
     st.parent_ids.clear();
     st.parent_ids.reserve(st.parent_offsets.back());
     st.parent_ids.resize(st.parent_offsets.back());
@@ -1281,9 +1216,8 @@ void Model::rebuild_back_references() {
     st.dependent_ids.reserve(st.dependent_offsets.back());
     st.dependent_ids.resize(st.dependent_offsets.back());
 
-    // Pass 2: fill. offsets[i] serves as i's write cursor, so when the pass is
-    // done it has advanced to i's END -- which is offsets[i + 1]'s value -- and
-    // one shift right restores the starts.
+    // Pass 2: fill. offsets[i] is i's write cursor and ends at i's end, i.e.
+    // offsets[i + 1]; one shift right restores the starts.
     std::fill(node_stamp.begin(), node_stamp.end(), -1);
     std::fill(var_stamp.begin(), var_stamp.end(), -1);
     for (const ExprNode& nd : st.nodes) {
@@ -1311,42 +1245,30 @@ void Model::rebuild_back_references() {
 //
 // A Sum qualifies when:
 //
-//  - it has a term, no term is a Sum, and none is named twice. A Sum term
-//    would have to push its own change further up; a term named twice is one
-//    back-reference, so its change would be counted once.
-//  - no term is the objective bound. It is a Const whose value is per-model
-//    search state, written by `set_objective_bound` without a walk, so it
-//    would change without pushing.
+//  - it has a term, no term is a Sum, none is named twice. A Sum term would
+//    have to push its change further up; a repeated term is one
+//    back-reference, so its change would count once.
+//  - no term is the objective bound: a Const that `set_objective_bound`
+//    rewrites without a walk, so it would change without pushing.
 //  - it is read, and only by top-level comparisons (`Leq`/`Geq`/`Lt`/`Gt`/`Eq`
-//    with no parent) whose other side is a variable or a Const. That is every
-//    MPS row and the objective row, and it is what keeps drift where
-//    FeasibilityJump can see it: a row reads the Sum DIRECTLY, so the row's
-//    residual is off by at most the Sum's drift bound, and a verdict the bound
-//    cannot decide is resolved by re-summing that one Sum. A Sum under any
-//    other node -- `sqr(sum)`, a Sum of Sums, a comparison inside an
-//    expression -- keeps the plain re-sum, which is what "take the re-sum
-//    unless the bound is propagated" means with no propagation.
-//  - it is not itself a constraint root (#192). `add_constraint` takes any
-//    node, and being a row is not a parent edge, so the readers rule alone
-//    would admit a Sum that is a row AND is read by a comparison. Its own row
-//    would then carry drift that FeasibilityJump cannot see: a row's slot is
-//    found through its children, and this row's children are the terms, so
-//    the gate never checks it and a re-grounding never re-settles it.
-//    The objective node is NOT refused on the same grounds. It is no row: the
-//    rows over it are `obj <= bound` and the like, which read it directly and
-//    so are gated. Its value outside a batch is re-grounded with every other
-//    Sum, and refusing it would put every MPS objective row back on the
-//    re-sum. That relies on the objective's value being read RAW only between
-//    batches: every such reader -- the search's incumbent and bound
-//    tightening, LNS's state key, the inner solver, the pool -- runs after
-//    the GLS loop, whose end re-grounds every drifted Sum
-//    (reground_drifted_rows), and a throw out of a batch is followed by
-//    solve()'s full_evaluate. A raw reader inside a batch would break this.
-//    The inner solver is a batch of its own in this sense since #207: its
-//    coordinate commits are incremental, its coordinate probes score against
-//    the drifted values (a difference of two readings over the same drift, as
-//    FJ's probes do), and it re-grounds every drifted Sum before its
-//    multi-variable pass (a raw reader) and before it returns.
+//    with no parent) whose other side is a variable or Const: every MPS row
+//    and the objective row. A row reading the Sum directly is off by at most
+//    the drift bound, and an undecided verdict re-sums that one Sum, so
+//    FeasibilityJump sees all drift. A Sum under any other node keeps the
+//    plain re-sum.
+//  - it is not itself a constraint root (#192). Being a row is no parent edge,
+//    and a row's slot is found through its children (here the terms), so its
+//    drift would never be gated or re-grounded.
+//    The objective node is NOT refused: it is no row, and the rows over it
+//    read it directly. This requires that the objective is read RAW only
+//    between batches: every such reader (incumbent and bound tightening,
+//    LNS's state key, inner solver, pool) runs after the GLS loop, whose end
+//    re-grounds drifted Sums (reground_drifted_rows), and a throw out of a
+//    batch is followed by solve()'s full_evaluate. A raw reader inside a
+//    batch would break this. The inner solver is its own batch (#207): its
+//    commits are incremental, its probes difference two readings over the
+//    same drift, and it re-grounds every drifted Sum before its
+//    multi-variable pass and before it returns.
 //
 // Terms may be anything else: every node term is flagged `kFeedsIncSum`, and a
 // dirty one pushes its change into the Sum. Whether an update is exact is a
@@ -1396,11 +1318,10 @@ bool readers_qualify(const Model& m, int32_t nid) {
 
 }  // namespace
 
-// Not monotone, unlike the exact-only rule it replaced: a Sum that gained a
-// reader of another kind no longer qualifies. So every flag and slot is
-// recomputed from scratch. Both callers, close() and
-// add_objective_soft_constraint, follow it with the full_evaluate that sizes
-// the per-model state to the new slots.
+// Not monotone (a Sum that gains another kind of reader drops out), so every
+// flag and slot is recomputed from scratch. Both callers, close() and
+// add_objective_soft_constraint, must follow it with the full_evaluate that
+// sizes per-model state to the new slots.
 void Model::classify_incremental_sums() {
     ModelStructure& st = mut();
     std::vector<ExprNode>& nodes = st.nodes;
@@ -1435,13 +1356,11 @@ void Model::classify_incremental_sums() {
 
 namespace {
 
-// The floor of node `nd`'s implicit domain row, or NaN when it needs none: a
-// `Log` (whose argument must be at least kLogDomainFloor), a `Sqrt`, or a `Pow`
-// whose exponent is a finite non-integer Const (whose argument must be at least
-// 0). These are the ops that evaluate to NaN outside their domain (#205). A
-// negative such exponent also has a pole at 0, +inf, which reads as flat as a
-// NaN, so its floor is the `Log` one. A `Pow` with a variable exponent is left
-// alone: no constant says whether a negative base is in its domain.
+// The floor of `nd`'s implicit domain row, or NaN if none: kLogDomainFloor for
+// `Log`, 0 for `Sqrt` and for `Pow` with a finite non-integer Const exponent,
+// the ops that are NaN outside their domain (#205). A negative such exponent
+// also has a pole (+inf, as flat as NaN) at 0, so takes the `Log` floor. A
+// variable exponent gets none: no constant decides a negative base's domain.
 double domain_floor(const Model& m, const ExprNode& nd) {
     constexpr double kNone = std::numeric_limits<double>::quiet_NaN();
     if (nd.op == NodeOp::Log) {
@@ -1464,11 +1383,9 @@ double domain_floor(const Model& m, const ExprNode& nd) {
     return p < 0.0 ? kLogDomainFloor : 0.0;
 }
 
-// Which nodes the model's rows or its objective read (1) and which nothing
-// does (0). An `If` reads its condition only, as far as a domain row is
-// concerned: it evaluates just the branch the condition selects. Nodes are
-// created after their children (`wrap` refuses a forward handle), so one sweep
-// down the ids reaches every node.
+// 1 for nodes the rows or objective read, else 0. For domain rows an `If` reads
+// only its condition (it evaluates one branch). Children precede parents
+// (`wrap` refuses forward handles), so one sweep down the ids suffices.
 std::vector<uint8_t> nodes_read(const Model& m) {
     std::vector<uint8_t> reached(m.num_nodes(), 0);
     for (const int32_t cid : m.constraint_ids()) {
@@ -1528,44 +1445,37 @@ std::vector<DomainRow> domain_rows_needed(const Model& m) {
 
 }  // namespace
 
-// #248. Every domain-restricted op (`domain_floor`) the model's rows or its
-// objective read gets a hidden row `arg >= floor`, as SCIP enforces `log`'s
-// argument at `expr/log/minzerodistance`. Without it a point outside the domain
-// reads NaN, which a row scores as violated at a flat 1e30 everywhere: no Newton
-// step, no direction back in (ex8_5_6, all of whose variables are free and
-// whose signs only the logs' domains fix). The row's violation is graded, so FJ
-// gets that direction.
+// #248. Every domain-restricted op (`domain_floor`) the rows or objective read
+// gets a hidden row `arg >= floor`, as SCIP's `expr/log/minzerodistance`.
+// Outside the domain the op reads NaN, a flat 1e30 violation with no direction
+// back; the row's graded violation gives FJ one.
 //
-// Costs: it cuts off (0, 1e-9) under a `Log`, and it adds rows the modeller did
-// not write. They come after the modeller's in constraint_ids (see
-// `num_user_constraints`), so they count in `verify_model` and the feasibility
-// test but not in the modeller's row count, and `save_model` leaves them out.
+// Costs: cuts off (0, 1e-9) under a `Log`, and adds rows the modeller did not
+// write. They follow the modeller's in constraint_ids (`num_user_constraints`):
+// counted by `verify_model` and the feasibility test, not by the modeller's
+// row count, and left out by `save_model`.
 //
 // Not added:
-//  - for an op nothing reads, or one read only through an `If` branch: an `If`
-//    evaluates only the branch its condition selects, so `if(x > 0, log(x), 0)`
-//    is defined at x <= 0, and a row would cut off what the model allows;
-//  - for a Const argument, where no move can change the row;
-//  - for a variable argument whose lower bound already meets the floor, which
-//    is most of MINLPLib's, so their models keep their rows and trajectories.
-// One row per (argument, floor), however many ops share it.
-//
-// Runs once: the first `close()` or `add_objective_soft_constraint()`.
+//  - for an op nothing reads, or read only through an `If` branch:
+//    `if(x > 0, log(x), 0)` is defined at x <= 0, and a row would cut it off;
+//  - for a Const argument, which no move can change;
+//  - for a variable whose lower bound already meets the floor (most of
+//    MINLPLib), so those models keep their rows and trajectories.
+// One row per (argument, floor). Runs once: the first `close()` or
+// `add_objective_soft_constraint()`.
 void Model::append_domain_rows() {
     ModelStructure& st = mut();
     if (st.num_user_constraints >= 0) {
         return;
     }
-    // Collected before any node is made: alloc_node grows the arrays the
-    // collection reads.
+    // Collected before any node is made: alloc_node grows the arrays it reads.
     const std::vector<DomainRow> rows = domain_rows_needed(*this);
     st.num_user_constraints = static_cast<int64_t>(st.constraint_ids.size());
     st.domain_node_begin = static_cast<int32_t>(st.nodes.size());
-    // The RHS is the bare floor. A row counts as satisfied up to the solve's
-    // tolerance, so `arg >= floor` read plainly would pass arg = 0 under a
-    // `Log`, where the op is still -inf or NaN; `evaluate`'s `Geq` arm adds
-    // `domain_margin()` to a violated domain row, which puts any argument below
-    // the floor past that tolerance, and leaves one at the floor at 0 (#258).
+    // RHS is the bare floor. Within tolerance, plain `arg >= floor` would pass
+    // arg = 0 under a `Log`; `evaluate`'s `Geq` arm adds `domain_margin()` to a
+    // violated domain row, so any arg below the floor exceeds the tolerance and
+    // one at the floor scores 0 (#258).
     int32_t log_floor = -1;
     int32_t zero_floor = -1;
     for (const DomainRow& r : rows) {
@@ -1591,11 +1501,10 @@ bool Model::set_domain_tolerance(double tol) {
         return false;  // LNS builds an FJ per round at the solve's tolerance
     }
     domain_margin_ = margin;
-    // Node values change under any pending probe's log, which would write the
-    // old residuals back on its Rollback (#270): drop it.
+    // A pending probe's Rollback would write old residuals back (#270): drop it.
     probe_undo_.pending = false;
-    // The domain rows are roots that no other node reads, so re-evaluating them
-    // in place is the whole update. Before close() they do not exist yet.
+    // Domain rows are unread roots, so re-evaluating them in place is the whole
+    // update. Before close() they do not exist.
     const ModelStructure& st = s();
     for (int32_t id = std::max(st.domain_node_begin, 0); id < st.domain_node_end; ++id) {
         const ExprNode& nd = st.nodes[static_cast<size_t>(id)];
@@ -1623,10 +1532,8 @@ void Model::add_objective_soft_constraint() {
     if (objective_id_ < 0) {
         throw std::invalid_argument("add_objective_soft_constraint requires an objective");
     }
-    // Idempotent, and the early return comes BEFORE the frozen check on purpose:
-    // `freeze()` has already run it, and a caller may still call it on a frozen
-    // replica (`solve()` did on every model it was handed until #271) -- so on a
-    // frozen model this must be a no-op rather than a throw.
+    // Idempotent, returning BEFORE the frozen check: `freeze()` has run it, so on
+    // a frozen replica a call must be a no-op, not a throw (#271).
     if (objective_constraint_idx_ >= 0) {
         return;
     }
@@ -1635,18 +1542,11 @@ void Model::add_objective_soft_constraint() {
     // On a model never closed, so the domain rows still come before this one.
     append_domain_rows();
 
-    // Exactly the room the row takes -- two nodes, two child refs, two node
-    // values, one constraint. A copied vector's capacity is its size, so without
-    // this a model at exact capacity -- every copy, and every model
-    // `mps_to_model` sized exactly -- would DOUBLE each of those arrays to append
-    // a handful of entries: address space the benchmark driver's `ulimit -v`
-    // counts. On a model that already has the slack these are no-ops.
-    //
-    // `node_values_` is in the list for the same reason the others are, and is
-    // the one that still matches the original argument literally: it is per-model,
-    // so it is copied per worker, where the structural arrays are appended once on
-    // the master before it is frozen (#157). Leaving it out doubled a 34 MB array
-    // on the largest MIPfeas instance.
+    // Exactly the room the row takes (two nodes, two child refs, two values, one
+    // constraint). A model at exact capacity (every copy, every model
+    // `mps_to_model` sized) would otherwise DOUBLE each array, address space
+    // `ulimit -v` counts. No-ops where slack exists. `node_values_` is per-model,
+    // so copied per worker (#157); it is the largest on big MIPfeas instances.
     st.nodes.reserve(st.nodes.size() + 2);
     st.parent_offsets.reserve(st.parent_offsets.size() + 2);
     st.child_refs.reserve(st.child_refs.size() + 2);
@@ -1654,10 +1554,8 @@ void Model::add_objective_soft_constraint() {
     node_values_.reserve(node_values_.size() + 2);
 
     objective_bound_ = std::numeric_limits<double>::infinity();
-    // Built through the private allocators, not `constant`/`leq`/`add_constraint`:
-    // those refuse a closed model (#173), and this is the one internal growth path
-    // that runs on one -- the rebuild below is what makes it safe to. Same nodes,
-    // same ids, same order as the public builders produced before that refusal.
+    // Private allocators: the public builders refuse a closed model (#173), and
+    // this is the one growth path that runs on one, made safe by the rebuild.
     objective_bound_node_ = push_constant(objective_bound_);
     // obj - bound <= 0; inert while bound is +inf, tightened during search.
     objective_constraint_node_ =
@@ -1672,10 +1570,8 @@ void Model::add_objective_soft_constraint() {
     classify_incremental_sums();
     build_var_constraints();
     full_evaluate(*this);
-    // The rebuild above is exactly close()'s, so say so: on a model solve()
-    // was handed unclosed, leaving closed_ false let every later builder
-    // through (#173's refusal keys on it), and a row added then was never
-    // evaluated. On an already-closed model this changes nothing.
+    // The rebuild is close()'s, so mark it closed: #173's refusal keys on
+    // closed_, else a later builder adds a row that is never evaluated.
     closed_ = true;
 }
 
@@ -1684,21 +1580,15 @@ void Model::set_objective_bound(double bound) {
         throw std::logic_error("set_objective_bound requires add_objective_soft_constraint first");
     }
     objective_bound_ = bound;
-    // Node values change under any pending probe's log, which would write the
-    // old bound back on its Rollback (#270): drop it.
+    // A pending probe's Rollback would write the old bound back (#270): drop it.
     probe_undo_.pending = false;
-    // The shared node's `const_value` is NOT touched -- it is structure, and a
-    // frozen structure is every worker's. `evaluate()` reads the bound from
-    // `objective_bound()` instead; see its `Const` arm.
+    // The shared node's `const_value` is NOT touched: it is structure, shared by
+    // every worker once frozen. `evaluate()`'s `Const` arm reads
+    // `objective_bound()`.
     node_values_[objective_bound_node_] = bound;
-    // Recompute the objective constraint residual in place (obj - bound). Must
-    // use the same residual rule as evaluate()'s Leq case, or this shortcut and
-    // the next delta_evaluate() would disagree on the row's value — in
-    // particular on the `obj = +inf, bound = +inf` state that opens every solve
-    // with a blown-up objective (issue #100). The bound side is
-    // objective_bound_node_, a Const by construction (see
-    // add_objective_soft_constraint), so it is a sentinel; the objective side is
-    // a computed expression and never is.
+    // Residual in place (obj - bound). Must use evaluate()'s Leq rule, else this
+    // and the next delta_evaluate() disagree, e.g. at obj = bound = +inf (#100).
+    // The bound side is a Const (a sentinel); the objective side never is.
     node_values_[objective_constraint_node_] =
         comparison_residual(node_values_[objective_id_], bound,
                             /*a_is_const=*/false, /*b_is_const=*/true);
@@ -1708,23 +1598,20 @@ void Model::set_objective_bound(double bound) {
 // each constraint's subtree and recording every variable it reaches. Stamping
 // gives O(1) per-constraint reset and dedups vars/nodes within a constraint.
 //
-// Into CSR, by inversion: the walk writes the constraint -> variables incidence
-// flat, in constraint order, and a counting pass turns it round. Visiting the
-// constraints in ascending index is what gives each variable's list ascending
-// constraint indices -- the order the per-variable push_back this replaced
-// produced. The incidence array is transient and costs 4 bytes per entry, where
-// a second walk to count first would cost the whole DFS again.
+// Into CSR by inversion: the walk writes constraint -> variables flat, in
+// ascending constraint order, so each variable's list is ascending; a counting
+// pass turns it round. The transient incidence costs 4 bytes per entry, where
+// counting first would cost a second DFS.
 void Model::build_var_constraints() {
     ModelStructure& st = mut();
     const auto n_cons = static_cast<int32_t>(st.constraint_ids.size());
     std::vector<int32_t> node_stamp(st.nodes.size(), -1);
     std::vector<int32_t> var_stamp(vars_.size(), -1);
     std::vector<int32_t> stack;
-    // Constraint order. Sized from the last build's incidence count, which the
-    // rebuild after add_objective_soft_constraint() matches to within one row, and
-    // that build's CSR is released first so the two are never both alive. Its
-    // offsets go with it, so a throw below leaves constraints_of_var reporting
-    // out_of_range rather than reading freed ids.
+    // Sized from the last build's count (the objective-row rebuild matches it to
+    // within one row), whose CSR is released first so both are never alive. Its
+    // offsets go too, so after a throw constraints_of_var reports out_of_range
+    // rather than reading freed ids.
     std::vector<int32_t> incident_vars;
     incident_vars.reserve(st.var_constraint_ids.size());
     std::vector<int32_t>().swap(st.var_constraint_ids);
@@ -1790,11 +1677,8 @@ std::vector<std::pair<int32_t, double>> Model::per_constraint_violation_delta(in
         return result;
     }
 
-    // Snapshot affected constraints' current violations. Read through the value
-    // array rather than the range-checking `node()`, for the reason `child_val`
-    // in dag.cpp gives: `affected` holds constraint INDICES from
-    // `constraints_of_var`, and `constraint_ids()` holds node ids validated when
-    // the constraint was added, so the check could only ever pass.
+    // Snapshot current violations, unchecked as in `child_val` (dag.cpp):
+    // `constraint_ids()` holds node ids validated by add_constraint.
     const std::vector<int32_t>& cids = constraint_ids();
     std::vector<double> old_viol(affected.size());
     for (size_t k = 0; k < affected.size(); ++k) {
@@ -1814,9 +1698,8 @@ std::vector<std::pair<int32_t, double>> Model::per_constraint_violation_delta(in
         }
     }
 
-    // Restore exactly: the Rollback writes the probe's undo log back (#270),
-    // drifted incremental Sums included -- see the notes on
-    // weighted_violation_delta below.
+    // Restore exactly: Rollback writes the probe's undo log back (#270), drifted
+    // incremental Sums included.
     var_mut(var_id).value = old_value;
     delta_evaluate(*this, &var_id, 1, DeltaMode::Rollback);
 
@@ -1848,37 +1731,24 @@ double Model::probe_weighted_delta(int32_t var_id, double j, const std::vector<d
         return 0.0;
     }
 
-    // Accumulate the *per-constraint* differences, rather than differencing two
-    // whole-sum accumulators.
+    // Must accumulate per-constraint differences, not difference two whole sums:
+    // a row clamped at kInfPenalty = 1e30 absorbs O(1) terms (1e30 + 1 == 1e30),
+    // so every candidate would score 0 (#100). Per row, 1e30 - 1e30 cancels
+    // exactly and the small terms keep full precision.
     //
-    // The two are equal in exact arithmetic but not in floating point, and the
-    // difference is the whole ballgame once any one row's violation is large.
-    // A non-convex blowup clamps to kInfPenalty = 1e30, some fourteen orders of
-    // magnitude above the O(1) contributions of the real rows, so `1e30 + 1`
-    // rounds back to `1e30`: both sums collapse to the same value, the
-    // subtraction yields exactly 0, and every candidate jump scores identically.
-    // Feasibility Jump is then blind — the search cannot tell which move reduces
-    // real infeasibility (issue #100). Differencing per constraint makes the
-    // huge term cancel exactly (1e30 - 1e30 == 0) and leaves the small terms at
-    // full precision.
-    //
-    // probe_old_violation_ is a member so this stays allocation-free after
-    // warm-up (one call per jump candidate). Safe for the same reason the
-    // transient node mutation below is: each search thread owns its own Model.
+    // probe_old_violation_ is a member so this is allocation-free after warm-up;
+    // safe because each search thread owns its Model.
     const std::vector<int32_t>& cids = constraint_ids();
     probe_old_violation_.resize(affected.size());
     for (size_t k = 0; k < affected.size(); ++k) {
         probe_old_violation_[k] = clamped_node_violation(node_values_[cids[affected[k]]]);
     }
 
-    // Probe/Rollback rather than two plain deltas. The old value is what lets
-    // the probe move each incremental Sum in the cone by its term's change, as
-    // the commit's update does (#188): the score is then measured against the
-    // committed value, drift included, rather than against a re-sum of it. The
-    // Rollback writes the probe's undo log back rather than walking the cone
-    // again (#270), so a drifted committed state comes back to the bit, at
-    // O(cone) stores. Where the commit would re-sum instead, the two can differ
-    // by the Sum's drift bound; see `probe_scalar_move`.
+    // Probe/Rollback: the old value lets the probe move each incremental Sum by
+    // its term's change, as the commit does (#188), so the score is against the
+    // committed value, drift included. Rollback replays the undo log (#270),
+    // restoring drifted state to the bit at O(cone) stores. Where the commit
+    // would re-sum, the two can differ by the drift bound (`probe_scalar_move`).
     const double old_value = v.value;
     var_mut(var_id).value = j;
     probe_scalar_move(*this, var_id, old_value);

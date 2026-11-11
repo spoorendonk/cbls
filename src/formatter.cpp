@@ -23,10 +23,8 @@ static std::string format_count(int64_t n) {
     return std::to_string(n);
 }
 
-// The objective in the model's own sense. The engine minimises internally, and
-// `maximize(e)` makes its objective `-e`, so SearchResult::objective and
-// SolveProgress::objective carry -f on a maximize model. A user reads f, which
-// the CLI printed negated until #225.
+// The objective in the model's own sense: `maximize(e)` minimises `-e`, so
+// SearchResult/SolveProgress::objective carry -f there; print f (#225).
 static double user_objective(double internal, bool maximizing) {
     return maximizing ? -internal : internal;
 }
@@ -82,10 +80,8 @@ void HumanFormatter::print_result(const SearchResult& result, const Model& model
         out_ << "Objective:  " << std::fixed << std::setprecision(6)
              << user_objective(result.objective, model.is_maximizing()) << "\n";
     } else {
-        // The objective exists but is not a number here. On a feasible
-        // assignment that is worth saying (issue #100): the point is real, the
-        // objective at it is not, and printing "inf" would read as a value. On
-        // an infeasible run there is no assignment to report one at.
+        // Non-finite objective: on a feasible point say so, as "inf" would read
+        // as a value (#100); an infeasible run has no point to report.
         out_ << "Objective:  " << (result.feasible ? "no finite objective at this assignment" : "-")
              << "\n";
     }
@@ -150,14 +146,11 @@ void JsonlFormatter::print_result(const SearchResult& result, const Model& model
     j["event"] = "result";
     j["time"] = std::round(result.time_seconds * 1000.0) / 1000.0;
     j["iterations"] = result.iterations;
-    // Qualifies the two above: "time_limit" means the run was cut off by its
-    // budget, anything else that it finished inside it. Without this a published
-    // wall time cannot be read correctly (#104, epic #87).
+    // "time_limit" means cut off by the budget, anything else finished inside
+    // it; needed to read a published wall time (#104).
     j["termination"] = termination_reason_name(result.termination);
-    // Same rule as HumanFormatter above, and for the same two reasons: a pure
-    // feasibility model has no objective to report (result.objective carries the
-    // internal 0.0 placeholder, which is not a value of the model), and a
-    // feasible point whose objective is +inf/NaN has none either (#100).
+    // As HumanFormatter: null for a pure feasibility model (objective is a 0.0
+    // placeholder) and for a non-finite objective (#100).
     if (model.objective_id() >= 0 && std::isfinite(result.objective)) {
         j["objective"] = user_objective(result.objective, model.is_maximizing());
     } else {

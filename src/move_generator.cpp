@@ -84,22 +84,15 @@ NeighbourList nearest_neighbours(int universe, int k, const std::function<double
                 scored.emplace_back(cost(e, f), static_cast<int32_t>(f));
             }
         }
-        // Ties broken by ascending id, so the list is a function of the cost and
-        // not of the sort's stability -- two builds of the same instance on two
-        // machines must give the same neighbourhood or the search is not
-        // reproducible across them.
+        // Ties broken by ascending id, so the list depends only on the cost and
+        // the search is reproducible across machines.
         std::partial_sort(
             scored.begin(), scored.begin() + static_cast<std::ptrdiff_t>(want), scored.end(),
             [](const std::pair<double, int32_t>& a, const std::pair<double, int32_t>& b) {
-                // NaN sorts last, and TWO NaNs must TIE -- broken by id, like any
-                // other tie. Deciding on the values first does NOT achieve that:
-                // `a.first != b.first` is true for NaN against NaN (and for a NaN
-                // against itself), so `a < b || isnan(b)` makes comp(x, y) and
-                // comp(y, x) both true. That is not a strict weak ordering, and
-                // partial_sort with one is undefined behaviour -- libstdc++'s
-                // insertion sort can then run off the front of the range. A
-                // single NaN never exposed it; two do, and a cost callback
-                // returning NaN for every unreachable pair produces many.
+                // NaN sorts last, and two NaNs must TIE (broken by id). Comparing
+                // values first fails: NaN != NaN, so comp(x, y) and comp(y, x)
+                // could both hold, not a strict weak ordering, and partial_sort
+                // is then UB (libstdc++ runs off the range).
                 const bool a_nan = std::isnan(a.first);
                 const bool b_nan = std::isnan(b.first);
                 if (a_nan != b_nan) {
@@ -180,12 +173,9 @@ namespace {
 
 /// One List or Set variable's standard typed moves, wrapped as a generator.
 ///
-/// One generator per variable rather than one covering them all, for two
-/// reasons. The structural batch checks its wall-clock deadline BETWEEN
-/// generators (#105), so per-variable generators keep the check per variable,
-/// which is exactly where the pre-#165 sweep checked it. And `ViolationGuided`
-/// skips a generator whose whole scope is in satisfied rows -- a decision that
-/// is only useful at variable granularity.
+/// One per variable: the structural batch checks its deadline between
+/// generators (#105), and `ViolationGuided` skips a generator whose scope is
+/// all in satisfied rows, both useful per variable.
 class StandardStructuralGenerator final : public MoveGenerator {
 public:
     StandardStructuralGenerator(int32_t var_id, VarType type,
@@ -210,10 +200,7 @@ public:
     }
 
     [[nodiscard]] std::unique_ptr<MoveGenerator> clone() const override {
-        // The neighbour list is immutable and shared on purpose: it is the one
-        // piece of a built-in generator that is read-only, and copying a
-        // k-nearest list per worker would be the cost this sharing exists to
-        // avoid (#157's argument, one level down).
+        // The immutable neighbour list is shared, not copied per worker (#157).
         return std::make_unique<StandardStructuralGenerator>(var_id_, type_, neighbours_);
     }
 
@@ -226,16 +213,11 @@ private:
 /// One `ListPartition`'s inter-list moves (#164): relocate, swap, 2-opt*, and
 /// the insert/remove pair under `Cover::AtMostOnce`.
 ///
-/// It holds NO derived state -- no element-to-list index, no unassigned pool.
-/// `generate_partition_moves` recomputes whatever it needs from the model on
-/// every call, which is what `MoveGenerator::on_commit`'s contract requires: the
-/// assignment moves under a peer generator's commit, every Feasibility Jump
-/// batch, the diversification kick, an LNS destroy-repair and a restart from the
-/// solution pool, and none of those notifies anybody. `Variable.elements` is
-/// also writable from Python at any moment (#156), so a cached membership pool
-/// would be a stale index into a universe that has since changed -- the crash
-/// class, not merely a stale heuristic. Recomputing costs
-/// O(sum |lists| + universe) on the one branch that needs it.
+/// Must hold NO derived state (`MoveGenerator::on_commit`'s contract): peer
+/// commits, FJ batches, the kick, LNS and pool restarts move the assignment
+/// unannounced, and Python can rewrite `Variable.elements` (#156), so a cache
+/// would be a stale index, a crash risk. Recomputing costs
+/// O(sum |lists| + universe) on the branch that needs it.
 ///
 /// Scope is every member list, so `ViolationGuided` can skip a partition all
 /// of whose rows are satisfied. A candidate is scored over the one or two
@@ -268,10 +250,8 @@ public:
     }
 
     [[nodiscard]] std::unique_ptr<MoveGenerator> clone() const override {
-        // Const reads only, so calling this concurrently on the one registered
-        // prototype -- which every portfolio worker does -- needs no lock. The
-        // neighbour list stays shared for the reason the per-variable generator
-        // shares it.
+        // Const reads only, so every worker may clone the one prototype
+        // concurrently without a lock. The neighbour list stays shared.
         return std::make_unique<ListPartitionGenerator>(partition_, list_ids_, neighbours_);
     }
 
@@ -296,12 +276,11 @@ std::vector<std::shared_ptr<const MoveGenerator>> default_move_generators(
         generators.push_back(
             std::make_shared<const StandardStructuralGenerator>(var.id, var.type, neighbours));
     }
-    // Partition generators come AFTER every per-variable one, and only exist for
-    // a model that declared a partition -- so a model without one gets exactly
-    // the generator list, in exactly the order, it got before #164, and its
-    // trajectory is unmoved. The per-variable generators still run for a member
-    // list: they carry the five length-preserving intra-list moves, which a
-    // partition neither replaces nor forbids.
+    // Partition generators come after every per-variable one, so a model
+    // without a partition keeps its pre-#164 list and trajectory. A member
+    // list keeps its per-variable generator for the intra-list moves, except
+    // under GranularBest with neighbours, where the partition supplies them
+    // (#203).
     for (size_t i = 0; i < model.list_partitions().size(); ++i) {
         generators.push_back(std::make_shared<const ListPartitionGenerator>(
             static_cast<int>(i), model.list_partitions()[i].list_ids, neighbours));

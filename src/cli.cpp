@@ -44,34 +44,21 @@ Options:
 
 namespace {
 
-// How a malformed numeric flag behaves, decided once for the whole option loop.
+// A malformed numeric flag is reported at the parse and exits 1, the loop's
+// `Error: ...` convention. (The benchmark runners instead return NaN for a
+// later guard to exit 2, an exit code their tests pin; the CLI has no such
+// guard.)
 //
-// Report at the parse and return 1, matching the `Error: ...`/exit-1 convention
-// the rest of this loop already uses for an unknown option, a bad --format and a
-// missing model file. The benchmark runners deliberately do the opposite for
-// doubles -- report, return NaN, and let a later positivity guard exit 2 -- but
-// that split exists to keep an exit code their drivers' tests pin, and it needs
-// a guard to land in. The CLI has neither: nothing pins its codes, and there is
-// no downstream guard for a NaN to be caught by, so it reports here instead.
+// Not rejected: `--time-limit 0` (no budget: solve() returns `no_budget`,
+// exit 1) and `--time-limit inf` (saturates at make_budget's ~31-year
+// ceiling); both are honest readings. NaN alone is rejected: nobody means it,
+// and it silently disables --lns and the search.
 //
-// What is deliberately NOT rejected: `--time-limit 0` and `--time-limit inf`
-// still parse. Neither is a useful CLI configuration since epoch-sync went --
-// the CLI has no iteration budget of its own, so 0 leaves no budget at all
-// (solve() returns `no_budget` having done nothing, exit 1) and inf saturates
-// to make_budget's ~31-year ceiling -- but both are honest readings of the flag
-// and a runner-style `!(x > 0.0)` guard would be a CLI break. NaN is different
-// -- it is
-// never a request anyone can mean, and it silently turns --lns off and
-// --time-limit into a solve that never searched -- so the double overload
-// rejects it and nothing else.
-//
-// Every overload returns false having already written the diagnostic; the caller
-// only has to `return 1`. The parsing rule itself is cbls/arg_parse.h, shared
-// with benchmarks/common/runner_args.h.
+// Every overload returns false having written the diagnostic; the caller only
+// `return 1`s. The parsing rule is cbls/arg_parse.h, shared with
+// benchmarks/common/runner_args.h.
 
-// Overflow is reported as such rather than as a typo. Both arrive here as a
-// failed parse, but "99999999999999999999999 is not an integer" sends the
-// reader hunting for a mistyped digit that is not there.
+// Overflow is reported as such, not as a typo the reader would hunt for.
 void report_parse_failure(const char* flag, const char* text, cbls::ParseStatus status,
                           const char* kind) {
     if (status == cbls::ParseStatus::kOutOfRange) {
@@ -82,9 +69,7 @@ void report_parse_failure(const char* flag, const char* text, cbls::ParseStatus 
 }
 
 bool parse_flag(const char* flag, const char* text, double& out) {
-    // Syntax alone is not enough: std::stod accepts "nan", so the NaN the
-    // comment above rules out would otherwise arrive as a successful parse. It
-    // is malformed for this flag's purposes, not out of range.
+    // std::stod accepts "nan"; reported as malformed, not out of range.
     double value = 0.0;
     const cbls::ParseStatus status = cbls::parse_double_status(text, value);
     if (status == cbls::ParseStatus::kOk && !std::isnan(value)) {
@@ -117,10 +102,8 @@ bool parse_flag(const char* flag, const char* text, int& out) {
     return true;
 }
 
-// --seed spans the full unsigned 64-bit range, not the signed one: the CLI
-// prints the seed back in its own header, where `--seed -1` is recorded as
-// 18446744073709551615. Narrowing to int64 would make the tool unable to read
-// back the seed it just printed, which is the whole point of the flag.
+// --seed spans the full uint64 range: the header prints `--seed -1` as
+// 18446744073709551615, and the CLI must be able to read back what it printed.
 bool parse_flag(const char* flag, const char* text, uint64_t& out) {
     const cbls::ParseStatus status = cbls::parse_uint64_status(text, out);
     if (status == cbls::ParseStatus::kOk) {
@@ -141,10 +124,8 @@ struct CliOptions {
     SearchConfig config;  // also holds lns_interval, which --lns-interval writes
     std::string format = "human";
     bool quiet = false;
-    // 0 = one worker per hardware thread. The portfolio shares incumbents and
-    // restarts stalled workers from them, so the default is to use the machine.
-    // Pass `--threads 1` for a single-threaded, exactly reproducible run --
-    // which is what the profiling recipes in docs/profiling.md need.
+    // 0 = one worker per hardware thread. `--threads 1` gives a single-threaded,
+    // exactly reproducible run (docs/profiling.md).
     int n_threads = 0;
 };
 
@@ -170,10 +151,8 @@ bool take_toggle_option(const std::string& arg, CliOptions& opt) {
     return false;
 }
 
-// The numeric options, each paired with the field it fills. A table rather than
-// a chain of branches because that is all they are: the plumbing around them --
-// is there a value after the flag, did it parse, report and stop -- is identical
-// for every one, and the parse_flag overload set is what varies with the type.
+// The numeric options, each paired with the field it fills; the parse_flag
+// overload varies with the type, the plumbing does not.
 struct ValueOption {
     const char* flag;
     std::variant<double*, int*, int64_t*, uint64_t*> target;
@@ -189,9 +168,8 @@ std::array<ValueOption, 5> numeric_options(CliOptions& opt) {
 
 // One `--flag VALUE` option. Advances `i` past the value when it takes one.
 //
-// A flag with nothing after it reports kNotMine rather than an error, so the
-// caller's unknown-option branch names it -- which is what a trailing `--seed`
-// has always produced.
+// A flag with nothing after it reports kNotMine, so the caller's unknown-option
+// branch names it.
 FlagStatus take_value_option(const std::string& arg, int& i, int argc, char** argv,
                              CliOptions& opt) {
     if (i + 1 >= argc) {
@@ -252,16 +230,12 @@ ParseOutcome parse_args(int argc, char** argv, CliOptions& opt) {
     return ParseOutcome::kRun;
 }
 
-// The cooperative portfolio. The model is read ONCE, in run_cli, and handed to
-// every worker as a replica sharing one immutable structure (#157) -- which is
-// why this takes the loaded Model and not the path. Re-reading the file per
-// worker was the old arrangement, and it paid for a full parse and a full DAG per
-// worker to arrive at N identical structures.
+// The cooperative portfolio, over the Model run_cli loaded once: every worker
+// is a replica sharing one immutable structure (#157).
 //
-// The model comes back frozen, carrying the artificial `obj <= bound` row. Its
-// own assignment is untouched, which is why run_cli restores the winner into it
-// before printing.
-// Returns false having already reported the failure.
+// The model comes back frozen, with the `obj <= bound` row, and its assignment
+// untouched: run_cli restores the winner before printing. Returns false having
+// reported the failure.
 bool solve_parallel(const CliOptions& opt, Model& model, int effective_threads,
                     SolveCallback* callback, SearchResult& result) {
     std::function<std::shared_ptr<InnerSolverHook>(Model&)> hook_factory;
@@ -283,9 +257,7 @@ bool solve_parallel(const CliOptions& opt, Model& model, int effective_threads,
     par_config.n_threads = effective_threads;
 
     ParallelSearch ps(effective_threads);
-    // solve() throws when every portfolio worker threw -- a bad_alloc
-    // replicating the model, say. Report that the way the load failure in
-    // run_cli is reported; letting it escape main is std::terminate.
+    // solve() throws when every worker threw; report it like a load failure.
     try {
         result = ps.solve(model, opt.time_limit, opt.seed, opt.config, hook_factory, lns_factory,
                           callback, par_config);
@@ -293,8 +265,8 @@ bool solve_parallel(const CliOptions& opt, Model& model, int effective_threads,
         std::cerr << "Error: parallel search failed: " << e.what() << "\n";
         return false;
     }
-    // A worker that died is absorbed and the survivors' answer returned (#170).
-    // Say so: the run the user asked for is not the run that happened.
+    // A dead worker is absorbed and the survivors' answer returned (#170); say
+    // so, since the run asked for is not the run that happened.
     if (result.workers_completed < effective_threads) {
         std::cerr << "Warning: " << result.workers_completed << " of " << effective_threads
                   << " portfolio workers completed\n";
@@ -367,12 +339,9 @@ int run_cli(int argc, char** argv) {
         if (!solve_parallel(opt, model, effective_threads, callback, result)) {
             return 1;
         }
-        // Both formatters print the ASSIGNMENT by iterating this model's
-        // variables, not result.best_state. On the single-threaded path that
-        // works because solve() restores its winner into the model it was
-        // handed. The portfolio's workers search their own models, so without
-        // this the CLI printed a real objective next to this model's UNTOUCHED
-        // initial values -- in both output formats.
+        // The formatters print this model's variables, not result.best_state;
+        // the workers searched their own models, so restore the winner here
+        // (single-threaded solve() does it itself).
         if (result.best_state.values.size() == model.num_vars() &&
             result.best_state.elements.size() == model.num_vars()) {
             model.restore_state(result.best_state);
@@ -395,14 +364,10 @@ int run_cli(int argc, char** argv) {
 }  // namespace
 
 int main(int argc, char* argv[]) {
-    // The argument parse above is no longer the only way an exception could
-    // reach here: solve() and the formatters call into Model, whose accessors
-    // throw std::out_of_range and std::logic_error. An exception escaping main
-    // is std::terminate -- an abort with no diagnostic and no usable exit
-    // status, which is the failure issue #130 was opened for. Naming the bad
-    // flag fixed the common route; this closes the class
-    // (bugprone-exception-escape, which cannot see across translation units and
-    // so does not flag it). Same shape as both benchmark runners' main.
+    // No exception may escape main (std::terminate, no diagnostic, #130): Model
+    // accessors under solve() and the formatters can throw, and
+    // bugprone-exception-escape cannot see across translation units. As in the
+    // benchmark runners' main.
     try {
         return run_cli(argc, argv);
     } catch (const std::exception& e) {

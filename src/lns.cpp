@@ -20,14 +20,10 @@ LNS::LNS(double destroy_fraction) : destroy_fraction_(destroy_fraction) {}
 // Out of line so the vtable has a single translation unit to live in.
 LNS::~LNS() = default;
 
-// Lexicographic search-state key (real violation, objective): feasibility first,
-// then objective — mirroring solve()'s record_best. Real violation excludes the
-// artificial `obj <= bound` soft constraint (when present) so the objective is
-// not double-counted, the way the dead augmented_objective() accept rule did.
-//
-// A row's violation counts only ABOVE `tol`: at or below it the row is
-// satisfied, as the search reads it, and its residual is rounding noise that
-// must not decide between two feasible states -- the objective does.
+// Lexicographic key (real violation, objective), as solve()'s record_best. Real
+// violation excludes the `obj <= bound` row so the objective is not counted
+// twice. A row counts only ABOVE `tol`: below it, its residual is noise that
+// must not decide between two feasible states.
 std::pair<double, double> lns_acceptance_key(const Model& model, double tol) {
     const int32_t obj_ci = model.has_objective_constraint() ? model.objective_constraint_idx() : -1;
     const auto& cids = model.constraint_ids();
@@ -37,10 +33,8 @@ std::pair<double, double> lns_acceptance_key(const Model& model, double tol) {
             continue;
         }
         const double v = model.node_value(cids[i]);
-        // NaN must be handled before the clamp: `NaN > tol` is false, which
-        // would score a NaN-poisoned repair as perfectly feasible and accept it
-        // over a genuinely better incumbent. Same guard as
-        // clamped_node_violation and search.cpp's max_real_violation.
+        // NaN before the clamp: `NaN > tol` is false, which would score a NaN
+        // repair as feasible. As clamped_node_violation and max_real_violation.
         if (std::isnan(v)) {
             real_violation = std::numeric_limits<double>::infinity();
             break;
@@ -49,10 +43,8 @@ std::pair<double, double> lns_acceptance_key(const Model& model, double tol) {
         real_violation += v > (model.is_domain_node(cids[i]) ? 0.0 : tol) ? v : 0.0;
     }
     double obj = model.objective_id() >= 0 ? model.node_value(model.objective_id()) : 0.0;
-    // A NaN objective (a domain error, inf - inf) ranks LAST, as +inf: compared
-    // raw, `x < NaN` is false for every x, so no repair could displace a
-    // NaN-objective incumbent at equal violation (#205). Same reading as
-    // record_best's, which treats a non-finite objective as the worst witness.
+    // A NaN objective ranks LAST, as +inf, else no repair could displace a NaN
+    // incumbent at equal violation (#205). As record_best reads it.
     if (std::isnan(obj)) {
         obj = std::numeric_limits<double>::infinity();
     }
@@ -73,7 +65,8 @@ constexpr double kBlinkRate = 0.01;        // beta: a position is skipped with t
 using Clock = std::chrono::steady_clock;
 
 // The acceptance key's real violation restricted to `rows` (indices into
-// constraint_ids()), with the same clamp at `tol` and the same NaN rule.
+// constraint_ids()): same NaN rule, but every row, domain rows too, clamps at
+// `tol`.
 double real_violation_over(const Model& model, ConstSpan<int32_t> rows, int32_t obj_ci,
                            double tol) {
     const auto& cids = model.constraint_ids();
@@ -99,22 +92,15 @@ double objective_value(const Model& model) {
     return std::isnan(obj) ? std::numeric_limits<double>::infinity() : obj;
 }
 
-// Ruin and recreate one `ListPartition` (#202) is ASB-RR's adjacent string
+// Ruin and recreate one `ListPartition` (#202): ASB-RR's adjacent string
 // removal (Algorithm 1) and greedy insertion with blinks (Algorithm 2), on any
-// partition rather than on routes. The pieces below are its steps: who holds
-// what, which elements one string takes, the ruin, the best insertion, and the
-// recreate that drives it.
+// partition. Two departures, as the engine knows nothing of what an element
+// means:
 //
-// It departs from the reference in two places, both because the engine knows
-// nothing about what an element MEANS:
-//
-//  - adj(seed) is "every customer by increasing distance from the seed". The
-//    engine has only `neighbours` -- the k nearest, when the caller supplied a
-//    list at all -- so adj(seed) is the seed, then its neighbour row, then the
-//    remaining assigned elements in random order.
-//  - Recreate sorts the removed set by Random, Demand, Far or Close with
-//    weights 4/4/2/1. Demand and depot distance are routing quantities, so the
-//    order here is always Random.
+//  - adj(seed) is the seed, its `neighbours` row (if any), then the remaining
+//    assigned elements in random order, not all customers by distance.
+//  - Recreate's order is always Random; Demand/Far/Close are routing
+//    quantities.
 
 // Which list holds each element of one partition.
 struct PartitionView {
@@ -141,9 +127,8 @@ PartitionView view_partition(const Model& model, const ListPartition& part) {
 // window that holds position `pos`. 'string' (or whenever the whole list goes)
 // takes l consecutive positions; 'split string' takes a window of l + m and
 // keeps a run of m inside it, m starting at 1 and kept when U < alpha or at its
-// maximum len - l, otherwise grown by one. Where the kept run sits inside the
-// window is not pinned by the reference's text; it is uniform over the l + 1
-// placements.
+// maximum len - l, otherwise grown by one. The kept run's placement, which the
+// reference leaves open, is uniform over the l + 1 choices.
 std::vector<bool> string_positions(int32_t len, int32_t pos, int32_t l, RNG& rng) {
     // A window of `width` positions holding `pos`, uniformly among those that
     // fit inside the list.
@@ -250,11 +235,10 @@ struct Insertion {
 
 // Algorithm 2's inner loops for one element: the lists in random order, every
 // position of each with room, each evaluated with probability 1 - beta. "A tour
-// that can serve c" is read through the cost rather than as a filter: the key
-// is (real violation added on the list's rows, objective), lexicographic, the
-// acceptance key's own rule, so a position that breaks no row beats every one
-// that does, and an empty list is the reference's new tour. Each position is
-// probed through the DAG and rolled back. Improves on `best` only strictly.
+// that can serve c" is a cost, not a filter: key (real violation added on the
+// list's rows, objective), lexicographic, so a row-preserving position beats
+// any other; an empty list is the reference's new tour. Each position is
+// probed and rolled back. Improves on `best` only strictly.
 Insertion best_insertion(Model& model, const ListPartition& part, int32_t e, Insertion best,
                          std::vector<int32_t>& order, RNG& rng, double tol) {
     const int32_t obj_ci = model.has_objective_constraint() ? model.objective_constraint_idx() : -1;
@@ -288,9 +272,9 @@ Insertion best_insertion(Model& model, const ListPartition& part, int32_t e, Ins
 
 // Algorithm 2: the removed elements back in, in random order, each at its best
 // insertion. Under `AtMostOnce`, leaving an element out is a candidate too, at
-// the key the partition has without it. Where nothing was evaluated -- every
-// position blinked, or the deadline reached -- an `Exact` partition still has
-// to place the element, and takes the first list with room, at its end.
+// the key the partition has without it. If nothing was evaluated (all blinked,
+// or past the deadline) an `Exact` partition must still place the element: the
+// first list with room, at its end.
 void recreate(Model& model, const ListPartition& part, std::vector<int32_t>& removed, RNG& rng,
               double tol, const Clock::time_point* deadline) {
     rng.shuffle(removed);  // the 'Random' order
@@ -341,10 +325,9 @@ void ruin_recreate_partition(Model& model, const ListPartition& part, RNG& rng,
     recreate(model, part, removed, rng, tol, deadline);
 }
 
-// The variables the original destroy randomises: every variable outside a
-// partition (`candidates`). With no partition that is every variable, and the
-// draws are the ones this loop always made: k whole sequences plus a fraction
-// of the rest when `VarSequence`s are registered, a uniform fraction otherwise.
+// The scalar destroy set, drawn from `candidates` (every variable outside a
+// partition): k whole `VarSequence`s plus a fraction of the rest when any are
+// registered, else a uniform fraction.
 std::vector<int32_t> scalar_destroy_set(const Model& model, std::vector<int32_t> candidates,
                                         RNG& rng, double fraction) {
     if (candidates.empty()) {
@@ -395,11 +378,10 @@ bool LNS::destroy_repair(Model& model, ViolationManager& vm, RNG& rng, double re
     auto old_key = lns_acceptance_key(model, feasibility_tolerance_);
     auto saved_state = model.copy_state();
 
-    // Every ListPartition is ruined and recreated (#202); its members are then
-    // left out of the scalar destroy below, which FJ could not repair anyway.
-    // One deadline for the whole repair: the FJ pass below gets what the
-    // partitions left of it, so a kick on a model with both stays inside
-    // `repair_time_limit` rather than taking it twice.
+    // Every ListPartition is ruined and recreated (#202); its members are left
+    // out of the scalar destroy, which FJ could not repair. One deadline for
+    // the whole repair, so FJ gets what the partitions left and the total
+    // stays inside `repair_time_limit`.
     const auto& partitions = model.list_partitions();
     const Clock::time_point deadline =
         Clock::now() + std::chrono::duration_cast<Clock::duration>(
@@ -411,7 +393,7 @@ bool LNS::destroy_repair(Model& model, ViolationManager& vm, RNG& rng, double re
         }
     }
 
-    // The original pair, on every variable outside a partition.
+    // Scalar destroy/repair, on every variable outside a partition.
     std::vector<int32_t> candidates;
     candidates.reserve(model.num_vars());
     for (int32_t i = 0; i < static_cast<int32_t>(model.num_vars()); ++i) {
@@ -423,20 +405,16 @@ bool LNS::destroy_repair(Model& model, ViolationManager& vm, RNG& rng, double re
         scalar_destroy_set(model, std::move(candidates), rng, destroy_fraction_);
 
     if (!var_indices.empty()) {
-        // Randomize destroyed variables. ListOrder::Perturb because
-        // destroy/repair works on an incumbent: a List outside a partition
-        // keeps its elements and gets a new order, which is what this loop did
-        // before the three copies were merged.
+        // ListOrder::Perturb: destroy/repair works on an incumbent, so a List
+        // keeps its elements and gets a new order.
         for (int32_t idx : var_indices) {
             randomize_var(model.var_mut(idx), rng, ListOrder::Perturb);
         }
 
         full_evaluate(model);
 
-        // Repair via FJ-NL, on what the partitions left of the limit (with no
-        // partition, the limit as it always was). Floored at a tiny positive
-        // value while a limit exists: 0 means "no wall-clock limit" to
-        // fj_nl_initialize, the opposite of a deadline already used up.
+        // Repair via FJ-NL on what the partitions left of the limit. Floored
+        // above 0 while a limit exists: 0 means "no limit" to fj_nl_initialize.
         const double fj_limit =
             repair_time_limit > 0.0 && !partitions.empty()
                 ? std::max(1e-9, std::chrono::duration<double>(deadline - Clock::now()).count())

@@ -53,8 +53,8 @@ Iter at(std::vector<int32_t>& elements, int32_t pos) {
 }
 
 /// Erase `length` elements at `from` and reinsert them, in order, at position
-/// `to` of the shortened vector -- which is one `std::rotate` and therefore
-/// allocation-free. `to == from` is the identity.
+/// `to` of the shortened vector: one allocation-free `std::rotate`.
+/// `to == from` is the identity.
 void apply_move_segment(const ElementEdit& edit, std::vector<int32_t>& elements) {
     const auto n = static_cast<int32_t>(elements.size());
     if (edit.length <= 0 || edit.from < 0 || edit.to < 0 || edit.from + edit.length > n ||
@@ -115,14 +115,9 @@ void apply_one_edit(const ElementEdit& edit, const std::vector<int32_t>& replace
 
 /// Whether ONE edit is inert on `elements`. See `change_is_noop`.
 ///
-/// EVERY KIND TESTS ITS RANGE FIRST, and an edit that does not fit reads as
-/// inert -- because that is what applying it does: `apply_one_edit` ignores an
-/// out-of-range position rather than indexing it (#156). The two have to agree
-/// or the predicate is lying about the thing it exists to answer, and "does not
-/// fit" is reachable exactly when a change is replayed against an assignment
-/// other than the one it was built on -- which is Python overwriting
-/// `Variable.elements`, the case the bounds test is there for in the first
-/// place.
+/// Every kind tests its range first, and an edit that does not fit is inert,
+/// because `apply_one_edit` ignores it (#156); the two must agree. Reachable
+/// when Python overwrites `Variable.elements` under a built change.
 bool edit_is_noop(const ElementEdit& edit, const std::vector<int32_t>& replacement,
                   const std::vector<int32_t>& elements) {
     const auto n = static_cast<int32_t>(elements.size());
@@ -168,9 +163,8 @@ std::vector<int32_t> elements_after(const Move::Change& change,
 }
 
 bool change_is_noop(const Move::Change& change, const std::vector<int32_t>& elements) {
-    // A pair of edits is inert only if both halves are -- `set_swap`'s erase and
-    // append are never both inert, since the element it brings in is by
-    // construction one the set does not hold.
+    // Inert only if both edits are (`set_swap`'s pair never is: it brings in an
+    // element the set does not hold).
     return std::all_of(change.edits.begin(), change.edits.end(),
                        [&change, &elements](const ElementEdit& edit) {
                            return edit_is_noop(edit, change.replacement, elements);
@@ -199,11 +193,8 @@ static std::vector<Move> int_moves(const Variable& var, RNG& rng) {
         moves.push_back(m);
     }
     // Through the shared window, so an infinite bound cannot cast to INT64_MIN
-    // (#112). Inert on a finite domain within +/-2^53. An empty window means the
-    // domain lies wholly past 2^53, where no int64_t range names it, so this move
-    // is dropped rather than drawn from a range that does not exist (#114). The
-    // int_dec/int_inc moves above are NOT dropped there and are no-ops when the
-    // ulp exceeds 1 — pre-existing, and out of #114's scope.
+    // (#112). An empty window (domain wholly past 2^53) drops this move (#114);
+    // int_dec/int_inc above are kept there and are no-ops when the ulp exceeds 1.
     const DomainWindow w = int_sample_window(var);
     if (w.lo <= w.hi) {
         Move m;
@@ -217,10 +208,8 @@ static std::vector<Move> int_moves(const Variable& var, RNG& rng) {
 }
 
 static std::vector<Move> float_moves(const Variable& var, RNG& rng, double sigma_frac = 0.1) {
-    // Scale the step by the shared sampling window rather than the raw bounds:
-    // an unbounded domain gives an infinite width, and normal(0, inf) is NaN
-    // (#112). Inert on a finite domain. The clamp still uses the real bounds —
-    // it is what keeps the move in the actual domain.
+    // Step scaled by the sampling window, not the raw bounds: normal(0, inf) is
+    // NaN (#112). The clamp uses the real bounds, keeping the move in domain.
     const DomainWindow w = domain_window(var);
     double sigma = (w.hi - w.lo) * sigma_frac;
     double new_val = var.value + rng.normal(0, sigma);
@@ -231,30 +220,21 @@ static std::vector<Move> float_moves(const Variable& var, RNG& rng, double sigma
     return {m};
 }
 
-// The second position of the move pair. Uniform over `{0..n-1} \ {i}` with no
-// neighbour list -- which is the pre-#165 draw, verbatim, and the reason the
-// uniform branch is written out here rather than reached through the granular
-// one. With a list, `elements[i]`'s nearest neighbours are the candidates, and
-// the uniform draw is the fallback when the list names nobody usable.
+// The second position of the move pair. Without a neighbour list, uniform over
+// `{0..n-1} \ {i}` (the pre-#165 draw, kept verbatim). With one, a neighbour of
+// `elements[i]`, falling back to the uniform draw if none is usable.
 static int pick_second_position(const Variable& var, RNG& rng, int n,
                                 const NeighbourList* neighbours, int i) {
     if (neighbours != nullptr && !neighbours->empty()) {
         const int32_t here = var.elements[static_cast<size_t>(i)];
         const ConstSpan<int32_t> nb = neighbours->of(here);
         if (!nb.empty()) {
-            // element -> position. Rebuilt per call: a List's elements are
-            // rewritten by every accepted move, so a cached index would have to
-            // be invalidated by the search rather than by this function.
-            // O(universe) against the O(n) each candidate move already costs.
-            //
-            // Sized by the UNIVERSE, not by the length (#164). They coincide on a
-            // permutation, which is all a List could be before #164; on a
-            // variable-length List every element id >= n would otherwise be
-            // dropped, silently turning granular guidance back into the uniform
-            // draw for most of the universe. The `e < universe` test is not
-            // decoration either: `Variable.elements` is writable from Python, so
-            // an out-of-universe id can reach here without passing any check
-            // (#156).
+            // element -> position, rebuilt per call (every accepted move
+            // rewrites the List, so a cache would need search-side
+            // invalidation): O(universe) against each candidate's O(n).
+            // Sized by the UNIVERSE, not the length (#164), else ids >= n drop
+            // to the uniform draw. `e < universe` is needed: Python can write
+            // any id into `Variable.elements` (#156).
             const auto universe = static_cast<size_t>(std::max(var.universe_size, 0));
             std::vector<int32_t> pos(universe, -1);
             for (int p = 0; p < n; ++p) {
@@ -279,16 +259,12 @@ static int pick_second_position(const Variable& var, RNG& rng, int n,
     return j;
 }
 
-// Which elements of a List's universe it currently holds. O(universe + n), and
-// built only on the paths that change the LENGTH -- the five length-preserving
-// moves never need it.
+// Which universe elements a List holds. O(universe + n), built only on
+// length-changing paths.
 //
-// Every write is bounds-tested against the universe: `Variable.elements` is
-// writable from Python with nothing in the way, so an out-of-universe id reaches
-// here without having passed any check (#156). Such an id is simply not
-// recorded, which reads as "absent" -- the list then looks shorter than it is to
-// the insert guard below, and the worst that follows is a candidate move, which
-// the batch scores and may reject like any other.
+// Writes are bounds-tested: Python can write any id into `Variable.elements`
+// (#156). An out-of-universe id is not recorded, so the list looks shorter to
+// the insert guard; at worst that yields a candidate the batch scores normally.
 static std::vector<bool> list_membership(const Variable& var) {
     std::vector<bool> present(static_cast<size_t>(std::max(var.universe_size, 0)), false);
     for (int32_t e : var.elements) {
@@ -302,12 +278,9 @@ static std::vector<bool> list_membership(const Variable& var) {
 /// The elements of `var`'s universe it does not hold: the membership flag over
 /// the universe, and the complement as a list to draw from.
 ///
-/// Built ONCE per `generate_standard_moves` call and shared by the two moves
-/// that need it, rather than once each. It is O(universe) with two allocations,
-/// which is the shape `SetPartition` already has on the Set path -- but it is
-/// also the cost this representation exists to keep off a candidate, so it is
-/// built only when one of those moves can actually apply. On a permutation List
-/// neither can, so nothing here runs at all.
+/// Built once per `generate_standard_moves` call, shared by the two moves that
+/// need it: O(universe) with two allocations, so built only when one of them
+/// can apply (never on a permutation List).
 struct ListComplement {
     std::vector<bool> present;  // indexed by element, over the universe
     std::vector<int32_t> absent;
@@ -327,11 +300,9 @@ static ListComplement list_complement(const Variable& var) {
 // One element of the universe that `var` does not hold, or -1 if it holds them
 // all.
 //
-// Granular where a neighbour list says so: grow the sequence next to what it
-// already holds rather than anywhere in the universe, the same rule
-// `pick_added_element` applies to a Set. Falls back to the uniform draw when the
-// list is empty or the list names nobody absent, so a partial neighbour list
-// restricts where the search looks and never what it can reach.
+// With a neighbour list, an absent neighbour of a held element, as
+// `pick_added_element` does for a Set; else, or if none is absent, uniform. A
+// partial list restricts where the search looks, never what it can reach.
 static int32_t pick_absent_element(const Variable& var, RNG& rng, const NeighbourList* neighbours,
                                    const ListComplement& comp) {
     const auto n = static_cast<int32_t>(var.elements.size());
@@ -353,9 +324,8 @@ static int32_t pick_absent_element(const Variable& var, RNG& rng, const Neighbou
 
 // Insert one absent element at a random position (#164).
 //
-// GUARDS BEFORE DRAWS, which is what keeps a permutation List's trajectory
-// bit-identical: on `list_var(n)` the length is pinned at max_size, so this
-// returns having consumed no random numbers at all.
+// Guards before draws, so a permutation List (`list_var(n)`, pinned at
+// max_size) consumes no random numbers and keeps its trajectory bit-identical.
 static void list_insert_move(const Variable& var, RNG& rng, const NeighbourList* neighbours,
                              const ListComplement& comp, std::vector<Move>& moves) {
     const auto n = static_cast<int32_t>(var.elements.size());
@@ -376,18 +346,12 @@ static void list_insert_move(const Variable& var, RNG& rng, const NeighbourList*
 // Exchange the element at a random position for one the List does not hold: the
 // only move that changes a List's MEMBERSHIP without changing its length (#164).
 //
-// Without it a List declared `min_len == max_len < universe` -- a fixed-count
-// orienteering or selection model -- is a dead end. Insert is refused at
-// max_len, remove at min_len, and the five reordering moves are all
-// permutations of what is already there, so the membership drawn at
-// initialisation is the membership for the whole run and the search silently
-// explores one of C(universe, k) equivalence classes. It is the List analogue of
-// `set_swap`, and it is guarded before it draws, so a permutation List
-// (universe == n) still consumes nothing.
+// Without it a `min_len == max_len < universe` List keeps its initial
+// membership all run. The List analogue of `set_swap`; guarded before it
+// draws, so a permutation List consumes nothing.
 //
-// Not offered for a partition member: membership there is shared with the
-// sibling lists, and `partition_swap` is the length-preserving exchange that
-// keeps the cover.
+// Not offered for a partition member (`list_moves` checks): `partition_swap` is
+// the exchange that keeps the cover.
 static void list_exchange_move(const Variable& var, RNG& rng, const NeighbourList* neighbours,
                                const ListComplement& comp, std::vector<Move>& moves) {
     const auto n = static_cast<int32_t>(var.elements.size());
@@ -419,11 +383,9 @@ static void list_remove_move(const Variable& var, RNG& rng, std::vector<Move>& m
     moves.push_back(m);
 }
 
-// The five length-preserving intra-list moves. Every guard here is about the
-// SEGMENT fitting strictly inside the list -- relocating the whole list is a
-// no-op, not a move -- so they read the same on a variable-length List as they
-// always did on a permutation: or-opt(2) needs n >= 3 and or-opt(3) needs n >= 4
-// for exactly that reason, and n < 2 leaves nothing to reorder at all.
+// The five length-preserving intra-list moves. Each guard requires the segment
+// to fit strictly inside the list (relocating all of it is a no-op): or-opt(2)
+// needs n >= 3, or-opt(3) n >= 4, and n < 2 has nothing to reorder.
 static void list_reorder_moves(const Variable& var, RNG& rng, std::vector<Move>& moves,
                                const NeighbourList* neighbours) {
     int n = static_cast<int>(var.elements.size());
@@ -452,10 +414,9 @@ static void list_reorder_moves(const Variable& var, RNG& rng, std::vector<Move>&
 
     // Relocate: remove element at position i, insert at position j.
     //
-    // The three relocating moves are one `segment_edit` each, and the insert
-    // positions below are the ones the whole-vector construction computed -- the
-    // segment is erased first, so a target to the RIGHT of it shifts left by the
-    // segment length, and the clamp is against the shortened vector.
+    // One `segment_edit` each. The segment is erased first, so a target to its
+    // right shifts left by its length, and the clamp is against the shortened
+    // vector.
     {
         Move m;
         m.move_type = "list_relocate";
@@ -495,21 +456,16 @@ static void list_reorder_moves(const Variable& var, RNG& rng, std::vector<Move>&
 // three that can only apply to a List that is not a permutation (#164) -- insert,
 // the fixed-length membership exchange, and remove.
 //
-// ORDER MATTERS AND THE TAIL MUST STAY LAST. All three tail moves test their
-// guards before touching the RNG, so on a permutation List -- where the length is
-// pinned at min_size == max_size == universe_size -- they draw nothing and the
-// resulting draw sequence is the pre-#164 one, move for move. Putting one of
-// them ahead of the five would not change that, but putting a DRAW ahead of a
-// guard would.
+// The tail moves must test their guards before touching the RNG: on a
+// permutation List they then draw nothing, keeping the pre-#164 draw sequence.
+// A draw ahead of a guard would break that.
 static void list_moves(const Variable& var, RNG& rng, std::vector<Move>& moves,
                        const NeighbourList* neighbours) {
     list_reorder_moves(var, rng, moves, neighbours);
     const auto n = static_cast<int32_t>(var.elements.size());
-    // The membership scan is built ONCE and only where one of the two moves that
-    // read it can apply. A permutation List can apply neither -- its length is
-    // pinned at max_size and its universe is its length -- so it neither scans
-    // nor draws, which is what keeps its trajectory the pre-#164 one. A partition
-    // member applies neither either: its membership belongs to the partition.
+    // Scanned once, only where insert or exchange can apply: never on a
+    // permutation List (so it neither scans nor draws, #164) nor a partition
+    // member (its membership belongs to the partition).
     if (!var.partitioned &&
         ((n < var.max_size && var.universe_size > 0) || (n > 0 && var.universe_size > n))) {
         const ListComplement comp = list_complement(var);
@@ -520,8 +476,7 @@ static void list_moves(const Variable& var, RNG& rng, std::vector<Move>& moves,
 }
 
 // The current subset, its complement and the membership flag, which all three
-// Set moves read. Split out of set_moves so that function is three independent
-// move constructions rather than one block that also owns this bookkeeping.
+// Set moves read.
 struct SetPartition {
     std::vector<int32_t> in_set;
     std::vector<int32_t> not_in;
@@ -546,12 +501,9 @@ static SetPartition partition_set(const Variable& var) {
     return p;
 }
 
-// The element a set_add / set_swap brings in. Uniform over the complement with
-// no neighbour list -- the pre-#165 draw, verbatim. With a list, the nearest
-// neighbour of a randomly chosen SELECTED element that is not already in the
-// set, which is the granular form of "grow the subset where it already is"
-// rather than anywhere in the universe. Falls back to the uniform draw when the
-// list offers nothing usable.
+// The element a set_add / set_swap brings in. Without a neighbour list, uniform
+// over the complement (the pre-#165 draw). With one, the nearest absent
+// neighbour of a random selected element, falling back to uniform.
 //
 // PRECONDITION: `part.not_in` is non-empty.
 static int32_t pick_added_element(const Variable& var, RNG& rng, const SetPartition& part,
@@ -612,18 +564,16 @@ static void set_swap_move(const Variable& var, RNG& rng, const SetPartition& par
     }
     Move m;
     m.move_type = "set_swap";
-    // Draw order is add-then-remove, as it has always been: both draws come off
-    // the search's RNG, so swapping them would shift every later draw.
+    // Draw order must stay add-then-remove: both use the search's RNG, so
+    // swapping them shifts every later draw.
     const int32_t add_elem = pick_added_element(var, rng, part, neighbours);
     const int32_t rem_elem = pick_removed_element(rng, part);
     const auto it = std::find(var.elements.begin(), var.elements.end(), rem_elem);
     if (it == var.elements.end()) {
         return;
     }
-    // Two edits, in this order: the removal happens where the element sits, and
-    // the addition lands at the end of the SHORTENED vector. That is the element
-    // order the whole-vector construction produced, and a Set read pairwise
-    // (`pair_lambda_sum`) can tell the difference.
+    // Erase in place, then append to the SHORTENED vector: a Set read pairwise
+    // (`pair_lambda_sum`) sees element order.
     const auto pos = static_cast<int32_t>(it - var.elements.begin());
     m.changes.push_back(
         edit_change(var.id, erase_edit(pos),
@@ -677,20 +627,17 @@ void generate_standard_moves(const Variable& var, RNG& rng, std::vector<Move>& o
 // two customers between routes, exchange two route tails (2-opt*), and -- under
 // `Cover::AtMostOnce` only -- insert an unassigned element or drop one.
 //
-// Every one of them preserves the cover BY CONSTRUCTION, which is the point:
-// "each element served exactly once" as a penalty row is a poor landscape for a
-// jump-based search, because every repair has to pass through a doubly-served or
-// unserved state. What these moves do NOT do is REPAIR a cover that something
-// else broke -- `Variable.elements` is writable from Python with no check in the
-// way (#156) -- and they do not need to. Nothing below indexes an array BY an
-// element id except the membership stamp, which bounds-tests every write, so a
-// state Python corrupted is a wrong search rather than a crash.
+// Each preserves the cover by construction (as a penalty row, every repair would
+// pass through a doubly-served or unserved state). They do not repair a cover
+// Python broke via `Variable.elements` (#156): only the membership stamp
+// indexes by element id, bounds-tested, so corruption is a wrong search, not a
+// crash.
 
 namespace {
 
 /// The position in `dest` of the nearest neighbour of `e` that `dest` holds, or
 /// -1 when there is no neighbour list or it names nobody `dest` holds. Draws no
-/// random numbers: the two callers below decide for themselves what a miss means.
+/// random numbers; callers decide what a miss means.
 int32_t neighbour_position(const std::vector<int32_t>& dest, int32_t e,
                            const NeighbourList* neighbours) {
     if (neighbours == nullptr || neighbours->empty()) {
@@ -706,9 +653,7 @@ int32_t neighbour_position(const std::vector<int32_t>& dest, int32_t e,
 }
 
 /// Insert position for `e` in `dest`: just after a nearest neighbour of `e` that
-/// `dest` already holds, else uniform over the `|dest| + 1` gaps. The uniform
-/// draw is the only one taken when no neighbour list was supplied, which is the
-/// default everywhere.
+/// `dest` already holds, else uniform over the `|dest| + 1` gaps.
 int32_t partition_insert_pos(const std::vector<int32_t>& dest, int32_t e, RNG& rng,
                              const NeighbourList* neighbours) {
     const int32_t near = neighbour_position(dest, e, neighbours);
@@ -718,10 +663,8 @@ int32_t partition_insert_pos(const std::vector<int32_t>& dest, int32_t e, RNG& r
     return static_cast<int32_t>(rng.integers(0, static_cast<int64_t>(dest.size()) + 1));
 }
 
-/// Append `move` unless every change leaves its variable exactly as it is. A
-/// no-op candidate is not wrong -- the batch scores it at delta 0 and rejects it
-/// -- but it costs two `delta_evaluate` passes to learn that, and the
-/// diversification kick would count it as a move it had made.
+/// Append `move` unless every change is a no-op: one would cost two
+/// `delta_evaluate` passes to reject, and the kick would count it as made.
 void push_if_changed(const Model& model, Move&& move, std::vector<Move>& out) {
     for (const Move::Change& change : move.changes) {
         if (!change_is_noop(change, model.var(change.var_id).elements)) {
@@ -760,11 +703,8 @@ void partition_swap(const Model& model, int32_t a, int32_t b, RNG& rng,
         return;
     }
     const auto i = static_cast<size_t>(rng.integers(0, static_cast<int64_t>(va.elements.size())));
-    // Granular where a neighbour list says so: exchange against the element of
-    // `b` nearest `a[i]`, since swapping it against one on the far side of the
-    // map can only be improving by accident. A miss -- no list, or no neighbour
-    // of `a[i]` in `b` -- falls back to the uniform draw, so a partial list
-    // restricts where the search looks and never what it can reach.
+    // With a neighbour list, the element of `b` nearest `a[i]`; on a miss,
+    // uniform, so a partial list never restricts what the search can reach.
     const int32_t near = neighbour_position(vb.elements, va.elements[i], neighbours);
     const auto j =
         (near >= 0)
@@ -772,17 +712,15 @@ void partition_swap(const Model& model, int32_t a, int32_t b, RNG& rng,
             : static_cast<size_t>(rng.integers(0, static_cast<int64_t>(vb.elements.size())));
     Move m;
     m.move_type = "partition_swap";
-    // One position assigned on each side: an exchange ACROSS two variables is
-    // two independent writes, where the intra-list swap is one.
+    // One assignment per side: across two variables, two independent writes.
     m.changes.push_back(edit_change(a, assign_edit(static_cast<int32_t>(i), vb.elements[j])));
     m.changes.push_back(edit_change(b, assign_edit(static_cast<int32_t>(j), va.elements[i])));
     push_if_changed(model, std::move(m), out);
 }
 
 /// `x[0, x_end)` then `y[y_from, end)`: one side of a 2-opt* tail exchange,
-/// allocated once at its final size. It is the `replacement` the change owns,
-/// so that one allocation per side is the whole cost; building it from a head
-/// copy, a tail copy and an insert cost three, plus the head's regrowth (#274).
+/// allocated once at its final size: one allocation per side, the whole cost of
+/// the change's `replacement` (#274).
 std::vector<int32_t> head_then_tail(const std::vector<int32_t>& x, size_t x_end,
                                     const std::vector<int32_t>& y, size_t y_from) {
     std::vector<int32_t> joined;
@@ -817,12 +755,10 @@ void partition_two_opt_star(const Model& model, int32_t a, int32_t b, RNG& rng,
 
 /// The elements of the partition's universe that no member list holds.
 ///
-/// RECOMPUTED FROM THE LISTS EVERY TIME, never cached: `Variable.elements` is
-/// writable from Python, and the assignment also moves under LNS, the
-/// diversification kick and a restart from the solution pool, none of which
-/// notifies a generator (see `MoveGenerator::on_commit`). O(sum |lists| +
-/// universe), and every stamp write is bounds-tested, so an out-of-universe id
-/// written from Python is ignored rather than indexing the heap (#156).
+/// Recomputed every time, never cached: Python, LNS, the kick and pool restarts
+/// all move the assignment without notifying a generator
+/// (`MoveGenerator::on_commit`). O(sum |lists| + universe); stamp writes are
+/// bounds-tested, so an out-of-universe id is ignored (#156).
 std::vector<int32_t> partition_unassigned(const Model& model, const ListPartition& part) {
     std::vector<bool> taken(static_cast<size_t>(std::max(part.universe_size, 0)), false);
     for (int32_t vid : part.list_ids) {
@@ -879,11 +815,9 @@ void partition_remove(const Model& model, int32_t a, RNG& rng, std::vector<Move>
 /// cover permits. Drawn from uniformly, so this list is also the mix.
 enum class PartitionMoveKind : std::uint8_t { Relocate, Swap, TwoOptStar, Insert, Remove };
 
-/// Written into `out`; the return is how many. A fixed array rather than a
-/// vector because this runs once per candidate PROPOSED, and the argument for
-/// the whole positional representation is that a candidate must not cost a heap
-/// allocation. The `Move` itself costs none either since #274: its name is a
-/// view onto a literal and its changes sit inline.
+/// Written into `out`; returns how many. A fixed array: this runs per proposed
+/// candidate, and a candidate must not cost a heap allocation (nor does `Move`,
+/// #274).
 size_t applicable_kinds(const ListPartition& part, std::array<PartitionMoveKind, 5>& out) {
     size_t n = 0;
     if (part.list_ids.size() >= 2) {
@@ -892,23 +826,18 @@ size_t applicable_kinds(const ListPartition& part, std::array<PartitionMoveKind,
         out[n++] = PartitionMoveKind::TwoOptStar;
     }
     if (part.cover == Cover::AtMostOnce) {
-        // Under Exact these are the two halves of a relocate and never stand
-        // alone: an insert would double-serve, a remove would leave an element
-        // unserved, and no later move could repair either.
+        // Never under Exact: an insert would double-serve, a remove leave an
+        // element unserved, and no later move could repair either.
         out[n++] = PartitionMoveKind::Insert;
         out[n++] = PartitionMoveKind::Remove;
     }
     return n;
 }
 
-/// A member of `part` other than `a`, uniformly, by the shift-past trick the
-/// intra-list move pair already uses. PRECONDITION: at least two members, and
-/// `a` a member. A non-member `a` makes the shift inert and the draw uniform
-/// over all of them, which is DEFINED but not supported: the resulting move
-/// would take an element out of a list the partition does not own and put it in
-/// one it does, double-serving it. `generate_partition_moves` refuses a
-/// non-member anchor before reaching here rather than leaving that to the
-/// caller.
+/// A member of `part` other than `a`, uniformly (shift past `a`).
+/// PRECONDITION: at least two members, `a` one of them. A non-member `a` draws
+/// over all members, defined but unsupported (it would double-serve);
+/// `generate_partition_moves` refuses one first.
 int32_t pick_other_list(const ListPartition& part, int32_t a, RNG& rng) {
     const auto count = static_cast<int64_t>(part.list_ids.size());
     const auto it = std::find(part.list_ids.begin(), part.list_ids.end(), a);
@@ -938,19 +867,13 @@ void generate_partition_moves(const Model& model, int partition, int32_t anchor,
     const PartitionMoveKind kind =
         kinds[static_cast<size_t>(rng.integers(0, static_cast<int64_t>(num_kinds)))];
 
-    // The first list is the anchor when the caller named one -- the
-    // diversification kick does, because it asks "move THIS variable" and reads
-    // the answer off that variable alone. The second is drawn only by the three
-    // kinds that need one, so an insert or a removal costs the draws it actually
-    // uses rather than one more.
+    // The first list is the caller's anchor if named (the kick asks to move THIS
+    // variable). The second is drawn only by the three kinds that need one.
     const int32_t a = (anchor >= 0) ? anchor
                                     : part.list_ids[static_cast<size_t>(rng.integers(
                                           0, static_cast<int64_t>(part.list_ids.size())))];
-    // A caller-supplied anchor must belong to this partition. Both live callers
-    // honour it -- the kick derives the partition from the same variable, and
-    // ListPartitionGenerator passes -1 -- but this is a public entry point in
-    // moves.h, and every move below preserves the cover only over a PAIR of
-    // member lists. One find over the member count, which is the route count.
+    // A caller's anchor must be a member: this is public (moves.h), and the moves
+    // below preserve the cover only over a pair of member lists. O(members).
     if (anchor >= 0 &&
         std::find(part.list_ids.begin(), part.list_ids.end(), a) == part.list_ids.end()) {
         return;
@@ -1071,11 +994,9 @@ void granular_pair_moves(const Model& model, const ListPartition& part, int32_t 
     granular_two_opt_star(va, i, vb, j, model, out);
 }
 
-/// Element -> (list, position) over one partition, recomputed from the lists on
-/// every call for the reason `partition_unassigned` is: nothing notifies a
-/// generator when the assignment moves. Packed as list * stride + pos into the
-/// caller's reused vector, so a call allocates nothing once it has grown. Every
-/// write and read is bounds-tested (#156).
+/// Element -> (list, position) over one partition, recomputed per call (see
+/// `partition_unassigned`). Packed as list * stride + pos into the caller's
+/// reused vector, so allocation-free once grown. Bounds-tested (#156).
 class PartitionSlots {
 public:
     PartitionSlots(const Model& model, const ListPartition& part, std::vector<int64_t>& packed)
@@ -1130,9 +1051,8 @@ void granular_insert_moves(const Model& model, const ListPartition& part, int32_
 }
 
 /// `e` moved into every EMPTY member list: relocated there when assigned, inserted
-/// when not. The granular pairs all land next to some assigned `f`, so without
-/// these an emptied list could never be reopened -- the depot arcs Toth & Vigo
-/// keep in the granular graph for the same reason.
+/// when not. Granular pairs land next to an assigned `f`, so without these an
+/// emptied list never reopens (Toth & Vigo's depot arcs).
 void granular_empty_list_moves(const Model& model, const ListPartition& part, int32_t e,
                                ElementSlot se, std::vector<Move>& out) {
     if (se.list >= 0) {
@@ -1213,12 +1133,9 @@ std::vector<int32_t> apply_move(Model& model, const Move& move) {
     for (const auto& change : move.changes) {
         auto& var = model.var_mut(change.var_id);
         if (is_structured(var.type)) {
-            // In place, on the vector that is already there -- no allocation
-            // unless the edit lengthens it past its capacity. The edit is
-            // relative to the assignment the move was built against, so the
-            // caller is responsible for applying it to THAT assignment; see
-            // `ElementEdit` and, for the several-candidates-per-sample case,
-            // `StructuralBatch`.
+            // In place, allocating only past capacity. The edit is relative to
+            // the assignment it was built against; the caller must apply it to
+            // THAT one (`ElementEdit`, `StructuralBatch`).
             apply_element_edits(change, var.elements);
         } else {
             var.value = change.new_value;
