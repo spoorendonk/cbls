@@ -14,7 +14,6 @@ import argparse
 import csv
 import json
 import os
-import re
 import socket
 import subprocess
 from pathlib import Path
@@ -110,8 +109,6 @@ def make_args(tmp_path: Path, **overrides: object) -> argparse.Namespace:
         "time_limit": 60.0,
         "seed": 1,
         "threads": 1,
-        "presolve": False,
-        "presolve_aggregation": True,
         "build_jobs": 4,
         "instances": [],
         "out": None,
@@ -621,40 +618,6 @@ def test_threads_reach_the_runner_and_the_run_record(tmp_path: Path) -> None:
     assert run_benchmark.parse_args([]).threads == 1
 
 
-def test_presolve_reaches_the_runner_and_keys_the_staging_dir(tmp_path: Path) -> None:
-    """`--presolve` (#343) runs `cbls_minlplib --presolve`, off by default."""
-    args = run_benchmark.parse_args(["--inst-dir", str(tmp_path / "inst"), "--presolve"])
-    assert args.presolve
-    assert "--presolve" in runner_command(args, "abc1234", "nvs01", tmp_path / "stage")
-    assert not run_benchmark.parse_args([]).presolve
-    plain = make_args(tmp_path)
-    assert "--presolve" not in runner_command(plain, "abc1234", "nvs01", tmp_path / "stage")
-    # A presolved campaign never resumes a plain one's rows, nor the reverse.
-    on, off = (
-        resolve_paths(make_args(tmp_path, presolve=p), "abc1234").stage for p in (True, False)
-    )
-    assert on != off
-    stage = tmp_path / "stage"
-    stage.mkdir()
-    assert staging_stamp_conflict(stage, plain, "abc1234") is None
-    assert "presolve" not in (stage / STAMP_NAME).read_text(), "a pre-#343 stamp still matches"
-    conflict = staging_stamp_conflict(stage, make_args(tmp_path, presolve=True), "abc1234")
-    assert conflict is not None and "presolve=on" in conflict
-
-
-def test_presolve_never_writes_a_published_table(tmp_path: Path) -> None:
-    published = tmp_path / "inst" / "comparison.csv"
-    for seed in (1, 2):
-        refusal = usage_error(make_args(tmp_path, presolve=True, seed=seed), published)
-        assert refusal is not None and "--presolve" in refusal
-        explicit = make_args(tmp_path, presolve=True, seed=seed, out=published)
-        assert usage_error(explicit, published) is not None
-    scratch = make_args(
-        tmp_path, presolve=True, out=tmp_path / "x.csv", trace_out=tmp_path / "t.csv"
-    )
-    assert usage_error(scratch, published) is None
-
-
 def test_the_merge_step_solves_nothing(tmp_path: Path) -> None:
     cmd = merge_command(tmp_path / "inst")
     assert "--merge-only" in cmd
@@ -1098,55 +1061,6 @@ def test_a_staged_row_at_another_thread_count_is_solved_again(tmp_path: Path) ->
     stage = _stage(tmp_path, config=f"{DEFAULT_ARM};threads=16")
     assert staged_complete(make_args(tmp_path, threads=16), "abc1234", "a", stage)
     assert not staged_complete(make_args(tmp_path), "abc1234", "a", stage)
-
-
-def test_a_staged_row_under_the_other_presolve_setting_is_solved_again(tmp_path: Path) -> None:
-    """As the thread count (#343): a plain resume never takes a presolved row, nor the reverse."""
-    stage = _stage(tmp_path)
-    assert not staged_complete(make_args(tmp_path, presolve=True), "abc1234", "a", stage)
-    stage = _stage(tmp_path, config=f"{DEFAULT_ARM};presolve")
-    assert staged_complete(make_args(tmp_path, presolve=True), "abc1234", "a", stage)
-    assert not staged_complete(make_args(tmp_path), "abc1234", "a", stage)
-
-
-def test_a_staged_row_under_the_other_aggregation_setting_is_solved_again(tmp_path: Path) -> None:
-    """The same for `--no-presolve-aggregation` (#347): its row says `no-presolve-aggregation`."""
-    off = make_args(tmp_path, presolve=True, presolve_aggregation=False)
-    stage = _stage(tmp_path, config=f"{DEFAULT_ARM};presolve")
-    assert not staged_complete(off, "abc1234", "a", stage)
-    stage = _stage(tmp_path, config=f"{DEFAULT_ARM};presolve;no-presolve-aggregation")
-    assert staged_complete(off, "abc1234", "a", stage)
-    assert not staged_complete(make_args(tmp_path, presolve=True), "abc1234", "a", stage)
-
-
-def test_no_presolve_aggregation_reaches_the_runner_and_keys_the_staging_dir(
-    tmp_path: Path,
-) -> None:
-    """`--no-presolve-aggregation` (#347): on by default, passed through, staged apart."""
-    inst = ["--inst-dir", str(tmp_path / "inst"), "--presolve"]
-    assert run_benchmark.parse_args(inst).presolve_aggregation
-    args = run_benchmark.parse_args([*inst, "--no-presolve-aggregation"])
-    assert not args.presolve_aggregation
-    cmd = runner_command(args, "abc1234", "nvs01", tmp_path / "stage")
-    assert "--presolve" in cmd and "--no-presolve-aggregation" in cmd
-    on = make_args(tmp_path, presolve=True)
-    assert "--no-presolve-aggregation" not in runner_command(
-        on, "abc1234", "nvs01", tmp_path / "stage"
-    )
-    off = make_args(tmp_path, presolve=True, presolve_aggregation=False)
-    assert resolve_paths(on, "abc1234").stage != resolve_paths(off, "abc1234").stage
-    stage = tmp_path / "stage"
-    stage.mkdir()
-    assert staging_stamp_conflict(stage, on, "abc1234") is None
-    assert "aggregation" not in (stage / STAMP_NAME).read_text(), "a #343 stamp still matches"
-    conflict = staging_stamp_conflict(stage, off, "abc1234")
-    assert conflict is not None and "presolve-aggregation=off" in conflict
-
-
-def test_no_presolve_aggregation_without_presolve_is_refused(tmp_path: Path) -> None:
-    published = tmp_path / "inst" / "comparison.csv"
-    refusal = usage_error(make_args(tmp_path, presolve_aggregation=False), published)
-    assert refusal is not None and "--no-presolve-aggregation needs --presolve" in refusal
 
 
 def test_preflight_refuses_more_threads_than_the_process_may_run_on(
@@ -1767,41 +1681,6 @@ def test_a_solve_that_throws_makes_the_runner_exit_nonzero(tmp_path: Path) -> No
     assert notes["ok"] in COMPLETED_VERDICTS
 
 
-#: Two columns: x0 in [0,10] and x1 fixed at 3. One row `x0 + x1 >= 4`, minimise
-#: `x0 + 2 x1`: optimum 7 at (1, 3). Presolve removes x1 (fixed), the row (a
-#: singleton once x1 is gone) and then x0, so the search runs on no column at
-#: all (the edge where `reduced_to_original` is empty) and the point written and
-#: verified is the postsolved one over both columns.
-PRESOLVABLE_NL = (
-    nl_header(2, 1, 1)
-    + "b\n0 0 10\n4 3\nr\n2 4\nO0 0\nn0\nG0 2\n0 1\n1 2\nC0\nn0\nJ0 2\n0 1\n1 1\n"
-)
-
-
-def test_a_presolved_row_is_verified_and_written_over_the_original_columns(
-    tmp_path: Path,
-) -> None:
-    """`--presolve` (#343): the `.sol` holds every original column, and the row verifies."""
-    sols = tmp_path / "sols"
-    sols.mkdir()
-    result = run_the_runner(
-        tmp_path, {"pre": PRESOLVABLE_NL}, ["--presolve", "--solution-dir", str(sols)]
-    )
-    assert result.returncode == 0, result.stdout + result.stderr
-    # The edge this fixture exists for: presolve removed both columns.
-    assert re.search(r"^pre\s+presolve=reduced rows=1 cols=2 ", result.stdout, re.M), result.stdout
-    with (tmp_path / "out.csv").open(newline="") as fh:
-        (row,) = list(csv.DictReader(fh))
-    assert row["feasible"] == "true", row
-    assert "presolve" in row["search_config"].split(";")
-    lines = (sols / "pre.sol").read_text().splitlines()
-    assert "columns 2" in lines
-    values = [float(v) for v in lines[lines.index("columns 2") + 1 :]]
-    assert values[1] == 3.0  # the removed column, restored by postsolve
-    assert values[0] >= 1.0 - 1e-6
-    assert float(row["objective"]) == pytest.approx(values[0] + 2.0 * values[1])
-
-
 def test_the_counters_sidecar_holds_one_row_per_search_and_leaves_the_table_alone(
     tmp_path: Path,
 ) -> None:
@@ -1867,44 +1746,6 @@ def test_the_counters_sidecar_holds_one_row_per_search_and_leaves_the_table_alon
         if not refused or (before is not None and taken.read_text() != before):
             escaped.append(taken.name)
     assert escaped == []
-
-
-#: Two columns in [0,10], one row `x0 + x1 = 5`, minimise `x0 + 2 x1`: optimum 5
-#: at (5, 0). The row is a doubleton equality, so presolve aggregates one column
-#: into the other (#328), unless `--no-presolve-aggregation` (#347).
-AGGREGABLE_NL = (
-    nl_header(2, 1, 1)
-    + "b\n0 0 10\n0 0 10\nr\n4 5\nO0 0\nn0\nG0 2\n0 1\n1 2\nC0\nn0\nJ0 2\n0 1\n1 1\n"
-)
-
-
-@pytest.mark.parametrize(
-    ("extra", "aggregated"),
-    [([], 1), (["--no-presolve-aggregation"], 0)],
-    ids=["aggregation-on", "aggregation-off"],
-)
-def test_presolve_aggregation_is_reported_and_recorded(
-    tmp_path: Path, extra: list[str], aggregated: int
-) -> None:
-    """`aggregated=` reports the step (#347), and the off arm is recorded in the row."""
-    result = run_the_runner(tmp_path, {"agg": AGGREGABLE_NL}, ["--presolve", *extra])
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert re.search(rf"^agg\s+presolve=\S+ .* aggregated={aggregated} ", result.stdout, re.M), (
-        result.stdout
-    )
-    with (tmp_path / "out.csv").open(newline="") as fh:
-        (row,) = list(csv.DictReader(fh))
-    assert row["feasible"] == "true", row
-    assert float(row["objective"]) == pytest.approx(5.0, abs=1e-6)
-    config = row["search_config"].split(";")
-    assert "presolve" in config
-    assert ("no-presolve-aggregation" in config) == (aggregated == 0)
-
-
-def test_the_runner_refuses_no_presolve_aggregation_without_presolve(tmp_path: Path) -> None:
-    result = run_the_runner(tmp_path, {"agg": AGGREGABLE_NL}, ["--no-presolve-aggregation"])
-    assert result.returncode == 2
-    assert "--no-presolve-aggregation needs --presolve" in result.stderr
 
 
 def test_an_unreadable_instance_makes_the_runner_exit_nonzero(tmp_path: Path) -> None:

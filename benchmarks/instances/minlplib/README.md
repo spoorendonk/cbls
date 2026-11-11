@@ -108,41 +108,13 @@ catalogue instance one status, the first that applies: `unsupported-op`,
 which takes one instance directory, so it goes next to the NL files. Counts per
 status for a given catalogue and engine commit are recorded on #280.
 
-### Presolve (#326, #343)
+### Presolve (removed)
 
-`--presolve` (default off; `--no-presolve` restores it) builds each model with
-the linear-part presolve of #342: rows the reader can see as linear are
-presolved, columns appearing in a nonlinear term are frozen. The search runs on
-the reduced model; its point is then postsolved onto the model built without
-presolve, every check (objective, residuals, `verify_model`) runs there, and a
-failure there is a `VERIFY-FAILED` row. The `.sol` holds every original column.
-`wall_seconds` times the search alone, not that second build. The row's
-`search_config` records `presolve`; what presolve did to the instance goes to
-stdout as `<instance>  presolve=<status> rows= cols= aggregated= bounds= seconds=`
-(statuses `reduced`, `unchanged`, `infeasible`, `rejected`, `not-run`; the
-last three searched the plain model, and the presolve time is spent in the
-build, outside `wall_seconds`). A presolved row is held to a stricter check
-than a plain one: `verify_model` also checks column bounds and DAG domain nodes,
-so a presolve-vs-plain A/B can lose solved rows to that check alone. Read its
-`VERIFY-FAILED(original model: ...)` rows apart. It is an experiment arm:
-`cbls_minlplib` and `run_benchmark.py --presolve` both refuse to write a
-published table, and the driver stages it apart (`threads<N>-presolve`, and a
-`presolve=on` stamp line).
-
-Presolve includes doubleton-equality aggregation (#328): a linear row
-`a x + b y = c` over two non-frozen columns eliminates `y`. It removes the
-column and its row, so it counts in `rows=` and `cols=`, and `aggregated=`
-says how many columns it took. `--no-presolve-aggregation` (valid only with
-`--presolve`, in the runner and the driver) is its off arm (#347). It is
-recorded as `no-presolve-aggregation` in `search_config` and staged apart
-(`threads<N>-presolve-no-aggregation`, and a `presolve-aggregation=off` stamp
-line).
-
-`cbls_minlplib_nl_check --presolve [--no-presolve-aggregation] FILE.nl...` adds
-`presolve=<status> rows=<removed> cols=<removed> aggregated=<cols>
-bounds=<tightened> seconds=<time>` to each modelled line: the census of how
-many instances presolve changes. Counts for a given engine commit are recorded
-on #326, #343 and #328.
+`--presolve` built each model with a linear-part presolve (#326, #342, #343),
+with doubleton-equality aggregation (#328, #347) and a census mode in
+`cbls_minlplib_nl_check`. #331 measured it no better than the plain engine and
+it stayed off; it was removed (#379; in git history at `b10da9d2`). Census
+counts for its commits are on #326, #343 and #328.
 
 ### Search counters (#341)
 

@@ -311,7 +311,8 @@ default. Its MINLPLib arms ran with
 `--compound-propagation`, both) on a 25-instance dev sample of this roster,
 `heldout/presolve_322_sample.txt`. The campaign, its sample file and its report
 section (`benchmarks/minlplib/presolve_report.py`) are removed; all three are
-in git history at `ef795b55`.
+in git history at `ef795b55`. Presolve itself, with the `nl_check --presolve`
+census below, was removed too (#379; in git history at `b10da9d2`).
 
 **Rule, fixed before any solve:** the held-out instances the A4-NL presolve
 reduces, filled up to 25 with instances it leaves untouched if fewer reduce.

@@ -624,7 +624,7 @@ roster instances, and it confirmed no setting, so no default changed. #331 then
 decided `--presolve` and `--compound-propagation` on all 22, in a pre-registered
 four-arm run at 60s with 3 seeds: pooled PI ratios 0.934 (presolve), 1.142
 (propagation) and 0.993 (both), all inside the control's 1.30 noise floor, so
-both stay off.
+both stayed off. Presolve was then removed (#379; in git history at `b10da9d2`).
 `tuned.txt` lists all 22. A table scored with `--held-out tuned.txt` reports the
 other 211, none of them tuned on. One scored over the whole roster names the 22:
 the effect on a roster-wide aggregate is small, but it is not zero.
@@ -648,11 +648,11 @@ the run:
 |---|---|---|
 | Threads | 1 (`--cbls-threads`, > 1 runs the cooperative portfolio) | CP-SAT's own count (`--cpsat-workers 0`, the default; recorded as `workers_started`), or N in the fj+ls mode (`--cpsat-workers N` -> `num_workers`) |
 | Algorithm | Feasibility Jump + ViolationLS + Novelty Jump | its full default portfolio; in the fj+ls mode `fj` + `ls` workers only (`filter_subsolvers`) |
-| Presolve | implied variable bounds only (activity-based propagation) by default; `--presolve` (#325, off by default, kept off by #331's measurement) builds the model from the presolved problem (fixed columns, singleton and redundant rows, coefficient tightening (#327, on under `--presolve`; `--no-presolve-coef-tightening` turns it off), doubleton-equality aggregation (#337, on under `--presolve`; `--no-presolve-aggregation` turns it off), empty columns; see `docs/architecture.md`, Presolve) and writes the point postsolved | default, i.e. on |
+| Presolve | implied variable bounds only (activity-based propagation); the opt-in `--presolve` (#325, kept off by #331's measurement) was removed (#379; in git history at `b10da9d2`) | default, i.e. on |
 | Propagation during search | none by default; `--compound-propagation` (#340, off by default, kept off by #331's measurement) propagates each Novelty leg over the linear rows | its own, as part of its default portfolio |
 | Feasibility tolerance | `1e-6`, stated explicitly | CP-SAT's own |
 | Unbounded column falls back to | `1e7` (`--inf-clamp`), where propagation derives nothing | not clamped |
-| Recorded per result | commit SHA, seed, tolerance, clamp + columns it still narrows, columns declared unbounded, columns tightened, propagation verdict and pass cap, compound-move, exact-Int-jump (#216, off by default), near-value-perturbation (#217, off by default), objective tie-break (#218, on by default since #226), propagation and presolve flags (`presolve`, `presolve_coef_tightening`, `presolve_aggregation`; with `--presolve`, its verdict, seconds and per-reduction counts as `presolve_*`), the point's own check against the instance file (`original_*` ratios), peak RSS, read/build/setup seconds, trace point count and trace source | OR-Tools version, seed, full parameter string, workers started (at its defaults), solver verdict, peak RSS, read/setup seconds, free-row count, trace source |
+| Recorded per result | commit SHA, seed, tolerance, clamp + columns it still narrows, columns declared unbounded, columns tightened, propagation verdict and pass cap, compound-move, exact-Int-jump (#216, off by default), near-value-perturbation (#217, off by default), objective tie-break (#218, on by default since #226), propagation flags, the point's own check against the instance file (`original_*` ratios), peak RSS, read/build/setup seconds, trace point count and trace source | OR-Tools version, seed, full parameter string, workers started (at its defaults), solver verdict, peak RSS, read/setup seconds, free-row count, trace source |
 | Solution verified against the instance file | yes, by SCIP | yes, by SCIP |
 
 Two of those are deliberate choices, made to keep the two sides comparable

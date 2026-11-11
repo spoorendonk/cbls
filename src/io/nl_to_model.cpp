@@ -16,7 +16,6 @@
 #include "cbls/expr.h"
 #include "cbls/io_nl.h"
 #include "cbls/model.h"
-#include "cbls/presolve.h"
 
 #include <algorithm>
 #include <cmath>
@@ -58,13 +57,6 @@ enum AmplOp : std::uint8_t {
     OP2POW = 77,  // x ^ 2
     OPCPOW = 78,  // constant ^ exponent
 };
-
-// The translator's handle for a column presolve removed. Only a column no
-// nonlinear part reaches can be removed (they are frozen), so reaching one is a
-// bug in the freezing; the translator then refuses the model rather than build
-// on a bad handle. Never a valid handle: a variable is `-(id + 1)` with id an
-// int32, a node is non-negative.
-constexpr int32_t kRemovedColumn = std::numeric_limits<int32_t>::min();
 
 // Whether a column side is "no bound": NaN or past the infinity convention. A
 // bound that is finite — declared in the file or derived by propagation — is
@@ -152,10 +144,6 @@ public:
     /// The handle for NL variable `j`: a column, or a defined variable.
     int32_t var_handle(int32_t j) {
         if (j >= 0 && j < static_cast<int32_t>(vh_.size())) {
-            if (vh_[j] == kRemovedColumn) {
-                fail("column " + std::to_string(j) + " was removed by presolve but is used");
-                return m_.constant(0.0);
-            }
             return vh_[j];
         }
         const int64_t slot = slot_of(j);
@@ -416,11 +404,6 @@ BodyResult build_body(Model& m, ExprTranslator& tr, const NlExpr& nonlinear,
             out.reason = "linear term names variable " + std::to_string(t.var) + ", not a column";
             return out;
         }
-        if (var_handles[static_cast<std::size_t>(t.var)] == kRemovedColumn) {
-            out.ok = false;
-            out.reason = "column " + std::to_string(t.var) + " was removed by presolve but is used";
-            return out;
-        }
     }
     const int32_t lin_node = build_linear(m, linear, var_handles);
     out.node = combine_body(m, nl_node, has_nl, lin_node, !linear.empty());
@@ -499,9 +482,9 @@ std::optional<RowBounds> linear_row_bounds(const NlConBound& b) {
 }
 
 /// The bounds of a row's linear part, ignoring its nonlinear part, or nullopt
-/// when propagation and presolve must leave it alone: an empty or Free row, or
-/// one naming a column out of range. `propagate_bounds` and `presolve` reject
-/// an out-of-range column outright, and io_nl.h promises "skip, don't throw" on
+/// when propagation must leave it alone: an empty or Free row, or one naming a
+/// column out of range. `propagate_bounds` rejects an out-of-range column
+/// outright, and io_nl.h promises "skip, don't throw" on
 /// a malformed file; omitting a row costs tightening, never validity, and
 /// `build_body` refuses the model for it.
 std::optional<RowBounds> linear_part_bounds(const NlConstraint& c, std::size_t n_cols) {
@@ -530,13 +513,13 @@ std::optional<double> constant_part(const NlExpr& e) {
     return std::nullopt;
 }
 
-/// The linear rows, which presolve and propagation without presolve both read:
+/// The linear rows, which propagation reads:
 /// `linear_part_bounds` of a row with no nonlinear part, or one whose nonlinear
 /// part is a lone constant `k` (every linear row of an AMPL export, #342 review
 /// 2, #344), read as `lo - k <= linear <= hi - k`. Activity arithmetic does not
-/// apply to any other row. A row presolve keeps is rebuilt from those shifted
-/// sides, so the constant is accounted for once; propagation only reads them.
-std::optional<RowBounds> presolvable_row(const NlConstraint& c, std::size_t n_cols) {
+/// apply to any other row. Propagation only reads them; the row itself is built
+/// verbatim.
+std::optional<RowBounds> linear_row(const NlConstraint& c, std::size_t n_cols) {
     const std::optional<double> k = constant_part(c.nonlinear);
     if (!k.has_value()) {
         return std::nullopt;
@@ -554,10 +537,10 @@ std::optional<RowBounds> presolvable_row(const NlConstraint& c, std::size_t n_co
     return rb;
 }
 
-/// Derive implied column bounds from the linear rows (`presolvable_row`). A row
+/// Derive implied column bounds from the linear rows (`linear_row`). A row
 /// with a non-constant nonlinear part is skipped: activity arithmetic does not
 /// apply to it, and omitting a row only costs tightening, never validity.
-/// Nonlinear presolve is deliberately out of scope here.
+/// Nonlinear propagation is deliberately out of scope here.
 ///
 /// Terms are packed into two flat arrays the caller owns for the duration, and
 /// the rows are handed to propagation as views into them rather than as copies.
@@ -573,7 +556,7 @@ BoundPropagationStats tighten_column_bounds(const NlProblem& prob, const NlToMod
     std::vector<std::pair<std::size_t, int32_t>> spans;
     spans.reserve(prob.constraints.size());
     for (const NlConstraint& c : prob.constraints) {
-        const std::optional<RowBounds> rb = presolvable_row(c, lb.size());
+        const std::optional<RowBounds> rb = linear_row(c, lb.size());
         if (!rb.has_value()) {
             continue;
         }
@@ -736,262 +719,7 @@ void seed_initial_values(Model& m, const NlProblem& prob) {
     }
 }
 
-/// Seed the presolved model: variable `i` is NL column `reduced_to_col[i]`. A
-/// removed column's `x` entry is dropped with it.
-void seed_reduced_values(Model& m, const NlProblem& prob,
-                         const std::vector<int32_t>& reduced_to_col) {
-    for (std::size_t i = 0; i < reduced_to_col.size(); ++i) {
-        seed_value(m, prob, static_cast<int32_t>(i), reduced_to_col[i]);
-    }
-}
-
-/// Which columns a nonlinear part can reach, and so must survive presolve: any
-/// column in an expression (a row's, the objective's, a defined variable's), in
-/// a defined variable's linear part, or in the linear part of a row presolve
-/// does not read (`presolvable_row`), which is built verbatim. Every defined
-/// variable counts, used or not, which covers a chain of them without walking
-/// it: a column in one is frozen whichever expression reaches it. Indices that
-/// are not columns are left to the translator, which refuses them.
-std::vector<uint8_t> frozen_columns(const NlProblem& prob) {
-    const auto n_cols = static_cast<std::size_t>(prob.n_vars);
-    std::vector<uint8_t> frozen(n_cols, 0);
-    auto mark = [&](int32_t j) {
-        if (j >= 0 && static_cast<std::size_t>(j) < n_cols) {
-            frozen[static_cast<std::size_t>(j)] = 1;
-        }
-    };
-    auto mark_expr = [&](const NlExpr& e) {
-        for (const NlExprNode& n : e.nodes) {
-            if (n.kind == NlNodeKind::Var) {
-                mark(n.index);
-            }
-        }
-    };
-    for (const NlConstraint& c : prob.constraints) {
-        mark_expr(c.nonlinear);
-        if (!presolvable_row(c, n_cols).has_value()) {
-            for (const NlLinTerm& t : c.linear) {
-                mark(t.var);
-            }
-        }
-    }
-    for (const NlObjective& o : prob.objectives) {
-        mark_expr(o.nonlinear);
-    }
-    for (const NlDefinedVar& dv : prob.defined_vars) {
-        mark_expr(dv.nonlinear);
-        for (const NlLinTerm& t : dv.linear) {
-            mark(t.var);
-        }
-    }
-    return frozen;
-}
-
-/// The linear part of `prob` as presolve's input: the rows `presolvable_row`
-/// accepts, the declared column boxes (NaN read as no bound), the frozen
-/// columns, and the first objective's linear part, negated when it maximises.
-/// `lp_row[i]` is NL row i's row in the problem, -1 for an opaque one. Returns
-/// nullopt when the objective's linear part names a non-column, which
-/// `build_body` refuses: the caller then builds the plain model, which reports
-/// it.
-std::optional<LinearProblem> to_linear_problem(const NlProblem& prob, const ColumnBoxes& box,
-                                               std::vector<int32_t>& lp_row) {
-    const auto n_cols = static_cast<std::size_t>(prob.n_vars);
-    LinearProblem lp;
-    lp.col_lb = box.lb;
-    lp.col_ub = box.ub;
-    lp.integral = box.integral;
-    lp.frozen = frozen_columns(prob);
-    lp.obj.assign(n_cols, 0.0);
-    if (prob.n_objs > 0) {
-        const NlObjective& o = prob.objectives[0];
-        const double sign = o.maximize ? -1.0 : 1.0;
-        for (const NlLinTerm& t : o.linear) {
-            if (t.var < 0 || static_cast<std::size_t>(t.var) >= n_cols) {
-                return std::nullopt;
-            }
-            // A G segment lists a column once; a repeat would add, as the two
-            // terms do in the plain build's Sum.
-            lp.obj[static_cast<std::size_t>(t.var)] += sign * t.coef;
-        }
-    }
-    lp_row.assign(prob.constraints.size(), -1);
-    for (std::size_t i = 0; i < prob.constraints.size(); ++i) {
-        const NlConstraint& c = prob.constraints[i];
-        const std::optional<RowBounds> rb = presolvable_row(c, n_cols);
-        if (!rb.has_value()) {
-            continue;
-        }
-        lp_row[i] = static_cast<int32_t>(lp.row_lo.size());
-        for (const NlLinTerm& t : c.linear) {
-            lp.cols.push_back(t.var);
-            lp.coefs.push_back(t.coef);
-        }
-        lp.row_start.push_back(lp.cols.size());
-        lp.row_lo.push_back(rb->lo);
-        lp.row_hi.push_back(rb->hi);
-    }
-    return lp;
-}
-
-/// The one or two constraints `lo <= lhs <= hi` stands for, and the primary
-/// node: `eq_expr` when the sides meet, one comparison per finite side
-/// otherwise, the upper side primary as `add_bound_constraints` makes it. -1
-/// when neither side is finite.
-int32_t add_reduced_row(Model& m, double lo, double hi, int32_t lhs) {
-    const bool has_lo = !is_unbounded_below(lo);
-    const bool has_hi = !is_unbounded_above(hi);
-    if (has_lo && has_hi && lo == hi) {
-        const int32_t cn = m.eq_expr(lhs, m.constant(lo));
-        m.add_constraint(cn);
-        return cn;
-    }
-    int32_t primary = -1;
-    if (has_lo) {
-        primary = m.geq(lhs, m.constant(lo));
-        m.add_constraint(primary);
-    }
-    if (has_hi) {
-        primary = m.leq(lhs, m.constant(hi));
-        m.add_constraint(primary);
-    }
-    return primary;
-}
-
-/// Reduced row `row`'s linear body over the reduced columns' handles.
-int32_t reduced_row_body(Model& m, const LinearProblem& red, std::size_t row,
-                         const std::vector<int32_t>& var_handles) {
-    std::vector<int32_t> parts;
-    for (std::size_t k = red.row_start[row]; k < red.row_start[row + 1]; ++k) {
-        parts.push_back(
-            scaled(m, red.coefs[k], var_handles[static_cast<std::size_t>(red.cols[k])]));
-    }
-    return sum_of(m, parts);
-}
-
-/// The first objective over the presolved problem: the reduced linear part and
-/// offset, turned back to the file's sense, plus the nonlinear part verbatim.
-/// The offset carries the removed columns' contribution. Returns false, with
-/// the reason recorded, when the nonlinear part is unsupported.
-bool add_presolved_objective(Model& m, ExprTranslator& tr, const NlProblem& prob,
-                             const LinearProblem& red, NlToModelResult& result) {
-    const NlObjective& o = prob.objectives[0];
-    const double sign = o.maximize ? -1.0 : 1.0;
-    std::vector<int32_t> parts;
-    for (std::size_t i = 0; i < red.obj.size(); ++i) {
-        if (red.obj[i] != 0.0) {
-            parts.push_back(scaled(m, sign * red.obj[i], result.var_handles[i]));
-        }
-    }
-    if (red.obj_offset != 0.0) {
-        parts.push_back(m.constant(sign * red.obj_offset));
-    }
-    if (!o.nonlinear.empty()) {
-        parts.push_back(tr.translate(o.nonlinear, o.nonlinear.root));
-        if (!tr.ok()) {
-            result.supported = false;
-            result.skipped_reasons.push_back("objective: " + tr.reason());
-            return false;
-        }
-    }
-    int32_t obj = sum_of(m, parts);
-    // minimize/maximize reject a bare variable handle; wrap in a sum node.
-    if (obj < 0) {
-        obj = m.sum({obj});
-    }
-    if (o.maximize) {
-        m.maximize(obj);  // negates internally; objective_id() is the neg node
-    } else {
-        m.minimize(obj);
-    }
-    result.objective_node_id = m.objective_id();
-    return true;
-}
-
-/// The model built from the presolved linear part (`NlToModelOptions::presolve`).
-/// Returns false, with nothing but `presolve_stats` or `presolve_rejected`
-/// set, when presolve proved the linear part infeasible or refused the input,
-/// or when the objective's linear part names a non-column: the caller then
-/// builds the plain model, as `column_boxes` hands the search the declared box
-/// when propagation proves it empty. Returns true otherwise, with `supported`
-/// false and the model left un-closed on an unsupported operator, as the plain
-/// build leaves it.
-bool build_presolved(const NlProblem& prob, const NlToModelOptions& opts, NlToModelResult& result) {
-    NlToModelOptions raw = opts;
-    raw.propagate_bounds = false;  // propagation runs inside presolve instead
-    BoundPropagationStats unused;
-    std::vector<int32_t> lp_row;
-    std::optional<LinearProblem> lp =
-        to_linear_problem(prob, column_boxes(prob, raw, unused), lp_row);
-    if (!lp.has_value()) {
-        return false;
-    }
-    PresolveOptions popts = opts.presolve;
-    popts.propagate_bounds = opts.propagate_bounds;
-    popts.propagation.max_passes = opts.max_propagation_passes;
-    PresolveResult pr;
-    try {
-        pr = presolve(*lp, popts);
-    } catch (const std::invalid_argument& e) {  // validate() is presolve's only throw
-        result.presolve_rejected = e.what();
-        return false;
-    }
-    lp.reset();
-    result.presolve_stats = pr.stats;
-    if (pr.stats.status == PresolveStatus::Infeasible) {
-        return false;
-    }
-    const LinearProblem& red = pr.reduced;
-    Model& m = result.model;
-
-    // Translator handles by NL column; a removed column has none.
-    std::vector<int32_t> col_handles(static_cast<std::size_t>(prob.n_vars), kRemovedColumn);
-    result.var_handles.reserve(red.n_cols());
-    for (std::size_t i = 0; i < red.n_cols(); ++i) {
-        const int32_t col = pr.reduced_to_col[i];
-        const ColumnVar cv =
-            add_column(m, col, red.integral[i] != 0, red.col_lb[i], red.col_ub[i], opts);
-        if (cv.clamped) {
-            ++result.n_clamped_columns;
-        }
-        result.var_handles.push_back(cv.handle);
-        col_handles[static_cast<std::size_t>(col)] = cv.handle;
-    }
-    seed_reduced_values(m, prob, pr.reduced_to_col);
-    result.postsolve = std::move(pr.postsolve);
-    result.reduced_to_original = std::move(pr.reduced_to_col);
-
-    ExprTranslator tr(m, prob, col_handles);
-    result.constraint_node_ids.assign(prob.constraints.size(), -1);
-    for (std::size_t i = 0; i < prob.constraints.size(); ++i) {
-        const NlConstraint& c = prob.constraints[i];
-        if (lp_row[i] < 0) {  // opaque: built verbatim over frozen columns
-            const BodyResult body = build_body(m, tr, c.nonlinear, c.linear, col_handles);
-            if (!body.ok) {
-                result.supported = false;
-                result.skipped_reasons.push_back("constraint " + std::to_string(i) + ": " +
-                                                 body.reason);
-                return true;
-            }
-            result.constraint_node_ids[i] = add_bound_constraints(m, c.bound, body.node);
-            continue;
-        }
-        const int32_t k = pr.row_to_reduced[static_cast<std::size_t>(lp_row[i])];
-        if (k < 0) {
-            continue;
-        }
-        const auto row = static_cast<std::size_t>(k);
-        result.constraint_node_ids[i] = add_reduced_row(
-            m, red.row_lo[row], red.row_hi[row], reduced_row_body(m, red, row, result.var_handles));
-    }
-
-    if (prob.n_objs > 0) {
-        add_presolved_objective(m, tr, prob, red, result);
-    }
-    return true;
-}
-
-/// The model without presolve.
+/// The model: one variable per column, one or two constraints per row.
 void build_plain(const NlProblem& prob, const NlToModelOptions& opts, NlToModelResult& result) {
     Model& m = result.model;
 
@@ -1057,14 +785,6 @@ void build_plain(const NlProblem& prob, const NlToModelOptions& opts, NlToModelR
 
 NlToModelResult nl_to_model(const NlProblem& prob, const NlToModelOptions& opts) {
     NlToModelResult result;
-    if (opts.presolve.enabled && build_presolved(prob, opts, result)) {
-        if (result.supported) {
-            result.model.close();
-        }
-        return result;
-    }
-    // Without presolve, or after it proved the linear part infeasible or
-    // refused the input.
     build_plain(prob, opts, result);
     return result;
 }
@@ -1080,10 +800,7 @@ std::vector<double> NlToModelResult::original_values(const Model& model) const {
         }
         x.push_back(vars[static_cast<std::size_t>(id)].value);
     }
-    if (postsolve.n_original() == 0) {
-        return x;
-    }
-    return postsolve.apply(x);
+    return x;
 }
 
 }  // namespace cbls

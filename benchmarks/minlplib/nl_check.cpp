@@ -7,22 +7,12 @@
 //   <path> \t adapter-unsupported \t <reason>    an op the adapter lacks
 //   <path> \t checker-failed \t <message>        the adapter or model threw
 //
-// With `--presolve` first, the model is built with the linear-part presolve
-// (#326, #343) and a modelled line also carries its outcome, for the census:
-//
-//   <path> \t modelled \t presolve=<status> rows=<removed> cols=<removed> aggregated=<cols> ...
-//
-// with the statuses of `presolve_outcome` (presolve_outcome.h). A
-// `--no-presolve-aggregation` after `--presolve` turns the doubleton-equality
-// aggregation off (#347), for the census of what it alone removes.
-//
 // benchmarks/instances/minlplib/status.py runs it over the unpacked MINLPLib
 // archive to give every catalogue instance a status (#283). Reader refusals
 // are split as the runner splits them (nl_refusal.h). Every control character
 // in a message (reader messages quote raw file bytes) becomes a space, so each
 // file is exactly one line.
 #include <benchmarks/minlplib/nl_refusal.h>
-#include <benchmarks/minlplib/presolve_outcome.h>
 #include <cbls/io_nl.h>
 #include <cstdio>
 #include <exception>
@@ -40,7 +30,7 @@ std::string one_line(std::string s) {
     return s;
 }
 
-std::string check(const std::string& path, bool presolve, bool aggregation) {
+std::string check(const std::string& path) {
     cbls::NlProblem prob;
     try {
         prob = cbls::read_nl(path);
@@ -51,12 +41,9 @@ std::string check(const std::string& path, bool presolve, bool aggregation) {
                one_line(what);
     }
     try {
-        cbls::NlToModelOptions opts;
-        opts.presolve.enabled = presolve;
-        opts.presolve.doubleton_aggregation = aggregation;
-        const cbls::NlToModelResult built = cbls::nl_to_model(prob, opts);
+        const cbls::NlToModelResult built = cbls::nl_to_model(prob);
         if (built.supported) {
-            return presolve ? "modelled\t" + cbls::bench::presolve_outcome(built) : "modelled";
+            return "modelled";
         }
         return "adapter-unsupported\t" + one_line(built.skipped_reasons.empty()
                                                       ? std::string("(no reason given)")
@@ -69,20 +56,14 @@ std::string check(const std::string& path, bool presolve, bool aggregation) {
 }  // namespace
 
 int main(int argc, char** argv) {
-    const bool presolve = argc > 1 && std::string(argv[1]) == "--presolve";
-    const bool no_aggregation =
-        presolve && argc > 2 && std::string(argv[2]) == "--no-presolve-aggregation";
-    const int first = 1 + (presolve ? 1 : 0) + (no_aggregation ? 1 : 0);
-    const auto usage = [&] {
-        std::fprintf(stderr, "usage: %s [--presolve [--no-presolve-aggregation]] FILE.nl...\n",
-                     argv[0]);
-    };
+    const int first = 1;
+    const auto usage = [&] { std::fprintf(stderr, "usage: %s FILE.nl...\n", argv[0]); };
     if (argc <= first) {
         usage();
         return 2;
     }
-    // A flag out of place must not become a file name: the census would then
-    // run with the setting it names silently off, and exit 0.
+    // An option must not become a file name: the census would then report it
+    // as a file and exit 0.
     for (int i = first; i < argc; ++i) {
         if (std::string(argv[i]).rfind("--", 0) == 0) {
             std::fprintf(stderr, "misplaced or unknown option: %s\n", argv[i]);
@@ -92,8 +73,7 @@ int main(int argc, char** argv) {
     }
     for (int i = first; i < argc; ++i) {
         const std::string path = argv[i];
-        std::printf("%s\t%s\n", one_line(path).c_str(),
-                    check(path, presolve, !no_aggregation).c_str());
+        std::printf("%s\t%s\n", one_line(path).c_str(), check(path).c_str());
         std::fflush(stdout);
     }
     return 0;

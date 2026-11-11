@@ -123,18 +123,6 @@ struct Args {
     // Changes the derived box, so it is recorded per result like every other
     // setting that does.
     int max_propagation_passes = 10;
-    // Build the model from the presolved problem (#322, #325) and write the
-    // point postsolved. Off by default: off is the model every earlier row was
-    // built from. With it on, propagation runs inside presolve, under the two
-    // settings above.
-    bool presolve = false;
-    // Coefficient tightening inside presolve (#327), on by default like the
-    // library. Changes the reduced model, so recorded per result; meaningless
-    // without --presolve, but recorded there too so every row has the key.
-    bool presolve_coef_tightening = true;
-    // Doubleton-equality aggregation inside presolve (#337, #346), on by
-    // default like the library; recorded per result like the one above.
-    bool presolve_aggregation = true;
     // Portfolio workers. 1 is the single-threaded engine path this benchmark has
     // always measured; >1 runs `ParallelSearch`, the cooperative portfolio, on
     // that many threads. The baseline's `num_workers` is the number to match:
@@ -169,8 +157,7 @@ void print_usage() {
         "Usage: cbls_mipfeas --instance NAME --out-dir DIR [--inst-dir DIR]\n"
         "                    [--budget SECONDS] [--seed N] [--feas-tol T]\n"
         "                    [--inf-clamp B] [--no-propagate-bounds]\n"
-        "                    [--max-propagation-passes N] [--presolve|--no-presolve]\n"
-        "                    [--no-presolve-coef-tightening] [--no-presolve-aggregation]\n"
+        "                    [--max-propagation-passes N]\n"
         "                    [--no-compound-moves] [--exact-int-jump]\n"
         "                    [--perturb-near-value] [--no-objective-tie-break]\n"
         "                    [--restart-randomization] [--luby-restart-unit N]\n"
@@ -281,14 +268,6 @@ Args parse_args(int argc, char** argv) {
             a.inf_clamp = parse_double("--inf-clamp", v);
         } else if (s == "--no-propagate-bounds") {
             a.propagate_bounds = false;
-        } else if (s == "--presolve") {
-            a.presolve = true;
-        } else if (s == "--no-presolve") {
-            a.presolve = false;
-        } else if (s == "--no-presolve-coef-tightening") {
-            a.presolve_coef_tightening = false;
-        } else if (s == "--no-presolve-aggregation") {
-            a.presolve_aggregation = false;
         } else if (c.value_flag("--max-propagation-passes", v)) {
             a.max_propagation_passes = parse_propagation_passes(v);
         } else if (parse_search_flag(c, a)) {
@@ -395,8 +374,7 @@ int count_unbounded_columns(const cbls::MpsProblem& prob) {
 /// the caller then publishes no objective -- an unverifiable row must not carry
 /// a number, which is the whole of issue #138.
 ///
-/// `values` holds one value per MPS column: `MpsToModelResult::original_values`,
-/// which maps a presolved model's point back through postsolve.
+/// `values` holds one value per MPS column: `MpsToModelResult::original_values`.
 bool write_solution_to(const std::string& tmp_path, const Args& args, const cbls::MpsProblem& prob,
                        const std::vector<double>& values, double objective) {
     if (values.size() != prob.vars.size()) {
@@ -478,9 +456,6 @@ void write_result(const Args& args, const nlohmann::json& extra) {
     j["inf_clamp"] = args.inf_clamp;
     j["propagate_bounds"] = args.propagate_bounds;
     j["max_propagation_passes"] = args.max_propagation_passes;
-    j["presolve"] = args.presolve;
-    j["presolve_coef_tightening"] = args.presolve_coef_tightening;
-    j["presolve_aggregation"] = args.presolve_aggregation;
     j["threads"] = args.threads;
     j["share_objective_bound"] = args.share_objective_bound;
     j["lns"] = args.search.lns;
@@ -614,9 +589,9 @@ Verdict assess_result(const cbls::MpsToModelResult& built, const cbls::SearchRes
     return v;
 }
 
-/// The point as the MPS columns see it (postsolved under --presolve), checked
-/// against the parsed file before anything is written (#325): assess_result
-/// judged the model the search ran on, which with presolve is not the file. A
+/// The point as the MPS columns see it, checked against the parsed file before
+/// anything is written (#325): assess_result judged the model the search ran
+/// on, and this check shares nothing with that build but the parsed file. A
 /// point that fails is withdrawn as `original_mismatch`. `original` receives the
 /// point; it stays empty when there was none to check.
 cbls::mipfeas::OriginalCheck check_against_file(const Args& args, const cbls::MpsProblem& prob,
@@ -632,7 +607,7 @@ cbls::mipfeas::OriginalCheck check_against_file(const Args& args, const cbls::Mp
         check =
             cbls::mipfeas::check_original_point(prob, original, result.objective, args.feas_tol);
     } catch (const std::exception& e) {
-        std::fprintf(stderr, "%s: postsolve failed: %s\n", args.instance.c_str(), e.what());
+        std::fprintf(stderr, "%s: point read-back failed: %s\n", args.instance.c_str(), e.what());
         check.size_mismatch = true;
     }
     if (!check.passes(result.objective)) {
@@ -640,49 +615,6 @@ cbls::mipfeas::OriginalCheck check_against_file(const Args& args, const cbls::Mp
         verdict.status = "original_mismatch";
     }
     return check;
-}
-
-/// Presolve's verdict and counts, as `presolve_*` result keys. Under --presolve
-/// propagation runs inside it, so the `n_bounds_*` keys stay zero and
-/// `presolve_bounds_tightened` is its count. On `infeasible` and `rejected`
-/// (presolve refused the input; `presolve_rejected` says why) the model was
-/// built without presolve: its own propagation then fills the `n_bounds_*`
-/// keys, and the presolve counts are zero bar `presolve_rounds`.
-/// `presolve_n_vars`/`presolve_n_cons` are the built model's columns and rows.
-void add_presolve_stats(const cbls::MpsToModelResult& built, nlohmann::json& j) {
-    const cbls::PresolveStats& ps = built.presolve_stats;
-    const char* status = "unchanged";
-    if (ps.status == cbls::PresolveStatus::Reduced) {
-        status = "reduced";
-    } else if (ps.status == cbls::PresolveStatus::Infeasible) {
-        status = "infeasible";
-    }
-    if (!built.presolve_rejected.empty()) {
-        status = "rejected";
-    }
-    j["presolve_status"] = status;
-    j["presolve_rejected"] = built.presolve_rejected.empty()
-                                 ? nlohmann::json(nullptr)
-                                 : nlohmann::json(built.presolve_rejected);
-    j["presolve_seconds"] = ps.seconds;
-    j["presolve_rounds"] = ps.rounds;
-    j["presolve_cols_fixed"] = ps.cols_fixed;
-    j["presolve_cols_empty"] = ps.cols_empty;
-    j["presolve_rows_empty"] = ps.rows_empty;
-    j["presolve_rows_free"] = ps.rows_free;
-    j["presolve_rows_singleton"] = ps.rows_singleton;
-    j["presolve_rows_redundant"] = ps.rows_redundant;
-    j["presolve_row_sides_dropped"] = ps.row_sides_dropped;
-    j["presolve_duplicates_merged"] = ps.duplicates_merged;
-    j["presolve_bounds_tightened"] = ps.bounds_tightened;
-    j["presolve_coefs_tightened"] = ps.coefs_tightened;
-    j["presolve_rows_coef_tightened"] = ps.rows_coef_tightened;
-    j["presolve_cols_aggregated"] = ps.cols_aggregated;
-    j["presolve_aggregation_fill"] = ps.aggregation_fill;
-    j["presolve_n_vars"] = built.var_handles.size();
-    j["presolve_n_cons"] =
-        std::count_if(built.constraint_node_ids.begin(), built.constraint_node_ids.end(),
-                      [](int32_t id) { return id >= 0; });
 }
 
 /// The portfolio arm of the solve: N workers over one shared structure, and the
@@ -810,9 +742,6 @@ int run_benchmark(int argc, char** argv) {
     mps_opts.inf_clamp = args.inf_clamp;
     mps_opts.propagate_bounds = args.propagate_bounds;
     mps_opts.max_propagation_passes = args.max_propagation_passes;
-    mps_opts.presolve.enabled = args.presolve;
-    mps_opts.presolve.coefficient_tightening = args.presolve_coef_tightening;
-    mps_opts.presolve.doubleton_aggregation = args.presolve_aggregation;
     const auto t_build = std::chrono::steady_clock::now();
     cbls::MpsToModelResult built;
     try {
@@ -1058,14 +987,11 @@ int run_benchmark(int argc, char** argv) {
         {"original_max_integrality", original_check.max_integrality},
         {"original_objective_drift", original_check.objective_drift},
         // Why an `original_mismatch` was withdrawn when the ratios cannot say:
-        // the check stops at a wrong-sized point (also a postsolve failure) or a
+        // the check stops at a wrong-sized point (also a failed read-back) or a
         // non-finite value or row activity, leaving the ratios at 0.
         {"original_size_mismatch", original_check.size_mismatch},
         {"original_non_finite", original_check.non_finite},
     };
-    if (args.presolve) {
-        add_presolve_stats(built, j);
-    }
     j["objective"] =
         verdict.have_solution ? nlohmann::json(result.objective) : nlohmann::json(nullptr);
     // How many portfolio workers ran to the end (#170); see worker_accounting.h.

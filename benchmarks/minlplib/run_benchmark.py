@@ -272,7 +272,7 @@ def resolve_paths(args: argparse.Namespace, sha: str) -> Paths:
         default_staging_root()
         / sha
         / f"{args.time_limit:g}s"
-        / (f"threads{args.threads}" + presolve_suffix(args))
+        / f"threads{args.threads}"
         / f"seed{args.seed}"
     )
     preregistered = args.seed == DEFAULT_SEED
@@ -502,15 +502,11 @@ def usage_error(args: argparse.Namespace, published_out: Path) -> str | None:
         return f"--build-jobs must be >= 1 (got {args.build_jobs})"
     if args.threads < 1:
         return f"--threads must be >= 1 (got {args.threads})"
-    if not args.presolve_aggregation and not args.presolve:
-        # The runner refuses it too; refused here before anything is staged.
-        return "--no-presolve-aggregation needs --presolve"
     seed_refusal = (
         roster_dir_error(args, published_out)
         or seed_policy_error(args, published_out)
         or budget_policy_error(args, published_out)
         or threads_policy_error(args, published_out)
-        or presolve_policy_error(args, published_out)
     )
     if seed_refusal:
         return seed_refusal
@@ -753,26 +749,6 @@ def threads_policy_error(args: argparse.Namespace, published_out: Path) -> str |
     return None
 
 
-def presolve_policy_error(args: argparse.Namespace, published_out: Path) -> str | None:
-    """Refuse `--presolve` writing a published table (#343).
-
-    The published tables are the engine without presolve; a presolved run is an
-    experiment, and like a run at another budget or thread count it must name
-    a scratch `--out` (and `--trace-out`). The runner refuses the published
-    table itself too, but every instance is staged, so this is that guard here.
-    """
-    if not args.presolve or args.instances:
-        return None
-    if args.out is None or args.out.resolve() == published_out.resolve():
-        return (
-            "--presolve: the published tables are measured without presolve, and this run "
-            f"would publish into "
-            f"{published_out.name if args.seed == DEFAULT_SEED else SEEDS_TABLE_NAME}; pass a "
-            "scratch --out (and --trace-out) for a presolved run"
-        )
-    return None
-
-
 def seed_policy_error(args: argparse.Namespace, published_out: Path) -> str | None:
     """Refuse any route by which a seed other than `DEFAULT_SEED` reaches a published file.
 
@@ -815,15 +791,11 @@ def staging_stamp(args: argparse.Namespace, sha: str) -> str:
     the build tree: a home directory can be shared between machines, and a
     campaign resumed on another one would publish one table measured on two. The
     thread count since #299: a campaign resumed at another `--threads` would
-    publish one table measured with two portfolio sizes. A `presolve` line since
-    #343, written only when it is on, so a stamp from before it still matches;
-    a `presolve-aggregation=off` line since #347 the same way, off its default.
+    publish one table measured with two portfolio sizes.
     """
     return (
         f"commit={sha}\ntime-limit={args.time_limit:g}\nseed={args.seed}\n"
         f"threads={args.threads}\n"
-        + ("presolve=on\n" if args.presolve else "")
-        + ("presolve-aggregation=off\n" if args.presolve and not args.presolve_aggregation else "")
         + f"host={socket.gethostname()}\nroster={roster_fingerprint(args.inst_dir)}\n"
     )
 
@@ -938,10 +910,6 @@ def staged_complete(args: argparse.Namespace, sha: str, name: str, stage: Path) 
         return False
     if staged_row_threads(stage / f"{name}.csv") != args.threads:
         return False
-    if staged_row_presolved(stage / f"{name}.csv") != args.presolve:
-        return False
-    if args.presolve and staged_row_aggregated(stage / f"{name}.csv") != args.presolve_aggregation:
-        return False
     return not args.trace or (stage / f"{name}.trace.csv").exists()
 
 
@@ -965,40 +933,6 @@ def staged_row_threads(path: Path) -> int | None:
     return int(match.group(1)) if match else 1
 
 
-def staged_row_presolved(path: Path) -> bool | None:
-    """Whether a staged row was solved under `--presolve` (#343), or None with no whole row.
-
-    The same hole as `staged_row_threads`: `--no-resume` rewrites the stamp and
-    leaves the earlier rows, so an interrupted plain re-run over a presolved
-    directory would resume onto presolved rows and publish them as the plain
-    engine's. The row's own `search_config` records `presolve` when it was on.
-    """
-    row = _staged_row(path)
-    if row is None:
-        return None
-    return "presolve" in row.get("search_config", "").split(";")
-
-
-def staged_row_aggregated(path: Path) -> bool | None:
-    """Whether a staged presolve row ran aggregation (#347), or None with no whole row.
-
-    The same hole again, for `--no-presolve-aggregation`. Staging is keyed by
-    commit, and every commit that has the flag records its off arm as
-    `no-presolve-aggregation` in `search_config`, so a row without it ran on.
-    """
-    row = _staged_row(path)
-    if row is None:
-        return None
-    return "no-presolve-aggregation" not in row.get("search_config", "").split(";")
-
-
-def presolve_suffix(args: argparse.Namespace) -> str:
-    """The staging directory's presolve part: `-presolve`, `-presolve-no-aggregation` or none."""
-    if not args.presolve:
-        return ""
-    return "-presolve" if args.presolve_aggregation else "-presolve-no-aggregation"
-
-
 def runner_command(args: argparse.Namespace, sha: str, name: str, stage: Path) -> list[str]:
     """The `cbls_minlplib` invocation for one instance, staged under `stage`."""
     return runner.runner_command(
@@ -1011,11 +945,7 @@ def runner_command(args: argparse.Namespace, sha: str, name: str, stage: Path) -
         out=stage / f"{name}.csv",
         solution_dir=stage,
         threads=args.threads,
-        extra=(["--trace", str(stage / f"{name}.trace.csv")] if args.trace else [])
-        + (["--presolve"] if args.presolve else [])
-        + (
-            ["--no-presolve-aggregation"] if args.presolve and not args.presolve_aggregation else []
-        ),
+        extra=(["--trace", str(stage / f"{name}.trace.csv")] if args.trace else []),
     )
 
 
@@ -1574,18 +1504,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default=DEFAULT_THREADS,
         help=f"portfolio threads per solve; {CAMPAIGN_THREADS} is the campaign protocol "
         "(#255, #256), and one table holds one thread count",
-    )
-    parser.add_argument(
-        "--presolve",
-        action="store_true",
-        help="presolve each instance's linear part (#343); never writes a published table",
-    )
-    parser.add_argument(
-        "--no-presolve-aggregation",
-        dest="presolve_aggregation",
-        action="store_false",
-        help="with --presolve: turn its doubleton-equality aggregation off (#347); on by "
-        "default, and staged apart",
     )
     parser.add_argument("--build-jobs", type=int, default=DEFAULT_BUILD_JOBS)
     # nargs="+", not "*": a bare `--instances` would otherwise be an empty list,

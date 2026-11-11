@@ -297,39 +297,6 @@ TEST_CASE("MIPfeas pk1 solves to a feasible point never better than its optimum"
     }
 }
 
-// The same solve on the presolved model (#325): the runner writes the point
-// postsolved, and checks it against the parsed file first. That check, not the
-// reduced model's verdict, is what has to pass.
-TEST_CASE("MIPfeas pk1 under presolve postsolves to a point the file accepts", "[mipfeas][solve]") {
-    const double reference = proven_optimum("pk1");
-    const cbls::MpsProblem prob = cbls::read_mps(kPk1Path);
-    const double band =
-        std::max(1e-6 * (std::abs(reference) + 1.0), 10.0 * cbls::kDefaultFeasibilityTolerance);
-    cbls::MpsToModelOptions opts;
-    opts.presolve.enabled = true;
-
-    for (uint64_t seed : {1ULL, 42ULL}) {
-        INFO("seed " << seed);
-        cbls::MpsToModelResult built = cbls::mps_to_model(prob, opts);
-        REQUIRE(built.presolve_stats.status != cbls::PresolveStatus::Infeasible);
-        REQUIRE(built.objective_node_id >= 0);
-        cbls::FloatIntensifyHook hook;
-        cbls::LNS lns(0.3);
-        cbls::SearchResult result = solve_deterministic(built.model, 2000, seed, &hook, &lns);
-        CAPTURE(result.best_violation, result.objective, built.presolve_stats.rounds);
-        REQUIRE(result.feasible);
-
-        const std::vector<double> x = built.original_values(built.model);
-        REQUIRE(x.size() == prob.vars.size());
-        const cbls::mipfeas::OriginalCheck check = cbls::mipfeas::check_original_point(
-            prob, x, result.objective, cbls::kDefaultFeasibilityTolerance);
-        CAPTURE(check.max_row_ratio, check.max_bound_ratio, check.max_integrality,
-                check.objective_drift);
-        REQUIRE(check.passes(result.objective));
-        REQUIRE(result.objective >= reference - band);
-    }
-}
-
 TEST_CASE("the runner's file check refuses a point the file does not accept", "[mipfeas]") {
     // min x + y  s.t.  x + y >= 2  (G),  x integer in [0, 3], y in [0, 3].
     cbls::MpsProblem prob;

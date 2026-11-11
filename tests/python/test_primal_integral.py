@@ -380,7 +380,6 @@ def test_a_row_without_the_shared_bound_key_scores_only_where_it_is_equivalent(
         ("objective_tie_break", False, True),
         ("restart_randomization", False, True),
         ("luby_restart_unit", 0, 1),
-        ("presolve", False, True),
         ("compound_propagation", False, True),
         # #267's tunable knobs: "off" is the value every row before them ran.
         ("lns", True, False),
@@ -395,7 +394,6 @@ def test_a_row_without_the_shared_bound_key_scores_only_where_it_is_equivalent(
         "objective_tie_break",
         "restart_randomization",
         "luby_restart_unit",
-        "presolve",
         "compound_propagation",
         "lns",
         "lns_interval",
@@ -406,7 +404,7 @@ def test_a_row_without_the_shared_bound_key_scores_only_where_it_is_equivalent(
 )
 @pytest.mark.parametrize(
     ("on", "match"),
-    # Before the flag (#216, #217, #218, #239, #267, #325, #340) every CBLS row ran its off arm.
+    # Before the flag (#216, #217, #218, #239, #267, #340) every CBLS row ran its off arm.
     [(False, None), (True, "span 2 configurations")],
     ids=["old-row-is-the-off-arm", "on-arm-refused"],
 )
@@ -429,87 +427,6 @@ def test_a_row_without_an_opt_in_engine_key_is_the_off_arm(
     else:
         with pytest.raises(ValueError, match=match):
             check_uniform_configuration(rows)
-
-
-@pytest.mark.parametrize(
-    "step",
-    # Coefficient tightening (#327) and aggregation (#337).
-    ["presolve_coef_tightening", "presolve_aggregation"],
-)
-@pytest.mark.parametrize(
-    ("presolve", "on", "match"),
-    # Without presolve the key names nothing, so an old row (no key) and a new
-    # one share a cell. Under presolve a row from before the step never ran
-    # it: it is the off arm, apart from the on arm.
-    [
-        (False, True, None),
-        (True, True, "span 2 configurations"),
-        (True, False, None),
-    ],
-    ids=["dropped-without-presolve", "on-arm-kept-under-presolve", "old-row-is-the-off-arm"],
-)
-def test_a_presolve_step_is_a_configuration_only_under_presolve(
-    tmp_path: Path, step: str, presolve: bool, on: bool, match: str | None
-) -> None:
-    old: dict[str, object] = {"presolve": presolve}
-    new: dict[str, object] = {"presolve": presolve, step: on}
-    for instance, extra in (("a", old), ("b", new)):
-        _write_result(
-            tmp_path,
-            "cbls",
-            instance,
-            {"status": "feasible", "objective": 100.0, **extra},
-            trace=[(1.0, 100.0)],
-        )
-    rows = [_score(tmp_path, name) for name in ("a", "b")]
-    if match is None:
-        check_uniform_configuration(rows)  # must not raise
-    else:
-        with pytest.raises(ValueError, match=match):
-            check_uniform_configuration(rows)
-
-
-def test_a_keyless_row_that_aggregated_is_the_aggregation_on_arm(tmp_path: Path) -> None:
-    # Aggregation (#337) came on commits before its flag, with its count: a
-    # presolve row from then has `presolve_cols_aggregated` but no key.
-    window: dict[str, object] = {"presolve": True, "presolve_cols_aggregated": 3}
-    for instance, extra in (
-        ("window", window),
-        ("on", {"presolve": True, "presolve_aggregation": True}),
-        ("off", {"presolve": True, "presolve_aggregation": False}),
-    ):
-        _write_result(
-            tmp_path,
-            "cbls",
-            instance,
-            {"status": "feasible", "objective": 100.0, **extra},
-            trace=[(1.0, 100.0)],
-        )
-    check_uniform_configuration([_score(tmp_path, name) for name in ("window", "on")])
-    with pytest.raises(ValueError, match="span 2 configurations"):
-        check_uniform_configuration([_score(tmp_path, name) for name in ("window", "off")])
-
-
-def test_a_keyless_error_row_is_not_guessed_into_the_aggregation_on_arm(tmp_path: Path) -> None:
-    # An error row gets no presolve stats, so a keyless one carries no evidence
-    # of its arm. It is not back-filled: it shares the cell of a full pre-#337
-    # row (`presolve_status`, no count), and next to a window row that
-    # aggregated it splits the cell, so the table is refused, not guessed.
-    for instance, status, extra in (
-        ("error", "solve_error", {}),
-        ("before", "feasible", {"presolve_status": "reduced"}),
-        ("window", "feasible", {"presolve_cols_aggregated": 3}),
-    ):
-        _write_result(
-            tmp_path,
-            "cbls",
-            instance,
-            {"status": status, "objective": 100.0, "presolve": True, **extra},
-            trace=[(1.0, 100.0)],
-        )
-    check_uniform_configuration([_score(tmp_path, name) for name in ("error", "before")])
-    with pytest.raises(ValueError, match="span 2 configurations"):
-        check_uniform_configuration([_score(tmp_path, name) for name in ("error", "window")])
 
 
 def test_summarize_excludes_not_run_instances_from_the_aggregates(tmp_path: Path) -> None:

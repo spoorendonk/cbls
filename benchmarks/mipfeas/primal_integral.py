@@ -135,9 +135,6 @@ CONFIG_KEYS = (
     "inf_clamp",
     "propagate_bounds",
     "max_propagation_passes",
-    "presolve",
-    "presolve_coef_tightening",
-    "presolve_aggregation",
     "lns",
     "lns_interval",
     "novelty_prob",
@@ -160,31 +157,6 @@ TUNABLE_DEFAULTS: dict[str, object] = {
     "unproductive_iters": 300,
     "perturbation_period": 100,
 }
-
-
-def presolve_steps(cells: dict[str, object]) -> None:
-    """Normalise the presolve steps' keys in a config cell, in place.
-
-    Coefficient tightening (#327) names nothing without presolve, so it is
-    dropped there; under presolve its off arm is what a presolve row from
-    before it ran, so off is dropped too (as the resume guard back-reads a
-    missing key as off) and only the on arm carries the key. Aggregation
-    (#337, #346) the same way, except that it came on by default commits
-    before its flag, in the commit that started writing
-    `presolve_cols_aggregated`: a keyless row with that count aggregated, so it
-    is back-filled as the on arm. A keyless presolve row with neither that count
-    nor `presolve_status` (an error row, which gets no presolve stats) carries no
-    evidence of its arm. It is not back-filled, so it reads as off: that keeps
-    every pre-#337 table byte-identical, and in the commits between, where
-    aggregation was on without the key, such a row splits the config cell and
-    `check_uniform_configuration` refuses the table rather than guess its arm.
-    """
-    presolve = cells.get("presolve") is True
-    if presolve and "presolve_aggregation" not in cells and "presolve_cols_aggregated" in cells:
-        cells["presolve_aggregation"] = True
-    for step in ("presolve_coef_tightening", "presolve_aggregation"):
-        if not presolve or cells.get(step) is False:
-            cells.pop(step, None)
 
 
 def config_string(result: dict[str, object]) -> str:
@@ -217,14 +189,10 @@ def config_string(result: dict[str, object]) -> str:
     # #226, so a new default row carries `objective_tie_break=True` and does
     # not match a table scored before it -- which is the point: that table was
     # measured on the old default and must be regenerated, not averaged in.
-    # Presolve (#325) likewise: off is the model every earlier row was built
-    # from. Its steps: `presolve_steps`.
-    presolve_steps(cells)
     for opt_in in (
         "perturb_near_value",
         "objective_tie_break",
         "restart_randomization",
-        "presolve",
         "compound_propagation",
     ):
         if cells.get(opt_in) is False:

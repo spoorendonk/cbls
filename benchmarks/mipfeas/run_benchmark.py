@@ -313,9 +313,6 @@ def build_run_record(
             "perturb_near_value": args.perturb_near_value,
             "objective_tie_break": args.objective_tie_break,
             "propagate_bounds": args.propagate_bounds,
-            "presolve": args.presolve,
-            "presolve_coef_tightening": args.presolve_coef_tightening,
-            "presolve_aggregation": args.presolve_aggregation,
             "large_bytes": args.large_bytes,
             "jobs_planned": planned,
             "jobs_to_run": to_run,
@@ -437,9 +434,6 @@ def build_command(job: Job, args: argparse.Namespace, results_dir: Path) -> list
             "--threads",
             str(args.cbls_threads),
             *([] if args.propagate_bounds else ["--no-propagate-bounds"]),
-            *(["--presolve"] if args.presolve else []),
-            *([] if args.presolve_coef_tightening else ["--no-presolve-coef-tightening"]),
-            *([] if args.presolve_aggregation else ["--no-presolve-aggregation"]),
             *solution_flags,
             "--commit",
             args.commit,
@@ -481,13 +475,7 @@ def arm_keys(engine: str, args: argparse.Namespace) -> dict[str, object]:
         "compound_propagation": args.compound_propagation,
         "perturb_near_value": args.perturb_near_value,
         "objective_tie_break": args.objective_tie_break,
-        "presolve": args.presolve,
     }
-    # Coefficient tightening (#327) and aggregation (#337) name a reduced model
-    # only under presolve.
-    if args.presolve:
-        keys["presolve_coef_tightening"] = args.presolve_coef_tightening
-        keys["presolve_aggregation"] = args.presolve_aggregation
     return keys
 
 
@@ -964,23 +952,6 @@ def has_usable_result(job: Job, results_dir: Path, verify: bool = False) -> bool
     )
 
 
-def aggregation_back_read(row: dict[str, object]) -> bool | None:
-    """What a presolve row without `presolve_aggregation` ran (#337, #346).
-
-    Aggregation came on by default in the commit that started writing
-    `presolve_cols_aggregated`, commits before the flag: a row with that
-    count aggregated, and a full row without it (one with `presolve_status`,
-    which every successful presolve row carries since #325) predates
-    aggregation. An error row, or one the driver wrote for a killed job,
-    carries neither stat, so it is unknown (None).
-    """
-    if "presolve_cols_aggregated" in row:
-        return True
-    if "presolve_status" in row:
-        return False
-    return None
-
-
 def check_resume_configuration(
     jobs: list[Job], results_dir: Path, args: argparse.Namespace
 ) -> int | None:
@@ -1003,18 +974,14 @@ def check_resume_configuration(
     Returns the exit code to fail with, or None to proceed.
     """
     # What a row without a key ran: `exact_int_jump`, `compound_propagation`,
-    # `perturb_near_value`, `objective_tie_break`, `presolve` and
-    # `presolve_coef_tightening` (a presolve row from before #327 ran without
-    # it) are back-read as off, since every row from before a flag ran its off
-    # arm; `presolve_aggregation` by `aggregation_back_read`; any other missing
-    # key is unknown and left alone.
+    # `perturb_near_value` and `objective_tie_break` are back-read as off, since
+    # every row from before a flag ran its off arm; any other missing key is
+    # unknown and left alone.
     back_read_off = {
         "exact_int_jump",
         "compound_propagation",
         "perturb_near_value",
         "objective_tie_break",
-        "presolve",
-        "presolve_coef_tightening",
     }
     for job in jobs:
         result = read_json_object(job.result_path(results_dir))
@@ -1034,16 +1001,11 @@ def check_resume_configuration(
             )
             return 2
         # A row the driver wrote for a killed job keeps its arm apart.
-        row = result
         nested = result.get("driver_arm")
         if isinstance(nested, dict):
             result = nested
         for key, asked in arm_keys(job.engine, args).items():
-            recorded: object
-            if key == "presolve_aggregation" and key not in result:
-                recorded = aggregation_back_read(row)
-            else:
-                recorded = result.get(key, False if key in back_read_off else None)
+            recorded = result.get(key, False if key in back_read_off else None)
             if recorded is None:
                 continue  # predates the key; nothing to contradict
             if recorded != asked:
@@ -1367,27 +1329,6 @@ def main() -> int:
         "narrowing finite bounds, and that half is unconditional. Not a "
         "configuration to publish, since the clamp it restores is not implied by "
         "the constraints",
-    )
-    parser.add_argument(
-        "--presolve",
-        action="store_true",
-        help="build the CBLS model from the presolved problem (#322) and write "
-        "postsolved solutions; off by default. A CBLS-side reduction CP-SAT does on "
-        "its own, recorded per result as presolve",
-    )
-    parser.add_argument(
-        "--no-presolve-aggregation",
-        dest="presolve_aggregation",
-        action="store_false",
-        help="under --presolve, skip doubleton-equality aggregation (#337), on by "
-        "default; recorded per result as presolve_aggregation",
-    )
-    parser.add_argument(
-        "--no-presolve-coef-tightening",
-        dest="presolve_coef_tightening",
-        action="store_false",
-        help="under --presolve, skip coefficient tightening (#327), on by default; "
-        "recorded per result as presolve_coef_tightening",
     )
     parser.add_argument(
         "--no-compound-moves",

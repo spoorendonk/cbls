@@ -39,10 +39,6 @@ add_executable(cbls_tests
     test_io_mps.cpp
     test_bound_propagation.cpp
     test_domain_propagation.cpp
-    test_presolve.cpp
-    test_presolve_aggregate.cpp
-    test_presolve_coef.cpp
-    test_presolve_work.cpp
     test_mipfeas.cpp
     test_bench_flags.cpp
     test_minlplib.cpp
@@ -81,7 +77,7 @@ include(Catch)
 #
 # Measured at Release: the 6 [slow]-tagged tests account for ~46s of the suite's
 # aggregate (summed per-test) time; with `-j$(nproc)` the full run is ~25s of
-# wall clock. The remaining 926 (919 discovered, plus the
+# wall clock. The remaining 864 (857 discovered, plus the
 # seven hand-registered tests that carry no slow label --
 # timing_structural_batch_deadline, hang_guard_iteration_only_portfolio,
 # hang_guard_novelty_zero_move_batch, hang_guard_nonpositive_batch_iterations
@@ -98,9 +94,9 @@ include(Catch)
 # the tag -- "measure both ways before tagging" applies to KEEPING a tag as
 # much as to adding one.
 #
-# The roster is therefore 936 ctest tests: 925 discovered here, the 9
+# The roster is therefore 874 ctest tests: 863 discovered here, the 9
 # hand-registered ones below, and the 2 non-Catch2 shell gate tests the root
-# CMakeLists.txt registers. The 934 Catch2 ones are four more than the 930
+# CMakeLists.txt registers. The 872 Catch2 ones are four more than the 868
 # TEST_CASEs in tests/*.cpp, because the four hang_guard_* tests are both
 # discovered and hand-registered -- see their notes below. `ctest -N -L slow` reports 10, not 6 --
 # the three #125 throughput floors and #191's hook deadline carry the slow

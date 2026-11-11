@@ -378,9 +378,6 @@ def _driver_args(**overrides: object) -> argparse.Namespace:
         "perturb_near_value": False,
         "objective_tie_break": True,
         "propagate_bounds": True,
-        "presolve": False,
-        "presolve_coef_tightening": True,
-        "presolve_aggregation": True,
         "cpsat_workers": 1,
         "cbls_threads": 1,
         "commit": "abc1234",
@@ -422,22 +419,6 @@ def _driver_args(**overrides: object) -> argparse.Namespace:
         ("cbls", {"perturb_near_value": True}, {"--perturb-near-value": None}, []),
         ("cbls", {}, {}, ["--no-objective-tie-break", "--objective-tie-break"]),
         ("cbls", {"objective_tie_break": False}, {"--no-objective-tie-break": None}, []),
-        ("cbls", {}, {}, ["--presolve", "--no-presolve"]),
-        ("cbls", {"presolve": True}, {"--presolve": None}, []),
-        ("cbls", {"presolve": True}, {}, ["--no-presolve-coef-tightening"]),
-        (
-            "cbls",
-            {"presolve": True, "presolve_coef_tightening": False},
-            {"--no-presolve-coef-tightening": None},
-            [],
-        ),
-        ("cbls", {"presolve": True}, {}, ["--no-presolve-aggregation"]),
-        (
-            "cbls",
-            {"presolve": True, "presolve_aggregation": False},
-            {"--no-presolve-aggregation": None},
-            [],
-        ),
         ("cbls", {"cbls_threads": 4}, {"--threads": "4"}, []),
         ("cpsat", {}, {"--workers": "1"}, []),
         # Without a solution directory neither runner writes a solution vector, and
@@ -458,12 +439,6 @@ def _driver_args(**overrides: object) -> argparse.Namespace:
         "perturb-near-value",
         "objective-tie-break-on-by-default",
         "no-objective-tie-break",
-        "presolve-off-by-default",
-        "presolve",
-        "presolve-coef-tightening-on-by-default",
-        "no-presolve-coef-tightening",
-        "presolve-aggregation-on-by-default",
-        "no-presolve-aggregation",
         "cbls-threads",
         "cpsat-workers",
         "cbls-solution-dir",
@@ -627,74 +602,6 @@ def test_resuming_under_a_different_search_arm_is_refused(tmp_path: Path) -> Non
     result.write_text(json.dumps({"instance": "a", "threads": 1, "compound_moves": True, **tie}))
     assert check() is None
     assert check(compound_moves=False) == 2
-    # And presolve (#325): it changes the model, so a --presolve re-run over an
-    # off directory would score a uniform off table as the presolve arm. A row
-    # from before the flag built the plain model, so it is read as off.
-    result.write_text(json.dumps({"instance": "a", "threads": 1, "presolve": False, **tie}))
-    assert check() is None
-    assert check(presolve=True) == 2
-    result.write_text(json.dumps({"instance": "a", "threads": 1, **tie}))
-    assert check() is None
-    assert check(presolve=True) == 2
-    # Its coefficient tightening (#327) is checked only under presolve, and a
-    # presolve row from before it never tightened, so it is read as off.
-    # Aggregation (#337) is held off here, so this block isolates tightening.
-    # A successful presolve row carries `presolve_status` (#325).
-    old_presolve = {
-        "instance": "a",
-        "threads": 1,
-        "presolve": True,
-        "presolve_status": "reduced",
-        **tie,
-    }
-    result.write_text(json.dumps(old_presolve))
-    assert check(presolve=True, presolve_aggregation=False) == 2
-    assert check(presolve=True, presolve_coef_tightening=False, presolve_aggregation=False) is None
-    tightened = {**old_presolve, "presolve_coef_tightening": True}
-    result.write_text(json.dumps(tightened))
-    assert check(presolve=True, presolve_aggregation=False) is None
-    assert check(presolve=True, presolve_coef_tightening=False, presolve_aggregation=False) == 2
-    no_presolve = {"instance": "a", "threads": 1, "presolve_coef_tightening": True, **tie}
-    result.write_text(json.dumps(no_presolve))
-    assert check(presolve_coef_tightening=False) is None
-    # Aggregation (#337) the same way: a presolve row from before it (here one
-    # that tightened) never aggregated, so it is read as off.
-    result.write_text(json.dumps(tightened))
-    assert check(presolve=True) == 2
-    assert check(presolve=True, presolve_aggregation=False) is None
-    result.write_text(json.dumps({**tightened, "presolve_aggregation": True}))
-    assert check(presolve=True) is None
-    assert check(presolve=True, presolve_aggregation=False) == 2
-    no_presolve = {"instance": "a", "threads": 1, "presolve_aggregation": True, **tie}
-    result.write_text(json.dumps(no_presolve))
-    assert check(presolve_aggregation=False) is None
-    # But aggregation came on commits before its flag, with its count: a
-    # keyless row carrying `presolve_cols_aggregated` aggregated, so it is on.
-    result.write_text(json.dumps({**tightened, "presolve_cols_aggregated": 3}))
-    assert check(presolve=True) is None
-    assert check(presolve=True, presolve_aggregation=False) == 2
-    # A killed job's row from then carries neither: unknown, left alone.
-    killed = {
-        "instance": "a",
-        "driver_arm": {k: v for k, v in tightened.items() if k != "instance"},
-    }
-    result.write_text(json.dumps(killed))
-    assert check(presolve=True) is None
-    assert check(presolve=True, presolve_aggregation=False) is None
-    assert check(presolve=True, presolve_coef_tightening=False) == 2
-    # So does an error row from then: it got no presolve stats, so it carries
-    # no evidence of its arm and is left alone, not read as off.
-    window_error = {
-        "instance": "a",
-        "threads": 1,
-        "status": "solve_error",
-        "presolve": True,
-        "presolve_coef_tightening": True,
-        **tie,
-    }
-    result.write_text(json.dumps(window_error))
-    assert check(presolve=True) is None
-    assert check(presolve=True, presolve_aggregation=False) is None
 
 
 def test_a_default_run_resumes_over_a_job_it_killed(tmp_path: Path) -> None:

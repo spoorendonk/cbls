@@ -2,9 +2,8 @@
 
 // The runner's check of a point against the MPS problem as read (#325).
 //
-// With `--presolve` the search runs on a reduced model, and the point written is
-// mapped back by postsolve. The model's own verdict (assess_result) says nothing
-// about that mapping, so before the point is written it is checked here against
+// The model's own verdict (assess_result) judges the model built from the
+// file, not the file, so before the point is written it is checked here against
 // the `MpsProblem` itself: declared column bounds, integrality, every row with a
 // compensated sum, and `c·x + offset` against the reported objective. Nothing is
 // shared with the model build but the parsed file; in particular no second Model

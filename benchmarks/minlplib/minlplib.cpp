@@ -16,7 +16,6 @@
 #include <benchmarks/common/search_config_flags.h>
 #include <benchmarks/minlplib/nl_refusal.h>
 #include <benchmarks/minlplib/note_policy.h>
-#include <benchmarks/minlplib/presolve_outcome.h>
 #include <benchmarks/mipfeas/worker_accounting.h>
 #include <cbls/cbls.h>
 #include <cbls/io_nl.h>
@@ -91,15 +90,6 @@ struct Args {
     // produced which table.
     cbls::bench::SearchFlags search;
     std::string search_config;  // search_config_string(search); filled in by parse_args
-    // Presolve the linear part before the search (#326, #343): the model is built
-    // with `NlToModelOptions::presolve`, and the point is postsolved and checked
-    // on the model built without it. Off by default; recorded in `search_config`
-    // when on, and refused for the published table.
-    bool presolve = false;
-    // Presolve's doubleton-equality aggregation (#328, #347), on by default
-    // under presolve. `--no-presolve-aggregation` is its off arm, valid only
-    // with `--presolve`, and recorded in `search_config` when off.
-    bool presolve_aggregation = true;
 };
 
 // Flag-value parsing lives in benchmarks/common/runner_args.h, shared with the
@@ -129,19 +119,6 @@ void check_flag_values(Args& a) {
     if (a.threads != 1) {
         a.search_config += (a.search_config.empty() ? "" : ";");
         a.search_config += "threads=" + std::to_string(a.threads);
-    }
-    if (!a.presolve && !a.presolve_aggregation) {
-        // A presolve step names nothing without presolve: accepting it would
-        // leave a row that says nothing of the flag the operator typed.
-        std::fprintf(stderr, "--no-presolve-aggregation needs --presolve\n");
-        std::exit(2);
-    }
-    if (a.presolve) {
-        a.search_config += (a.search_config.empty() ? "" : ";");
-        a.search_config += "presolve";
-        if (!a.presolve_aggregation) {
-            a.search_config += ";no-presolve-aggregation";
-        }
     }
     if (a.search.no_time_limit) {
         // The wall-clock-free arm (#136): solve() disables its clock at
@@ -195,11 +172,6 @@ const char* unpublishable_flag(const Args& a) {
         // holds one thread count.
         return "--threads";
     }
-    if (a.presolve) {
-        return "--presolve";
-    }
-    // `--no-presolve-aggregation` needs no rung: it is refused without
-    // `--presolve` (check_flag_values), and `--presolve` is refused above.
     return cbls::bench::first_non_default_search_flag(a.search);
 }
 
@@ -318,12 +290,6 @@ Args parse_args(int argc, char** argv) {
             a.counters_csv = v;
         } else if (c.value_flag("--solution-dir", v)) {
             a.solution_dir = v;
-        } else if (s == "--presolve") {
-            a.presolve = true;
-        } else if (s == "--no-presolve") {
-            a.presolve = false;
-        } else if (s == "--no-presolve-aggregation") {
-            a.presolve_aggregation = false;
         } else if (cbls::bench::match_search_flag(c, s, a.search)) {
             // A search-configuration flag (#136); the table, the parse and the
             // recorded spelling all live in benchmarks/common/search_config_flags.h.
@@ -331,8 +297,7 @@ Args parse_args(int argc, char** argv) {
             std::printf(
                 "Usage: cbls_minlplib [inst-dir] [--time-limit S] [--seed N]"
                 " [--feas-tol T] [--instance NAME ...] [--threads N] [--commit SHA]"
-                " [--out CSV] [--trace CSV] [--counters CSV] [--solution-dir DIR]"
-                " [--presolve|--no-presolve] [--no-presolve-aggregation]\n"
+                " [--out CSV] [--trace CSV] [--counters CSV] [--solution-dir DIR]\n"
                 "       %s\n",
                 cbls::bench::search_flags_usage(kSearchFlagFamilies).c_str());
             std::exit(0);
@@ -1079,10 +1044,7 @@ bool prepare_instance(std::ostream& csv, const Args& args, const std::string& na
     }
 
     try {
-        cbls::NlToModelOptions opts;
-        opts.presolve.enabled = args.presolve;
-        opts.presolve.doubleton_aggregation = args.presolve_aggregation;
-        built = cbls::nl_to_model(prob, opts);
+        built = cbls::nl_to_model(prob);
     } catch (const std::exception& e) {
         std::printf("%-22s  ERROR building model: %s\n", name.c_str(), e.what());
         ++t.errored;
@@ -1110,11 +1072,6 @@ bool prepare_instance(std::ostream& csv, const Args& args, const std::string& na
     // of the instances actually built (as the printout implies).
     if (prob.n_discrete_vars > 0) {
         ++t.mixed_integer;
-    }
-    // What presolve did to this instance (#343): the row's `search_config` says
-    // only that it was asked for, so an A/B reads which rows it touched here.
-    if (args.presolve) {
-        std::printf("%-22s  %s\n", name.c_str(), cbls::bench::presolve_outcome(built).c_str());
     }
 
     return true;
@@ -1168,45 +1125,6 @@ cbls::SearchResult search_instance(const Args& args, cbls::Model& model,
     return result;
 }
 
-/// The model built without presolve, holding `presolved`'s current point
-/// postsolved onto the original columns and full-evaluated: what the row is
-/// verified, described and written from under `--presolve`. A build that is
-/// not presolved (no `--presolve`, or presolve fell back to the plain build) is
-/// returned as is. `postsolve`, not `reduced_to_original`, says which: presolve
-/// can remove every column.
-cbls::NlToModelResult postsolve_onto_plain(const cbls::NlProblem& prob,
-                                           cbls::NlToModelResult presolved) {
-    if (presolved.postsolve.n_original() == 0) {
-        return presolved;
-    }
-    const std::vector<double> x = presolved.original_values(presolved.model);
-    cbls::NlToModelResult plain = cbls::nl_to_model(prob);
-    if (!plain.supported || x.size() != plain.var_handles.size()) {
-        throw std::runtime_error("presolve: the plain build cannot hold the postsolved point");
-    }
-    for (std::size_t j = 0; j < x.size(); ++j) {
-        plain.model.var_mut(cbls::handle_to_var_id(plain.var_handles[j])).value = x[j];
-    }
-    cbls::full_evaluate(plain.model);
-    return plain;
-}
-
-/// `verify_model` on the postsolved point (column bounds, integrality, every
-/// constraint, DAG consistency). Returns false having set the VERIFY-FAILED
-/// note, as `verify_assignment` does, when it fails.
-bool verify_original(const cbls::NlToModelResult& plain, const Args& args, const std::string& name,
-                     Tally& t, std::string& note) {
-    const cbls::VerifyResult v = cbls::verify_model(plain.model, args.feas_tol);
-    if (v.ok) {
-        return true;
-    }
-    ++t.verify_failed;
-    note = "VERIFY-FAILED(original model: " + std::to_string(v.errors.size()) + " errors; first " +
-           v.errors.front().entity + ")";
-    std::printf("%-22s  WARNING: %s\n", name.c_str(), note.c_str());
-    return false;
-}
-
 /// Process CPU seconds: at `--threads 1` the search's own CPU time, which is
 /// what #341's throughput ratios divide by (wall time is noisy on a shared
 /// machine). At more threads it sums the workers.
@@ -1217,7 +1135,7 @@ double process_cpu_seconds() {
 }
 
 /// What a search cost the process, read as it returns: CPU seconds around it
-/// and the peak RSS so far (KiB), before postsolve's second build can raise it.
+/// and the peak RSS so far (KiB).
 struct SearchCost {
     double cpu_seconds = 0.0;
     long peak_rss_kb = 0;
@@ -1251,18 +1169,6 @@ void write_counters_row(std::ofstream& counters, const Args& args, const std::st
     counters.flush();
 }
 
-/// Whether a feasible search's point stands: `verify_assignment` on the NL
-/// problem, then, for a presolved build, `verify_original` on the model built
-/// without presolve. On failure `note` holds the VERIFY-FAILED string.
-bool verify_row(const cbls::NlProblem& prob, const cbls::NlToModelResult& built, bool presolved,
-                const Args& args, double obj, const std::string& name, Tally& t, std::string& note,
-                double& max_violation) {
-    if (!verify_assignment(prob, built, args, obj, name, t, note, max_violation)) {
-        return false;
-    }
-    return !presolved || verify_original(built, args, name, t, note);
-}
-
 /// Read, build, solve and score one instance, and write its row. Every exit
 /// writes exactly one row.
 void run_instance(std::ostream& csv, std::ofstream& trace, std::ofstream& counters,
@@ -1282,9 +1188,6 @@ void run_instance(std::ostream& csv, std::ofstream& trace, std::ofstream& counte
     std::printf("%-22s ", name.c_str());
     std::fflush(stdout);
 
-    // Only a presolved build is checked again on the model built without it
-    // (#343): presolve that fell back searched the plain model itself.
-    const bool presolved = built.postsolve.n_original() != 0;
     auto t0 = std::chrono::steady_clock::now();
     auto t1 = t0;
     cbls::SearchResult result;
@@ -1306,13 +1209,6 @@ void run_instance(std::ostream& csv, std::ofstream& trace, std::ofstream& counte
                        stderr);
             ++t.lost_workers;
         }
-        // Under presolve the search ran on the reduced model: postsolve its
-        // point onto the model built without presolve, so the residuals, the
-        // objective check, the infeasibility note and the `.sol` all describe
-        // the original instance (#343). Inside the bracket, so a throw here is
-        // a solve-error row, not a lost one; after `t1`, so `wall_seconds`
-        // times the search alone and not the second build.
-        built = postsolve_onto_plain(prob, std::move(built));
     } catch (const std::exception& e) {
         std::printf(" ERROR solving: %s\n", e.what());
         ++t.errored;
@@ -1354,8 +1250,8 @@ void run_instance(std::ostream& csv, std::ofstream& trace, std::ofstream& counte
     double gap_bks = safe_gap(obj, b.primal, maximizing);
     double gap_dual = safe_gap(obj, b.dual, maximizing);
 
-    const bool verified = result.feasible && verify_row(prob, built, presolved, args, obj, name, t,
-                                                        note, max_violation);
+    const bool verified =
+        result.feasible && verify_assignment(prob, built, args, obj, name, t, note, max_violation);
 
     if (verified) {
         ++t.feasible;

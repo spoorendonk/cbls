@@ -544,10 +544,6 @@ class Provenance:
     scip_version: str
     budget: Budget
     memory_cap: str
-    #: "on", "on-no-aggregation", "off" or "none" (no rows), as `_one` reads it: a
-    #: presolved run's rows record `presolve` in `search_config` (#343), and its
-    #: aggregation off arm `no-presolve-aggregation` too (#347).
-    cbls_presolve: str = "off"
 
 
 def provenance(
@@ -566,22 +562,7 @@ def provenance(
         scip_version=_one((r.version for r in scip.rows.values()), "SCIP versions"),
         budget=budget or Budget(),
         memory_cap=memory_cap or NOT_STATED,
-        cbls_presolve=_one(
-            (presolve_setting(r.search_config) for r in rows), "cbls presolve settings"
-        ),
     )
-
-
-def presolve_setting(search_config: str) -> str:
-    """`on`, `on-no-aggregation` (#347) or `off`, as a row's `search_config` records it.
-
-    Aggregation's off arm is its own setting, so a table mixing it with the on
-    arm is refused like one mixing presolve with the plain engine.
-    """
-    tokens = search_config.split(";")
-    if "presolve" not in tokens:
-        return "off"
-    return "on-no-aggregation" if "no-presolve-aggregation" in tokens else "on"
 
 
 # --------------------------------------------------------------------------
@@ -822,7 +803,6 @@ def render_markdown(s: Score) -> str:
         "",
         f"- engine commit: {p.commit_sha} (commit_sha column)",
         f"- cbls threads: {threads} (search_config)",
-        f"- cbls presolve: {p.cbls_presolve} (search_config)",
         f"- SCIP: {p.scip_version} (scip_version column), at its defaults",
         _budget_line(p.budget),
         f"- memory cap: {p.memory_cap}",

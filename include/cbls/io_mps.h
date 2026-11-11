@@ -12,7 +12,6 @@
 
 #include "bound_propagation.h"
 #include "model.h"
-#include "presolve.h"
 
 #include <cstdint>
 #include <limits>
@@ -105,58 +104,31 @@ std::vector<SoluEntry> read_solu(const std::string& filename);
 /// the constraints (see `bound_propagation.h`), which cannot remove a feasible
 /// point; `inf_clamp` is the fallback where propagation finds no finite bound,
 /// and *can* lose solutions, so it is only ever consulted last.
-///
-/// With `presolve.enabled` the rows and column boxes go through `presolve`
-/// (presolve.h) first and the model is built from the reduced problem. Its
-/// `propagate_bounds` and `propagation.max_passes` are then taken from the two
-/// fields below, so propagation runs once, inside presolve, not twice.
 struct MpsToModelOptions {
     double inf_clamp = 1.0e9;
     /// Derive implied bounds from the rows before falling back on `inf_clamp`.
     bool propagate_bounds = true;
     /// Fixed-point iteration cap for that pass; see `BoundPropagationOptions`.
     int max_propagation_passes = 10;
-    /// Off by default; off, the model is the one built without presolve.
-    PresolveOptions presolve;
 };
 
 struct MpsToModelResult {
     Model model;
     /// `var_handles[i]` is the CBLS variable handle (negative encoding
-    /// `-(var_id + 1)`) for MPS column `i` without presolve, and for *reduced*
-    /// column `i` with it: map a point back with `original_values`. Code that
-    /// assumes one handle per MPS column must check the size first.
+    /// `-(var_id + 1)`) for MPS column `i`.
     std::vector<int32_t> var_handles;
     /// `constraint_node_ids[i]` is the constraint expression node id for MPS
-    /// row `i`; -1 for a row presolve removed. A range row, and an `E` row with
-    /// a RANGES entry, adds a second constraint not listed here. The listed one
-    /// is the same side with or without presolve: `>=` for a `G` row, `<=` for
-    /// `L` and ranged `E` (unless presolve dropped that side as redundant).
+    /// row `i`. A range row, and an `E` row with a RANGES entry, adds a second
+    /// constraint not listed here. The listed one is `>=` for a `G` row, `<=`
+    /// for `L` and ranged `E`.
     std::vector<int32_t> constraint_node_ids;
     int32_t objective_node_id = -1;  ///< -1 if the MPS had no 'N' row.
-    /// Outcome of the propagation pass without presolve; all-zero when it was
-    /// disabled or ran inside presolve (counted in `presolve_stats` there).
+    /// Outcome of the propagation pass; all-zero when it was disabled.
     BoundPropagationStats bound_stats;
-    /// Columns of the built model (reduced columns with presolve) whose bounds
-    /// `inf_clamp` or the int32 clip still had to supply after propagation,
-    /// i.e. where the unsound fallback was actually used.
+    /// Columns whose bounds `inf_clamp` or the int32 clip still had to supply
+    /// after propagation, i.e. where the unsound fallback was actually used.
     int n_clamped_columns = 0;
-    /// All-zero (status `Unchanged`) without presolve. `Infeasible` means
-    /// presolve proved the problem empty and the model was built without it.
-    PresolveStats presolve_stats;
-    /// Non-empty when presolve refused the input (its validation message: an
-    /// infinite or NaN side, a non-finite coefficient); the model was then
-    /// built without presolve, and `presolve_stats` is all-zero.
-    std::string presolve_rejected;
-    /// Maps reduced values back to the MPS columns; empty (n_original 0)
-    /// unless the model was built from a presolved problem.
-    Postsolve postsolve;
-    /// MPS column of each reduced column; empty unless built from presolve, and
-    /// empty too when presolve removed every column (test `postsolve.n_original()`).
-    std::vector<int32_t> reduced_to_original;
-
-    /// The model's current point as one value per MPS column: the variable
-    /// values, mapped back through `postsolve` when the model was presolved.
+    /// The model's current point as one value per MPS column.
     /// `model` must be this result's model (or a copy of it).
     [[nodiscard]] std::vector<double> original_values(const Model& model) const;
 };

@@ -244,50 +244,28 @@ def test_the_real_checker_models_the_vendored_files(tmp_path: Path) -> None:
     assert got[str(unknown)][0] == "reader-unsupported"
 
 
-#: Two columns in [0,10] and the doubleton equality `x0 + x1 = 5`, minimise
-#: `x0 + 2 x1`: presolve aggregates one column into the other (#328).
-AGGREGABLE_NL = (
+#: Two columns in [0,10] and the equality `x0 + x1 = 5`, minimise `x0 + 2 x1`.
+SMALL_NL = (
     "g3 0 1 0\n 2 1 1 0 0\n 0 0\n 0 0\n 0 0 0\n 0 0 0 1\n 0 0 0 0 0\n 0 0\n 0 0\n 0 0 0 0 0\n"
     "b\n0 0 10\n0 0 10\nr\n4 5\nO0 0\nn0\nG0 2\n0 1\n1 2\nC0\nn0\nJ0 2\n0 1\n1 1\n"
 )
 
 
 @pytest.mark.parametrize(
-    ("flags", "aggregated"),
-    [(["--presolve"], 1), (["--presolve", "--no-presolve-aggregation"], 0)],
-    ids=["aggregation-on", "aggregation-off"],
-)
-def test_the_presolve_census_reports_aggregation(
-    tmp_path: Path, flags: list[str], aggregated: int
-) -> None:
-    """`nl_check --presolve` reports `aggregated=`, and has the off switch (#347)."""
-    if not CHECKER.is_file():
-        pytest.skip("cbls_minlplib_nl_check not built")
-    nl = tmp_path / "agg.nl"
-    nl.write_text(AGGREGABLE_NL)
-    out = subprocess.run(
-        [str(CHECKER), *flags, str(nl)], capture_output=True, text=True, check=True, timeout=60
-    ).stdout
-    fields = out.rstrip("\n").split("\t")
-    assert fields[1] == "modelled", out
-    assert f" aggregated={aggregated} " in fields[2], out
-
-
-@pytest.mark.parametrize(
     "flags",
-    [["--no-presolve-aggregation"], ["--presolve", "AGG", "--no-presolve-aggregation"]],
-    ids=["without-presolve", "after-a-file"],
+    [["--bogus"], ["NL", "--bogus"]],
+    ids=["before-a-file", "after-a-file"],
 )
 def test_the_census_refuses_a_misplaced_flag(tmp_path: Path, flags: list[str]) -> None:
-    """A flag out of place is refused, never read as a file name (#347)."""
+    """An option is refused, never read as a file name (#347)."""
     if not CHECKER.is_file():
         pytest.skip("cbls_minlplib_nl_check not built")
-    nl = tmp_path / "agg.nl"
-    nl.write_text(AGGREGABLE_NL)
-    argv = [str(nl) if f == "AGG" else f for f in flags]
-    if "AGG" not in flags:
+    nl = tmp_path / "small.nl"
+    nl.write_text(SMALL_NL)
+    argv = [str(nl) if f == "NL" else f for f in flags]
+    if "NL" not in flags:
         argv.append(str(nl))
     result = subprocess.run([str(CHECKER), *argv], capture_output=True, text=True, timeout=60)
     assert result.returncode == 2, result.stdout
-    assert "misplaced or unknown option: --no-presolve-aggregation" in result.stderr
+    assert "misplaced or unknown option: --bogus" in result.stderr
     assert result.stdout == ""
