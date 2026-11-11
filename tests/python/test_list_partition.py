@@ -14,7 +14,6 @@ is CLAUDE.md's #156 crash class: it takes the interpreter down rather than
 failing a test, so the scenario cannot be asserted in-process.
 """
 
-import subprocess
 import sys
 
 import _cbls_core as cbls
@@ -23,10 +22,6 @@ import pytest
 from support import run_scenario, vid
 
 CHILD_TIMEOUT_SECONDS = 30.0
-
-
-def _run_scenario(name: str) -> subprocess.CompletedProcess[str]:
-    return run_scenario(__file__, name, CHILD_TIMEOUT_SECONDS)
 
 
 def test_list_var_of_one_argument_is_still_a_permutation() -> None:
@@ -157,13 +152,13 @@ def test_an_exact_partition_is_solved_without_breaking_its_cover() -> None:
 
 
 def test_a_broken_invariant_from_python_does_not_crash_the_interpreter() -> None:
-    proc = _run_scenario("broken_invariant")
+    proc = run_scenario(__file__, "broken_invariant", CHILD_TIMEOUT_SECONDS)
     assert proc.returncode == 0, f"child failed:\n{proc.stdout}\n{proc.stderr}"
     assert "OK" in proc.stdout
 
 
 def test_an_out_of_universe_element_does_not_crash_the_interpreter() -> None:
-    proc = _run_scenario("out_of_universe")
+    proc = run_scenario(__file__, "out_of_universe", CHILD_TIMEOUT_SECONDS)
     assert proc.returncode == 0, f"child failed:\n{proc.stdout}\n{proc.stderr}"
     assert "OK" in proc.stdout
 

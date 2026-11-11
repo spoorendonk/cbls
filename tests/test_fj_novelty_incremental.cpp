@@ -13,12 +13,10 @@
 #include "test_helpers.h"
 #include "test_models.h"
 
-#include <algorithm>
 #include <catch2/catch_test_macros.hpp>
 #include <cbls/cbls.h>
 #include <chrono>
 #include <cstdint>
-#include <random>
 #include <vector>
 
 using namespace cbls;

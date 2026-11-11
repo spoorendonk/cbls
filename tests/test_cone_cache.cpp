@@ -9,7 +9,6 @@
 #include <cbls/cbls.h>
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include <memory>
 #include <stdexcept>
 #include <utility>

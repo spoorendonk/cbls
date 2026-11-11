@@ -15,7 +15,6 @@ would take the whole pytest run down instead of failing one test.
 which the binding copies out to a list -- so it is covered here too.
 """
 
-import subprocess
 import sys
 from typing import TYPE_CHECKING, Any
 
@@ -29,17 +28,13 @@ if TYPE_CHECKING:
 CHILD_TIMEOUT_SECONDS = 20.0
 
 
-def _run_scenario(name: str) -> subprocess.CompletedProcess[str]:
-    return run_scenario(__file__, name, CHILD_TIMEOUT_SECONDS)
-
-
 # -2 is the first variable handle past a one-variable model: the boundary of the
 # variable-id check, which the far-out ids alone would not pin.
 @pytest.mark.parametrize("handle", [5, 100_000, -2, -100_000])
 def test_an_out_of_range_child_handle_raises_instead_of_corrupting_the_model(
     handle: int,
 ) -> None:
-    proc = _run_scenario(f"bad_child:{handle}")
+    proc = run_scenario(__file__, f"bad_child:{handle}", CHILD_TIMEOUT_SECONDS)
     assert proc.returncode == 0, (
         f"child exited {proc.returncode} (negative = killed by that signal)\n"
         f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
@@ -48,7 +43,7 @@ def test_an_out_of_range_child_handle_raises_instead_of_corrupting_the_model(
 
 
 def test_an_out_of_range_constraint_or_objective_handle_raises() -> None:
-    proc = _run_scenario("bad_root")
+    proc = run_scenario(__file__, "bad_root", CHILD_TIMEOUT_SECONDS)
     assert proc.returncode == 0, (
         f"child exited {proc.returncode}\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
     )
@@ -56,7 +51,7 @@ def test_an_out_of_range_constraint_or_objective_handle_raises() -> None:
 
 
 def test_an_empty_min_or_max_raises_instead_of_reading_past_its_children() -> None:
-    proc = _run_scenario("empty_min_max")
+    proc = run_scenario(__file__, "empty_min_max", CHILD_TIMEOUT_SECONDS)
     assert proc.returncode == 0, (
         f"child exited {proc.returncode}\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
     )
@@ -64,7 +59,7 @@ def test_an_empty_min_or_max_raises_instead_of_reading_past_its_children() -> No
 
 
 def test_a_short_state_or_weight_vector_raises_instead_of_reading_past_it() -> None:
-    proc = _run_scenario("short_state_or_weights")
+    proc = run_scenario(__file__, "short_state_or_weights", CHILD_TIMEOUT_SECONDS)
     assert proc.returncode == 0, (
         f"child exited {proc.returncode}\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
     )
@@ -72,7 +67,7 @@ def test_a_short_state_or_weight_vector_raises_instead_of_reading_past_it() -> N
 
 
 def test_an_out_of_range_ad_expression_handle_raises() -> None:
-    proc = _run_scenario("bad_ad_expr")
+    proc = run_scenario(__file__, "bad_ad_expr", CHILD_TIMEOUT_SECONDS)
     assert proc.returncode == 0, (
         f"child exited {proc.returncode}\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
     )
@@ -80,7 +75,7 @@ def test_an_out_of_range_ad_expression_handle_raises() -> None:
 
 
 def test_a_held_variable_handle_survives_the_array_reallocating() -> None:
-    proc = _run_scenario("variable_handle_realloc")
+    proc = run_scenario(__file__, "variable_handle_realloc", CHILD_TIMEOUT_SECONDS)
     assert proc.returncode == 0, (
         f"child exited {proc.returncode}\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
     )
@@ -88,7 +83,7 @@ def test_a_held_variable_handle_survives_the_array_reallocating() -> None:
 
 
 def test_a_violation_manager_built_before_freeze_raises_instead_of_overreading() -> None:
-    proc = _run_scenario("vm_before_freeze")
+    proc = run_scenario(__file__, "vm_before_freeze", CHILD_TIMEOUT_SECONDS)
     assert proc.returncode == 0, (
         f"child exited {proc.returncode}\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
     )
@@ -96,7 +91,7 @@ def test_a_violation_manager_built_before_freeze_raises_instead_of_overreading()
 
 
 def test_lns_refuses_a_stale_violation_manager_before_destroying() -> None:
-    proc = _run_scenario("lns_stale_vm")
+    proc = run_scenario(__file__, "lns_stale_vm", CHILD_TIMEOUT_SECONDS)
     assert proc.returncode == 0, (
         f"child exited {proc.returncode}\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
     )

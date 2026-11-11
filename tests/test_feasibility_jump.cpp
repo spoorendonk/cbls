@@ -1,4 +1,5 @@
 #include "test_helpers.h"
+#include "test_models.h"
 
 #include <algorithm>
 #include <catch2/catch_approx.hpp>
@@ -6,7 +7,6 @@
 #include <cbls/cbls.h>
 #include <cmath>
 #include <cstdint>
-#include <cstring>
 #include <limits>
 #include <utility>
 #include <vector>
@@ -1178,11 +1178,7 @@ TEST_CASE("FJ's commits leave integral rows exactly as a full evaluation would",
     for (size_t i = 0; i < m.num_nodes(); ++i) {
         const double got = m.node_values()[i];
         const double want = fresh.node_values()[i];
-        uint64_t got_bits = 0;
-        uint64_t want_bits = 0;
-        std::memcpy(&got_bits, &got, sizeof got_bits);
-        std::memcpy(&want_bits, &want, sizeof want_bits);
-        if (got_bits != want_bits) {
+        if (cbls_test::bits_of(got) != cbls_test::bits_of(want)) {
             FAIL("node " << i << " holds " << got << ", a full evaluation gives " << want);
         }
     }

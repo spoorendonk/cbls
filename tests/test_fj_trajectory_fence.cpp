@@ -77,16 +77,16 @@
 // reproduced all three unchanged.
 
 #include "libstdcxx_rng.h"
+#include "test_models.h"
 
-#include <algorithm>
 #include <catch2/catch_test_macros.hpp>
 #include <cbls/cbls.h>
 #include <cstdint>
-#include <cstring>
-#include <random>
 #include <vector>
 
 using namespace cbls;
+using cbls_test::bits_of;
+using cbls_test::build_random_int_model;
 
 namespace {
 
@@ -94,55 +94,12 @@ uint64_t mix(uint64_t h, uint64_t x) {
     return h ^ (x + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2));
 }
 
-uint64_t bits(double d) {
-    uint64_t u = 0;
-    std::memcpy(&u, &d, sizeof u);
-    return u;
-}
-
-// A random sparse integer model, more rows than can hold at once. With
-// `nonlinear`, every fifth row multiplies two of its variables, so run()'s
-// two-phase path masks those rows out of the first phase.
-void build_fence_model(Model& m, uint32_t seed, int num_vars, int num_rows, bool nonlinear) {
-    std::mt19937 gen(seed);
-    std::uniform_int_distribution<int> pick_var(0, num_vars - 1);
-    std::uniform_int_distribution<int> pick_coef(1, 3);
-    std::uniform_int_distribution<int> pick_sign(0, 1);
-    std::uniform_int_distribution<int> pick_rhs(-2, 6);
-    std::vector<int32_t> handles;
-    handles.reserve(static_cast<size_t>(num_vars));
-    for (int i = 0; i < num_vars; ++i) {
-        handles.push_back(m.int_var(0, 4));
-    }
-    for (int r = 0; r < num_rows; ++r) {
-        std::vector<int> used;
-        while (used.size() < 4) {
-            const int v = pick_var(gen);
-            if (std::find(used.begin(), used.end(), v) == used.end()) {
-                used.push_back(v);
-            }
-        }
-        std::vector<int32_t> terms;
-        for (const int v : used) {
-            const double coef = (pick_sign(gen) != 0 ? 1.0 : -1.0) * pick_coef(gen);
-            terms.push_back(m.prod(m.constant(coef), handles[static_cast<size_t>(v)]));
-        }
-        if (nonlinear && r % 5 == 0) {
-            terms.push_back(m.prod(handles[static_cast<size_t>(used[0])],
-                                   handles[static_cast<size_t>(used[1])]));
-        }
-        const int32_t sum = m.sum(terms);
-        const double rhs = pick_rhs(gen);
-        m.add_constraint(r % 2 == 0 ? m.leq(sum, m.constant(rhs)) : m.geq(sum, m.constant(rhs)));
-    }
-}
-
 uint64_t hash_state(uint64_t h, const Model& m, const ViolationManager& vm) {
     for (size_t v = 0; v < m.num_vars(); ++v) {
-        h = mix(h, bits(m.var(static_cast<int32_t>(v)).value));
+        h = mix(h, bits_of(m.var(static_cast<int32_t>(v)).value));
     }
     for (const double w : vm.weights) {
-        h = mix(h, bits(w));
+        h = mix(h, bits_of(w));
     }
     return h;
 }
@@ -151,7 +108,7 @@ uint64_t hash_state(uint64_t h, const Model& m, const ViolationManager& vm) {
 // and a kick every tenth, hashing the assignment and the weights after each.
 uint64_t batch_api_trajectory() {
     Model m;
-    build_fence_model(m, 101, 60, 130, false);
+    build_random_int_model(m, 101, 60, 130, false);
     m.close();
     ViolationManager vm(m);
     RNG rng(17);
@@ -180,7 +137,7 @@ uint64_t batch_api_trajectory() {
 // to weight 0, the general phase unmasks them.
 uint64_t two_phase_run_trajectory() {
     Model m;
-    build_fence_model(m, 202, 40, 90, true);
+    build_random_int_model(m, 202, 40, 90, true);
     m.close();
     ViolationManager vm(m);
     RNG rng(29);
@@ -198,7 +155,7 @@ uint64_t two_phase_run_trajectory() {
 // probe -- the path the batch-API fence, all-linear, never takes.
 uint64_t nonlinear_novelty_trajectory() {
     Model m;
-    build_fence_model(m, 303, 40, 90, true);
+    build_random_int_model(m, 303, 40, 90, true);
     m.close();
     ViolationManager vm(m);
     RNG rng(31);

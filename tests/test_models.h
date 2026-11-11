@@ -4,7 +4,8 @@
 // verbatim copy in every file that used it.
 
 #include <algorithm>
-#include <cbls/cbls.h>
+#include <cbls/dag_ops.h>
+#include <cbls/model.h>
 #include <cstdint>
 #include <cstring>
 #include <random>
@@ -55,10 +56,12 @@ inline cbls::Model integer_model() {
 
 // The trajectory fence's random over-constrained integer model: rows that
 // cannot all hold, so FJ and Novelty both reach local minima, backtrack and
-// bump, and propagation legs narrow domains with some fixes conflicting.
-// Returns the variable handles; the model is left open.
+// bump, and propagation legs narrow domains with some fixes conflicting. With
+// `nonlinear`, every fifth row also multiplies two of its variables (no extra
+// draws, so the linear part is the same model). Returns the variable handles;
+// the model is left open.
 inline std::vector<int32_t> build_random_int_model(cbls::Model& m, uint32_t seed, int num_vars,
-                                                   int num_rows) {
+                                                   int num_rows, bool nonlinear = false) {
     std::mt19937 gen(seed);
     std::uniform_int_distribution<int> pick_var(0, num_vars - 1);
     std::uniform_int_distribution<int> pick_coef(1, 3);
@@ -81,6 +84,10 @@ inline std::vector<int32_t> build_random_int_model(cbls::Model& m, uint32_t seed
         for (const int v : used) {
             const double coef = (pick_sign(gen) != 0 ? 1.0 : -1.0) * pick_coef(gen);
             terms.push_back(m.prod(m.constant(coef), handles[static_cast<size_t>(v)]));
+        }
+        if (nonlinear && r % 5 == 0) {
+            terms.push_back(m.prod(handles[static_cast<size_t>(used[0])],
+                                   handles[static_cast<size_t>(used[1])]));
         }
         const int32_t sum = m.sum(terms);
         const double rhs = pick_rhs(gen);

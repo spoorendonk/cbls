@@ -35,8 +35,6 @@ using namespace cbls;
 using cbls_test::integer_model;
 using cbls_test::quadratic_model;
 
-namespace {}  // namespace
-
 // ---------------------------------------------------------------------------
 // The invariant that protects every benchmark
 // ---------------------------------------------------------------------------

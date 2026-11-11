@@ -75,6 +75,9 @@ benchmarks = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests/python"]
+# `from support import ...` (tests/python/support.py) must not depend on the
+# import mode putting the test directory on sys.path.
+pythonpath = ["tests/python"]
 
 [tool.ruff]
 line-length = 100

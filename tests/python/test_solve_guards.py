@@ -27,13 +27,9 @@ from support import run_scenario
 CHILD_TIMEOUT_SECONDS = 60.0
 
 
-def _run_scenario(name: str) -> subprocess.CompletedProcess[str]:
-    return run_scenario(__file__, name, CHILD_TIMEOUT_SECONDS)
-
-
 def _assert_scenario_ok(name: str) -> None:
     try:
-        proc = _run_scenario(name)
+        proc = run_scenario(__file__, name, CHILD_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired as exc:
         raise AssertionError(
             f"scenario {name!r} did not finish within {CHILD_TIMEOUT_SECONDS}s: something "
