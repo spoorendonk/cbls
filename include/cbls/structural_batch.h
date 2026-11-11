@@ -15,91 +15,47 @@ class Model;
 class ViolationManager;
 struct SearchConfig;
 
-/// A STRUCTURAL batch (paper Algorithm 6 has FJ/NJ; this is the List/Set peer).
+/// A STRUCTURAL batch, the List/Set peer of paper Algorithm 6's FJ/NJ.
+/// Sweeps the registered `MoveGenerator`s and greedily commits candidates with
+/// negative weighted delta_G under the current GLS weights W. `FeasibilityJump`
+/// jumps only scalars, so List/Set assignments improve only here. `run`
+/// returns true if anything was committed: the caller owes `fj.resync()`.
 ///
-/// Sweeps the registered `MoveGenerator`s, has each propose candidate moves for
-/// the variables in its scope, and greedily commits the ones that reduce total
-/// weighted violation (a negative weighted delta_G under the current GLS weights
-/// W, since `total_violation()` is W-weighted). `FeasibilityJump` only jumps
-/// scalar variables, so a List/Set-structured model cannot improve its
-/// structural assignment without this. `run` returns true if any move was
-/// committed, which tells the caller it owes an `fj.resync()`.
+/// Generators are built ONCE per search (built-ins plus a clone of each
+/// `SearchConfig::move_generators` entry) and owned here, so each portfolio
+/// worker's caches, cursors and counters are its own (#157).
 ///
-/// The generator set is built ONCE per search -- the built-ins for every
-/// List/Set variable plus a clone of each generator on
-/// `SearchConfig::move_generators` -- and owned here. Cloning is what makes the
-/// portfolio safe: every worker constructs its own batch and therefore its own
-/// clones, so a generator's caches, cursors and counters are per-worker state
-/// rather than shared across threads (#157).
-///
-/// DEADLINE. The sweep is bounded BETWEEN generators, never inside one: each
-/// generator's candidates are evaluated whole, so the reference move set is
-/// never truncated for speed and the overrun is capped at one generator's work.
-///
-/// "One generator's work" is a cap the CALLER sizes, not a constant. Between
-/// two checks the batch applies, `delta_evaluate`s, scores and rolls back every
-/// candidate on offer -- 3-5 for a built-in, up to
-/// `SearchConfig::structural_sample_size` plus one call's yield under the
-/// sampling policies, and whatever a registered generator chooses under
-/// `FirstImprovingSample`, which caps nothing. See the `generate` contract on
-/// `MoveGenerator`, which is where that obligation is stated.
-/// The bound is needed because the sweep's cost is unbounded in the model size,
-/// and `solve(model, time_limit)` is a library contract: on a
-/// 1500-List x 100-element model with 40k constraints a 0.5s budget ran
-/// 1.19-1.25s unbounded versus 0.502s bounded (#105). Real benchmark models were
-/// nowhere near it -- pharma-glsp's largest class swept 10 List variables in
-/// ~0.5ms (retired in #28; the measurement is what motivated the bound) -- so
-/// this is about honouring the contract on large models, not about the
-/// benchmarks.
-///
-/// THAT 1.19-1.25s IS A PRE-#165 NUMBER and does not describe this code. It was
-/// the O(#constraints) full rescan PER CANDIDATE, which the G_v restriction
-/// below removed: the same model's unbounded sweep re-measures at 0.024s.
-///
-/// Be precise about what that removed, because the obvious reading is wrong.
-/// The filler rows are NOT "no longer read" -- an earlier draft of this comment
-/// said so and it was false. `ViolationManager::snapshot_violations` calls
-/// `total_violation()`, which walks EVERY constraint (src/violation.cpp), and
-/// the batch snapshots once on entry and again after every committed move. So
-/// the per-candidate O(#constraints) term is gone; a per-pass and a per-COMMIT
-/// one remain, and on a low-acceptance sweep -- which is what the 0.024s
-/// measurement is -- those are cheap enough to disappear into the total.
-///
-/// The remaining cost is therefore
-/// O(#constraints x (1 + #commits) + #generators x #candidates x
-/// (delta_evaluate + |R_c|)), where R_c is the rows a CANDIDATE can have moved
-/// -- its walked variables' G_v plus the rows still differing from the
-/// snapshot -- rather than its generator's whole scope (#273, which took a
-/// partition generator over every route of a CVRP down to the one or two
-/// routes a move touches). Still unbounded in the model size, so the bound
-/// still matters -- but it now takes a model with large STRUCTURES, or a sweep
-/// that commits heavily, rather than merely many rows, to reach the same
-/// overrun. Restricting the baseline refresh to the moved rows would close the
-/// commit term and is exact by the same argument the restricted delta rests on;
-/// it is not done here because `snapshot_violations` reaches `total_violation()`,
-/// whose 1000-call drift-resync counter would then advance on a different
-/// schedule -- which moves the trajectory digests that
-/// tests/test_structural_equivalence.cpp exists to hold still. Re-record those
-/// deliberately or not at all.
+/// DEADLINE: checked BETWEEN generators, never inside one, so a generator's
+/// move set is never truncated and the overrun is one generator's work --
+/// which the CALLER sizes (3-5 candidates for a built-in, sample size plus one
+/// call's yield when sampling, unbounded for a registered generator under
+/// `FirstImprovingSample`; see `MoveGenerator`'s `generate` contract). Needed
+/// because sweep cost grows with the model and `solve(model, time_limit)` is
+/// a contract (#105). Pinned by counting visited generators in
 /// `a deadline that passes mid-sweep stops the sweep between generators`
-/// (tests/test_structural_batch.cpp) is what pins the bound, by counting the
-/// generators a sweep visited rather than by timing it.
+/// (tests/test_structural_batch.cpp).
 ///
-/// The check is unconditional per generator rather than strided. An earlier
-/// self-tuning stride was deleted: because the stride persisted across passes
-/// while its counter reset per pass, once it exceeded the model's structured
-/// variable count it could never fire again, so it did nothing at all on 160 of
-/// the 170 real pharma-glsp instances (2-6 List variables each). A per-generator
-/// clock read costs ~1.4us only on an HPET clocksource like the machine that was
-/// measured on; via the vDSO on a TSC clocksource it is ~20-25ns. Amortising a
-/// 60x-inflated constant did not justify the complexity.
+/// Cost: O(#constraints x (1 + #commits) + #generators x #candidates x
+/// (delta_evaluate + |R_c|)), R_c being the rows a candidate can have moved
+/// (its walked variables' G_v plus rows still differing from the snapshot,
+/// #273). The per-commit term remains because `snapshot_violations` calls
+/// `total_violation()`, which walks every row, on entry and after each
+/// commit: cheap on a low-acceptance sweep, costly on a heavily committing
+/// one; with large structures the second term dominates. Restricting the
+/// refresh to moved rows would be exact but shifts `total_violation()`'s
+/// 1000-call drift-resync schedule and so the digests
+/// tests/test_structural_equivalence.cpp holds; re-record them deliberately or
+/// not at all.
+///
+/// The check is unconditional per generator, not strided (the self-tuning
+/// stride it replaced never fired once it exceeded the structured-variable
+/// count): one clock read per generator, ~20-25ns via vDSO on a TSC
+/// clocksource, ~1.4us on HPET -- too small to justify amortising.
 class StructuralBatch {
 public:
-    /// `enabled` false builds nothing at all -- not even the per-variable scan
-    /// that `default_move_generators` would do. `solve()` passes false on a
-    /// model with no structured variable, where the batch never runs and the
-    /// scan would be one more O(#variables) pass per portfolio worker on a
-    /// model with 710 000 columns.
+    /// `enabled` false builds nothing, skipping even `default_move_generators`'
+    /// O(#variables) scan per worker; `solve()` passes false on a model with no
+    /// structured variable, where the batch never runs.
     StructuralBatch(const Model& model, const SearchConfig& config, bool enabled);
 
     StructuralBatch(const StructuralBatch&) = delete;
@@ -113,20 +69,14 @@ public:
              std::chrono::steady_clock::time_point deadline);
 
     [[nodiscard]] size_t generator_count() const noexcept { return generators_.size(); }
-    /// The batch's OWN clone of generator `i` -- not the instance the caller
-    /// registered. Exposed so a test can prove that each worker got a distinct
-    /// object.
+    /// The batch's OWN clone of generator `i`, not the registered instance
+    /// (exposed so tests can check each worker got a distinct object).
     [[nodiscard]] const MoveGenerator& generator(size_t i) const { return *generators_.at(i); }
 
-    /// Candidates applied-and-scored, and committed, per generator since this
-    /// batch was built (#169). Parallel to `generators_`, so entry `i` belongs to
-    /// `generator(i)`; the names are copied at construction because a clone's
-    /// `name()` is a `string_view` that dies with it.
-    ///
-    /// Counted where the candidate is scored, not where it is generated: the two
-    /// differ under the sampling policies, which draw until the sample is full
-    /// and score what they drew. Observational only -- nothing here is read back
-    /// by the sweep.
+    /// Per generator since construction (#169): candidates applied-and-scored
+    /// (not generated; sampling policies differ) and committed. Entry `i`
+    /// belongs to `generator(i)`; names are copied since a clone's `name()`
+    /// dies with it. Observational only: the sweep never reads them.
     [[nodiscard]] const std::vector<GeneratorCounters>& generator_counters() const noexcept {
         return counters_;
     }
@@ -138,10 +88,10 @@ private:
                    GeneratorCounters& counters);
     /// Snapshot the current violations into `baseline_`; no row differs then.
     void resnapshot(const ViolationManager& vm);
-    /// After a walk over `walked`: the weighted change against `baseline_`,
-    /// summed over the rows that can differ from it -- `differing_` and the
-    /// walked variables' G_v -- and `differing_` brought up to date. See the
-    /// note above `StructuralBatch::run` in structural_batch.cpp.
+    /// After a walk over `walked`: the weighted change against `baseline_`
+    /// over the rows that can differ (`differing_` plus the walked variables'
+    /// G_v), updating `differing_`. See the note above `StructuralBatch::run`
+    /// in structural_batch.cpp.
     double delta_after_walk(const Model& model, const ViolationManager& vm,
                             const std::vector<int32_t>& walked);
     /// Whether any row in the scope's G_v is violated at the baseline. See
@@ -150,27 +100,23 @@ private:
     /// Fill `candidates_` from `gen`, up to the sample the policy asks for.
     void draw_candidates(MoveContext& ctx, MoveGenerator& gen);
 
-    /// Record the value and the elements of every variable `candidates_` names,
-    /// as they stand BEFORE any candidate is applied. Taken ONCE per sample;
-    /// `apply_from_base` then replays as much of it as the previous candidate
-    /// disturbed. Scalars are included even though no built-in generator emits
-    /// one: nothing in the `MoveGenerator` contract forbids it, and a variable
-    /// missing from this list would be missing from the `touched` set
-    /// `delta_evaluate` is given.
+    /// Record value and elements of every variable `candidates_` names before
+    /// any is applied, once per sample; `apply_from_base` replays what the
+    /// previous candidate disturbed. Scalars are included: the `MoveGenerator`
+    /// contract allows them, and a missing one would be absent from
+    /// `delta_evaluate`'s `touched` set.
     void snapshot_sample_base(const Model& model);
-    /// Put the variables named by `which` back to the baseline. `assign` rather
-    /// than a fresh vector, so the capacity is reused and nothing allocates.
+    /// Put the variables in `which` back to the baseline, via `assign` so
+    /// nothing allocates.
     void restore_sample_base(Model& model, const std::vector<int32_t>& which) const;
-    /// Copy the current assignment of the sampled variables into
-    /// `accepted_*` -- the state the sweep falls back to when its last
-    /// candidate was rejected.
+    /// Copy the sampled variables into `accepted_*`, the sweep's fallback
+    /// after a rejected last candidate.
     void record_accepted(const Model& model);
     /// Put the sampled variables at `accepted_*`.
     void restore_accepted(Model& model) const;
-    /// Apply `move` to the sample baseline, as an absolute element vector would
-    /// have. Returns every variable whose value may have moved -- the union of
-    /// the move's own and the ones the restore put back, which `delta_evaluate`
-    /// needs in full.
+    /// Apply `move` to the sample baseline, as an absolute element vector
+    /// would. Returns every variable whose value may have moved (the move's own
+    /// plus those restored), which `delta_evaluate` needs in full.
     const std::vector<int32_t>& apply_from_base(Model& model, const Move& move);
 
     std::vector<std::unique_ptr<MoveGenerator>> generators_;
@@ -178,34 +124,29 @@ private:
     std::vector<GeneratorCounters> counters_;
     StructuralSelection selection_;
     int sample_size_;
-    /// Per-constraint violations of the last ACCEPTED assignment. See the note
-    /// in structural_batch.cpp for why a move is judged against this rather than
-    /// by differencing two whole-sum `total_violation()` readings.
+    /// Per-constraint violations of the last ACCEPTED assignment, which moves
+    /// are judged against (why: note in structural_batch.cpp).
     std::vector<double> baseline_;
-    /// Every row whose clamped violation differs, bitwise, from `baseline_`, in
-    /// ascending order. Empty right after each snapshot; `delta_after_walk`
-    /// keeps it exact across walks.
+    /// Rows whose clamped violation differs bitwise from `baseline_`,
+    /// ascending. Empty after each snapshot; kept exact by `delta_after_walk`.
     std::vector<int32_t> differing_;
     /// `delta_after_walk`'s scratch: the rows it scores, and a per-row
     /// dedup mark that is all zero between calls.
     std::vector<int32_t> score_rows_;
     std::vector<uint8_t> row_mark_;
     std::vector<Move> candidates_;
-    /// The sample baseline: one entry per structured variable the current
-    /// `candidates_` name, holding its elements before any candidate was
-    /// applied. See `snapshot_sample_base`.
+    /// The sample baseline, per variable `candidates_` names, before any
+    /// candidate is applied (`snapshot_sample_base`).
     std::vector<int32_t> base_vars_;
     std::vector<double> base_values_;
     std::vector<std::vector<int32_t>> base_elements_;
-    /// The assignment after the last ACCEPTED candidate of this sample, parallel
-    /// to `base_vars_`, and what the sweep leaves behind when the last candidate
-    /// it tried was rejected.
+    /// Assignment after this sample's last ACCEPTED candidate, parallel to
+    /// `base_vars_`; what the sweep leaves when its last candidate is rejected.
     std::vector<double> accepted_values_;
     std::vector<std::vector<int32_t>> accepted_elements_;
-    /// The variables the PREVIOUS candidate of this sample changed -- exactly
-    /// what the next one has to put back, since every candidate is applied to
-    /// the baseline and so disturbs nothing else. Doubles as the `touched` set
-    /// handed to `delta_evaluate`, unioned with the current move's own.
+    /// Variables the PREVIOUS candidate of this sample changed: exactly what
+    /// the next must put back (candidates disturb nothing else). Doubles as
+    /// `delta_evaluate`'s `touched` set, unioned with the current move's own.
     std::vector<int32_t> dirty_vars_;
     std::vector<int32_t> touched_;
 };

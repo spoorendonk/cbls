@@ -15,26 +15,15 @@ namespace cbls {
 class Model;
 class ViolationManager;
 
-/// Granular neighbourhood: for each element `e` of a universe `{0..n-1}`, the
-/// other elements a move involving `e` is allowed to reach, nearest first.
+/// Granular neighbourhood (Toth & Vigo, INFORMS J. Computing 15(4), 2003): for
+/// each element `e` of `{0..n-1}`, the others a move involving `e` may reach,
+/// nearest first, supplied by the model author since the engine knows no cost.
 ///
-/// This is Toth & Vigo's granular neighbourhood (INFORMS J. Computing 15(4),
-/// 2003), the standard way to make a sequence neighbourhood affordable on a
-/// large universe: relocating a customer next to one on the far side of the map
-/// is never improving, so the uniform `(i, j)` draw spends almost all of its
-/// candidates on moves that cannot win. The engine has no idea what a "cost"
-/// between two elements means, so the list is supplied by the model author --
-/// either built here from a cost callback, or handed over as arrays.
-///
-/// CSR, like the model's own adjacency: `of(e)` is
-/// `ids[offsets[e] .. offsets[e+1])`. The invariants (offsets non-decreasing,
-/// starting at 0, ending at `ids.size()`, every id inside the universe) are
-/// checked ONCE at construction and never again, because `of()` is read on the
-/// move-generation hot path. `of()` is nonetheless total: an out-of-range `e`
-/// returns an empty span rather than indexing past the array, so a generator
-/// holding a list built for a different variable degrades to "no neighbours"
-/// instead of reading the heap (the #156 hazard class -- this type is reachable
-/// from Python).
+/// CSR: `of(e)` is `ids[offsets[e] .. offsets[e+1])`. Invariants (offsets
+/// non-decreasing from 0 to `ids.size()`, ids in the universe) are checked
+/// ONCE at construction, since `of()` is on the hot path. `of()` is still
+/// total: an out-of-range `e` gives an empty span, not a heap read (#156; this
+/// type is reachable from Python).
 class NeighbourList {
 public:
     NeighbourList() = default;
@@ -55,10 +44,8 @@ public:
     [[nodiscard]] bool empty() const noexcept { return ids_.empty(); }
     /// `e`'s neighbours, nearest first. Empty for an out-of-range `e`.
     [[nodiscard]] ConstSpan<int32_t> of(int32_t e) const noexcept {
-        // Widened before the +1: `e + 1` on an int32_t is signed overflow at
-        // INT32_MAX, which is undefined behaviour in the one function written to
-        // be total on every input -- and `neighbours_of(2147483647)` is one
-        // Python call away.
+        // Widened before +1: `e + 1` overflows at INT32_MAX, reachable from
+        // Python, in a function that must be total.
         if (e < 0 || static_cast<size_t>(e) + 1 >= offsets_.size()) {
             return {};
         }
@@ -76,77 +63,49 @@ private:
     std::vector<int32_t> ids_;
 };
 
-/// Each element's `k` nearest others under `cost`, nearest first, ties broken by
-/// ascending id so the list is a function of the cost alone and not of the
-/// sort's stability.
-///
-/// O(universe^2) cost evaluations and O(universe^2 log k) work: this is a
-/// setup-time convenience for a universe of a few thousand, not a spatial index.
-/// A caller with a bigger instance, or with a cost it can index geometrically,
-/// builds the rows itself and uses the `NeighbourList` constructors.
-///
-/// `k <= 0` or `universe <= 1` yields a list with no neighbours, which every
-/// built-in generator reads as "fall back to the uniform draw".
+/// Each element's `k` nearest others under `cost`, nearest first, ties by
+/// ascending id (a function of the cost, not the sort's stability).
+/// O(universe^2) cost calls, O(universe^2 log k) work: a setup convenience for
+/// a few thousand elements, not a spatial index; larger or geometric callers
+/// build rows themselves. `k <= 0` or `universe <= 1` yields no neighbours,
+/// which every built-in generator reads as "use the uniform draw".
 NeighbourList nearest_neighbours(int universe, int k, const std::function<double(int, int)>& cost);
 
 /// How the structural batch turns a generator's candidates into a commit.
-///
-/// `FirstImprovingSample` is the DEFAULT and is bit-for-bit what the batch did
-/// before generators existed (#165): one `generate` call per generator, each
-/// candidate applied in turn and kept if it strictly lowers weighted violation.
-/// It is what the default, `Auto`, runs without a neighbour list; with one,
-/// `Auto` runs `GranularBest`. The others are opt-in and change the trajectory.
+/// `FirstImprovingSample` is bit-for-bit the pre-#165 batch; the default
+/// `Auto` picks it or `GranularBest`. The others change the trajectory.
 enum class StructuralSelection : std::uint8_t {
-    /// Today's rule: take every improving candidate from one sample, in order.
+    /// Take every improving candidate from one sample, in order.
     FirstImprovingSample,
-    /// Call the generator until it has offered at least
-    /// `SearchConfig::structural_sample_size` candidates, score them all, and
-    /// commit the best improving one. One call always happens, and a call that
-    /// appends several may overshoot the target by up to that call's yield -- so
-    /// the built-in List generator yields 5 even at a sample size of 1. The
-    /// sample size is a floor on the effort, not a ceiling on the count.
+    /// Call the generator until it offered at least
+    /// `SearchConfig::structural_sample_size` candidates (at least one call),
+    /// score all, commit the best improving one. A floor on effort, not a cap
+    /// on count: the built-in List generator yields 5 even at size 1.
     BestOfSample,
-    /// `BestOfSample`, restricted to generators whose scope can still change a
-    /// VIOLATED row.
-    ///
-    /// The restriction is exact rather than a heuristic: if no constraint in the
-    /// union of the scope's G_v is violated at the accepted assignment, every
-    /// one of those rows contributes 0 to the weighted violation, so any move
-    /// over that scope can only leave the total alone or raise it. Skipping the
-    /// generator therefore cannot skip an improving move.
-    ///
-    /// NOTE ON SCOPE. #165 describes this policy as picking the *element* to
-    /// move from those appearing in violated constraints. That is not
-    /// recoverable from the DAG: incidence is tracked per VARIABLE (G_v), and a
-    /// `Set` read through a single `Lambda` node puts every element of the
-    /// universe in every row that node feeds. So what ships here is the
-    /// variable-level form -- which variable to spend candidates on -- plus
-    /// whatever element-level granularity a `NeighbourList` supplies. The
-    /// element-level form needs a generator-supplied element scorer.
+    /// `BestOfSample`, restricted to generators whose scope can change a
+    /// VIOLATED row. Exact, not heuristic: if no row in the scope's G_v union
+    /// is violated, every move there leaves the weighted violation equal or
+    /// higher. Variable-level, not #165's element-level: incidence is per
+    /// variable, and a `Set` read through one `Lambda` puts every element in
+    /// every row; element-level needs a generator-supplied scorer, beyond what
+    /// a `NeighbourList` gives.
     ViolationGuided,
     /// `ViolationGuided`, with each `ListPartition` searched by the GRANULAR
-    /// COMPLETE neighbourhood of one element per `generate` call instead of a
-    /// sampled move (#203; Toth & Vigo 2003): one random element, every relocate
-    /// / swap / 2-opt / 2-opt* pairing it with each of its k nearest neighbours,
-    /// and a move into each empty list (`generate_granular_partition_moves`,
-    /// which says how this differs from the paper's threshold graph).
-    /// The best improving candidate is committed. A call that yields fewer than
-    /// `structural_sample_size` is topped up like any other, i.e. with a further
-    /// element's neighbourhood.
-    ///
-    /// Needs `SearchConfig::structural_neighbours`; without a list the partition
-    /// generator keeps its sampled moves and this is `ViolationGuided`. With one,
-    /// the per-variable intra-list generators of PARTITION MEMBERS propose
-    /// nothing: same-list neighbour pairs already give that list its relocate,
-    /// swap and 2-opt, under the granular restriction. A List or Set outside any
-    /// partition is sampled exactly as under `ViolationGuided`.
+    /// COMPLETE neighbourhood of one random element per `generate` call (#203;
+    /// Toth & Vigo 2003): every relocate / swap / 2-opt / 2-opt* with each of
+    /// its k nearest neighbours, plus a move into each empty list
+    /// (`generate_granular_partition_moves` states how it differs from the
+    /// paper). Commits the best improving candidate; short calls are topped up
+    /// with another element's neighbourhood. Needs
+    /// `SearchConfig::structural_neighbours`, else it is `ViolationGuided`.
+    /// With a list, partition members' intra-list generators propose nothing
+    /// (the neighbour pairs cover them); Lists/Sets outside a partition are
+    /// sampled as under `ViolationGuided`.
     GranularBest,
-    /// The default (#203, option (c)): `GranularBest` when the search has a
-    /// `SearchConfig::structural_neighbours` list, `FirstImprovingSample`
-    /// otherwise. A model run without a neighbour list therefore keeps the
-    /// pre-#165 trajectory bit for bit; one with a list gets the policy that won
-    /// #203's CVRP smoke (15/15 paired against `ViolationGuided`). Resolved once,
-    /// by `resolve_structural_selection`, when the batch is built.
+    /// The default (#203): `GranularBest` with a
+    /// `SearchConfig::structural_neighbours` list (won #203's CVRP smoke, 15/15
+    /// vs `ViolationGuided`), else `FirstImprovingSample`, so a run without one
+    /// keeps the pre-#165 trajectory. Resolved once when the batch is built.
     Auto,
 };
 
@@ -155,18 +114,14 @@ enum class StructuralSelection : std::uint8_t {
 StructuralSelection resolve_structural_selection(StructuralSelection selection,
                                                  bool has_neighbours);
 
-/// Stable snake_case token for a `StructuralSelection`, and its inverse.
-/// Used by the benchmark runners' flags and by the Python bindings, so there is
-/// one spelling of each name.
+/// Stable snake_case token for a `StructuralSelection`, and its inverse; the
+/// one spelling used by the benchmark flags and the Python bindings.
 const char* structural_selection_name(StructuralSelection selection);
 bool try_parse_structural_selection(std::string_view text, StructuralSelection& out);
 
-/// What a generator is allowed to look at while proposing candidates.
-///
-/// Everything here is READ-ONLY apart from the RNG. A generator must not touch
-/// the model's assignment: the batch applies, scores and rolls back each
-/// candidate itself, and a generator that moved a variable behind its back
-/// would corrupt the baseline every candidate after it is scored against.
+/// What a generator may look at while proposing. READ-ONLY except the RNG:
+/// the batch applies, scores and rolls back each candidate itself, so a
+/// generator moving a variable corrupts the baseline later candidates use.
 struct MoveContext {
     const Model& model;
     /// GLS weights `W` and the per-constraint violations of the CURRENT
@@ -182,54 +137,36 @@ struct MoveContext {
     const std::vector<double>* violations = nullptr;
 };
 
-/// A source of candidate structural moves.
+/// A source of candidate structural moves. The built-in List/Set moves are
+/// generators too (`default_move_generators`), so a domain move is a peer.
+/// Register instances on `SearchConfig::move_generators`.
 ///
-/// The built-in List and Set moves are registered as generators like any other
-/// (see `default_move_generators`), so a domain move -- an inter-route
-/// exchange, a block move, an ejection chain -- is a peer rather than a special
-/// case. Register instances on `SearchConfig::move_generators`.
-///
-/// CONTRACTS, all of which the batch relies on:
-///
-///  - a structured change is a POSITIONAL EDIT on the variable's `elements`
-///    (`ElementEdit`), or a whole `replacement` vector for what positions cannot
-///    express. Either is applied to the assignment the sample was drawn against,
-///    which the batch restores before each candidate -- so an edit's positions
-///    always name the elements the generator saw. A generator that does not want
-///    to think about positions builds `replace_change` and pays the copy.
-///  - `generate` must RETURN IN BOUNDED TIME **and append a bounded number of
-///    candidates**. The structural batch checks its wall-clock deadline BETWEEN
-///    generators, never inside one (#105); between two checks it applies,
-///    `delta_evaluate`s, scores and rolls back EVERY candidate on offer. So a
-///    `generate` that returns instantly and appends 100 000 candidates overruns
-///    `solve()`'s budget exactly as thoroughly as one that never returns. The
-///    built-ins append at most 5, except the partition generator under
-///    `GranularBest`, which appends one element's granular neighbourhood
-///    (`generate_granular_partition_moves` states the bound). Only the sampling policies cap the
-///    count
-///    (`SearchConfig::structural_sample_size`); `FirstImprovingSample` takes
-///    whatever it is given.
-///  - `generate` APPENDS; it must not clear or reorder what is already in `out`.
+/// CONTRACTS the batch relies on:
+///  - a structured change is a POSITIONAL EDIT on `elements` (`ElementEdit`)
+///    or a whole `replacement` (`replace_change`, paying the copy), applied
+///    to the assignment the sample was drawn against, which the batch
+///    restores before each candidate.
+///  - `generate` returns in bounded time AND appends a bounded number of
+///    candidates: the deadline is checked only BETWEEN generators (#105), and
+///    every candidate on offer is applied, evaluated, scored and rolled back,
+///    so 100 000 instant candidates overrun `solve()`'s budget like a hang.
+///    Built-ins append at most 5, except the partition generator under
+///    `GranularBest` (bound in `generate_granular_partition_moves`). Only the
+///    sampling policies cap the count (`SearchConfig::structural_sample_size`);
+///    `FirstImprovingSample` takes all.
+///  - `generate` APPENDS; it must not clear or reorder `out`.
 ///  - `generate` must not change the model's assignment (see `MoveContext`).
-///  - `clone()` must return an independent object, AND must itself be safe to
-///    call concurrently on one prototype. Every portfolio worker builds its own
-///    `StructuralBatch` on its own thread, so N threads call `clone()` on the
-///    single registered instance at once: a `clone()` that writes shared state
-///    -- bumps a counter, fills a lazily built cache -- needs its own lock.
-///    (`tests/test_parallel.cpp`'s `CountingGenerator` takes a mutex for exactly
-///    this reason; `tests/test_structural_batch.cpp`'s `TransferGenerator` does
-///    not, because it is only ever driven single-threaded. Copy the former.)
-///    Any cache, cursor or counter the CLONE holds is then per-worker state; a
-///    clone that shared it would be a data race across worker threads (#157).
-///    A clone does not outlive its worker's `solve()`: a restarted worker
-///    (`src/pool.cpp`) builds a fresh batch and so a fresh clone, so `clone()`
-///    runs workers x restarts times and no generator state survives a restart.
-///  - `scope()` must name every variable the generator's moves can change, and
-///    must stay constant for the generator's lifetime. `ViolationGuided` and
-///    `GranularBest` use it to skip generators that cannot help, so a move
-///    touching a variable outside the scope can be skipped when it would have
-///    helped. Scoring does not read it: the batch scores the rows each move's
-///    own variables reach (#273).
+///  - `clone()` returns an independent object and is safe to call
+///    concurrently on one prototype: each portfolio worker clones the single
+///    registered instance on its own thread, so a `clone()` writing shared
+///    state needs a lock (as `tests/test_parallel.cpp`'s `CountingGenerator`).
+///    Clone-held caches, cursors and counters are per-worker; sharing them
+///    races (#157). A clone dies with its worker's `solve()`; each restart
+///    (`src/pool.cpp`) clones afresh, so no state survives a restart.
+///  - `scope()` names every variable the moves can change and is constant for
+///    the generator's lifetime. `ViolationGuided`/`GranularBest` skip
+///    generators by it, so an incomplete scope can skip a helpful move.
+///    Scoring ignores it: it uses the rows each move's variables reach (#273).
 class MoveGenerator {
 public:
     MoveGenerator() = default;
@@ -251,57 +188,29 @@ public:
     /// `FirstImprovingSample`, and repeatedly under the sampling policies until
     /// the sample is full or a call adds nothing.
     ///
-    /// EVERY CANDIDATE FROM ONE CALL IS BUILT AGAINST THE SAME ASSIGNMENT, and
-    /// each is applied to THAT assignment: a structured change carries
-    /// positional `ElementEdit`s (#164), and the batch restores the sample's
-    /// starting assignment before applying each candidate so an edit always
-    /// lands where it was built. Under `FirstImprovingSample` the batch may
-    /// commit SEVERAL of them in turn, so committing candidate k and then
-    /// candidate k+1 leaves k's change gone -- k+1 was built before k ran and is
-    /// applied from the same baseline. For the built-ins that is harmless and is
-    /// exactly what the pre-#165 sweep did with whole element vectors; the
-    /// accept test is against a re-snapshotted baseline either way.
-    ///
-    /// It used NOT to be harmless for a generator that maintains a structural
-    /// invariant ACROSS variables by construction rather than by a constraint
-    /// row -- a partition of elements over several Lists, say. Commit "move e
-    /// from L1 to L2", then apply a stale candidate that names L1 and L3 but not
-    /// L2, and L1 gets e back while L2 keeps it, with nothing to notice.
-    ///
-    /// #164's per-sample baseline closes that: the batch restores EVERY variable
-    /// any candidate of the sample names, not just the ones the candidate being
-    /// applied names, so the assignment is always the sample's own plus exactly
-    /// one candidate -- and every candidate was built against that assignment.
-    /// The built-in `ListPartition` generator nonetheless emits at most ONE
-    /// candidate per call (except under `GranularBest`, a take-best policy),
-    /// deliberately: a cover maintained by construction is
-    /// expensive to get wrong, and one candidate is safe under any batch that
-    /// applies moves at all rather than under this one's particular discipline.
-    /// A generator that wants a larger sample can rely on the baseline, or run
-    /// under `BestOfSample` / `ViolationGuided`, which commit at most one
-    /// candidate per call.
+    /// Every candidate of one call is built against, and applied to, the SAME
+    /// assignment: the batch restores every variable any candidate of the
+    /// sample names before applying each one (#164), so a positional
+    /// `ElementEdit` lands where it was built and the state is always the
+    /// sample's own plus one candidate. Under `FirstImprovingSample` the batch
+    /// may commit several in turn, so committing k then k+1 leaves k's change
+    /// gone (harmless for the built-ins: same as rejecting k). The built-in
+    /// `ListPartition` still emits at most ONE candidate per call (except under
+    /// take-best `GranularBest`), since a cover kept by construction is costly
+    /// to get wrong. For a larger sample, rely on the baseline or run under
+    /// `BestOfSample` / `ViolationGuided`, which commit at most one per call.
     virtual void generate(MoveContext& ctx, std::vector<Move>& out) = 0;
 
-    /// One of THIS generator's moves was committed. The default does nothing.
-    ///
-    /// It is a private notification for the generator's own bookkeeping, NOT a
-    /// broadcast that the assignment changed. The assignment also moves under a
-    /// peer generator's commit in the same sweep, every Feasibility Jump batch,
-    /// a Novelty Jump, the diversification kick, an LNS destroy-repair and a
-    /// restart from the solution pool -- none of which notifies anybody. So
-    /// anything DERIVED from the assignment (an element-to-list index, a
-    /// position map) must be recomputed in `generate` from `ctx.model`; only
-    /// state that is the generator's own -- a cursor, a counter, a tabu tenure
-    /// it alone writes -- can be carried across calls.
-    ///
-    /// AND UNDER `FirstImprovingSample` A NOTIFIED COMMIT CAN STILL BE UNDONE.
-    /// Every candidate from one `generate` is applied to the assignment the
-    /// sample was drawn against, so committing candidate k and then candidate
-    /// k+1 leaves k's change gone -- after `on_commit(k)` was already delivered.
-    /// Arithmetically that is the same as having rejected k, which is why it is
-    /// harmless for the built-ins, but a generator whose bookkeeping must track
-    /// the assignment should emit one candidate per call or run under a policy
-    /// that commits at most one.
+    /// One of THIS generator's moves was committed; the default does nothing.
+    /// A private notification, NOT an assignment-change broadcast: peer
+    /// commits, FJ/Novelty batches, the kick, LNS and pool restarts move the
+    /// assignment silently. So anything DERIVED from the assignment (an
+    /// element-to-list index, a position map) must be recomputed in `generate`
+    /// from `ctx.model`; only the generator's own state (cursor, counter, tabu
+    /// tenure) may carry across calls. Under `FirstImprovingSample` a notified
+    /// commit can still be undone by a later one from the same sample (see
+    /// `generate`); a generator whose bookkeeping must track the assignment
+    /// should emit one candidate per call or run under a one-commit policy.
     virtual void on_commit(const Move& move);
 
     /// A per-worker copy. See the cloning contract above.
@@ -309,20 +218,12 @@ public:
 };
 
 /// The built-in structural generators for `model`: one per List/Set variable,
-/// in variable-id order, each proposing exactly the typed moves
-/// `generate_standard_moves` has always proposed for that type (List:
-/// swap / 2-opt / relocate / or-opt(2) / or-opt(3) built from one random
-/// position pair; Set: one add, one remove, one swap).
-///
-/// Empty for a model with no structured variable.
-///
-/// With `neighbours` non-null, the target of a move is drawn from the moved
-/// element's neighbour list rather than uniformly. That changes the trajectory,
-/// so the default (null) is what keeps an unconfigured run on the pre-#165 path.
-///
-/// Exposed rather than private so a caller building its own generator set --
-/// #164's partition-level inter-list moves are the first -- can start from the
-/// built-ins and add to them instead of re-deriving them.
+/// in variable-id order, each proposing the typed moves of
+/// `generate_standard_moves` (List: swap / 2-opt / relocate / or-opt(2) /
+/// or-opt(3) from one random position pair; Set: one add, remove and swap).
+/// Empty with no structured variable. Non-null `neighbours` draws a move's
+/// target from the moved element's list, changing the trajectory; null keeps
+/// the pre-#165 path. Public so a custom set can extend the built-ins.
 std::vector<std::shared_ptr<const MoveGenerator>> default_move_generators(
     const Model& model, const std::shared_ptr<const NeighbourList>& neighbours = nullptr);
 

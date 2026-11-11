@@ -12,34 +12,25 @@ namespace cbls {
 
 double full_evaluate(Model& model);
 
-/// What a `delta_evaluate` call means.
-///
-/// `Commit` and `Probe` recompute every op in the cone from the assignment in
-/// front of them. A `Probe` also logs the cone's values as it found them
-/// (`ProbeUndo`, #270), and the matching `Rollback` writes that log back instead
-/// of walking the cone again: O(cone) stores rather than a collect, sort and
-/// evaluate, and exact by construction, so an incremental `Sum` (#188) carrying
-/// drift comes back to the bit instead of being re-summed.
+/// What a `delta_evaluate` call means. `Commit` and `Probe` recompute the cone
+/// from the current assignment; a `Probe` also logs the cone's prior values
+/// (`ProbeUndo`, #270), which `Rollback` writes back: O(cone) stores instead
+/// of collect, sort and evaluate, and exact, so a drifting incremental `Sum`
+/// (#188) returns to the bit.
 enum class DeltaMode : uint8_t {
-    /// The assignment being evaluated is the new committed one. This is what an
-    /// applied move, and both legs of an evaluate-forwards-evaluate-back probe,
-    /// mean -- and it is the default.
+    /// The evaluated assignment is the new committed one: an applied move, and
+    /// both legs of an evaluate-forwards-evaluate-back probe. The default.
     Commit,
-    /// A counterfactual the caller WILL undo: the cone's values are logged for
-    /// the matching `Rollback` call.
+    /// A counterfactual the caller WILL undo; the cone's values are logged for
+    /// the matching `Rollback`.
     Probe,
-    /// The caller has put back the assignment the `Probe` was measured from.
-    /// Every node of the probe's cone gets its pre-probe value back from the
-    /// log, and nothing is re-evaluated.
-    ///
-    /// Must directly follow a `Probe` over the same changed-variable set, in
-    /// the same order. Any other walk, `full_evaluate`, `reground_inc_sum`,
-    /// `Model::set_objective_bound` or `Model::set_domain_tolerance` in between
-    /// drops the log, and the Rollback is then treated as `Commit` -- the honest
-    /// reading of a caller that moved the assignment without probing first. A
-    /// Rollback over a different set writes the log back, then commits the
-    /// union of the probe's set and the set it was given: correct whether or not
-    /// the probed variables were put back.
+    /// The caller restored the `Probe`'s starting assignment; the probe's cone
+    /// gets its logged values back, nothing re-evaluated. Must directly follow
+    /// a `Probe` over the same changed-variable set in the same order: any
+    /// other walk, `full_evaluate`, `reground_inc_sum`,
+    /// `Model::set_objective_bound` or `Model::set_domain_tolerance` between
+    /// drops the log and this acts as `Commit`. Over a different set it writes
+    /// the log back, then commits the union of both sets: correct either way.
     Rollback,
 };
 
@@ -47,63 +38,54 @@ enum class DeltaMode : uint8_t {
 double delta_evaluate(Model& model, const int32_t* changed_var_ids, size_t count,
                       DeltaMode mode = DeltaMode::Commit);
 
-/// The inexact update that would be an incremental `Sum`'s kIncSumPeriod-th
-/// since its last re-sum re-sums it instead (#188), so a Sum carries at most
-/// kIncSumPeriod - 1 = 63. An exact update -- every one on integral data -- does
-/// not count. A safety cap on how far the drift bound can grow between
-/// re-groundings, not a tuned optimum: chosen by a pre-registered rule on
-/// held-out instances, where it cost under 1% of throughput against never
-/// re-summing (`docs/benchmarks/incremental-sum-drift.md`). 0 means never: the
-/// drift is then bounded only by the batch-end re-grounding and the gate.
+/// An incremental Sum's kIncSumPeriod-th inexact update since its last re-sum
+/// re-sums instead (#188), so it carries at most 63; exact updates (all, on
+/// integral data) do not count. A safety cap on drift between re-groundings,
+/// not a tuned optimum: picked by a pre-registered rule on held-out instances,
+/// costing <1% throughput vs never re-summing
+/// (`docs/benchmarks/incremental-sum-drift.md`). 0 means never: drift is then
+/// bounded only by the batch-end re-grounding and the gate.
 constexpr uint32_t kIncSumPeriod = 64;
 
-/// A `Commit` of one scalar variable whose previous value was `old_value` (the
-/// caller has already written the new one): `delta_evaluate(model, &var_id, 1)`,
-/// except that every incremental `Sum` in the cone (`ExprNode::kIncSum`) is moved
-/// by its terms' changes, O(1) per changed term, instead of being re-summed over
-/// all of them (#177, #188). On a MIP row that is the difference between
-/// O(|G_v|) and O(sum of |row| over G_v) per committed move.
+/// `Commit` of one scalar whose previous value was `old_value` (new one
+/// already written): `delta_evaluate(model, &var_id, 1)`, but each incremental
+/// `Sum` in the cone (`ExprNode::kIncSum`) moves by its terms' changes, O(1)
+/// each, rather than re-summing (#177, #188): O(|G_v|) instead of
+/// O(sum of |row| over G_v) per MIP move.
 ///
-/// Each update is tested for exactness (TwoSum on `new - old` and on the add).
-/// An exact one changes no bits relative to the re-sum's arithmetic and adds no
-/// drift. An inexact one leaves the Sum up to one rounding of each away from the
-/// real sum of its stored terms, and adds those roundings -- exactly, as TwoSum
-/// computes them -- to the Sum's `IncSumState::drift_bound`. After
-/// `kIncSumPeriod - 1` inexact updates carried (at most 63), the next inexact
-/// one re-sums the Sum instead. So does a non-finite value, and so does the
-/// Sum's first commit after a `full_evaluate` or a plain `delta_evaluate` over
-/// it, both of which re-sum without the check.
+/// Each update is TwoSum-tested: an exact one matches the re-sum bitwise; an
+/// inexact one adds its exact roundings to `IncSumState::drift_bound`. After
+/// `kIncSumPeriod - 1` (63) inexact updates the next inexact one re-sums, as
+/// do a non-finite value and the first commit after a `full_evaluate` or
+/// plain `delta_evaluate` over the Sum (which re-sum unchecked).
 ///
-/// Precondition, stronger than `delta_evaluate`'s: every node value must
-/// describe the assignment apart from `var_id`'s change. A variable written
-/// without a walk (`restore_state` with no `full_evaluate`, say) leaves an
-/// incremental Sum on a stale base, which this would update rather than repair.
+/// Precondition, stronger than `delta_evaluate`'s: every node value describes
+/// the assignment apart from `var_id`'s change. A write without a walk
+/// (`restore_state` without `full_evaluate`) leaves a stale base this would
+/// update rather than repair.
 double commit_scalar_move(Model& model, int32_t var_id, double old_value);
 
-/// The `Probe` counterpart: the commit's updates, applied from the committed
-/// values, so an identity move on a drifted state scores exactly 0. Where the
-/// commit would re-sum instead (an untracked Sum, `kIncSumPeriod` reached, a
-/// non-finite value) the probe still updates, so its score can differ from the
-/// commit's by up to the Sum's drift bound plus the re-sum's rounding. The
-/// matching `delta_evaluate(..., Rollback)` writes the probe's undo log back
-/// (see `DeltaMode`), so a drifted committed state comes back to the bit. No
-/// Sum's drift state changes.
+/// The `Probe` counterpart: the commit's updates from the committed values,
+/// so an identity move on a drifted state scores exactly 0. Where the commit
+/// would re-sum (untracked Sum, `kIncSumPeriod` reached, non-finite) the
+/// probe still updates, so scores can differ by the drift bound plus the
+/// re-sum's rounding. `delta_evaluate(..., Rollback)` restores the state to
+/// the bit (see `DeltaMode`). No drift state changes.
 double probe_scalar_move(Model& model, int32_t var_id, double old_value);
 
-/// Re-sums, checked, the incremental Sum in `slot` and re-evaluates the rows
-/// that read it -- by construction nothing else does. Afterwards the Sum
-/// is a fresh re-sum (`IncSumState::drifting` is 0). O(|terms| + |readers|).
+/// Re-sums (checked) the incremental Sum in `slot` and re-evaluates the rows
+/// that read it (by construction its only readers); afterwards
+/// `IncSumState::drifting` is 0. O(|terms| + |readers|).
 void reground_inc_sum(Model& model, int32_t slot);
 
 /// `reground_inc_sum` for every Sum still drifting on `IncSums::drifted`,
-/// appending each one's slot to `regrounded`, and empties the list. O(1) when
-/// nothing drifted since the last call. FeasibilityJump calls it at the end of
-/// every batch, which is what keeps drift inside one.
+/// appending each slot to `regrounded`, then empties the list; O(1) if nothing
+/// drifted since the last call.
+/// FeasibilityJump calls it at every batch end, keeping drift inside a batch.
 void reground_drifted_sums(Model& model, std::vector<int32_t>& regrounded);
 
-/// Diagnostics for tests and profiling (#177, #188), on this thread since the
-/// caller last assigned it `IncrementalSumCounters{}`; nothing in the engine
-/// reads them.
+/// Diagnostics for tests and profiling (#177, #188), per thread since last
+/// reset to `IncrementalSumCounters{}`; the engine never reads them.
 struct IncrementalSumCounters {
     /// Commits that took an incremental Sum as its terms' updates left it.
     uint64_t incremental = 0;
@@ -114,23 +96,20 @@ struct IncrementalSumCounters {
     /// Term updates a Probe applied to an incremental Sum: one per probe of a
     /// variable that is a term of it.
     uint64_t probe_pushes = 0;
-    /// FeasibilityJump's side. Local minima -- GLS iterations that found no
-    /// improving jump -- where some row's verdict was undecided by its Sum's
-    /// drift bound, so the Sum was re-summed before any decision (the gate).
+    /// FeasibilityJump: local minima where some row's verdict was undecided by
+    /// its Sum's drift bound, so the Sum was re-summed first (the gate).
     uint64_t gated_minima = 0;
-    /// Gated minima where a re-sum moved a row into or out of V, so the
+    /// Gated minima where the re-sum moved a row into or out of V, so the
     /// iteration sampled again instead of bumping or stopping.
     uint64_t gate_flips = 0;
 };
 IncrementalSumCounters& incremental_sum_counters() noexcept;
 
-/// One-variable walks on this thread since the caller last assigned it
-/// `ConeCacheCounters{}` (#271): those that read the variable's cone from
-/// `Model::freeze()`'s cache, and those that collected and sorted it -- an
-/// unfrozen model, or a variable past the cache's cap. A Rollback served from
-/// the probe's undo log walks nothing and is in neither; nor is a walk over
-/// several variables, which always collects. `solve()` reports its own run's in
-/// `SearchCounters`.
+/// One-variable walks on this thread since last reset to `ConeCacheCounters{}`
+/// (#271): cone read from `Model::freeze()`'s cache, or collected and sorted
+/// (unfrozen model, or variable past the cap). A Rollback from the undo log
+/// and a multi-variable walk (always collects) count in neither. `solve()`
+/// reports its own run's in `SearchCounters`.
 struct ConeCacheCounters {
     uint64_t cached_walks = 0;
     uint64_t fallback_walks = 0;
@@ -154,78 +133,59 @@ inline double delta_evaluate(Model& model, std::initializer_list<int32_t> change
     return delta_evaluate(model, changed_var_ids.begin(), changed_var_ids.size(), mode);
 }
 
-// Reverse-mode AD over the cone of `expr_id` (the nodes reachable from it
-// through children), visited in reverse topological order. Cost O(c log c) for
-// a cone of c nodes, not O(|nodes|); a cone too large for the sort to pay falls
-// back to the full-order walk. Results are bit-identical either way. The
-// rationale and the cutover are at `reverse_sweep` in src/dag_ops.cpp.
-//
-// All three share one thread_local scratch, so none may be called from inside
-// another on the same thread.
-//
-// `expr_id` must be a node id of `model` (not a variable handle); it is not
-// range-checked here, on the hot path. The Python binding checks it.
+// Reverse-mode AD over the cone of `expr_id`, in reverse topological order:
+// O(c log c) for a cone of c nodes, falling back to the full-order walk when
+// the sort would not pay; bit-identical either way (cutover at `reverse_sweep`
+// in src/dag_ops.cpp). All three share one thread_local scratch, so none may
+// be called from inside another on one thread. `expr_id` must be a node id of
+// `model`; unchecked here (hot path), checked by the Python binding.
 
-/// One chain-rule step along a DAG edge: `acc += edge * carried`, `edge` being
-/// the edge's local derivative and `carried` the adjoint (reverse mode) or slope
-/// (forward mode) brought to it. Every propagation pass takes its edges through
-/// here: the reverse sweep and the two forward up-cone passes (`UpConePartials`,
-/// behind FJ's row slopes and the inner solver's, and FJ's pruned breakpoint
-/// slopes; #260).
-///
-/// A zero edge -- an untaken If branch, a Min's unselected operand -- is skipped,
-/// not multiplied: an infinite or NaN `carried` times 0 would read NaN where the
-/// edge carries nothing, and turn a partial that is truly 0 into NaN. Any other
-/// edge multiplies, so inf and NaN on a live path still propagate. For a finite
-/// `carried` the skip changes no result but the sign of a zero.
+/// One chain-rule step: `acc += edge * carried`, `edge` the local derivative,
+/// `carried` the adjoint or forward slope. Every propagation pass uses it
+/// (reverse sweep, `UpConePartials`, FJ's pruned breakpoint slopes; #260).
+/// A zero edge (untaken If branch, Min's unselected operand) is skipped, so
+/// an inf/NaN `carried` cannot turn a true 0 partial into NaN; live paths
+/// still propagate inf/NaN. For finite `carried` only a zero's sign changes.
 inline void add_chain_term(double& acc, double edge, double carried) {
     if (edge != 0.0) {
         acc += edge * carried;
     }
 }
 
-/// d(parent)/d(child) for one DAG edge, summed over the operands of `parent`
-/// naming `child`: the edge factor of the forward up-cone passes, whose cone
-/// walk sees a parent once however often it names the child. A Sum's is its
-/// multiplicity of the operand, 1 unless `Model::close()` marked the Sum
-/// `kRepeatedChild`, so an objective Sum over n terms costs O(1) per edge, not
-/// O(n); any other op scans its children. Requires a closed model.
+/// d(parent)/d(child) for one DAG edge, summed over `parent`'s operands naming
+/// `child` (the forward up-cone walk sees a parent once). For a Sum it is the
+/// operand's multiplicity, 1 unless `Model::close()` marked it
+/// `kRepeatedChild`, so an n-term Sum costs O(1) per edge, not O(n); other ops
+/// scan their children. Requires a closed model.
 double up_edge_derivative(const Model& model, int32_t parent, const ChildRef& child);
 
 /// ∂expr/∂var for one variable; 0.0 for a `var_id` outside the model.
 double compute_partial(const Model& model, int32_t expr_id, int32_t var_id);
 
-/// d(node)/d(var) for every node above one variable, forward mode (#249).
+/// d(node)/d(var) for every node above one variable, forward mode (#249):
+/// collect the up-cone (via `Model::parents`), sort topologically, carry the
+/// slope along each parent edge by `up_edge_derivative`. Same chain rule as
+/// `compute_partial`, so `of(row)` matches it up to summation order on finite
+/// paths; both skip zero edges (`add_chain_term`). Where infinite paths meet
+/// the modes can differ (inf + -inf = NaN at different nodes), including a
+/// parent naming a child twice (`z / z`): this pass sums the operand
+/// derivatives before the zero test, the reverse sweep tests each.
 ///
-/// `build` collects the variable's up-cone (every node a change of it reaches
-/// through `Model::parents`), sorts it by topological position and carries the
-/// slope forward along each parent edge, the factor being `up_edge_derivative`.
-/// The same chain rule as `compute_partial`, so `of(row)` equals it up to
-/// summation order, except on non-finite paths. Both modes skip a zero edge
-/// (`add_chain_term`), so an overflow on either side of one (an untaken If
-/// branch, a Min's unselected operand) reads 0 in both and leaves the row's
-/// finite paths alone. Where infinite paths meet, the modes can still differ:
-/// they sum the paths at different nodes, and inf meeting -inf reads NaN. That
-/// includes a parent naming one child twice (`z / z`): this pass sums the two
-/// operand derivatives before the zero test, the reverse sweep tests each.
+/// COST: O(u log u) for an up-cone of u nodes plus their parent edges, giving
+/// EVERY node's partial at once, vs `compute_partial`'s whole row cone per
+/// row. Wins with a large row cone and small up-cone (separable `obj <=
+/// bound`; UC-CHPED ucp200-168p: ~30 ms per reverse sweep over a 1.38M-node
+/// cone, 42% of a 60 s run); loses with a large up-cone and small rows (a
+/// variable in many nonlinear rows), so `build` gives up past a node budget
+/// and the caller takes the reverse sweep.
 ///
-/// COST: O(u log u) for an up-cone of u nodes, plus their parent edges, and it
-/// gives the partial of EVERY node above the variable at once. `compute_partial`
-/// costs the row's whole cone per row instead. That wins when a row's cone is
-/// large and the variable's up-cone small: a separable objective `obj <= bound`
-/// over many variables (UC-CHPED ucp200-168p: ~30 ms per reverse sweep over a
-/// 1.38M-node cone, 42% of a 60 s run). It loses when the up-cone is large and
-/// the row small (a variable in many nonlinear rows). `build` therefore takes a
-/// node budget and gives up past it, leaving the caller to take the reverse sweep.
-///
-/// Requires a closed model; `build` returns false on one that is not. Not
-/// thread-safe: one instance per thread, reused across calls (entries are
-/// epoch-stamped, so a call never clears the arrays).
+/// Requires a closed model. Not thread-safe: one instance per thread, reused
+/// (epoch-stamped entries, so a call never clears the arrays).
 class UpConePartials {
 public:
-    /// Collects and sweeps `var_id`'s up-cone. False, leaving every `of` at 0,
-    /// when the model is not closed or the cone outgrows `max_nodes`. A build
-    /// that throws leaves every `of` at 0.
+    /// Collects and sweeps `var_id`'s up-cone. False, every `of` at 0, when the
+    /// model is not closed or the cone outgrows `max_nodes`; a throwing build
+    /// also leaves every `of` at 0.
     bool build(const Model& model, int32_t var_id, size_t max_nodes);
 
     /// d(node)/dv at the point `build` saw; 0 for a node the variable cannot reach.
@@ -244,25 +204,22 @@ private:
     uint32_t epoch_ = 0;
 };
 
-/// Batch AD: partials of `expr_id` w.r.t. ALL variables in one reverse pass.
-/// Returns a vector of size `num_vars()`; entry[i] = ∂expr/∂var_i. The O(num_vars)
-/// result is the floor here; prefer `compute_partials_sparse` on a large model.
+/// Batch AD: partials of `expr_id` w.r.t. ALL variables in one reverse pass;
+/// entry[i] = ∂expr/∂var_i, size `num_vars()`. That O(num_vars) result is
+/// the floor; prefer `compute_partials_sparse` on a large model.
 std::vector<double> compute_all_partials(const Model& model, int32_t expr_id);
 
-/// Sparse batch AD: fills `out` (cleared first) with (var_id, ∂expr/∂var_id) for
-/// every variable whose partial is nonzero -- each variable at most once, in
-/// the deterministic order the sweep first reached it. Values are bit-identical
-/// to `compute_all_partials`' entries. Costs the sweep plus O(output) -- never
-/// the O(num_vars) result `compute_all_partials` pays -- which is what a per-row
-/// slope cache over a linear model wants. `out` is the caller's buffer so a hot
-/// loop can reuse its capacity.
+/// Sparse batch AD: fills `out` (cleared first; the caller's buffer, reused)
+/// with (var_id, ∂expr/∂var_id) for each variable with a nonzero partial,
+/// once each, in the sweep's deterministic first-reach order; values
+/// bit-identical to `compute_all_partials`. Costs the sweep plus O(output),
+/// never O(num_vars). Exactly-0.0 partials are absent.
 ///
-/// Partials are taken at the CURRENT node values, so a cached slope stays valid
-/// only while every op on the path has a constant local derivative: `Sum`,
-/// `Neg`, `Prod` or `Div` by a constant, and `Leq`/`Geq`/`Lt`/`Gt` do; `Eq` is
-/// sign(residual), hence 0.0 when satisfied and sign-flipping otherwise; `Neq`
-/// and the structural ops are always 0.0. A partial that is exactly 0.0 --
-/// cancelled, or through a zero local derivative -- is absent, not listed.
+/// Partials are at CURRENT node values, so a cached slope stays valid only
+/// while every op on the path has a constant local derivative: `Sum`, `Neg`,
+/// `Prod`/`Div` by a constant, `Leq`/`Geq`/`Lt`/`Gt`. `Eq` is sign(residual)
+/// (0.0 when satisfied, sign-flipping otherwise); `Neq` and the structural
+/// ops are always 0.0.
 void compute_partials_sparse(const Model& model, int32_t expr_id,
                              std::vector<std::pair<int32_t, double>>& out);
 

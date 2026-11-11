@@ -6,198 +6,113 @@
 
 namespace cbls {
 
-/// Which kind of batch the ViolationLS outer loop ran (paper Algorithm 6
-/// alternates FJ/NJ; STRUCTURAL is the List/Set peer added in P4).
-///
-/// Public because `SearchCounters` buckets by it and `Tracer::batch_end` reports
-/// it. It was a detail of `src/search.cpp` until #169; nothing else about it
-/// changed.
-///
-/// Structural batches commit changes outside FeasibilityJump's scan-set and
-/// jump-table, so the loop owes an `fj.resync()` after them. A Novelty batch
-/// rebuilds FJ's state itself (#209) and needs none.
+/// Which batch the ViolationLS outer loop ran (paper Algorithm 6 alternates
+/// FJ/NJ; Structural is the List/Set peer). Public since #169 for
+/// `SearchCounters` and `Tracer::batch_end`. A Structural batch commits outside
+/// FJ's scan-set and jump-table, so the loop owes `fj.resync()` after it; a
+/// Novelty batch rebuilds FJ's state itself (#209).
 enum class BatchKind : std::uint8_t { FeasibilityJump, NoveltyJump, Structural };
 
 /// Stable snake_case token for a `BatchKind` ("feasibility_jump",
 /// "novelty_jump", "structural"). Returns a static string; never null.
 const char* batch_kind_name(BatchKind kind);
 
-/// One registered move generator's share of the structural work.
-///
-/// Per generator rather than per variable because #165 made the generator the
-/// unit the batch actually sweeps: a built-in covers one List/Set variable, but
-/// a registered one may cover several, and `MoveGenerator::name()` is the only
-/// identity either has.
+/// One move generator's share of the structural work, keyed per generator
+/// since a registered one may cover several variables (#165).
 struct GeneratorCounters {
-    /// `MoveGenerator::name()`, copied, with `#<index>` appended on every
-    /// occurrence where one batch built more than one generator of that name.
-    ///
-    /// The suffix is there because `merge` below keys on this string and
-    /// `MoveGenerator::name()` does not promise to be unique: the built-ins name
-    /// themselves by TYPE, so two List variables both say "builtin_list".
-    ///
-    /// BE PRECISE ABOUT WHAT IT BUYS, because the obvious reading overstates it.
-    /// `merge`'s two fast paths already handle the common case correctly without
-    /// it: an empty target appends every row, and two same-length vectors whose
-    /// names agree position-for-position are walked positionally -- and every
-    /// worker builds the same generators in the same order, so that is what a
-    /// portfolio actually produces. The collapse the suffix prevents needs the
-    /// BY-NAME scan to run, i.e. two vectors that differ in length or ordering:
-    /// merging a worker that built its batch against one that built a different
-    /// set. So this is defensive work on a largely latent bug, not a fix for one
-    /// that was happening.
-    ///
-    /// Unique within a batch UNLESS a registered generator's own `name()` already
-    /// ends in `#<n>`, which `StructuralBatch`'s constructor records as a
-    /// documented limit rather than defending against.
-    ///
-    /// The copy is needed either way: the generator is a per-worker clone that
-    /// dies with its search, so the counters cannot borrow its `string_view`.
+    /// `MoveGenerator::name()`, copied (the generator is a per-worker clone),
+    /// with `#<index>` appended where one batch built several of that name:
+    /// `merge`'s by-name path keys on it and built-ins name themselves by type.
+    /// The suffix only matters when merged vectors differ in length or order;
+    /// same-order vectors merge positionally. Not unique if a registered
+    /// `name()` already ends in `#<n>` (documented limit, `StructuralBatch`).
     std::string name;
-    /// Candidates APPLIED and SCORED -- not candidates generated. The two differ
-    /// when a generator offers more than the sampling policy draws.
+    /// Candidates APPLIED and SCORED, not generated (sampling may draw fewer).
     int64_t moves_tried = 0;
-    /// The subset committed. Under `FirstImprovingSample` several candidates of
-    /// one sample can be committed in turn, and a later one can undo an earlier
-    /// one (see `MoveGenerator::on_commit`), so this counts ACCEPTANCES rather
-    /// than surviving changes.
+    /// Acceptances, not surviving changes: under `FirstImprovingSample` a later
+    /// commit can undo an earlier one (see `MoveGenerator::on_commit`).
     int64_t moves_accepted = 0;
 };
 
-/// Where a run spent its work. Observational only: nothing in the search reads
-/// any of these back, so a run that fills them takes the trajectory it would
-/// have taken without them.
-///
-/// `SearchResult` already carried `iterations`, `perturbations`, `lns_repairs`
-/// and `lns_repairs_accepted`; those stay where they are rather than being
-/// duplicated here (#169 says "LNS as today"). What is new is the breakdown the
-/// old fields could not answer: which KIND of batch the budget went to, how much
-/// of the structural sweep was accepted, and what the inner solver cost.
+/// Where a run spent its work. Observational only: the search never reads
+/// these back, so filling them leaves the trajectory unchanged. Fields
+/// already on `SearchResult` (iterations, perturbations, LNS) stay there
+/// (#169).
 struct SearchCounters {
-    /// Batches run. `fj_batches + novelty_batches + structural_batches == batches`
-    /// exactly -- `pick_batch_kind` returns one of the three and every batch is
-    /// counted once, which `tests/test_counters.cpp` pins.
+    /// `fj_batches + novelty_batches + structural_batches == batches` exactly
+    /// (pinned by `tests/test_counters.cpp`).
     int64_t batches = 0;
     int64_t fj_batches = 0;
     int64_t novelty_batches = 0;
-    /// What the Novelty batches did (#209): moves applied (each leg of a
-    /// compound move, and each move explored and then undone, counts once; the
-    /// undos do not), compound moves committed, and GLS weight bumps. A
-    /// Novelty batch charges 3 GLS iterations per move and 1 per bump, so the
-    /// iteration count cannot tell its work from FJ's; these can -- and they
-    /// tell a run whose Novelty never committed from one that never ran it.
+    /// Novelty batch work (#209): moves applied (each compound leg and each
+    /// explored-then-undone move once; undos not), compound moves committed,
+    /// and GLS weight bumps. Separates Novelty from FJ work, which the
+    /// iteration count cannot (3 per move, 1 per bump).
     int64_t novelty_moves = 0;
     int64_t novelty_commits = 0;
     int64_t novelty_weight_bumps = 0;
     int64_t structural_batches = 0;
 
-    /// Totals over `by_generator` below, kept as their own fields so a caller
-    /// that only wants "how much structural work happened" does not have to sum
-    /// a vector.
+    /// Totals over `by_generator`, so callers need not sum the vector.
     int64_t structural_moves_tried = 0;
     int64_t structural_moves_accepted = 0;
-    /// One entry per generator the structural batch built, in the batch's own
-    /// order -- and one row per GENERATOR, not per distinct `name()`, which is
-    /// what the `#<index>` suffix on `GeneratorCounters::name` buys. A portfolio
-    /// therefore reports the same rows a single `solve()` does, merged across its
-    /// workers rather than duplicated per worker. Empty on a model with no
-    /// structured variable and no registered generator, where the batch builds
-    /// nothing at all.
+    /// One row per GENERATOR the structural batch built, in its order (the
+    /// `#<index>` suffix keeps same-name rows apart); a portfolio merges rows
+    /// across workers. Empty when the batch builds no generator.
     std::vector<GeneratorCounters> by_generator;
 
-    /// `InnerSolverHook::solve` calls, and the seconds they took.
-    ///
-    /// THE SECONDS ARE ONLY FILLED WHEN THE RUN HAS A WALL-CLOCK BUDGET, and
-    /// read 0.0 otherwise. That is not an oversight, and the argument is about
-    /// SCALING rather than about a literal zero: an iteration-budgeted run does
-    /// read the clock a bounded number of times already (`solve()`'s entry and
-    /// exit, and `note_first_feasible` once; a `SolveCallback`, if one is
-    /// attached, adds one per batch -- `docs/architecture.md` names them),
-    /// but each of the three unconditional ones is O(1) per RUN, where timing the
-    /// hook would add
-    /// two reads per inner-solver CALL and so scale with the run. That is what
-    /// #169's "no additional clock read" criterion protects, and it is what makes
-    /// an iteration-budgeted run bit-reproducible. The gate is exactly the one
-    /// `last_improvement_` already carries in `src/search.cpp`. The CALL COUNT is
-    /// always filled -- it reads no clock.
-    ///
-    /// WHAT THE WALL-CLOCK SIDE COSTS, measured rather than asserted, because the
-    /// gate is the RUN's and not the caller's: every timed run pays it whether or
-    /// not it reads the field. The hook fires on each new feasible point, so the
-    /// rate is the polish rate, not the iteration rate. On the three #125
-    /// throughput models at their 1s budget: 201 calls (milp/pk1), 52
-    /// (uc/ucp13-1p), 0 (minlp/chain50) -- so 402, 104 and 0 extra
-    /// `steady_clock::now()` per second. At 1359ns per read, measured on an HPET
-    /// clocksource (the pessimistic case; via the vDSO on a TSC one it is
-    /// ~20-25ns, see structural_batch.h), that is 546us, 141us and 0 per second of
-    /// budget -- 0.055%, 0.014% and 0. Derived from a call COUNT and a per-read
-    /// cost rather than by differencing two whole-program timings, which under any
-    /// load at all cannot resolve a number this size.
+    /// `InnerSolverHook::solve` calls (always counted; reads no clock) and
+    /// their seconds, filled only under a wall-clock budget, else 0.0. Timing
+    /// adds two clock reads per CALL, scaling with the run, where an
+    /// iteration-budgeted run's other reads are O(1) per run (per batch with a
+    /// `SolveCallback`); the gate keeps such runs bit-reproducible (#169), as
+    /// `last_improvement_` in `src/search.cpp` does. Timed runs pay it whether
+    /// read or not: the hook fires per new feasible point, so on the #125
+    /// models at 1s (pk1 201, ucp13-1p 52, chain50 0 calls) at 1359ns/read
+    /// (HPET, pessimistic; ~20-25ns via vDSO/TSC) it costs 0.055%, 0.014% and
+    /// 0 of the budget (count x per-read cost, not differenced timings).
     int64_t inner_solver_calls = 0;
     double inner_solver_seconds = 0.0;
 
-    /// Restarts a portfolio worker took beyond its first solve, summed over
-    /// workers. Always 0 for a single `cbls::solve()`, which cannot restart
-    /// itself. See `src/pool.cpp`'s restart loop for what a restart is and why
-    /// one happens.
-    ///
-    /// Counted per SOLVE THAT PRODUCED A RESULT, so a retry after a throwing
-    /// solve is not one: a worker whose first attempt threw and whose second
-    /// succeeded has run one solve, not one solve and a restart.
+    /// Portfolio restarts beyond a worker's first solve, summed over workers;
+    /// always 0 for `cbls::solve()`. Counts solves that produced a result, so
+    /// a retry after a throwing solve is not a restart (`src/pool.cpp`).
     int64_t portfolio_restarts = 0;
 
-    /// One-variable DAG walks that read their cone from the model's cone cache,
-    /// and those that collected and sorted it instead because the variable was
-    /// past the cache's cap (#271; see `ConeCacheCounters` in dag_ops.h).
-    /// `cone_cache_walks / (cone_cache_walks + cone_fallback_walks)` is the hit
-    /// rate. Counted on the solving thread between `solve()`'s entry and exit,
-    /// so a walk a user callback makes in between is in it too. Summed over
-    /// workers.
+    /// One-variable DAG walks served by the cone cache vs. collected and sorted
+    /// because the variable was past the cache's cap (#271; `ConeCacheCounters`
+    /// in dag_ops.h). Counted on the solving thread between `solve()`'s entry
+    /// and exit, so user-callback walks are included. Summed over workers.
     int64_t cone_cache_walks = 0;
     int64_t cone_fallback_walks = 0;
 
-    /// Engagement of the shared objective bound (#179). All four are 0 for a
-    /// single `cbls::solve()`, which has no pool and so no global best to be
-    /// behind; under `ParallelSearch` they are summed over workers.
+    /// Shared objective bound engagement (#179): 0 for a single
+    /// `cbls::solve()`; under `ParallelSearch` summed over workers. Filled with
+    /// `ParallelConfig::share_objective_bound` on or off: the global best is
+    /// read either way, and with sharing off only these counters depend on it.
+    /// "Global" is the pool's, so after a restart it includes this worker's
+    /// earlier solve (all four fields).
     ///
-    /// Filled in BOTH arms of the A/B -- `ParallelConfig::share_objective_bound`
-    /// on or off -- because the control arm is where the opportunity is
-    /// measured: the global best is READ either way, and with sharing off only
-    /// these counters depend on it, never the search's trajectory.
-    ///
-    /// Times the global best MOVED this worker's bound: at a batch boundary where
-    /// the bound was looser, or in record_best when a peer improved since the
-    /// last boundary. Always 0 with sharing off; nonzero is the mechanism firing.
-    /// NOT counted: the cap applied by an adoption's re-grounding, which can
-    /// also tighten the bound -- an adoption is its own event (`perturbations`).
-    ///
-    /// "Global" is the pool's, so after a portfolio RESTART it includes this
-    /// worker's own earlier solve: a restarted `solve()` reopens the bound at +inf
-    /// and the first sync re-tightens it to what the previous solve found. That is
-    /// true of the other three fields too.
+    /// Times the global best tightened this worker's bound (batch boundary, or
+    /// record_best after a peer improved). Always 0 with sharing off. Excludes
+    /// the cap from an adoption's re-grounding (an adoption is a
+    /// `perturbations` event).
     int64_t shared_bound_tightenings = 0;
-    /// New own-bests recorded while the portfolio already held a strictly better
-    /// feasible objective -- the "worker found something a peer (or, after a
-    /// restart, its own earlier solve) had beaten" event. Nonzero in both arms: sharing changes
-    /// where the bound sits, not which of the worker's own points count as its incumbent.
+    /// New own-bests recorded while the pool already held a strictly better
+    /// objective (a peer's, or after a restart this worker's earlier solve).
+    /// Nonzero in both arms: sharing moves the bound, not the incumbent.
     int64_t own_best_behind_global = 0;
-    /// Batches that RAN with this worker's bound looser than the global best's.
-    /// With sharing on this is 0 by construction -- the bound is tightened at the
-    /// batch boundary that would otherwise start one, and a peer improving
-    /// MID-batch is not charged -- so it is the control arm's measure of time
-    /// spent searching for points a peer had already beaten. That includes a
-    /// worker's batches before its own first feasible point.
+    /// Batches that RAN with this worker's bound looser than the global best,
+    /// including those before its own first feasible point. 0 by construction
+    /// with sharing on (tightened at the boundary; mid-batch peer gains are not
+    /// charged), so it measures the control arm's wasted search.
     int64_t bound_behind_global_batches = 0;
-    /// The wall seconds those batches took. Same gate as `inner_solver_seconds`:
-    /// 0.0 on a run with no wall-clock budget, where the batch count above is the
-    /// whole answer.
+    /// Wall seconds of those batches; same gate as `inner_solver_seconds`.
     double bound_behind_global_seconds = 0.0;
 
-    /// Add `other` into this, as `ParallelSearch` sums `perturbations`: every
-    /// scalar adds, and `by_generator` merges by NAME (an entry whose name is
-    /// already present adds into it, a new name is appended). Used in both
-    /// places the portfolio aggregates -- across a worker's restarts and across
-    /// the workers -- so the two cannot drift apart.
+    /// Add `other` into this: every scalar adds, and `by_generator` merges by
+    /// NAME (a present name adds in, a new one is appended). Used for both
+    /// portfolio aggregations (across restarts and across workers).
     void merge(const SearchCounters& other);
 };
 
