@@ -11,20 +11,14 @@
 
 namespace cbls {
 
-// A child's value, read WITHOUT the range check `Model::var`/`Model::node` do.
-//
-// Safe because every ChildRef is validated once, when the node naming it is made
-// (`Model::wrap` throws on an id past what exists), and a model never removes a
-// variable or node -- so the check here could only ever pass. It is not free,
-// though: evaluate() and local_derivative() read a child on nearly every DAG
-// edge they touch, and the throwing branch kept the reads from being as cheap
-// as a plain index. Measured for #156 (idle box; cbls_minlplib, 20k iterations,
-// seed 7; serial, interleaved, median of 5; results identical), with the
-// checked read -> this: nvs05 9.08 s -> 7.70, chain50 3.93 -> 2.31, ex8_6_1
-// 3.95 -> 3.04, maxmin 2.99 -> 2.54. The asserts keep the check in a Debug build
-// (-DCMAKE_BUILD_TYPE=Debug); a sanitizer build is Release unless configured
-// otherwise, and loses them. Child counts are not re-checked either: Min and Max
-// read children[0], so their builders refuse an empty argument list.
+// A child's value, WITHOUT `Model::var`/`Model::node`'s range check: every ChildRef is
+// validated when its node is made (`Model::wrap`) and nothing is ever removed, so the check
+// could only pass, yet it cost on nearly every DAG edge. Measured for #156 (idle box,
+// cbls_minlplib, 20k iterations, seed 7, serial, interleaved, median of 5, results identical):
+// nvs05 9.08 s -> 7.70, chain50 3.93 -> 2.31, ex8_6_1 3.95 -> 3.04, maxmin 2.99 -> 2.54. The
+// asserts check only in a Debug build; a sanitizer build is Release unless configured otherwise.
+// Child counts are not re-checked: Min and Max read children[0], so their builders refuse an empty
+// argument list.
 static double child_val(const ChildRef& ref, const Model& model) {
     if (ref.is_var) {
         assert(static_cast<size_t>(ref.id) < model.num_vars());
@@ -34,34 +28,23 @@ static double child_val(const ChildRef& ref, const Model& model) {
     return model.node_values()[ref.id];
 }
 
-// Whether a comparison's child is a literal Const node — i.e. a bound the
-// modeller wrote, not a quantity the DAG computed. `comparison_residual` needs
-// this to tell an "absent bound" +inf sentinel from an arithmetic overflow; a
-// variable is never a sentinel, since its value is search state. Unchecked for
-// the reason child_val gives.
+// Whether a comparison's child is a literal Const (a bound the modeller wrote), which
+// `comparison_residual` needs to tell an "absent bound" +inf sentinel from an overflow; a
+// variable is never a sentinel. Unchecked for child_val's reason.
 static bool child_is_const(const ChildRef& ref, const Model& model) {
     assert(ref.is_var || static_cast<size_t>(ref.id) < model.num_nodes());
     return !ref.is_var && model.nodes()[ref.id].op == NodeOp::Const;
 }
 
-// The Div case of `evaluate` (#205). A denominator below 1e-15 in magnitude is
-// read as a zero, as it always was, but the answer now follows the quotient's
-// real sign rule instead of the numerator's alone:
-//
-//  - num != 0: an infinity signed by num * denom (`1 / -0.0` is -inf, and so is
-//    `-1 / 1e-16`). Signs are combined with signbit rather than by multiplying,
-//    so an infinite numerator over an exact zero stays an infinity instead of
-//    turning into `inf * 0` = NaN.
-//  - num == 0: 0 / 0, NaN -- undefined, so a comparison reads it as maximally
-//    violated. It used to be +inf, which a `>=` row reads as satisfied. This
-//    holds for a tiny NONZERO denominator too, because below the threshold the
-//    denominator is a zero by definition -- and it keeps a sub-threshold Div
-//    from ever evaluating finite, which LinearJumpScorer depends on: such a Div
-//    is affine by rule with local derivative 0, and `prepare` keeps the row off
-//    the closed form only because its side is non-finite. A finite 0 / 1e-16
-//    would let the scorer read `x / 1e-16` as constant at x = 0 (#205 review).
-//  - a NaN numerator stays NaN; a NaN denominator fails the threshold test and
-//    reaches the plain division, which is NaN too.
+// The Div case of `evaluate` (#205). A denominator below 1e-15 in magnitude is a zero:
+//  - num != 0: an infinity signed by num * denom (`1 / -0.0` and `-1 / 1e-16` are -inf), via
+//    signbit, so an infinite numerator over an exact zero is not `inf * 0` = NaN.
+//  - num == 0: NaN, so a comparison reads it as maximally violated (+inf would satisfy a `>=`
+//    row), even for a tiny NONZERO denominator. A sub-threshold Div then never evaluates
+//    finite, which LinearJumpScorer depends on: it is affine by rule with derivative 0, and
+//    `prepare` keeps the row off the closed form only because its side is non-finite (a
+//    finite 0 / 1e-16 would let it read `x / 1e-16` as constant at x = 0).
+//  - a NaN numerator stays NaN; a NaN denominator fails the test and divides to NaN.
 static double div_value(double num, double denom) {
     if (std::abs(denom) < 1e-15) {
         if (num == 0.0 || std::isnan(num)) {
@@ -92,10 +75,9 @@ static int list_size(const ChildRef& ref, const Model& model) {
     return 0;
 }
 
-// An Element index (#186): the child's value truncated toward zero, which is how
-// `At` reads its index, or -1 when that falls outside [0, n). Tested as a double
-// BEFORE any conversion, so a NaN, an infinity or a value past int range is
-// "outside" rather than the undefined behaviour `static_cast<int>` would be.
+// An Element index (#186): the value truncated toward zero, as `At` reads it, or -1 outside
+// [0, n). Tested as a double BEFORE conversion, so NaN, infinity or a value past int range is
+// "outside", not `static_cast<int>`'s undefined behaviour.
 static int32_t element_index(double v, int32_t n) {
     const double t = std::trunc(v);
     if (std::isnan(t) || t < 0.0 || t >= static_cast<double>(n)) {
@@ -104,17 +86,15 @@ static int32_t element_index(double v, int32_t n) {
     return static_cast<int32_t>(t);
 }
 
-// The Element case of `evaluate`: one or two indices into the node's table, and
-// 0.0 when any of them is out of range -- `At`'s rule for a position past its
-// List. Kept out of the dispatch table to keep the case to one line.
+// The Element case of `evaluate`: one or two indices into the node's table; 0.0 when one is
+// out of range (`At`'s rule), NaN when one is NaN.
 static double element_value(const ExprNode& node, ConstSpan<ChildRef> children,
                             const Model& model) {
     const ElementTable& tbl = model.element_table(node.lambda_func_id);
     const double raw_i = child_val(children[0], model);
     const int32_t i = element_index(raw_i, tbl.rows);
     if (i < 0) {
-        // Out of range reads 0.0, At's rule; an undefined (NaN) index stays
-        // undefined (#205).
+        // An undefined (NaN) index stays undefined (#205).
         return std::isnan(raw_i) ? raw_i : 0.0;
     }
     if (children.size() == 1) {
@@ -129,11 +109,9 @@ static double element_value(const ExprNode& node, ConstSpan<ChildRef> children,
         .values[(static_cast<size_t>(i) * static_cast<size_t>(tbl.cols)) + static_cast<size_t>(j)];
 }
 
-// The Min and Max cases of `evaluate`. A NaN child makes the result NaN (#205):
-// std::min/std::max keep whichever operand a `<` against NaN does not displace,
-// so they returned NaN only when it came FIRST and silently dropped it anywhere
-// else -- `max(5, sqrt(-1)) <= 6` read as satisfied, and the answer depended on
-// child order.
+// The Min and Max cases of `evaluate`. A NaN child makes the result NaN (#205), tested
+// explicitly: std::min/std::max keep NaN only when it comes FIRST, so the answer would depend
+// on child order (`max(5, sqrt(-1)) <= 6` would read as satisfied).
 static double min_max_value(ConstSpan<ChildRef> children, const Model& model, bool take_max) {
     double m = child_val(children[0], model);
     if (std::isnan(m)) {
@@ -149,10 +127,9 @@ static double min_max_value(ConstSpan<ChildRef> children, const Model& model, bo
     return m;
 }
 
-// The `extra` values of a LambdaExtra/PairLambdaExtra node, children[1..], read
-// once per evaluation and handed to every functor call as one span. Eight inline
-// slots cover the "few scalars" the op is for without a heap allocation per
-// evaluation; more spill to a vector.
+// A LambdaExtra/PairLambdaExtra node's `extra` values, children[1..], read once per evaluation
+// and passed to every call as one span. Eight inline slots cover the "few scalars" the op is
+// for without a heap allocation; more spill to a vector.
 class ExtraValues {
 public:
     ExtraValues(ConstSpan<ChildRef> children, const Model& model) : n_(children.size() - 1) {
@@ -207,49 +184,29 @@ static double pair_lambda_extra_value(const ExprNode& node, ConstSpan<ChildRef> 
     return s;
 }
 
-// A flat dispatch table over NodeOp's 34 cases, suppressed deliberately rather
-// than split. What the score measures here is not compounded logic: it is the
-// eighteen small guards the individual cases carry -- a loop over a variadic
-// node's children, a divide-by-zero test, an overflow test -- each charged
-// double because the metric adds the enclosing switch's nesting level to every
-// one of them. The cases are siblings, not a hierarchy: none runs past six lines
-// or nests deeper than two, and none can affect another.
+// A flat dispatch table over NodeOp's 34 cases, suppressed rather than split: the score is
+// eighteen small per-case guards (a child loop, a divide-by-zero or overflow test), each
+// charged double for the switch's nesting. The cases are independent siblings, none over six
+// lines or two levels deep, so the table is the readable unit. delta_evaluate calls this once
+// per dirtied node per candidate, so any split would have to stay inlinable, which rules out
+// dispatch through a function table.
 //
-// So the readable unit here is the table, and per-family helpers would hide it.
-// And delta_evaluate calls this once per dirtied node per candidate move, so any
-// split would have to stay inlinable -- which rules out the
-// dispatch-through-a-table alternative outright.
-//
-// ADDING A NodeOp: the switch is deliberately `default:`-free, so a missed case is
-// a -Wswitch warning, and since #171 it shows up twice over: GCC compiles this
-// with -Wall, and clang-tidy reports `clang-diagnostic-switch` (before #171
-// neither did -- no -Wall, and `.clang-tidy`'s leading `-*` switched the
-// diagnostics off). No hook blocks on either now: both are checked by hand
-// before a push (CLAUDE.md, Git Hooks). `.githooks/tidy-probe.sh` keeps proving
-// the clang-tidy half bites. Never add a `default:` here: it is exactly what
-// would hide the missed case. The warning covers `default:`-free switches
-// only, so `grep -rn 'NodeOp::' src/ include/ python/` for the other places an
-// op is named: `src/io.cpp` has two switches, and `node_is_affine` in
-// src/feasibility_jump.cpp has a deliberate `default:` (a new op is
-// conservatively non-affine there, and unreported).
+// ADDING A NodeOp: the switch is deliberately `default:`-free, so a missed case is a -Wswitch
+// warning from both GCC (-Wall) and clang-tidy (`clang-diagnostic-switch`, #171), checked by
+// hand before a push; `.githooks/tidy-probe.sh` proves the clang-tidy half bites. Never add a
+// `default:` here. Other places name ops (`grep -rn 'NodeOp::' src/ include/ python/`):
+// `src/io.cpp` has two switches, and `node_is_affine` in src/feasibility_jump.cpp has a
+// deliberate `default:` (a new op is conservatively non-affine there, and unreported).
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
 double evaluate(const ExprNode& node, const Model& model) {
     const ConstSpan<ChildRef> children = model.children(node);
     switch (node.op) {
         case NodeOp::Const:
-            // One Const is not a literal: the objective row's RHS. Each
-            // portfolio worker tightens its own bound on its own incumbents, so
-            // that value is per-model state and lives in the model, not in the
-            // shared node's `const_value` -- which keeps the +inf the row was
-            // created with (#157).
-            //
-            // Cheap and safe to test here. A Const is a leaf, so it is never in a
-            // `delta_evaluate` dirty cone and this arm runs only from
-            // `full_evaluate`; and `objective_bound_node()` is -1 until the row
-            // exists, so the comparison is inert on a model that has none. The
-            // branch is also NEEDED rather than merely tidy: `full_evaluate` runs
-            // after every `restore_state`, and without it a restart would reset
-            // the worker's bound to +inf.
+            // One Const is not a literal: the objective row's RHS, per-worker state kept in the
+            // model, while the shared node's `const_value` keeps the creation-time +inf (#157).
+            // Cheap: a leaf is never in a dirty cone, so only `full_evaluate` runs this, and
+            // `objective_bound_node()` is -1 without the row. NEEDED: `full_evaluate` follows
+            // every `restore_state`, and a restart would otherwise reset the bound to +inf.
             if (node.id == model.objective_bound_node()) {
                 return model.objective_bound();
             }
@@ -273,10 +230,8 @@ double evaluate(const ExprNode& node, const Model& model) {
             return div_value(child_val(children[0], model), child_val(children[1], model));
 
         case NodeOp::Pow:
-            // std::pow's own answer, unmodified (#205): NaN for a domain error
-            // (`pow(-8, 1/3)`) and a correctly SIGNED inf for an overflow or a
-            // pole. This used to fold every non-finite result to +inf, which a
-            // `>=` row reads as satisfied by any finite bound.
+            // std::pow unmodified (#205): NaN for a domain error (`pow(-8, 1/3)`), a SIGNED inf
+            // for an overflow or pole. Never fold to +inf: a `>=` row reads that as satisfied.
             return std::pow(child_val(children[0], model), child_val(children[1], model));
 
         case NodeOp::Min:
@@ -301,14 +256,13 @@ double evaluate(const ExprNode& node, const Model& model) {
             return std::exp(child_val(children[0], model));
 
         case NodeOp::Log:
-            // std::log as is (#205): -inf at exactly 0 (either sign), NaN below.
-            // A negative argument used to read as -inf, which `log(x) <= c`
-            // scored as satisfied.
+            // std::log as is (#205): -inf at exactly 0 (either sign), NaN below, so `log(x) <= c`
+            // is not satisfied by a negative x.
             return std::log(child_val(children[0], model));
 
         case NodeOp::Sqrt:
-            // std::sqrt as is (#205): NaN below 0. It used to read 0.0 there, a
-            // satisfiable value -- `sqrt(x) <= 1` held at x = -10.
+            // std::sqrt as is (#205): NaN below 0, not a satisfiable value (`sqrt(x) <= 1` at
+            // x = -10).
             return std::sqrt(child_val(children[0], model));
 
         case NodeOp::SignPower: {
@@ -340,11 +294,9 @@ double evaluate(const ExprNode& node, const Model& model) {
         }
 
         case NodeOp::At: {
-            // children[0] = list var, children[1] = index expr. The index goes
-            // through element_index, Element's guard, so a NaN or an
-            // out-of-int-range value is never cast (that cast is undefined
-            // behaviour). Out of range keeps reading 0.0; a NaN index is
-            // undefined and stays NaN (#205).
+            // children[0] = list var, children[1] = index expr, through Element's
+            // `element_index` guard so no out-of-int-range value is cast. Out of range reads
+            // 0.0; a NaN index stays NaN (#205).
             const double raw = child_val(children[1], model);
             if (std::isnan(raw)) {
                 return raw;
@@ -472,13 +424,10 @@ double evaluate(const ExprNode& node, const Model& model) {
     return 0.0;
 }
 
-// The local derivative of a Min/Max with respect to one child: the child's
-// share of the attaining set. A child that attains the extremum gets 1/k, where
-// k children tie for it, and any other child 0. Giving each tied child 1.0, as
-// this used to, made a k-way tie a slope of k in the chain rule's sum over the
-// children, and a Newton step through it overshot k-fold (#211). The 1/k split
-// is a subgradient: it keeps the sum of the shares at 1, the slope the node
-// actually has along a direction moving every tied child together.
+// A Min/Max's local derivative w.r.t. one child: 1/k if it is one of k children attaining the
+// extremum, else 0. A subgradient whose shares sum to 1, the node's slope when every tied child
+// moves together; 1.0 each would make a k-way tie a slope of k and overshoot Newton k-fold
+// (#211).
 static double extremum_share(const ExprNode& node, ConstSpan<ChildRef> children, int child_idx,
                              const Model& model) {
     const double extremum = model.node_values()[node.id];
@@ -492,31 +441,20 @@ static double extremum_share(const ExprNode& node, ConstSpan<ChildRef> children,
     return 1.0 / static_cast<double>(ties);
 }
 
-// The AD peer of evaluate() above, and suppressed for the same reason and by the
-// same argument: one flat `default:`-free dispatch table over the same 34 NodeOp
-// cases, where the score is the sum of each case's own guards against a
-// non-finite or non-differentiable point rather than any nesting between them.
-// It scores higher than evaluate() only because a derivative needs more such
-// guards, not because the cases interact. Reverse-mode AD calls it once per DAG
-// edge, so it sits on the same hot path. The `default:`-free table is checked the
-// same way -- see the note on evaluate() above.
+// The AD peer of evaluate(), suppressed by the same argument: one flat `default:`-free table
+// over the same 34 cases, scoring higher only because a derivative needs more per-case guards.
+// Reverse-mode AD calls it once per DAG edge. Adding a NodeOp: see the note on evaluate().
 //
-// Non-finite partials. Every propagation pass multiplies the edges along a path
-// (`add_chain_term`), so one infinite edge makes the partial of every variable
-// below it on a live path infinite, and two such paths meeting with opposite
-// signs read `inf - inf` -- NaN. A zero edge below it is skipped, not
-// multiplied, since #260. `Pow`, `SignPower`, and since #205 `Div` and `Tan`,
-// therefore fold a non-finite partial to 0; `Log`
-// and `Sqrt` return 0 on and below their singular point, where their value is
-// -inf or NaN. What stays finite but huge near a pole (`1/x` at x = 1e-15) is
-// left alone: that slope is real, and clamping it would change every AD
-// trajectory that passes near one.
+// Non-finite partials: propagation multiplies edges along a path (`add_chain_term`), so one
+// infinite edge makes every variable below it on a live path infinite, and opposite-signed
+// paths meet as `inf - inf` = NaN (a zero edge is skipped, #260). So `Pow`, `SignPower`, `Div`
+// and `Tan` fold a non-finite partial to 0 (#205), and `Log`/`Sqrt` return 0 on and below
+// their singular point. A finite but huge slope near a pole (`1/x` at x = 1e-15) is real and
+// left alone: clamping it would change every AD trajectory passing near one.
 //
-// And no op offers a finite slope where its VALUE is NaN (#205): a Newton step
-// built from it would aim at a root inside a region where the function is not
-// defined. `Log` returns 0 for x < 0, `Sqrt` for x < 1e-15, and `Pow`'s
-// `pow(base, exp - 1)` is itself NaN wherever `pow(base, exp)` is, which the
-// isfinite fold catches.
+// No op offers a finite slope where its VALUE is NaN (#205), since a Newton step would aim into
+// an undefined region: `Log` returns 0 for x < 0, `Sqrt` for x < 1e-15, and `Pow`'s
+// `pow(base, exp - 1)` is NaN wherever `pow(base, exp)` is, which the isfinite fold catches.
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
 double local_derivative(const ExprNode& node, int child_idx, const Model& model) {
     const ConstSpan<ChildRef> children = model.children(node);

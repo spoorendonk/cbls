@@ -12,12 +12,9 @@
 #include <utility>
 #include <vector>
 
-// The incremental Sum's drift bound (#188) rests on TwoSum computing each
-// addition's rounding error exactly, which needs IEEE double arithmetic
-// evaluated as written. -ffast-math (or -ffinite-math-only) lets the compiler
-// fold `(a - (s - (s - a))) + ...` to 0, which would zero every error, make
-// every inexact update read as exact, and silently switch the phantom-row gate
-// off. Refused here rather than trusted to the build.
+// The incremental Sum's drift bound (#188) needs TwoSum's exact rounding error, i.e. IEEE double
+// arithmetic as written. -ffast-math may fold the error term to 0, making every inexact update
+// read as exact and silently disabling the phantom-row gate, so it is refused here.
 #if defined(__FAST_MATH__) || defined(__FINITE_MATH_ONLY__) && __FINITE_MATH_ONLY__
 #error "src/dag_ops.cpp needs IEEE arithmetic: do not build it with -ffast-math"
 #endif
@@ -28,20 +25,11 @@ namespace cbls {
 
 namespace detail {
 
-// Kahn's algorithm over the node-to-node edges only (variable children are
-// sources and carry no in-degree). Children come out before their parents.
-//
-// Walks the back-references `Model::rebuild_back_references` has just built,
-// rather than a child->parents adjacency of its own: that was one more vector per
-// node, allocated on each of the two sorts per build. Those lists hold each
-// parent once, where the old adjacency listed a parent naming the same child
-// twice (`prod(n, n)`) twice and counted both edges into its in-degree. The
-// order is unchanged: those two entries sat next to each other, a parent's
-// in-degree could only reach zero on the second, and nothing was queued between
-// them -- so a parent is queued at the same point either way.
-//
-// `sorted` is its own FIFO: entries are appended at the back and consumed from
-// `head`, the order a std::queue gave without the deque's block allocations.
+// Kahn's algorithm over node-to-node edges (variables carry no in-degree); children come out
+// before parents. Walks `Model::parents`, which lists a parent once even when it names a child
+// twice (`prod(n, n)`); that queues each parent at the same point as counting both edges would.
+// `sorted` is its own FIFO (append at the back, consume from `head`): a std::queue's order
+// without the deque's block allocations.
 std::vector<int32_t> compute_topo_order(const Model& model) {
     const auto n = static_cast<int32_t>(model.num_nodes());
     std::vector<int32_t> in_degree(static_cast<size_t>(n), 0);
@@ -72,30 +60,19 @@ std::vector<int32_t> compute_topo_order(const Model& model) {
 
 namespace {
 
-// Is this thread already inside `full_evaluate` or `delta_evaluate`?
-//
-// A `lambda_sum` functor is user code inside the evaluation walk. Re-entering
-// from there is not merely unsupported, it is SILENT PERMANENT CORRUPTION of
-// this thread: the nested call does `dirty_list.clear()` on the same
-// `thread_local` vector that the outer call's `DirtyFlagGuard` holds a reference
-// to, so the guard then clears the INNER call's ids and leaks the outer call's
-// flags -- and a leaked flag makes `delta_evaluate`'s seeding loop skip that node
-// for the life of the process (see `DirtyFlagGuard`). The symptom would be a node
-// that quietly stops updating, long after and nowhere near the cause. So it is
-// refused rather than documented.
-//
-// One `thread_local` test and one store per call, on both entry points. It
-// changes no value and draws no random number, so trajectories are unaffected.
+// Is this thread already inside `full_evaluate` or `delta_evaluate`? Re-entry from a lambda
+// functor (user code in the walk) is SILENT PERMANENT CORRUPTION: the nested call clears the
+// `thread_local` dirty list the outer `DirtyFlagGuard` references, leaking the outer flags,
+// and a leaked flag makes the seeding loop skip that node for the life of the process. So it
+// is refused. One `thread_local` test and store per call; trajectories are unaffected.
 thread_local bool in_evaluation = false;
 
-// RAII, so that an exception out of user code inside the walk clears the flag
-// on the way out instead of poisoning every later call on this thread.
+// RAII, so an exception out of user code clears the flag instead of poisoning the thread.
 class EvaluationGuard {
 public:
     explicit EvaluationGuard(const char* entry) {
         if (in_evaluation) {
-            // Not an assert: this is reachable from user code in a Release build,
-            // and the silent wrong answer above is the thing being prevented.
+            // Not an assert: reachable from user code in a Release build.
             throw std::logic_error(std::string(entry) +
                                    ": re-entered from inside an evaluation. A lambda functor "
                                    "must not call full_evaluate or delta_evaluate, on this "
@@ -116,9 +93,8 @@ double full_evaluate(Model& model) {
     const EvaluationGuard guard("full_evaluate");
     // The probe's undo log (#270) is dropped: every value is about to be rewritten.
     model.probe_undo().pending = false;
-    // Re-sums without the rounding check, so no incremental Sum is tracked
-    // afterwards and none carries drift (#188); its first commit re-sums it,
-    // checked. Also what sizes the state: every close and every structural
+    // Re-sums unchecked, so afterwards no incremental Sum is tracked or drifted (#188); its
+    // first commit re-sums it, checked. Also sizes the state: every close and structural
     // rebuild ends in a full pass.
     IncSums& sums = model.inc_sums();
     sums.slots.assign(model.inc_sum_nodes().size(), IncSumState{});
@@ -134,27 +110,13 @@ double full_evaluate(Model& model) {
 
 namespace {
 
-// Recompute a marked dirty set in topological order, by whichever of the two
-// routes is cheaper for THIS set. Its own function because it is a separate job
-// from finding the set: the BFS above decides WHAT is stale, this decides how to
-// walk it in dependency order.
-//
-// Sorting d entries costs O(d log d), with two scattered `topo_pos_` loads per
-// comparison; scanning `topo_order()` and testing the flag costs O(|nodes|)
-// sequential byte tests. Sorting wins by orders of magnitude in the regime that
-// matters -- a few dozen dirty nodes against the 4.3M of the largest MIPfeas
-// instance, where the scan was ~2M flag tests to recompute a handful, and delta
-// evaluation was not sublinear in the model at all. It loses at the other end:
-// as d approaches |nodes| the sort does ~log2(d) scattered comparisons per
-// element where the scan does one sequential test, and a dense continuous model
-// -- MINLPLib's regime, not this roster's -- can sit there.
-//
-// The condition is the cost model itself rather than a tuned constant: sort
-// while d*log2(d) is under |nodes|, otherwise scan. Both routes produce the same
-// order and the same values.
-//
-// `eval_node` is a template parameter rather than a `std::function` so that the
-// plain instantiation inlines the `evaluate()` call.
+// Recompute a marked dirty set in topological order, by the cheaper route for THIS set.
+// Sorting d entries is O(d log d) with scattered `topo_pos_` loads; scanning `topo_order()` is
+// O(|nodes|) sequential flag tests. Sorting wins by orders of magnitude on a few dozen dirty
+// nodes of a 4.3M-node MIPfeas instance (the scan made delta evaluation non-sublinear); it
+// loses as d approaches |nodes| (a dense continuous model, MINLPLib's regime). The condition
+// is that cost model, not a tuned constant: sort while d*log2(d) < |nodes|. Both routes give
+// the same order and values. `eval_node` is a template parameter so `evaluate()` inlines.
 template <typename EvalNode>
 void evaluate_dirty_in_topo_order(Model& model, std::vector<int32_t>& dirty_list,
                                   const std::vector<uint8_t>& dirty_flags, size_t num_nodes,
@@ -180,17 +142,12 @@ void evaluate_dirty_in_topo_order(Model& model, std::vector<int32_t>& dirty_list
     }
 }
 
-// Clears the dirty flags the caller set, however the caller leaves.
-//
-// Not a tidiness wrapper: the flags are `thread_local`, and a LEAKED `1` is worse
-// than stale, because `delta_evaluate`'s seeding loop skips a node whose flag is
-// already set -- so the next call omits that node from its dirty list and never
-// recomputes it, silently, for the rest of the process. Only user code inside the
-// walk can throw (a `lambda_sum` functor). The destructor cannot throw: every id
-// in `list` already indexed `flags` on the way in. `List` is the collected
-// `std::vector`, read at destruction so that it covers every id pushed after the
-// guard was armed, or a cached cone's span (#271), whose flags are all set
-// before anything can throw.
+// Clears the dirty flags the caller set, however the caller leaves. The flags are
+// `thread_local`, and a LEAKED `1` makes the seeding loop skip that node silently for the rest
+// of the process. Only user code in the walk (a lambda functor) can throw; the destructor
+// cannot, since every id in `list` already indexed `flags`. `List` is the collected vector,
+// read at destruction to cover ids pushed after arming, or a cached cone's span (#271), whose
+// flags are all set before anything can throw.
 template <typename List>
 struct DirtyFlagGuard {
     DirtyFlagGuard(std::vector<uint8_t>& f, const List& l) : flags(f), list(l) {}
@@ -214,77 +171,34 @@ struct DirtyFlagGuard {
 // Incremental Sum (#177, #188)
 // ---------------------------------------------------------------------------
 //
-// A committed FJ move changes one term of each row it touches, and re-summing a
-// row costs its whole length: on swath3 a committed dirty Sum averaged 1315
-// terms, of which about one had changed, and the re-sum was 36% of the run.
-// So `commit_scalar_move` moves each incremental Sum (`ExprNode::kIncSum`, see
-// `Model::classify_incremental_sums`) by its terms' changes instead: a variable
-// term's from the old value the caller passes, a node term's from the value it
-// held just before the walk rewrote it. The update is applied to the Sum's
-// value in place, ahead of the Sum's own turn in topological order, where it is
-// then taken as it stands.
+// Rules, exactness and containment: docs/architecture.md, "Incremental Sum". Here:
 //
-// THE UPDATE IS FLOATING POINT, AND EACH ONE IS TESTED. `new - old` and
-// `value + (new - old)` are each checked with TwoSum, which computes the
-// rounding error of an addition exactly. Both errors 0 means the update is
-// exact: it adds no drift, and on integral data within 2^53 every update is,
-// so there the values are the re-sum's to the bit, exactly as #177's
-// exact-only rule had them. Otherwise the Sum's `IncSumState::drift_bound`
-// grows by the two errors' magnitudes, so that it bounds |value - the real sum
-// of the stored terms| at all times:
+// `commit_scalar_move` moves each incremental Sum by its terms' changes: a variable term's
+// from the caller's old value, a node term's from its value just before the walk rewrote it.
+// The update is applied in place ahead of the Sum's topological turn, which then takes it as
+// it stands. Each update adds its two TwoSum errors (each at most half an ulp of its result)
+// to `drift_bound`, and every addition to the bound is rounded up (`round_bound_up`), so it
+// never underestimates. A non-finite value (the Sum's, or a term's old or new) re-sums at its
+// turn, since `inf - inf` is no update.
 //
-//   - a checked re-sum (`checked_resum`) sets it to the sum of the magnitudes
-//     of its own n - 1 rounding errors, again computed exactly by TwoSum --
-//     which is 0 when the re-sum was exact and never more than the textbook
-//     bound gamma_{n-1} * sum(|t_i|);
-//   - each inexact update adds |error of new - old| + |error of the add|,
-//     each at most half an ulp of its result;
-//   - every addition of the bound itself is rounded up (`round_bound_up`), so
-//     rounding the bound can never make it an underestimate.
+// A Probe that knows the old value applies the commit's update, so an identity move on a
+// drifted state scores exactly 0. Where the commit would re-sum instead (untracked, period
+// reached, non-finite) the probe still updates and its score differs by at most the drift
+// bound plus the re-sum's rounding; FJ makes no feasibility or bump decision on a probe. The
+// Rollback replays the undo log (#270): re-summing would snap the committed value and change
+// the violated-row bookkeeping under FeasibilityJump's feet.
 //
-// Drift is contained three ways. A Sum re-sums, checked, on what would be its
-// kIncSumPeriod-th inexact update since the last re-sum. `reground_inc_sum`
-// re-sums one Sum on demand -- FeasibilityJump's local-minimum gate uses it on
-// a row whose verdict the bound cannot decide -- and `reground_drifted_sums`
-// every drifted one, which FeasibilityJump does at the end of every batch, so
-// drift never leaves a batch: the search, the pool, LNS and the inner solver
-// see only re-summed values. A non-finite value -- the Sum's, or a term's old
-// or new one -- makes the Sum re-sum at its turn, since `inf - inf` is no
-// update.
-//
-// Every other walk keeps the values consistent with a drifted Sum:
-//
-//   - a plain `Commit` (`delta_evaluate`) re-sums every incremental Sum in
-//     its cone and leaves it untracked -- a snap, but only of rows the caller
-//     moved and so re-reads; the next FJ commit to update the Sum re-sums it
-//     again, checked, first;
-//   - a `Probe`, when it knows the old value (`probe_scalar_move`), applies
-//     the commit's update to the committed value, so an identity move on a
-//     drifted state scores exactly 0. Where the commit would re-sum instead
-//     (an untracked Sum, the period reached, a non-finite value) the probe
-//     still updates, and its score differs from the commit's by at most the
-//     Sum's drift bound plus the re-sum's rounding. That is a scoring
-//     difference at the ulp level; FJ makes no feasibility or bump decision
-//     on a probe's value;
-//   - the matching `Rollback` writes the probe's undo log back (`ProbeUndo`,
-//     #270) rather than re-summing, which would snap the committed value, and
-//     change the violated-row bookkeeping under FeasibilityJump's feet.
-//
-// The cost model. The update costs two TwoSums and a store per changed term,
-// paid by the term, plus a parents scan for each dirty node term. It wins when
-// rows are long and a move touches one term of each, which is the MIP regime.
-// It loses on short rows, where the checks are a larger share of a small
-// re-sum, and where walks that are not FJ commits -- Novelty Jump's legs, the
-// structural batch, the inner solver -- alternate with FJ commits on the same
-// Sum: each such walk leaves it untracked, so the next commit pays a checked
-// re-sum (a TwoSum per term) where the plain walk paid a plain one.
+// Cost: two TwoSums and a store per changed term, plus a parents scan per dirty node term.
+// Wins on long rows a move touches once (MIP). Loses on short rows, and where non-FJ walks
+// (Novelty Jump's legs, the structural batch, the inner solver) alternate with FJ commits on
+// one Sum: each leaves it untracked, so the next commit pays a checked re-sum.
 namespace {
 
 thread_local IncrementalSumCounters inc_sum_counts;
 thread_local ConeCacheCounters cone_cache_counts;
 
-// The dirty_flags bit beyond 1 ("in the cone"), on an incremental Sum: re-sum
-// it at its turn rather than take it as its updates left it.
+// The dirty_flags bit beyond 1 ("in the cone"), on an incremental Sum: re-sum it at its turn
+// rather than take it as its updates left it.
 constexpr uint8_t kDirtyResum = 2;
 
 // The rounding error of `s = fl(a + b)`, exactly: a + b == s + err in real
@@ -335,9 +249,8 @@ double checked_resum(const Model& model, const ExprNode& node, IncSumState& st) 
     return s;
 }
 
-// The incremental-Sum rules for one walk. `Plain` is a model with no incremental
-// Sum, or an unclosed one whose state no full_evaluate has sized: every node goes
-// to the plain evaluator.
+// The incremental-Sum rules for one walk. `Plain` (no incremental Sum, or state not yet sized
+// by full_evaluate) sends every node to the plain evaluator.
 class IncSumWalk {
 public:
     IncSumWalk(Model& model, DeltaMode mode, bool push, std::vector<uint8_t>& dirty_flags)
@@ -348,16 +261,13 @@ public:
           rule_(rule_for(model, mode)),
           push_(push && (rule_ == Rule::Commit || rule_ == Rule::Probe)) {}
 
-    // Before the walk: a plain commit untracks the Sums in its cone; then the
-    // changed variables' own moves are pushed into the Sums they are terms of.
+    // Before the walk: a plain commit untracks the Sums in its cone; then the changed
+    // variables' moves are pushed into the Sums they are terms of.
     //
-    // This and `eval_flagged` are kept out of line
-    // deliberately. Inlined, they grew `delta_walk` and made the probe-bound
-    // MINLPLib walks 5-14% slower per iteration at a fixed iteration count
-    // (eg_all_s 7.09 s against 6.20 s for the pre-#188 engine; maxmin, nvs01,
-    // nvs14 likewise), on the same trajectory. Out of line, every one of them
-    // timed at or below the pre-#188 engine (#188, review round 2). The cost is
-    // one call per walk, and one per flagged node, which is a Sum or its term.
+    // Out of line deliberately, as is `eval_flagged` (measured, #188): inlined, they grew
+    // `delta_walk` and made probe-bound MINLPLib walks 5-14% slower per iteration on the same
+    // trajectory (eg_all_s 7.09 s vs 6.20 s; maxmin, nvs01, nvs14 likewise); out of line all
+    // timed at or below the pre-#188 engine. Cost: one call per walk and per flagged node.
     [[gnu::noinline]] void prepare(ConstSpan<int32_t> dirty_list, const int32_t* changed_var_ids,
                                    size_t count, const double* old_values) {
         switch (rule_) {
@@ -369,23 +279,13 @@ public:
                 break;
             case Rule::Commit:
                 if (!push_) {
-                    // A walk without pushes re-reads a term only at its Sum's
-                    // turn, so anything throwing before that turn -- a plain
-                    // or extra lambda (Python binds them as raw callables), or
-                    // anything else -- would leave the Sum stale while its
-                    // state says it is tracked; the next commit would update
-                    // the stale value. Untracked, it re-sums instead.
-                    // Defensive: after a throw the contract already asks for a
-                    // full_evaluate, which resets them all.
-                    //
-                    // Unconditional (#192): keying it on the node kinds that run
-                    // user code missed the plain lambdas once already. It changes
-                    // no value -- every Sum in the cone is untracked at its own
-                    // turn anyway (eval_sum, Rule::Commit without pushes), this
-                    // only does it before the walk can throw. The cost is one
-                    // pass over the dirty list per plain commit, a walk that
-                    // already visits every node on that list; FJ's commits push
-                    // and never take it.
+                    // Untrack before the walk can throw: a throw (any lambda, or anything
+                    // else) before a Sum's turn would leave it stale but tracked, and the
+                    // next commit would update the stale value. Defensive, since a throw
+                    // already requires a full_evaluate. Unconditional (#192): keying it on
+                    // user-code node kinds missed plain lambdas. Changes no value (eval_sum
+                    // untracks each at its turn anyway); costs one dirty-list pass per plain
+                    // commit, which FJ's pushing commits never take.
                     for (const int32_t nid : dirty_list) {
                         if ((nodes_[nid].inc_sum_flags & ExprNode::kIncSum) != 0) {
                             sums_.slots[slot_of(nid)].tracked = 0;
@@ -408,14 +308,9 @@ public:
         }
     }
 
-    // One dirty node's new value. An incremental Sum is taken as its updates
-    // left it, or re-summed; a dirty term node pushes its change into its
-    // incremental parents.
-    //
-    // Split in two so that this, the part every dirty node runs, stays small
-    // enough to inline into the walk's loop: on a probe-bound model most dirty
-    // nodes are neither a Sum nor a term of one, and a call per node there cost
-    // nvs14 ~8% of its run (gprof, #188).
+    // One dirty node's new value: an incremental Sum as its updates left it, or re-summed; a
+    // dirty term node pushes its change into its incremental parents. Split so this common
+    // part inlines into the walk: a call per node cost nvs14 ~8% of its run (gprof, #188).
     template <typename EvalOther>
     double eval(int32_t nid, EvalOther&& eval_other) {
         const uint8_t flags = nodes_[nid].inc_sum_flags;
@@ -447,8 +342,7 @@ private:
     enum class Rule : uint8_t { Plain, Commit, Probe };
 
     static Rule rule_for(const Model& model, DeltaMode mode) {
-        // A model with no incremental Sum -- most MINLPLib instances -- takes
-        // the plain walk.
+        // No incremental Sum (most MINLPLib instances): the plain walk.
         if (model.inc_sum_nodes().empty() ||
             model.inc_sums().slots.size() != model.inc_sum_nodes().size()) {
             return Rule::Plain;
@@ -498,8 +392,8 @@ private:
             ++st.inexact;
             ++inc_sum_counts.inexact;
         }
-        // Exact or not, the value is no longer a re-sum of the current terms
-        // unless it is the exact sum -- and a zero bound says it is.
+        // A nonzero bound (from this or an earlier update) means the value may not be the
+        // exact sum of the current terms.
         if (st.drift_bound != 0.0) {
             st.drifting = 1;
             if (st.listed == 0) {
@@ -510,11 +404,9 @@ private:
         model_.set_node_value_unchecked(p, s);
     }
 
-    // Untracked as well as flagged: were user code to throw before the Sum's
-    // turn, the flag would be cleared on the way out and the Sum -- which has
-    // not taken this term's change -- must not be updated again from there.
-    // (A throw mid-commit can also leave other Sums pushed but their readers
-    // not yet re-evaluated; a full_evaluate after it resets every Sum.)
+    // Untracked as well as flagged: a throw before the Sum's turn clears the flag, and the Sum,
+    // which has not taken this term's change, must not be updated from there. (A throw
+    // mid-commit can leave other Sums pushed but unread; a full_evaluate after it resets all.)
     static void force_resum(uint8_t& flag, IncSumState& st) {
         flag |= kDirtyResum;
         st.tracked = 0;
@@ -541,11 +433,8 @@ private:
                 if (push_) {
                     return checked_resum(model_, node, st);
                 }
-                // A walk without pushes -- Novelty Jump's legs, the inner
-                // solver, the structural batch -- re-sums plainly and leaves
-                // the Sum untracked, as full_evaluate does: the rounding check
-                // is paid only by the FJ commit that next updates the Sum, and
-                // never by a regime that re-sums on every walk.
+                // A walk without pushes re-sums plainly and untracks, as full_evaluate does:
+                // the rounding check is paid only by the next FJ commit to update the Sum.
                 st.tracked = 0;
                 st.drifting = 0;
                 return evaluate(node, model_);
@@ -596,11 +485,9 @@ double objective_value(const Model& model) {
     return 0.0;
 }
 
-// A Probe's undo log (#270): its cone, with every value as it stood before the
-// probe. Taken after the cone is collected and before anything in it is
-// written -- an incremental Sum's term pushes included -- so the log holds the
-// committed values, drift and all. O(cone) loads and stores, against the
-// O(cone log cone) collect-sort-evaluate walk the Rollback no longer repeats.
+// A Probe's undo log (#270): its cone's values before the probe, taken after collection and
+// before any write (term pushes included), so it holds the committed values, drift and all.
+// O(cone) loads and stores, against an O(cone log cone) collect-sort-evaluate Rollback walk.
 void arm_probe_undo(Model& model, ConstSpan<int32_t> dirty_list, const int32_t* changed_var_ids,
                     size_t count) {
     ProbeUndo& undo = model.probe_undo();
@@ -613,11 +500,8 @@ void arm_probe_undo(Model& model, ConstSpan<int32_t> dirty_list, const int32_t* 
     undo.pending = true;
 }
 
-// The Rollback of a pending probe (#270), with no cone collection, sort or
-// evaluation: the log's values are written back, which is exact by
-// construction, where re-evaluating restored them only as far as every node's
-// value was what `evaluate()` gives -- not an incremental Sum carrying drift
-// (#188), which needed a stash of its own.
+// The Rollback of a pending probe (#270): the log written back, exact by construction, with no
+// collection, sort or evaluation. Re-evaluating would not restore a drifted Sum (#188).
 void roll_back_probe(Model& model, const ProbeUndo& undo) {
     for (const auto& [nid, value] : undo.values) {
         model.set_node_value_unchecked(nid, value);
@@ -644,14 +528,10 @@ void evaluate_with_sums(Model& model, IncSumWalk& sums, Walk walk) {
     });
 }
 
-// A one-variable walk over its cached cone (#271): the cone `freeze()` already
-// collected and sorted, so no BFS and no sort. The same nodes in the same
-// topological order `evaluate_dirty_in_topo_order` reaches by either route,
-// so every value is the one the collecting walk computes.
-//
-// A model with no incremental Sum sets no dirty flag at all: only the scan
-// route and the incremental-Sum pushes read them. The others set every flag of
-// the cone up front, under a guard armed first, as the collecting walk's is.
+// A one-variable walk over the cone `freeze()` cached (#271): no BFS, no sort, the same nodes
+// in the same topological order as the collecting walk, so the same values. Without
+// incremental Sums no dirty flag is set (only the scan route and Sum pushes read them);
+// otherwise every flag is set up front under a guard armed first.
 double walk_cached_cone(Model& model, const int32_t* var_id, DeltaMode mode,
                         const double* old_values, std::vector<uint8_t>& dirty_flags) {
     const ConstSpan<int32_t> cone = model.cached_cone(*var_id);
@@ -681,14 +561,13 @@ double walk_cached_cone(Model& model, const int32_t* var_id, DeltaMode mode,
     return objective_value(model);
 }
 
-// The one walk behind every entry point. `old_values`, when non-null, holds the
-// previous value of each of `changed_var_ids` and switches the term updates on;
-// null re-sums every dirty incremental Sum, as `delta_evaluate` always did.
+// The one walk behind every entry point. Non-null `old_values` (previous value of each of
+// `changed_var_ids`) switches term updates on; null re-sums every dirty incremental Sum.
 double delta_walk(Model& model, const int32_t* changed_var_ids, size_t count, DeltaMode mode,
                   const double* old_values) {
     const EvaluationGuard guard("delta_evaluate");
-    // Any walk moves the assignment on from the pending probe's, so the log is
-    // dropped here, whatever the mode; only the Rollback it belongs to spends it.
+    // Any walk moves on from the pending probe's assignment, so the log is dropped whatever the
+    // mode; only its own Rollback spends it.
     ProbeUndo& undo = model.probe_undo();
     if (undo.pending) {
         undo.pending = false;
@@ -697,13 +576,9 @@ double delta_walk(Model& model, const int32_t* changed_var_ids, size_t count, De
                 roll_back_probe(model, undo);
                 return objective_value(model);
             }
-            // A Rollback over a set the probe did not move: the caller broke
-            // the pairing, so the log's values are not known to match the
-            // assignment in front of us -- the probed variables may not have
-            // been put back. The honest reading is a commit of BOTH sets (see
-            // DeltaMode): the log is written back first, then the walk below
-            // recomputes the union's cone from the assignment. Out of contract,
-            // so sort-and-unique's O(n log n) is no concern.
+            // A Rollback over a set the probe did not move (broken pairing; the probed
+            // variables may not be back): commit BOTH sets (see DeltaMode). Write the log
+            // back, then recompute the union's cone. Out of contract, so O(n log n) is fine.
             roll_back_probe(model, undo);
             thread_local std::vector<int32_t> merged;
             merged.assign(undo.vars.begin(), undo.vars.end());
@@ -717,8 +592,7 @@ double delta_walk(Model& model, const int32_t* changed_var_ids, size_t count, De
     }
     const size_t num_nodes = model.num_nodes();
 
-    // Flat dirty flags + dirty list for O(dirty) cleanup
-    // Use thread_local to avoid reallocation across calls
+    // Flat dirty flags + list for O(dirty) cleanup; thread_local to avoid reallocation.
     thread_local std::vector<uint8_t> dirty_flags;
     thread_local std::vector<int32_t> dirty_list;
 
@@ -734,9 +608,8 @@ double delta_walk(Model& model, const int32_t* changed_var_ids, size_t count, De
         return objective_value(model);
     }
 
-    // A one-variable walk on a frozen model reads its cone from the cache
-    // (#271); a walk over several variables, an unfrozen model's, or one past
-    // the cache's cap collects and sorts it below.
+    // A one-variable walk on a frozen model reads its cached cone (#271); several variables,
+    // an unfrozen model, or a variable past the cache's cap collect and sort below.
     if (count == 1) {
         if (model.has_cached_cone(changed_var_ids[0])) {
             ++cone_cache_counts.cached_walks;
@@ -745,12 +618,9 @@ double delta_walk(Model& model, const int32_t* changed_var_ids, size_t count, De
         ++cone_cache_counts.fallback_walks;
     }
 
-    // A model with no incremental Sum -- most of MINLPLib -- evaluates its
-    // cone with plain `evaluate()`, building no incremental-Sum rules (its
-    // Probe still arms the log, and its paired Rollback returned above
-    // without walking). Measured, not guessed: on
-    // gear4, whose probe cones are a handful of nodes, merely constructing the
-    // incremental-Sum rules per walk cost ~10% of the run (#188).
+    // No incremental Sum (most of MINLPLib): plain `evaluate()`, no incremental-Sum rules (its
+    // Probe still arms the log). Measured: on gear4, whose probe cones are a handful of nodes,
+    // merely constructing the rules per walk cost ~10% of the run (#188).
     if (model.inc_sum_nodes().empty()) {
         const DirtyFlagGuard<std::vector<int32_t>> plain_guard(dirty_flags, dirty_list);
         collect_dirty_cone(model, changed_var_ids, count, dirty_flags, dirty_list);
@@ -764,8 +634,7 @@ double delta_walk(Model& model, const int32_t* changed_var_ids, size_t count, De
     }
     IncSumWalk sums(model, mode, old_values != nullptr, dirty_flags);
 
-    // Armed BEFORE the seeding loop, so it covers every flag this call sets --
-    // including the ones set before an exception out of the walk below.
+    // Armed BEFORE seeding, so it covers every flag this call sets, a throw included.
     const DirtyFlagGuard<std::vector<int32_t>> flag_guard(dirty_flags, dirty_list);
     collect_dirty_cone(model, changed_var_ids, count, dirty_flags, dirty_list);
     if (mode == DeltaMode::Probe) {
@@ -776,9 +645,6 @@ double delta_walk(Model& model, const int32_t* changed_var_ids, size_t count, De
     evaluate_with_sums(model, sums, [&](auto eval_node) {
         evaluate_dirty_in_topo_order(model, dirty_list, dirty_flags, num_nodes, eval_node);
     });
-
-    // The flags are cleared by `flag_guard` on the way out, which is also what
-    // covers a throw from user code inside the walk.
     return objective_value(model);
 }
 
@@ -813,8 +679,7 @@ void reground_inc_sum(Model& model, int32_t slot) {
     const std::vector<ExprNode>& nodes = model.nodes();
     model.set_node_value_unchecked(
         nid, checked_resum(model, nodes[nid], sums.slots[static_cast<size_t>(slot)]));
-    // Its readers are top-level comparisons (classify_incremental_sums), so
-    // they are all there is above it.
+    // Its readers are top-level comparisons (classify_incremental_sums): nothing else above.
     for (const int32_t p : model.parents(nid)) {
         model.set_node_value_unchecked(p, evaluate(nodes[p], model));
     }
@@ -835,13 +700,9 @@ void reground_drifted_sums(Model& model, std::vector<int32_t>& regrounded) {
 
 namespace {
 
-// Scratch for the reverse sweep, shared by the three entry points below. Every
-// buffer is left all-zero / empty between calls; `AdjointScratchGuard` restores
-// that on the way out, including when an allocation throws.
-//
-// `adjoint` is flat: [0, num_nodes) for nodes, [num_nodes, num_nodes + num_vars)
-// for variables. It only ever grows, so a thread that sees a larger model keeps
-// the larger buffer.
+// Reverse-sweep scratch for the three entry points below, all-zero / empty between calls
+// (`AdjointScratchGuard` restores that, an allocation throw included). `adjoint` is flat:
+// [0, num_nodes) nodes, then variables; it only grows.
 struct AdjointScratch {
     std::vector<double> adjoint;
     std::vector<int32_t> written;  // adjoint entries touched, for O(touched) cleanup
@@ -876,8 +737,7 @@ private:
     AdjointScratch& scratch_;
 };
 
-// Push the adjoint of one node onto its children -- the body of the sweep,
-// unchanged from the full-order walk it replaced.
+// Push one node's adjoint onto its children: the sweep's body, shared by both routes.
 void propagate_adjoint(const Model& model, int32_t nid, size_t num_nodes, AdjointScratch& s) {
     const double adj = s.adjoint[nid];
     const auto& nd = model.node(nid);
@@ -893,39 +753,24 @@ void propagate_adjoint(const Model& model, int32_t nid, size_t num_nodes, Adjoin
     }
 }
 
-// Reverse-mode sweep from `expr_id`: on return `s.adjoint` holds d expr / d x
-// for every node and variable x, and `s.written` lists every entry touched.
+// Reverse-mode sweep from `expr_id`: on return `s.adjoint` holds d expr / d x for every node
+// and variable x, and `s.written` lists every entry touched.
 //
-// Only the cone of `expr_id` -- the nodes reachable from it through children --
-// can ever carry a nonzero adjoint, so the sweep visits the cone in reverse
-// topological order rather than all of `topo_order()`. It keeps the full walk's
-// `adjoint == 0.0` skip, so it performs exactly the same floating-point
-// operations in exactly the same order: every node outside the cone had adjoint
-// 0 in the full walk too, and the cone sorted by `topo_position` is the full
-// order restricted to the cone. The results, and every search trajectory built
-// on them, are bit-identical to the full walk.
+// Only `expr_id`'s cone (reachable through children) can carry a nonzero adjoint, so the
+// sweep visits it in reverse topological order. With the full walk's `adjoint == 0.0` skip
+// kept, it performs the same floating-point operations in the same order: results and every
+// trajectory are bit-identical to the full-order walk.
 //
-// Cost: collecting the cone is O(cone + its edges), sorting it O(c log c) with
-// two scattered `topo_position` loads per comparison, against the full walk's
-// O(|nodes|) adjoint tests (a sequential read of `topo_order`, gathering the
-// adjoint by id). That wins by orders of magnitude where the callers live -- a
-// linear MIP row of a few dozen terms against the 765k nodes of MIPfeas'
-// uccase12, where the full walk was 87% of CPU in a gprof profile at 175e617
-// (~0.9 ms per call, from that profile's self time over its call count). It
-// loses as the cone approaches the whole DAG (an objective over every node, a
-// dense continuous model), where the sort does ~log2(c) scattered comparisons
-// per node the scan tests once. So a cost model like
-// `evaluate_dirty_in_topo_order`'s picks the route -- with log2|nodes| standing
-// in for log2(c), since c is unknown while collecting: collect while
-// c * (log2|nodes| + 1) <= |nodes|, and on crossing it abandon the cone and scan
-// the full order exactly as before. The abandoned collection is at most
-// ~|nodes| / log2|nodes| nodes, all of them reachable from `expr_id` and so
-// nodes and edges the fallback walk visits anyway: the worst case is the old
-// cost plus a comparable amount.
+// Cost: collect O(cone + edges) and sort O(c log c) with scattered `topo_position` loads,
+// against the full walk's O(|nodes|) tests. Wins by orders of magnitude on a few-dozen-term
+// MIP row of a 765k-node model (MIPfeas uccase12: the full walk was 87% of CPU, gprof at
+// 175e617); loses as the cone nears the whole DAG. So collect while c * (log2|nodes| + 1) <=
+// |nodes| (log2|nodes| stands in for the unknown log2(c)), else abandon and scan the full
+// order. The abandoned part (<= ~|nodes| / log2|nodes| nodes) is visited by the fallback
+// anyway: worst case the full walk's cost plus a comparable amount.
 //
-// A model whose `topo_order` does not cover every node -- one not yet closed
-// has none -- has no position to sort by, so it takes the full-order walk as it
-// always did (over an empty order: all zeros).
+// A model whose `topo_order` does not cover every node (an unclosed one has none) takes the
+// full-order walk (over an empty order: all zeros).
 void reverse_sweep(const Model& model, int32_t expr_id, AdjointScratch& s) {
     const size_t num_nodes = model.num_nodes();
     const size_t total_size = num_nodes + model.num_vars();
@@ -936,8 +781,7 @@ void reverse_sweep(const Model& model, int32_t expr_id, AdjointScratch& s) {
         s.in_cone.resize(num_nodes, 0);
     }
 
-    // Each push precedes the write it records, so a `bad_alloc` in the push
-    // leaves nothing the guard does not know to undo.
+    // Each push precedes its write, so a `bad_alloc` leaves nothing the guard cannot undo.
     s.written.push_back(expr_id);
     s.adjoint[expr_id] = 1.0;
 

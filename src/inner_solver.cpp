@@ -13,35 +13,13 @@ namespace cbls {
 
 namespace {
 
-// d(node)/d(v) for every node above one variable, forward mode (#207): the
-// `UpConePartials` pass FJ's row slopes use (#249), with no node budget.
-//
-// One pass over v's up-cone -- every node a change of v can reach through
-// parents -- gives the partial of each row in G_v AND of the objective at once,
-// which is everything a coordinate step on v reads. The cone is collected through
-// `Model::parents`, sorted by topological position and swept once, each edge's
-// factor being `up_edge_derivative`. That is the same chain rule the reverse
-// sweep applies, zero edges skipped in both (`add_chain_term`), so the slopes
-// equal `compute_partial`'s up to summation order on finite paths.
-//
-// COST, per variable: O(u log u) for an up-cone of u nodes, plus their parent
-// edges. A probe's `delta_evaluate` dirties that same up-cone, so the slopes cost
-// about one probe -- never more than a constant factor of the work the descent
-// does anyway. Before #207 the descent took the objective partial by a reverse
-// sweep over the objective's WHOLE cone and scanned every row for violated ones,
-// O(nodes) per variable, O(Float vars x nodes) per sweep: on UC-CHPED ucp100-48p
-// (9.6k variables, 195k nodes) one sweep outlasted a 10 s budget.
-//
-// Where it wins: a separable objective over many variables (UC-CHPED, every MIP
-// with a linear objective), where u is a handful of nodes and the objective cone
-// is the model. Where it loses: a dense objective in a few variables (MINLPLib's
-// least-squares shapes), where every variable's up-cone is roughly the whole
-// objective cone. There one `compute_all_partials(objective)` per sweep would be
-// n times cheaper than n forward passes, but its gradient goes stale with every
-// committed move of a nonlinear objective; the forward pass costs there exactly
-// what the per-variable reverse sweep it replaces did, so that regime is no
-// worse than before, only not better. Hence no node budget: past one there is
-// nothing cheaper to fall back to.
+// Node budget for the `UpConePartials` pass (#207, #249): none. One forward pass over v's
+// up-cone gives every G_v row's and the objective's slope, equal to `compute_partial`'s up to
+// summation order on finite paths, at about one probe's cost (cost argument:
+// docs/architecture.md, "Per-variable cost"). Where it loses (a dense objective in few
+// variables) one `compute_all_partials(objective)` per sweep would be n times cheaper but goes
+// stale after each committed move of a nonlinear objective, so there is nothing cheaper to
+// fall back to past a budget.
 constexpr size_t kUnboundedUpCone = std::numeric_limits<size_t>::max();
 
 // The objective as `augmented_objective()` reads it: 0 without one, and a
@@ -54,14 +32,10 @@ double clamped_objective(const Model& model) {
     return std::isfinite(obj) ? obj : kInfPenalty;
 }
 
-// The augmented objective's change when one variable moves, measured over the
-// only terms that CAN change: the rows of G_v and the objective (#207). Every
-// other row keeps its node value bit for bit, so this is the difference of two
-// `augmented_objective()` readings without their two O(rows) scans -- and
-// without the last-ulp disagreement two readings of that incrementally kept
-// total can show for a move that changed nothing (the reason
-// `weighted_delta_from` differences per row, #118). Rows are differenced the
-// same way, so a row clamped to kInfPenalty on both sides cancels exactly.
+// The augmented objective's change when one variable moves, over the only terms that CAN
+// change: G_v's rows and the objective (#207). No O(rows) scans, and no last-ulp disagreement
+// of two readings of the incrementally kept total for a no-op move (#118); differenced per
+// row, so a row clamped to kInfPenalty on both sides cancels exactly.
 class AugmentedDelta {
 public:
     void snapshot(const Model& model, const ViolationManager& vm, int32_t var_id) {
@@ -108,25 +82,17 @@ struct Scratch {
     AugmentedDelta delta;
 };
 
-// Best value found so far for the variable under consideration, paired with the
-// change in augmented objective it achieved. Seeded with the variable's current
-// value, at a change of 0.
+// Best value so far for the variable, with its augmented-objective change; seeded with the
+// current value at a change of 0.
 struct Incumbent {
     double value;
     double delta;
 };
 
-// Apply `candidate` to `var_id`, measure the augmented objective's change there,
-// then put the variable back. Records the candidate when it beats `best`. The
-// model's values (and its node values) are left exactly as they were found, so
-// the caller may probe any number of candidates against one common baseline.
-//
-// The probe moves each incremental Sum in v's cone by its one changed term
-// (`probe_scalar_move`, #188) and the Rollback writes the probe's undo log back
-// without a second walk (#270), so a probe costs O(up-cone) rather than a re-sum
-// of every wide Sum above v. On
-// UC-CHPED the objective is a Sum over every unit x period cost term; before
-// this, re-summing it twice per probe was what each probe cost.
+// Score `candidate` for `var_id` and record it when it beats `best`. Values and node values
+// are left exactly as found, so any number of probes share one baseline. A probe is
+// O(up-cone): incremental Sums move by their one changed term (#188) and the Rollback replays
+// the undo log without a second walk (#270), instead of re-summing every wide Sum above v.
 void probe_candidate(Model& model, const AugmentedDelta& delta, int32_t var_id, double old_val,
                      double candidate, Incumbent& best) {
     model.var_mut(var_id).value = candidate;
@@ -140,11 +106,9 @@ void probe_candidate(Model& model, const AugmentedDelta& delta, int32_t var_id, 
     delta_evaluate(model, &var_id, 1, DeltaMode::Rollback);
 }
 
-// Newton steps toward the root of the first few violated rows OF THIS VARIABLE
-// (G_v, ascending): for a residual g with partial dg, the step that would zero g
-// is -g/dg, clamped to the variable's domain. Before #207 these were the first
-// three rows of the GLOBAL violated list, which for almost every variable of a
-// large model named rows it is not in -- partial 0, no candidate.
+// Newton steps -g/dg, clamped to the domain, toward the roots of the first few violated rows
+// OF THIS VARIABLE (G_v, ascending), not of the global violated list, which on a large model
+// names rows v is not in (#207).
 void newton_candidates(Model& model, const Scratch& sc, const Variable& var, double old_val,
                        Incumbent& best) {
     constexpr int kMaxNewton = 3;
@@ -157,10 +121,8 @@ void newton_candidates(Model& model, const Scratch& sc, const Variable& var, dou
         const int32_t cid = cids[static_cast<size_t>(ci)];
         const bool domain = model.is_domain_node(cid);
         double g = model.node_value(cid);
-        // Not `<= tol`: a NaN residual (#205) has no root to step toward, and
-        // fails this test as every comparison against NaN does. A domain row is
-        // violated at any g > 0 (#258); its root is that of g less its step, the
-        // floor itself, not floor + margin.
+        // Negated so a NaN residual (#205), which has no root, fails it. A domain row is
+        // violated at any g > 0 (#258) and is aimed at the floor itself, not floor + margin.
         if (!(g > (domain ? 0.0 : kDefaultFeasibilityTolerance))) {
             continue;
         }
@@ -181,10 +143,8 @@ void newton_candidates(Model& model, const Scratch& sc, const Variable& var, dou
     }
 }
 
-// Backtracking line search down the objective's gradient: halve the step size
-// each time, and probe each point that is distinct both from where the variable
-// started and from the previous point (clamping makes successive steps
-// coincide once the domain boundary is reached).
+// Backtracking line search down the objective's gradient, halving the step; a point equal to
+// the start or the previous point is not probed (clamping makes steps coincide at a bound).
 void line_search_candidates(Model& model, const Scratch& sc, const Variable& var, double old_val,
                             double initial_step, int max_steps, Incumbent& best) {
     if (model.objective_id() < 0) {
@@ -206,11 +166,9 @@ void line_search_candidates(Model& model, const Scratch& sc, const Variable& var
     }
 }
 
-// One coordinate-descent step on a single Float variable: collect the Newton and
-// line-search candidates against a common baseline, then commit the best one if
-// it beats staying put. Returns true if the variable moved. Cost: the slopes and
-// each probe are O(up-cone of v), the scoring O(|G_v|) -- nothing scales with
-// the model (#207).
+// One coordinate-descent step on a Float variable: commit the best Newton or line-search
+// candidate if it beats staying put; true if it moved. Cost O(up-cone of v) per slope pass and
+// probe, O(|G_v|) per score: nothing scales with the model (#207).
 bool descend_float_var(Model& model, const ViolationManager& vm, Scratch& sc, const Variable& var,
                        double initial_step, int max_line_search_steps) {
     const double old_val = var.value;
@@ -233,19 +191,14 @@ bool descend_float_var(Model& model, const ViolationManager& vm, Scratch& sc, co
     return true;
 }
 
-// Minimum-norm Newton step on ONE violated constraint, over every Float variable
-// with a usable partial: the step -g/|grad|^2 * grad is the smallest move that
-// would zero the residual under a linear model. Applied to all of them at once
-// and rolled back wholesale unless the augmented objective improved. Needs at
-// least two variables to be doing anything the per-variable sweep above did not.
-// Returns true if the step was kept.
+// Minimum-norm Newton step -g/|grad|^2 * grad on ONE violated row over every Float variable
+// with a usable partial, rolled back wholesale unless the augmented objective improves; true
+// if kept. Needs two variables to do anything the per-variable sweep did not.
 bool multi_var_newton_step(Model& model, ViolationManager& vm, int32_t cid) {
     double g = model.node_value(cid);
-    // A non-finite residual (a domain error is NaN since #205) gives a NaN or
-    // infinite step for every variable at once. Rejecting it must not hang on
-    // two augmented_objective() readings comparing exactly: that total is an
-    // incrementally maintained accumulator with a periodic resync, so a
-    // last-ulp drift could accept an all-NaN assignment.
+    // A non-finite residual (a domain error is NaN, #205) gives a NaN or infinite step for
+    // every variable. Rejected here, not by the augmented-objective compare: that incremental
+    // total can drift a last ulp and accept an all-NaN assignment.
     if (!std::isfinite(g)) {
         return false;
     }
@@ -358,45 +311,22 @@ PassOutcome multi_var_pass(Model& model, ViolationManager& vm, int max_constrain
     return improved ? PassOutcome::Improved : PassOutcome::Unchanged;
 }
 
-// How often the coordinate pass polls (#191). Without any poll the hook ran
-// MIPfeas rahue (12k Float columns, 77k rows) ~10 s past a 20 s budget.
-//
-// The stride is sized by the model's size, as a machine-independent proxy for a
-// variable's cost: kPollUnits / max(rows, nodes), clamped to [1, 256]. Since
-// #207 a descent costs O(up-cone of v): the forward slopes, a handful of
-// `delta_evaluate` probes over that cone and a scoring pass over G_v. Before it,
-// every descent scanned every row and ran a reverse sweep over the objective's
-// whole cone, so the proxy was the descent's cost; now it is an upper bound on
-// it -- an up-cone is at most every node, G_v at most every row -- and the
-// proxy only ever polls MORE often than the work strictly needs. On a model
-// whose up-cones are small (UC-CHPED, MIPfeas) that is one poll per cheap
-// descent on large models, the regime discussed below.
-//
-// What a poll costs is the clock read inside the search's past_deadline():
-// ~20-25 ns through the vDSO on a tsc clocksource, but 1408 ns on this project's
-// reference machine (hpet; measured for #113). The
-// regimes, and where each constant loses:
-//  - Large models (>= kPollUnits nodes): one variable per poll -- rahue
-//    (352k nodes) is here. The overrun is one variable's descent, irreducible
-//    from here: O(up-cone), which on a variable reaching most of a
-//    multi-million-node DAG is milliseconds, and only a poll inside the probes
-//    would cut it. Where the up-cones are small the poll may be a noticeable
-//    share of a descent on hpet (unmeasured) -- the next regime.
-//  - Where nodes overstate the work -- since #207 any large DAG whose
-//    variables each reach few nodes -- a descent can be far cheaper than a node count suggests, and
-//    polling every variable then costs up to a 1.4 us clock read per cheap descent on hpet. That is
-//    the regime this proxy loses in, accepted because it can only cost hook throughput, never the
-//    budget.
-//  - Small models: up to kMaxVarsPerPoll variables per poll. Every descent there
-//    is dominated by its partials and line-search probes (each a
-//    delta_evaluate), so 256 of them are many times the 1.4 us poll, and the
-//    overrun is 256 descents of a model with < 256 nodes -- sub-millisecond.
-// A stride sized in time, as FJ's is (#113), is not open here: the hook cannot
-// read the clock itself without breaking a clockless run's "reads no clock"
-// guarantee, and the stop it is handed does not say whether a clock exists.
-//
-// The polls never change what the descent does, only whether it continues, so
-// with `stop` never raised the trajectory is exactly what it was without them.
+// Coordinate-pass poll stride (#191): kPollUnits / max(rows, nodes), clamped to [1, 256], a
+// machine-independent proxy for a descent's cost. A descent is O(up-cone of v) plus O(|G_v|)
+// (#207), so the proxy is an upper bound and only ever polls MORE often than needed. A poll is
+// the clock read in past_deadline(): ~20-25 ns via the vDSO on tsc, 1408 ns on the reference
+// machine (hpet; measured for #113).
+//  - Large models (>= kPollUnits nodes): one variable per poll. The overrun is one descent,
+//    irreducible short of a poll inside the probes: milliseconds on a variable reaching most
+//    of a multi-million-node DAG.
+//  - Where nodes overstate the work (large DAGs whose variables each reach few nodes): up to a
+//    1.4 us clock read per cheap descent on hpet. The regime this proxy loses in; accepted as
+//    it costs hook throughput only, never the budget.
+//  - Small models: up to 256 variables per poll, each descent many times the 1.4 us poll; the
+//    overrun is 256 descents of a < 256-node model, sub-millisecond.
+// A time-sized stride, as FJ's (#113), would break a clockless run's "reads no clock"
+// guarantee, and `stop` does not say whether a clock exists. Polls only decide whether to
+// continue, so a never-raised `stop` leaves the trajectory unchanged.
 constexpr int64_t kPollUnits = int64_t{1} << 16;
 constexpr int kMaxVarsPerPoll = 256;
 
@@ -420,11 +350,9 @@ void FloatIntensifyHook::solve(Model& model, ViolationManager& vm,
         if (coordinate == PassOutcome::Stopped) {
             break;
         }
-        // The multi-variable step reads rows and the objective raw and scores
-        // by two absolute readings, the second after a plain delta_evaluate that
-        // re-sums every incremental Sum it reaches. On a drifted state that
-        // difference would include the drift the re-sum removed, so the pass
-        // starts from re-grounded Sums. O(1) when nothing drifted.
+        // The multi-variable step scores by two raw readings, the second after a plain
+        // delta_evaluate that re-sums the Sums it reaches; on drifted Sums the difference would
+        // include the removed drift, so start re-grounded. O(1) when nothing drifted.
         reground_drifted_sums(model, regrounded);
         const PassOutcome multi = multi_var_pass(model, vm, max_multi_var_constraints, stop);
         if (multi == PassOutcome::Stopped) {
@@ -434,13 +362,9 @@ void FloatIntensifyHook::solve(Model& model, ViolationManager& vm,
             break;
         }
     }
-    // The coordinate commits move incremental Sums by their terms' changes, which
-    // can leave one within its drift bound of a re-sum. The search reads the
-    // objective and the rows RAW after the hook returns (incumbent, bound,
-    // feasibility), which is sound only on re-grounded Sums -- the contract FJ
-    // keeps by re-grounding at every batch end (src/model.cpp, the incremental
-    // Sum rules). So the hook leaves them as it found them: re-grounded.
-    // O(1) when nothing drifted.
+    // Coordinate commits can leave an incremental Sum within its drift bound of a re-sum; the
+    // search reads rows and objective RAW after the hook, sound only on re-grounded Sums (FJ's
+    // batch-end contract, src/model.cpp). So return them re-grounded; O(1) if none drifted.
     reground_drifted_sums(model, regrounded);
     vm.invalidate_cache();
 }

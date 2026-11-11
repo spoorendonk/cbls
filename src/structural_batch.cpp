@@ -20,9 +20,8 @@ namespace cbls {
 
 namespace {
 
-/// A candidate is kept only if it strictly lowers weighted violation by more
-/// than this. Pre-#165 constant, unchanged: it is a guard against committing on
-/// rounding noise, not a tuned parameter.
+/// A candidate is kept only if it lowers weighted violation by more than this: a guard against
+/// committing on rounding noise, not a tuned parameter (unchanged since before #165).
 constexpr double kImprovementThreshold = -1e-12;
 
 }  // namespace
@@ -45,65 +44,36 @@ StructuralBatch::StructuralBatch(const Model& model, const SearchConfig& config,
             generators_.push_back(gen->clone());
         }
     }
-    // Both contract violations a generator can commit before it has proposed
-    // anything, checked once here rather than left to surface mid-search:
-    //
-    //  - a `clone()` that returns null would be dereferenced on every sweep;
-    //  - a `scope()` naming a variable this model does not have would throw
-    //    std::out_of_range out of `constraints_of_var` on the first sweep, i.e.
-    //    out of `solve()` some way into a run, where the caller can no longer
-    //    tell which generator did it.
-    //
-    // O(#generators x |scope|) once per search, and the span read is the same
-    // one the sweep will read.
+    // Checked once, not left to surface mid-search: a null `clone()` would be dereferenced on
+    // every sweep, and a `scope()` naming a missing variable would throw std::out_of_range out
+    // of `solve()` mid-run, naming no generator. O(#generators x |scope|) once per search.
     for (const std::unique_ptr<MoveGenerator>& gen : generators_) {
         if (gen == nullptr) {
             throw std::invalid_argument("MoveGenerator::clone() returned null");
         }
         for (int32_t var_id : gen->scope()) {
-            // Cast to void: the span is deliberately discarded -- this call is here
-            // for its throw, and `constraints_of_var` is [[nodiscard]].
+            // Called for its throw; the [[nodiscard]] span is discarded.
             static_cast<void>(model.constraints_of_var(var_id));
         }
     }
-    // Built here rather than lazily, so `generator_counters()` is always
-    // parallel to `generators_` and a generator that never proposed anything
-    // still has a row reading zero -- which is the answer a caller asking "did
-    // this generator do anything" wants, rather than a missing entry.
-    // A NAME THAT REPEATS CARRIES ITS INDEX, and that is load-bearing rather
-    // than cosmetic: `SearchCounters::merge` keys on this string, and
-    // `MoveGenerator::name()` does not promise to be unique. The built-ins name
-    // themselves by TYPE -- `StandardStructuralGenerator::name()` returns
-    // "builtin_list" or "builtin_set" for every List or Set variable -- so a
-    // model with two Lists gives two rows spelled alike, and merging them
-    // un-disambiguated folds both of a peer's rows into the first of ours while
-    // the second reads zero. A registered generator whose own `name()` already
-    // ends in `#<n>` can still collide with a suffix generated here -- `foo`,
-    // `foo`, `foo#1` yields `foo#0`, `foo#1`, `foo#1` -- which is contrived
-    // enough to be left as a documented limit rather than a rule a registrant
-    // has to know. A single `solve()` reports both correctly, so the
-    // portfolio would report a different row SHAPE for the same model.
-    //
-    // Every worker builds the same generators in the same order (the built-ins
-    // in variable-id order, then `SearchConfig::move_generators` in
-    // registration order), so the suffixed names agree across workers, which is
-    // what keeps the merge exact. Suffixed on BOTH occurrences rather than only
-    // the second, so the rows of one kind are symmetric.
+    // Built eagerly, parallel to `generators_`, so an idle generator reads zero rather than
+    // missing. A REPEATED NAME CARRIES ITS INDEX: `SearchCounters::merge` keys on the name, and
+    // the built-ins are named by type ("builtin_list"/"builtin_set"), so two Lists would merge
+    // into one row. Every worker builds the same generators in the same order (built-ins by
+    // variable id, then `SearchConfig::move_generators`), so suffixes agree across workers.
+    // Both occurrences are suffixed, for symmetry. Documented limit: a registered name already
+    // ending in `#<n>` can collide (`foo`, `foo`, `foo#1` -> `foo#0`, `foo#1`, `foo#1`), and the
+    // portfolio then reports a different row shape than a single `solve()`.
     counters_.reserve(generators_.size());
     std::vector<std::string> names;
     names.reserve(generators_.size());
     for (const std::unique_ptr<MoveGenerator>& gen : generators_) {
         names.emplace_back(gen->name());
     }
-    // Occurrences counted ONCE, in O(G), rather than rescanned per entry.
-    // `counters_` carries one row per structured variable, and
-    // `SearchCounters::merge` reasons about a 1500-List model, where a
-    // `std::count` per entry is ~2.25M string comparisons per solve -- the same
-    // call frequency, and twice the size, of the cost merge's positional walk
-    // exists to remove. It loses a little on the one-to-three-generator model
-    // every benchmark in the tree has, where one small hash table is more work
-    // than three comparisons; the keys borrow `names`' storage, so nothing here
-    // allocates a string of its own.
+    // Occurrences counted once, O(G): one row per structured variable, and a `std::count` per
+    // entry is ~2.25M string compares per solve on a 1500-List model. Loses a little on the
+    // one-to-three-generator models every in-tree benchmark has, where a small hash table is
+    // more work than three compares; keys borrow `names`' storage, so no string is allocated.
     std::unordered_map<std::string_view, int> occurrences;
     occurrences.reserve(names.size());
     for (const std::string& name : names) {
@@ -122,16 +92,12 @@ void StructuralBatch::resnapshot(const ViolationManager& vm) {
     differing_.clear();
 }
 
-// COST (#273). Per call O(|R_c| + |differing_|), plus a sort of R_c when the
-// G_v runs arrive out of order -- several walked variables, or a differing row
-// from an earlier candidate; one variable whose G_v already holds every
-// differing row needs none. It replaced a scan of the generator's whole scope
-// (the union of its G_v), and wins where a candidate walks a small part of a
-// large scope: a `ListPartitionGenerator` over every route of a CVRP, whose
-// move touches one or two (14-15% of instructions on X-n251/X-n502 under
-// GranularBest, measured by callgrind). It loses, by the mark-and-copy pass
-// over G_v, on a one-variable scope, where R_c IS the scope; that is one more
-// O(|G_v|) pass next to the walk's own O(cone), and cone >= G_v.
+// COST (#273): O(|R_c| + |differing_|) per call, plus a sort of R_c when the G_v runs arrive
+// out of order. Wins over scanning the whole scope where a candidate walks a small part of a
+// large one: a `ListPartitionGenerator` over every CVRP route, whose move touches one or two
+// (14-15% of instructions on X-n251/X-n502 under GranularBest, callgrind). Loses on a
+// one-variable scope,
+// where R_c IS the scope: one more O(|G_v|) mark-and-copy pass next to the walk's O(cone).
 double StructuralBatch::delta_after_walk(const Model& model, const ViolationManager& vm,
                                          const std::vector<int32_t>& walked) {
     score_rows_.clear();
@@ -156,8 +122,7 @@ double StructuralBatch::delta_after_walk(const Model& model, const ViolationMana
     for (const int32_t ci : score_rows_) {
         row_mark_[static_cast<size_t>(ci)] = 0;
     }
-    // Ascending, because that is the order the full scan sums in and
-    // floating-point addition is not associative.
+    // Ascending: the full scan's summation order (floating-point addition is not associative).
     if (!ascending) {
         std::sort(score_rows_.begin(), score_rows_.end());
     }
@@ -186,10 +151,8 @@ void StructuralBatch::draw_candidates(MoveContext& ctx, MoveGenerator& gen) {
     if (selection_ == StructuralSelection::FirstImprovingSample) {
         return;  // exactly one call, which is the pre-#165 sample
     }
-    // Top the sample up. Bounded twice over -- by the sample size and by a call
-    // count -- so a generator that returns nothing (or one move at a time) can
-    // neither spin nor blow the batch's share of the deadline, which is checked
-    // only between generators.
+    // Top the sample up, bounded by sample size AND call count, so a generator returning little
+    // can neither spin nor overrun the deadline, which is checked only between generators.
     for (int extra = 0; static_cast<int>(candidates_.size()) < sample_size_ && extra < sample_size_;
          ++extra) {
         const size_t before = candidates_.size();
@@ -200,16 +163,10 @@ void StructuralBatch::draw_candidates(MoveContext& ctx, MoveGenerator& gen) {
     }
 }
 
-// A move that changes a variable outside its generator's `scope()` breaks the
-// skip `scope_can_improve` makes under ViolationGuided and GranularBest: a
-// generator whose scope reads satisfied is passed over although its moves
-// reach violated rows. Scoring no longer rests on the scope (#273 scores the
-// rows the walk reached), so the move itself is still judged right; the lost
-// opportunity does not crash or mis-score, which makes it harder to find
-// rather than easier, so the contract is checked where the move is handed
-// over. Debug and sanitizer builds only: `touched` is already materialised,
-// but the check is O(|touched| x |scope|) on the hot path and it is 1x1 for
-// every built-in.
+// A move outside its generator's `scope()` breaks `scope_can_improve`'s skip under
+// ViolationGuided/GranularBest: a generator is passed over although its moves reach violated
+// rows. Scoring is still right (#273), so the silent lost opportunity is asserted at hand-over.
+// Debug/sanitizer only: O(|touched| x |scope|) on the hot path, 1x1 for every built-in.
 static void assert_move_within_scope(const MoveGenerator& gen,
                                      const std::vector<int32_t>& touched) {
 #ifndef NDEBUG
@@ -219,8 +176,7 @@ static void assert_move_within_scope(const MoveGenerator& gen,
                "a MoveGenerator's move changed a variable outside its scope()");
     }
 #else
-    // Cast to void, as in the scope-validation loop above: these are unused
-    // only in this branch.
+    // Unused only in this branch.
     static_cast<void>(gen);
     static_cast<void>(touched);
 #endif
@@ -230,28 +186,15 @@ static void assert_move_within_scope(const MoveGenerator& gen,
 // The sample baseline (#164)
 // ---------------------------------------------------------------------------
 //
-// A structured `Move::Change` carries POSITIONAL EDITS rather than the absolute
-// element vector it used to carry, which is what removes four O(n) copies and
-// two allocations from every candidate scored. Positions are relative, so
-// something has to guarantee that an edit lands on the assignment it was built
-// against -- and under `FirstImprovingSample` that guarantee is not free, because
-// the batch may commit SEVERAL candidates from one sample in turn.
-//
-// With absolute vectors, applying candidate k+1 after committing candidate k
-// silently wiped k's change: the vector k+1 carried was built before k ran. That
-// is the behaviour `MoveGenerator::generate` documents, and it is the behaviour
-// every trajectory in tests/test_structural_equivalence.cpp was recorded under.
-// Replaying k+1's EDIT on top of k's committed state would be a different move
-// -- and for an `Erase` past the shortened end, not a move at all.
-//
-// So the batch keeps the sample's starting elements and puts back, before each
-// candidate, exactly what the previous one disturbed. The ledger per candidate
-// is then one allocation-free `assign` per variable THAT CANDIDATE'S PREDECESSOR
-// changed -- one or two for every built-in -- against the absolute form's three
-// copies (into the Move, into the undo snapshot, and back out again) and two
-// allocations, whatever the sample size. The snapshot itself is taken once per
-// sample, and its buffers are reused across sweeps, so the steady state
-// allocates nothing at all.
+// A structured `Move::Change` carries POSITIONAL EDITS, valid only on the assignment they
+// were built against, and `FirstImprovingSample` may commit SEVERAL candidates of one sample.
+// Every candidate applies to the sample's starting state, so candidate k+1 replaces k's
+// change, as `MoveGenerator::generate` documents and tests/test_structural_equivalence.cpp
+// pins; replaying k+1's edit on k's state would be a different move (an `Erase` past the
+// shortened end, none at all). Before each candidate the batch puts back what its predecessor
+// changed: one allocation-free `assign` per such variable, one or two for every built-in. The
+// snapshot is taken once per sample into buffers reused across sweeps, so the steady state
+// allocates nothing.
 void StructuralBatch::snapshot_sample_base(const Model& model) {
     base_vars_.clear();
     for (const Move& move : candidates_) {
@@ -262,20 +205,16 @@ void StructuralBatch::snapshot_sample_base(const Model& model) {
             }
         }
     }
-    // Grown, never shrunk: the buffers are reused across samples and across
-    // sweeps, which is what keeps every `assign` below allocation-free once the
-    // search is warm.
+    // Grown, never shrunk, so every `assign` below is allocation-free once warm.
     if (base_elements_.size() < base_vars_.size()) {
         base_values_.resize(base_vars_.size());
         base_elements_.resize(base_vars_.size());
         accepted_values_.resize(base_vars_.size());
         accepted_elements_.resize(base_vars_.size());
     }
-    // The guard tests one of the four but resizes all four, and the three others
-    // are indexed unchecked below and in restore_*. They stay equal because this
-    // is the only place any of them is resized -- assert it, so a later resize
-    // elsewhere fails here under the sanitizer build rather than writing out of
-    // bounds. Free under NDEBUG.
+    // The guard tests one buffer, the others are indexed unchecked here and in restore_*; they
+    // stay equal because only this site resizes them. Asserted so a later resize elsewhere fails
+    // here, not out of bounds. Free under NDEBUG.
     assert(base_values_.size() == base_vars_.size());
     assert(accepted_values_.size() == base_vars_.size());
     assert(accepted_elements_.size() == base_vars_.size());
@@ -318,17 +257,13 @@ void StructuralBatch::restore_accepted(Model& model) const {
 }
 
 const std::vector<int32_t>& StructuralBatch::apply_from_base(Model& model, const Move& move) {
-    // Every candidate is applied to the baseline, so the model differs from it
-    // only in what the PREVIOUS candidate changed -- putting exactly those back
-    // is enough, and is what keeps the restore proportional to a move rather
-    // than to the sample.
+    // The model differs from the baseline only in what the PREVIOUS candidate changed, so the
+    // restore is proportional to a move, not to the sample.
     restore_sample_base(model, dirty_vars_);
     touched_ = dirty_vars_;  // the restore moved these; a node reading one is dirty
     dirty_vars_.clear();
-    // Inlined rather than calling `apply_move`, whose return value is a freshly
-    // allocated vector this caller would discard -- one malloc and free per
-    // candidate SCORED, on the path the positional representation exists to take
-    // allocations off.
+    // Inlined, not `apply_move`, whose discarded return vector would cost a malloc and free
+    // per candidate scored.
     for (const Move::Change& change : move.changes) {
         Variable& var = model.var_mut(change.var_id);
         if (is_structured(var.type)) {
@@ -348,10 +283,8 @@ bool StructuralBatch::take_first_improving(Model& model, ViolationManager& vm, M
                                            GeneratorCounters& counters) {
     bool changed = false;
     snapshot_sample_base(model);
-    // Added up front because this loop CANNOT exit early -- every candidate is
-    // applied and scored. Move it inside the loop if a deadline check is ever
-    // added there, or the try count silently over-counts and
-    // `moves_accepted <= moves_tried` stops being the bound it is read as.
+    // Up front because this loop cannot exit early. If a deadline check is ever added, move
+    // this inside, or the try count over-counts and `moves_accepted <= moves_tried` loosens.
     counters.moves_tried += static_cast<int64_t>(candidates_.size());
     for (const Move& move : candidates_) {
         const std::vector<int32_t>& touched = apply_from_base(model, move);
@@ -365,34 +298,18 @@ bool StructuralBatch::take_first_improving(Model& model, ViolationManager& vm, M
             gen.on_commit(move);
             record_accepted(model);
         }
-        // A REJECTED candidate is not rolled back here, deliberately. The next
-        // candidate restores the baseline before applying its own edit, and the
-        // delta it is then judged by is measured against `baseline_` from the
-        // node values `delta_evaluate` derives from the variables -- so nothing
-        // in between reads the rejected state. Only the sweep's final state has
-        // to be right, which the restore below sees to.
+        // A REJECTED candidate is deliberately not rolled back: the next one restores the
+        // baseline first and nothing reads the rejected state; the restore below fixes the end.
     }
-    // Put the sweep at the assignment it is keeping: the sample baseline plus
-    // the last ACCEPTED candidate, which is what the absolute form's final
-    // `undo_move` left behind. Cheap when nothing was accepted, since
-    // `accepted_*` is then the baseline itself.
-    //
-    // UNCONDITIONAL, not keyed on `dirty_vars_` being non-empty. A final
-    // candidate carrying NO changes leaves `dirty_vars_` empty -- `apply_from_base`
-    // restores the baseline and returns early -- while `baseline_` and
-    // `accepted_*` still describe base + the last accepted candidate. Skipping
-    // the restore there hands the next generator in this same sweep a model at
-    // the baseline and a violation snapshot for a different assignment, after
-    // `changed` was already set. No built-in can emit an empty `Move`, so this
-    // needs a registered generator; `take_best` has the same-shaped guard and is
-    // correct with it, because take_best wants the baseline and that is exactly
-    // what an empty last candidate leaves.
+    // Land on the kept assignment: sample base + last ACCEPTED candidate. UNCONDITIONAL, not
+    // keyed on `dirty_vars_`: an empty final candidate (registered generators only) leaves it
+    // empty after restoring the base, while `baseline_` describes the accepted state, so a skip
+    // would hand the next generator a mismatched snapshot. `take_best`'s same-shaped guard is
+    // correct: it wants the base, which an empty last candidate leaves.
     restore_accepted(model);
     delta_evaluate(model, base_vars_);
-    // Not a score: this walk moved rows, and the next generator's candidates
-    // read `differing_`, which must name every row that differs from
-    // `baseline_` once it is done -- a restore that does not land bit-for-bit
-    // included.
+    // Not a score: refreshes `differing_`, which the next generator's candidates need to name
+    // every row differing from `baseline_`, including a restore not landing bit-for-bit.
     static_cast<void>(delta_after_walk(model, vm, base_vars_));
     dirty_vars_.clear();
     return changed;
@@ -403,11 +320,8 @@ bool StructuralBatch::take_best(Model& model, ViolationManager& vm, MoveGenerato
     std::ptrdiff_t best = -1;
     double best_delta = kImprovementThreshold;
     snapshot_sample_base(model);
-    // Every candidate is applied and scored below, whether or not it wins, so
-    // the try count is the sample size -- exactly as under FirstImprovingSample,
-    // and added up front for the same reason: neither loop can exit early. At
-    // most ONE of them is then committed, which is the policy difference the
-    // accepted count makes visible.
+    // Every candidate is scored, so tries = sample size, added up front as in
+    // `take_first_improving`; at most ONE is committed.
     counters.moves_tried += static_cast<int64_t>(candidates_.size());
     for (size_t i = 0; i < candidates_.size(); ++i) {
         const Move& move = candidates_[i];
@@ -439,68 +353,24 @@ bool StructuralBatch::take_best(Model& model, ViolationManager& vm, MoveGenerato
     return true;
 }
 
-// Per-constraint violations of the last ACCEPTED assignment. A move is judged by
-// ViolationManager::weighted_delta_from against this, not by differencing two
-// whole-sum total_violation() values. That subtraction had TWO defects, and only
-// the first one needs a clamped row.
+// `baseline_` holds the per-row violations of the last ACCEPTED assignment, and a move is
+// judged by `weighted_delta_from` against it, not by differencing two `total_violation()`
+// readings: a kInfPenalty-clamped row swallows every real row (#118), and the incremental
+// total drifts by a last ulp that `- 1e-12` cannot filter above 2^14 (docs/architecture.md,
+// "Structural Batch"). Per-row differencing cancels a clamped row exactly and gives an
+// unchanged row an exact 0.
 //
-// 1. Clamped-row blindness (#118). A row clamped to kInfPenalty swallows the
-//    real rows: 1e30 is fourteen orders of magnitude above an O(1) row, so both
-//    sums round to the same double and `after < before - 1e-12` reads
-//    `before < before`. That is #100's defect in this pass, and #116's sentinel
-//    objective bound put a permanently clamped row into every model whose
-//    feasible region contains a non-finite objective -- so the pass rejected
-//    every structural move for as long as the sentinel was installed, however
-//    much it improved the real rows.
+// Scoring only the rows that can differ is the same double as a full rescan (#165, #273): a
+// row equal to the snapshot is skipped by both, and ascending order keeps the sum's sequence.
+// `differing_` (empty at a snapshot) plus the walked variables' G_v re-derives it exactly; the
+// walk alone would not, since under FirstImprovingSample the next candidate's restore moves a
+// kept candidate's rows off the snapshot and the one after does not walk them.
 //
-// 2. Phantom improvements, on ANY model, clamped row or not, and predating #116.
-//    Both readings came from total_violation()'s incremental accumulator
-//    (cached_total_ += (new - old) * W), whose 1000-call recompute bounds the
-//    accumulated rounding error without removing it, and `before` was threaded
-//    across candidate moves -- so two readings taken at different points in that
-//    drift cycle differ in the last ulp even when no constraint changed at all.
-//    `- 1e-12` cannot filter that: x - 1e-12 == x for every double x > 2^14
-//    (16384 itself is the last value it still moves), and GLS weights put
-//    setcover's weighted total at ~4.4e6, where one ulp is 9.3e-10. Measured on
-//    scp41/Set with no row clamped anywhere: 99 of 39627 candidates were
-//    accepted with a true weighted delta of exactly 0, each of them setting
-//    `changed` and forcing a needless fj.resync().
-//
-// Differencing per constraint fixes both: the clamped row cancels exactly, and
-// an unchanged row contributes an exact 0 instead of a drifted total.
-//
-// #165 restricted the differencing to the rows a candidate can actually have
-// changed -- the union of the moved generator's scope's G_v -- which is the same
-// double and not merely the same answer: every other row satisfies
-// `now == snapshot[i]` bitwise and is skipped by both versions, and ascending
-// order keeps the surviving terms in the same sequence.
-//
-// #273 narrowed it again, from the generator's scope to what each candidate
-// can have moved, by the same argument. `differing_` holds every row whose
-// violation differs from `baseline_`: empty at a snapshot, and after each walk
-// over variables W the only rows whose value can have changed are those in
-// G_v for v in W, so re-reading those plus the old `differing_` restores it --
-// a row in neither differed before the walk and was not touched by it. A
-// candidate's walk alone would NOT do: under FirstImprovingSample, once a
-// candidate is kept and re-snapshotted, the next one restores the sample base
-// and so moves the kept candidate's rows away from the snapshot, and the one
-// after it no longer walks them. `differing_` is what carries them.
-//
-// Every in-tree op lands a row bit-for-bit on a restore (a plain Commit
-// re-sums), so on such rows nothing stays in `differing_` past it. Scoring
-// reads no scope; the scope drives only the skips, and an empty one is still
-// asserted against in Debug.
-//
-// COST of the two trailing calls (after first-improving's final restore and
-// take_best's no-improvement restore): an extra pass over G(base_vars_) or
-// G(dirty_vars_) per generator per sweep, which leaves `differing_` empty on
-// in-tree models. It is small next to the walk over the same variables just
-// before it, and without it `differing_` would be stale for the next
-// generator.
-//
-// Both delta calls self-correct to the current node values (they read the
-// constraint nodes directly), so no explicit invalidate is needed across the
-// apply/undo dance; the baseline is re-snapshotted only when a move is kept.
+// The two trailing `delta_after_walk` calls cost one pass over G(base_vars_) or G(dirty_vars_)
+// per generator per sweep, small next to the walk just before; without them `differing_` is
+// stale for the next generator. Every in-tree op lands a row bit-for-bit on a restore, so they
+// leave it empty on in-tree models. Delta calls read constraint nodes directly, so no invalidate
+// is needed across apply/undo; the baseline is re-snapshotted only when a move is kept.
 bool StructuralBatch::run(Model& model, ViolationManager& vm, RNG& rng, bool has_deadline,
                           std::chrono::steady_clock::time_point deadline) {
     if (generators_.empty()) {
@@ -508,8 +378,8 @@ bool StructuralBatch::run(Model& model, ViolationManager& vm, RNG& rng, bool has
     }
     bool changed = false;
     resnapshot(vm);
-    // Sized once per pass to the model's rows, which `snapshot_violations` has
-    // just checked against the weights; every mark is cleared after use.
+    // Sized to the rows `snapshot_violations` just checked against the weights; marks are
+    // cleared after each use.
     row_mark_.resize(baseline_.size(), 0);
     MoveContext ctx{model, vm, rng, selection_, &baseline_};
     for (size_t i = 0; i < generators_.size(); ++i) {

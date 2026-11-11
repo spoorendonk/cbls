@@ -39,33 +39,15 @@ void SearchCounters::merge(const SearchCounters& other) {
     bound_behind_global_batches += other.bound_behind_global_batches;
     bound_behind_global_seconds += other.bound_behind_global_seconds;
 
-    // Positionally when the two describe the SAME generator set, by name
-    // otherwise.
+    // By name is the rule: a worker that threw before building its batch contributes an EMPTY
+    // vector, so a blind merge by index would misattribute rows. The two fast paths keep it.
     //
-    // By name is the correct rule and the fast path does not weaken it: a worker
-    // that threw before building its batch contributes an EMPTY vector, and a
-    // blind merge by index would then attribute the survivors' rows to the wrong
-    // generator. `StructuralBatch` makes the names unique within one batch (see
-    // its constructor), and every worker builds the same generators in the same
-    // order, so in the normal case the two vectors agree name-for-name at every
-    // position -- checked in O(G) -- and the merge is a walk.
-    //
-    // The fast paths are a complexity fix, not a micro-optimisation, and they win
-    // and lose in stated regimes. `by_generator` carries ONE ENTRY PER
-    // List/Set VARIABLE, since the built-ins register per variable, and
-    // `structural_batch.h` reasons about a 1500-List model: the by-name scan is
-    // O(G^2) string comparisons, ~1.1M at G = 1500, and `merge` runs once per
-    // restart per worker as well as once per worker. The fast path is O(G). It
-    // loses nothing when it does not apply -- one O(G) name comparison before
-    // falling through -- and it does not apply exactly when the vectors differ,
-    // which is the case the by-name scan exists for.
-    // An EMPTY target is the FIRST merge at BOTH aggregation sites -- a worker's
-    // first absorb, and solve_portfolio's first worker -- and neither the walk nor
-    // the by-name scan is needed for it: there is nothing to match against, so
-    // every row is appended unchanged. Taken first because the size compare would
-    // otherwise send exactly this case, which happens once per worker, down the
-    // by-name path. Without it the O(G) claim below covers only the per-restart
-    // term and the total stays O(W x G^2).
+    // Cost: `by_generator` has one entry per List/Set variable, so the by-name scan is O(G^2)
+    // string compares (~1.1M at G = 1500) and `merge` runs per restart per worker. An empty
+    // target (each site's first merge) is a copy, and identical names at every position (the
+    // normal case: unique names, same build order) are an O(G) walk. A mismatch costs one O(G)
+    // check before the by-name scan, which exists for exactly that case. Without the empty-target
+    // path the first merge per worker takes the by-name scan and the total stays O(W x G^2).
     if (by_generator.empty()) {
         by_generator = other.by_generator;
         return;

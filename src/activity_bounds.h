@@ -1,7 +1,7 @@
 #pragma once
 
-// Row-activity arithmetic for bound propagation (src/bound_propagation.cpp),
-// split out for the domain propagator (#329; removed by #380). Not installed.
+// Row-activity arithmetic for bound propagation (src/bound_propagation.cpp); internal, not
+// installed (#329).
 
 #include "cbls/bound_propagation.h"
 
@@ -22,10 +22,9 @@ inline double eff_hi(double b, double infinity) {
     return b >= infinity ? std::numeric_limits<double>::infinity() : b;
 }
 
-/// Running min or max activity of a row, kept as the sum of its finite terms
-/// plus a count of the infinite ones. The count is what lets a row tighten the
-/// single column that made it infinite: with exactly one infinite contribution,
-/// the activity of *everything else* is still finite and still bounds it.
+/// Running min or max activity of a row: the sum of its finite terms plus a count of the
+/// infinite ones. With exactly one infinite term the rest is finite, so the row can still
+/// tighten that one column.
 struct Activity {
     double sum = 0.0;
     /// Sum of the finite terms' magnitudes: what the rounding error of `sum`
@@ -73,17 +72,12 @@ inline double max_contribution(double coef, double lo, double hi) {
     return coef > 0.0 ? coef * hi : coef * lo;
 }
 
-/// The roundoff margin, per unit of `|row bound| + activity magnitude`, of a
-/// bound derived on one term (coefficient `coef`) of an `nnz`-term row.
-///
-/// The margin a derived bound is relaxed by has to cover the error it was
-/// computed with, and that error scales with the ACTIVITY, not with the
-/// bound: a slack of 3 left over from activities of 1e8 carries the 1e8's
-/// rounding (#211). A recursive sum of n terms is off by at most about
-/// n * DBL_EPSILON * sum |terms|; the rest-of-row subtraction, the slack
-/// and the division add three operations. So the margin in x-space is
-/// `(nnz + 3) * DBL_EPSILON * (|row bound| + magnitude) / |coef|`, and this
-/// returns everything but the parenthesised factor.
+/// The roundoff margin, per unit of `|row bound| + activity magnitude`, of a bound derived on
+/// one term (coefficient `coef`) of an `nnz`-term row. The error scales with the ACTIVITY, not
+/// the bound: a slack of 3 left from activities of 1e8 carries their rounding (#211). A
+/// recursive n-term sum is off by at most about n * DBL_EPSILON * sum |terms|, plus three
+/// operations (rest-of-row subtraction, slack, division): margin = `(nnz + 3) * DBL_EPSILON *
+/// (|row bound| + magnitude) / |coef|`, returned without the parenthesised factor.
 inline double roundoff_per_unit(std::size_t nnz, double coef) {
     return static_cast<double>(nnz + 3) * std::numeric_limits<double>::epsilon() / std::abs(coef);
 }

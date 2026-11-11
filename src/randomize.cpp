@@ -25,10 +25,8 @@ DomainWindow domain_window(const Variable& var) {
     }
 
     if (!std::isfinite(hi - lo)) {
-        // Both bounds declared and finite, but the width overflows. Narrowing
-        // only ever moves a bound inward, so the result stays a subset. Applies
-        // to every scalar type: it used to be the `else` of an Int-only trim, so
-        // Int skipped it.
+        // Both bounds finite, but the width overflows. Narrowing only moves a bound inward,
+        // so the result stays a subset. Applies to every scalar type, Int included.
         lo = std::max(lo, -clamp);
         hi = std::min(hi, clamp);
     }
@@ -44,17 +42,13 @@ DomainWindow int_sample_window(const Variable& var) {
     if (var.type != VarType::Int) {
         return w;
     }
-    // Inward-only, so still a subset of the window (and of the domain). Empty
-    // when the whole window sits past 2^53; the bounds are NOT clamped
-    // independently into the range, which is what made trimming inside
+    // Inward-only, so a subset of the window and domain; empty when the whole window sits past
+    // 2^53. The bounds are NOT clamped independently into the range: that made trimming inside
     // `domain_window` unsound.
     //
-    // Rounding inward as well, because `static_cast<int64_t>` truncates toward
-    // zero: on `[0.9, 1.2]` that named 0, and the draw then left the domain.
-    // Both readers already round an Int column's bounds inward (`std::ceil` /
-    // `std::floor` in nl_to_model.cpp and mps_to_model.cpp) and `int_var` takes
-    // `int`, so no model the codebase can build reaches this with a fractional
-    // bound — it cannot move an existing draw sequence.
+    // Rounded inward because `static_cast<int64_t>` truncates toward zero (on `[0.9, 1.2]` it
+    // named 0, outside the domain). Both readers round Int bounds inward and `int_var` takes
+    // `int`, so no buildable model has a fractional bound: this moves no existing draw sequence.
     return {std::ceil(std::max(w.lo, -kExactIntMagnitude)),
             std::floor(std::min(w.hi, kExactIntMagnitude - 1.0))};
 }
@@ -62,11 +56,8 @@ DomainWindow int_sample_window(const Variable& var) {
 bool movable_domain(const Variable& var) {
     switch (var.type) {
         case VarType::Int: {
-            // Exact and UB-free at any magnitude, where an int64_t cast is
-            // neither: the window holds two distinct integers iff
-            // floor(hi) - ceil(lo) >= 1. Note this calls [0.9, 1.2] immovable,
-            // where truncating casts called it movable — 1 is the only integer
-            // in it, so immovable is the right answer.
+            // Exact and UB-free at any magnitude, where an int64_t cast is neither: the window
+            // holds two distinct integers iff floor(hi) - ceil(lo) >= 1.
             const DomainWindow w = int_sample_window(var);
             return std::floor(w.hi) - std::ceil(w.lo) >= 1.0;
         }
@@ -85,10 +76,8 @@ double random_in_domain(const Variable& var, RNG& rng) {
         case VarType::Int: {
             const DomainWindow s = int_sample_window(var);
             if (s.lo > s.hi) {
-                // Domain wholly past 2^53: no int64_t range to draw from. Draw
-                // over the untrimmed window instead — in-domain by construction,
-                // and integral for free, since every double that large already
-                // is one.
+                // Domain wholly past 2^53: draw over the untrimmed window, in-domain by
+                // construction and integral, since every double that large is one.
                 const double v = std::round(rng.uniform(w.lo, w.hi));
                 return std::min(std::max(v, w.lo), w.hi);
             }
@@ -103,32 +92,23 @@ double random_in_domain(const Variable& var, RNG& rng) {
 void randomize_structured_var(Variable& var, RNG& rng, ListOrder order) {
     switch (var.type) {
         case VarType::List:
-            // `permutation(n)` is iota-then-shuffle, so on a freshly built List
-            // (elements == iota) the two arms are bit-identical. They diverge
-            // once the list has been moved: Regenerate discards that order,
-            // Perturb keeps the same elements in a new arrangement. LNS needs
-            // the latter — see ListOrder.
-            //
-            // Perturb is length-preserving whatever the List is, which is what
-            // makes LNS destroy safe on a partition member: it rearranges the
-            // elements that list already holds and can neither gain nor lose one.
+            // `permutation(n)` is iota-then-shuffle, so on a fresh List (elements == iota) the
+            // arms are bit-identical; once moved, Regenerate discards the order and Perturb
+            // keeps the elements. Perturb preserves length and membership on any List, which
+            // makes LNS destroy safe on a partition member (see ListOrder).
             if (order == ListOrder::Perturb) {
                 rng.shuffle(var.elements);
             } else if (var.list_init == ListInit::Identity) {
-                // universe == min == max here (list_var enforces it), so this is
-                // the pre-#164 draw on the pre-#164 variable, verbatim: one
-                // `rng.permutation(max_size)` and nothing else. Keeping it a
-                // distinct arm rather than a special case of the Random one below
-                // is what makes every permutation trajectory bit-identical.
+                // universe == min == max (list_var enforces it): exactly one
+                // `rng.permutation(max_size)`, the pre-#164 draw. A distinct arm, not a case of
+                // Random below, so every permutation trajectory stays bit-identical.
                 var.elements = rng.permutation(var.max_size);
             } else if (var.list_init == ListInit::Empty) {
                 var.elements.clear();  // no draw
             } else {
-                // Random: a uniformly random admissible length, then that many
-                // distinct elements of the universe in a uniformly random order.
-                // `choice` shuffles the whole universe and truncates, so the
-                // ORDER is random too -- which a List needs and a Set does not
-                // care about.
+                // Random: a uniform admissible length, then that many distinct elements.
+                // `choice` shuffles the whole universe and truncates, so the ORDER is random
+                // too, which a List needs.
                 const int size = static_cast<int>(rng.integers(var.min_size, var.max_size + 1));
                 var.elements = rng.choice(var.universe_size, size);
             }
@@ -143,36 +123,17 @@ void randomize_structured_var(Variable& var, RNG& rng, ListOrder order) {
     }
 }
 
-// Lay `part` out as a uniformly random assignment that satisfies its cover:
-// every list within its own [min_len, max_len], every element in at most one
-// list, and -- for `Cover::Exact`, which `add_list_partition` has already
-// checked is achievable -- every element in exactly one.
-//
-// Two passes over one shuffled universe. The first hands each list its minimum
-// length, which is what makes the result feasible at all; the second offers each
-// remaining element to a uniformly chosen list that is still under its TARGET.
-//
-// The target is where `ListInit` re-enters, and where the two covers differ:
-//
-//  - `Exact` ignores it and targets every list's `max_len`, so the second pass
-//    places every element. It has to: the cover must hold at the first
-//    assignment, because no `Exact` move can repair an incomplete one, and the
-//    validated `sum(max_len) >= universe` is what guarantees some list always
-//    has room.
-//  - `AtMostOnce` targets what each member's `ListInit` asks for -- `Empty`
-//    stops at the minimum (which `list_var` requires to be 0), `Random` draws a
-//    uniform admissible length. So a prize-collecting model whose routes are
-//    declared `Empty` starts with everything unassigned and its skip penalty at
-//    its worst, which is a starting point the search can improve, rather than
-//    fully assigned, which under a capacity bound it may not be able to leave.
-//
-// NOT uniform over the feasible assignments in general: once a list reaches its
-// target the remaining elements are forced into the ones still open, which skews
-// the size distribution. It is uniform when no target binds. This is a starting
-// point rather than a sample, so that is enough.
-//
-// The lists are otherwise left in the order the draw produced: an inter-list
-// move reorders them anyway, and imposing one here would only look tidier.
+// Two passes over one shuffled universe: the first gives each list its minimum length (what
+// makes the result feasible); the second offers each remaining element to a uniformly chosen
+// list still under its TARGET.
+//  - `Exact` targets every `max_len`, placing every element: no `Exact` move can repair an
+//    incomplete cover, and the validated `sum(max_len) >= universe` keeps some list open.
+//  - `AtMostOnce` targets each member's `ListInit`: `Empty` stops at the minimum (0, per
+//    `list_var`), `Random` draws a uniform admissible length. Routes declared `Empty` start
+//    unassigned, which the search can improve; fully assigned under a capacity bound it may
+//    not be able to leave.
+// Uniform only when no target binds (a full list forces the rest into open ones); it is a
+// starting point, not a sample. List order is left as drawn: inter-list moves reorder anyway.
 void randomize_list_partition(Model& model, const ListPartition& part, RNG& rng) {
     for (int32_t vid : part.list_ids) {
         model.var_mut(vid).elements.clear();
@@ -190,10 +151,8 @@ void randomize_list_partition(Model& model, const ListPartition& part, RNG& rng)
             v.elements.push_back(pool[next]);
         }
     }
-    // Candidates are compacted in place as they fill up, so the draw below is
-    // uniform over the lists that can still take an element rather than over all
-    // of them -- otherwise a partition of one large and many tiny lists would
-    // spend most of its draws on lists with no room.
+    // Full lists are compacted out, so the draw is uniform over lists with room; otherwise one
+    // large and many tiny lists would spend most draws on lists with no room.
     std::vector<int32_t> open_lists;
     std::vector<int32_t> targets;
     open_lists.reserve(part.list_ids.size());
