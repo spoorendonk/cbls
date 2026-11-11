@@ -10,7 +10,8 @@
 //   * `periods` -- one solve per (instance, horizon), so `instance` alone does
 //     not identify a row's solve.
 //   * `time_limit_s` -- "flattened before the budget?" needs the budget, and
-//     the budget map is what these traces exist to change.
+//     the budget map is what these traces exist to change: without the
+//     column an archived trace stops stating its budget once the map moves.
 //   * `batches` -- `SolveProgress::iteration`, the ViolationLS batch count (NOT
 //     comparison.csv's GLS `iterations`); separates "converged" from "barely
 //     started" in a flat tail.
@@ -100,13 +101,13 @@ public:
     /// One closing row per solve; the runner calls it after `solve()` returns.
     ///
     /// Periodic reports come at most once a second and `record_best` resets
-    /// that timer, so without this row the trace can end on an improvement up
-    /// to ~1.5s before the budget and read as "still improving" (measured,
-    /// #147). A solve with no valued incumbent would otherwise write no rows,
-    /// indistinguishable from a filtered roster or a `nullptr` callback; this
-    /// row states it with an EMPTY objective cell, which no periodic row has.
-    /// Hence `max(time_seconds)` per (instance, periods) is the run's end, and
-    /// `new_best` is 0: the row reports where the budget left the search.
+    /// that timer, so without this row every horizon's trace stopped 0.65-1.45s
+    /// short of its budget (measured, #147), and one that improved inside that
+    /// window ends on a rising incumbent that reads as "still improving". A solve with no valued
+    /// incumbent would otherwise write no rows, indistinguishable from a filtered roster or a
+    /// `nullptr` callback; this row states it with an EMPTY objective cell, which no periodic row
+    /// has. Hence `max(time_seconds)` per (instance, periods) is the run's end, and `new_best` is
+    /// 0: the row reports where the budget left the search.
     ///
     /// `batches` is the last batch count `on_progress` saw, NOT
     /// `SearchResult::iterations` (the GLS count), so the column means one

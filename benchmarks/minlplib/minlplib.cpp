@@ -54,8 +54,8 @@ constexpr int kCampaignThreads = 16;
 
 struct Args {
     std::string inst_dir = "benchmarks/instances/minlplib";
-    // 60s per instance: 5s is a stingy budget for a general-purpose non-convex
-    // MINLP heuristic (#88).
+    // 60s per instance: the previously published 5s is a stingy budget for a
+    // general-purpose non-convex MINLP heuristic (#88).
     double time_limit = 60.0;
     bool time_limit_set = false;
     uint64_t seed = 1;
