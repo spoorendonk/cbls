@@ -1,10 +1,9 @@
 """Run the MINLPLib ablation campaign of issue #143, serially and resumably.
 
-The campaign asks which parts of the engine the published MINLPLib result
-actually depends on. It runs four arms plus a gated fifth over the 50-instance
-roster at the published 60s budget, three seeds each, with the arms
-**interleaved per instance** so that slow drift in machine state hits every arm
-equally rather than accumulating against whichever arm ran last:
+Which parts of the engine the published MINLPLib result depends on: four arms
+plus a gated fifth over the 50-instance roster at the published 60s budget,
+three seeds each, **interleaved per instance** so machine drift hits every arm
+equally instead of accumulating against the last one:
 
     control            (all defaults)
     no-float-hook      --no-float-hook
@@ -18,42 +17,30 @@ Usage, from a configured Release build directory and a clean checkout:
     .venv/bin/python3 -m benchmarks.minlplib.run_ablation --out-dir ... --dry-run
     .venv/bin/python3 -m benchmarks.minlplib.run_ablation --out-dir ... --report-only
 
-The same invocation resumes: every completed run is appended to
-`<out-dir>/results.csv` and flushed to disk before the next one starts, and a
-restart skips exactly the `(instance, arm, seed)` triples already recorded. A
-ten-hour campaign that loses everything to one interruption is not usable, and
-this one is expected to be interrupted.
+The same invocation resumes: each completed run is appended to
+`<out-dir>/results.csv` and flushed before the next starts, and a restart skips
+exactly the `(instance, arm, seed)` triples already recorded.
 
-WHAT THIS DRIVER REFUSES, and why each refusal is a refusal rather than a
-warning -- every one of them would otherwise surface as a number nobody can
-trust, hours after the mistake:
+Refusals, not warnings, since each would otherwise yield an untrustworthy number
+hours later:
 
-* **Writing anywhere near the published tables.** `--out-dir` must be outside
-  `benchmarks/instances/`, so the campaign cannot regenerate or truncate
-  `comparison.csv` or `anytime_trace.csv` however it is invoked. The runner
-  refuses those files independently (#136), and neither guard is load-bearing
-  alone: the runner's guard would let the *control* arm through, since control
-  is by definition the default configuration.
-* **Sharing the machine.** The machine-wide `jobs.wallclock_lock` (shared with
-  `run_benchmark.py`) and an exclusive lock on `<out-dir>/campaign.lock` for
-  the whole run, plus a load-average check before the first solve. The budget
-  is wall-clock, so a concurrent solve produces numbers comparable neither to
-  the other arms nor to anything published.
-* **Resuming into a different configuration.** A stamp file records the commit,
-  budget, seeds and arm set; a mismatch is refused rather than merged, because
-  an ablation assembled from two engines measures the engines, not the arms.
-* Everything `run_benchmark.common_preflight` already refuses -- a dirty tree, a
-  non-Release or sanitizer build directory, a build configured from another
-  checkout, a roster with missing `.nl` files.
+* **Writing near the published tables.** `--out-dir` must be outside
+  `benchmarks/instances/`. The runner refuses `comparison.csv` and
+  `anytime_trace.csv` too (#136), but its guard alone would let the default
+  *control* arm through.
+* **Sharing the machine.** `jobs.wallclock_lock` (shared with
+  `run_benchmark.py`), an exclusive `<out-dir>/campaign.lock`, and a load check
+  before the first solve: the budget is wall-clock.
+* **Resuming into another configuration.** The stamp records commit, budget,
+  seeds and arm set; a mismatch is refused, since a mix measures engines, not
+  arms.
+* Everything `run_benchmark.common_preflight` refuses: a dirty tree, a
+  non-Release or sanitizer build, a build from another checkout, missing `.nl`
+  files.
 
-The campaign changes no engine default and writes no published table. If an arm
-argues for a different default, that is a separate change with its own
-justification (issue #143's own acceptance criteria).
-
-This driver also ran #145's `--campaign transfer-145` and #331's
-`--campaign presolve-322` arm sets on the held-out roster. Both issues are
-closed and both campaigns are removed; they are in git history at `ef795b55`.
-An out-dir stamped by either is refused rather than scored as an ablation.
+Changes no engine default and writes no published table (#143). The removed
+`transfer-145` (#145) and `presolve-322` (#331) campaigns are at `ef795b55`; an
+out-dir stamped by either is refused.
 """
 
 from __future__ import annotations
@@ -76,10 +63,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-# Executed as a script (`python3 benchmarks/minlplib/run_ablation.py`) only this
-# file's own directory lands on sys.path, so the sibling module whose preflight
-# guards this driver reuses would not import. Adding the repository root keeps
-# that invocation working alongside `python3 -m benchmarks.minlplib.run_ablation`.
+# Run as a script, only this directory is on sys.path; add the repo root so the
+# `benchmarks.*` imports resolve as under `python3 -m`.
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
@@ -117,9 +102,8 @@ from benchmarks.minlplib.runner import (  # noqa: E402
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
 
-#: Nothing the campaign writes may land under here. `benchmarks/instances/`
-#: holds every published table in the repository, and the one failure mode this
-#: driver cannot recover from is replacing one of them.
+#: Nothing the campaign writes may land here: it holds every published table,
+#: and replacing one is the one failure this driver cannot recover from.
 PROTECTED_ROOT = REPO_ROOT / "benchmarks" / "instances"
 
 #: The append-only record of completed runs. It is both the campaign's output
@@ -129,12 +113,11 @@ RESULTS_NAME = "results.csv"
 #: Records which configuration the rows in an out-dir belong to.
 STAMP_NAME = "stamp.txt"
 
-#: Held for the whole campaign, so a second driver refuses instead of quietly
-#: halving both runs' iteration counts.
+#: Held for the whole campaign, so a second driver refuses instead of halving
+#: both runs' iteration counts.
 LOCK_NAME = "campaign.lock"
 
-#: Where the gate's reading and its verdict are written, so the decision is
-#: recoverable from the output rather than from this session's scrollback.
+#: The gate's reading and verdict, so the decision is recoverable from the output.
 GATE_NAME = "lns_gate.json"
 
 
@@ -146,104 +129,67 @@ class Arm:
     flags: tuple[str, ...]
 
 
-#: The arms that always run. `control` is first and is run in this same sitting
-#: rather than taken from the published table, which was measured at another
-#: time on a differently-loaded machine -- exactly the drift the interleaving
-#: rule exists to defeat (issue #143's protocol).
+#: The arms that always run. `control` runs in this sitting, not taken from the
+#: published table, which was measured under other machine load (#143).
 ARMS: tuple[Arm, ...] = (
     Arm(CONTROL_ARM, ()),
     Arm("no-float-hook", ("--no-float-hook",)),
     Arm("unproductive-0", ("--unproductive-iters", "0")),
-    # Compound moves are on by default since 2026-10-07, so the arm turns them
-    # OFF; it measures the same on/off difference #143 asked for.
+    # Compound moves default on since 2026-10-07, so the arm turns them off (#143).
     Arm("no-compound-moves", ("--no-compound-moves",)),
 )
 
 #: The gated fifth arm.
 GATED_ARM = Arm("no-lns", ("--no-lns",))
 
-#: The gate probe's rows. Same flags as `control` and the same budget, run over
-#: the roster at one seed before the campaign proper, for the sole purpose of
-#: reading `lns_repairs`. Its rows are recorded under this name so that the
-#: scoring can tell them apart from the campaign's own control and refuse to
-#: average the two -- they were measured hours apart, which is the thing the
-#: protocol says makes a control unusable as a comparison baseline.
+#: The gate probe: `control`'s flags and budget at one seed before the campaign,
+#: only to read `lns_repairs`. Named apart so scoring refuses to average it with
+#: the campaign's control, measured hours apart.
 PROBE_ARM = Arm(PROBE_ARM_NAME, ())
 
 #: The campaign every stamp records (see `campaign_stamp`, `campaign_refusal`).
 ABLATION_CAMPAIGN = "ablation"
 
-#: Three seeds, as the protocol requires. 1 is the seed the published table was
-#: measured at, so the control arm stays comparable with it -- once that table
-#: is regenerated under the current defaults: it predates compound moves
-#: becoming the default (2026-10-07) and records `compound_moves=off`; 2 and 3 are the
-#: next two, chosen for being unremarkable -- any seed is as good as any other
-#: to this engine, and picking memorable ones invites the suspicion that they
-#: were picked after looking.
+#: Three seeds, as the protocol requires. 1 is the published table's seed, so
+#: control is comparable once that table is regenerated (it predates compound
+#: moves defaulting on, 2026-10-07, and records `compound_moves=off`); 2 and 3
+#: are the next two, unremarkable so they cannot look picked after the fact.
 DEFAULT_SEEDS: tuple[int, ...] = (1, 2, 3)
 
-#: THE LNS GATE. Arm 4 of issue #143 runs only if LNS is doing work at this
-#: budget, read off the `lns_repairs` counter the runner now publishes.
+#: THE LNS GATE (#143): the `no-lns` arm runs only if the probe's `lns_repairs`
+#: shows LNS working at this budget. The arm is skipped only at ZERO repairs
+#: roster-wide, the point it becomes a provable no-op: `diversify()` in
+#: `src/search.cpp` tests `lns_ != nullptr` first and otherwise perturbs, so with
+#: no repair `--no-lns` takes the same branch and consumes the RNG identically.
 #:
-#: The threshold is 1 repair in 1 instance -- that is, the arm is skipped only
-#: when the control probe recorded ZERO repairs across the whole roster. That is
-#: not a timid threshold, it is the exact point at which the arm stops being an
-#: experiment: `src/search.cpp`'s `diversify()` tests `lns_ != nullptr` before
-#: anything else and otherwise perturbs, so with no repair anywhere the
-#: `--no-lns` run takes the same branch at every kick and consumes the RNG
-#: identically. Zero repairs means the arm is provably a no-op; one repair means
-#: the trajectories genuinely diverge on that instance.
-#:
-#: The gate reads ATTEMPTS, deliberately, even though `lns_repairs_accepted`
-#: (#150) now publishes the acceptance half the earlier version of this comment
-#: said nothing could answer. Acceptance is a stronger reading of "was LNS
-#: worth its budget", but it is NOT a stronger reading of the question this
-#: gate asks, which is whether `--no-lns` is a distinguishable arm. A REJECTED
-#: repair is not a no-op: it randomises variables, runs `fj_nl_initialize` and
-#: rolls back, so it consumes the RNG and seconds of the budget that the
-#: `--no-lns` run spends on search instead. An arm with 50 attempts and zero
-#: acceptances therefore still diverges -- and the divergence is precisely the
-#: budget cost the arm exists to price. Skipping on acceptance would skip the
-#: measurement that matters most.
-#:
-#: So acceptance is reported, not gated on: `ablation_report.py` prints it
-#: beside the attempt total for every arm it scores. Both numbers are flags, so
-#: a campaign that comes back with two repairs in 50 instances can be re-gated
-#: without editing this file.
+#: Gates on ATTEMPTS, not `lns_repairs_accepted` (#150): a rejected repair still
+#: randomises, runs `fj_nl_initialize` and rolls back, consuming RNG and budget,
+#: so it diverges, and that budget cost is what the arm prices. Acceptance is
+#: reported beside attempts by `ablation_report.py`. Both thresholds are flags.
 LNS_GATE_MIN_REPAIRS = 1
 LNS_GATE_MIN_INSTANCES = 1
 
-#: The share of probe runs that must actually carry an `lns_repairs` reading
-#: before a SKIP decision is allowed to stand on them. Below it the arm runs:
-#: the acceptance criterion asks for "the counter reading that justified
-#: skipping", and a reading assembled mostly from runs that never solved is not
-#: one. Costs machine time in the ambiguous case, which is the right direction
-#: to fail.
+#: Share of probe runs that must carry an `lns_repairs` reading for a SKIP to
+#: stand; below it the arm runs, since mostly-unsolved runs are not "the counter
+#: reading that justified skipping" (#143). Fails toward spending machine time.
 GATE_MIN_READABLE_FRACTION = 0.9
 
 #: One-minute load average above which the campaign refuses to start.
 #:
-#: Well BELOW one busy core, deliberately. The runner is single-threaded, so a
-#: running campaign holds the one-minute average at about 1.00 and oscillates
-#: either side of it: a threshold of 1.0 would let a second campaign start
-#: roughly half the time it was tried, and every timing in both would then be
-#: invalid with nothing in either record saying so. `jobs.wallclock_lock`
-#: excludes a second timed driver by this user on this host; this check is what
-#: notices anything else -- another user's run, or any other load.
-#:
-#: Overridable with `--allow-busy`, which is there for the case this cannot
-#: distinguish -- the average still decaying from the campaign that just died.
+#: Well below one busy core: a single-threaded campaign oscillates around 1.00,
+#: so 1.0 would admit a second one about half the time. `jobs.wallclock_lock`
+#: excludes this user's timed drivers; this catches other load. `--allow-busy`
+#: overrides, for an average still decaying from a campaign that just died.
 MAX_LOAD_AVERAGE = 0.4
 
-#: The runner columns copied onto a result row: all of them but the two the
-#: provenance block below already carries, in the runner's own order.
+#: Runner columns copied onto a result row, in runner order, minus the two the
+#: provenance columns already carry.
 _RUNNER_COLUMNS: tuple[str, ...] = tuple(
     column for column in RUNNER_COLUMNS if column not in ("instance", "commit_sha")
 )
 
-#: The columns of `results.csv`. `instance,arm,seed` is the resume key; the
-#: provenance columns after it are what let a row be read years later without
-#: this file; the rest are the runner's own row, verbatim.
+#: `results.csv` columns: `instance,arm,seed` is the resume key, the provenance
+#: columns make a row self-describing, the rest are the runner's row verbatim.
 RESULT_COLUMNS: tuple[str, ...] = (
     "instance",
     "arm",
@@ -265,7 +211,7 @@ class Run:
 
     @property
     def key(self) -> tuple[str, str, int]:
-        """The resume key -- what `results.csv` records and a restart skips on."""
+        """The resume key: what `results.csv` records and a restart skips on."""
         return (self.instance, self.arm.name, self.seed)
 
     @property
@@ -276,16 +222,11 @@ class Run:
 def campaign_plan(roster: Sequence[str], seeds: Sequence[int], arms: Sequence[Arm]) -> list[Run]:
     """The campaign's run order: instance-major, then seed, then arm.
 
-    This ordering IS the protocol. Every arm at every seed for one instance runs
-    back to back before the next instance is touched, so the machine drift
-    between the control and an arm is minutes rather than hours; and the arms
-    rotate innermost, so a paired (control, arm) comparison at one seed is as
-    close together in time as this campaign can put it.
-
-    The obvious alternative -- arm-major, one whole roster pass per arm -- is
-    what the issue forbids: it makes every arm's comparison against the control
-    a comparison across an hour of drift, which is not distinguishable from an
-    arm effect at the size of effect this roster can resolve.
+    This ordering IS the protocol (#143): drift between control and an arm is
+    minutes, not hours, and arms rotate innermost so each paired (control, arm)
+    comparison at one seed is as close in time as possible. Arm-major order is
+    forbidden: an hour of drift is indistinguishable from the arm effects this
+    roster can resolve.
     """
     return [Run(instance, arm, seed) for instance in roster for seed in seeds for arm in arms]
 
@@ -293,11 +234,9 @@ def campaign_plan(roster: Sequence[str], seeds: Sequence[int], arms: Sequence[Ar
 def probe_plan(roster: Sequence[str], seed: int) -> list[Run]:
     """The gate probe: the control configuration over the roster at one seed.
 
-    One seed, because the gate asks whether LNS ever fires at this budget, not
-    how often on average. One roster pass is ~7% of the campaign and buys a
-    symmetric interleave for the arm it gates -- deciding the gate per instance
-    inside the campaign loop would instead put the gated arm systematically last
-    in every block.
+    One seed: the gate asks whether LNS ever fires, not how often. The pass costs
+    ~7% of the campaign and keeps the gated arm's interleave symmetric; gating per
+    instance in the loop would put it last in every block.
     """
     return [Run(instance, PROBE_ARM, seed) for instance in roster]
 
@@ -305,9 +244,8 @@ def probe_plan(roster: Sequence[str], seed: int) -> list[Run]:
 def scratch_refusal(out_dir: Path) -> str | None:
     """Refuse an `--out-dir` from which the campaign could reach a published table.
 
-    A path test rather than a filename test: the campaign writes several files
-    and the runner writes more underneath it, so the durable rule is that the
-    whole tree is off limits, not that three names are.
+    A path test, not a filename test: the whole tree is off limits, since the
+    campaign and the runner write several files under it.
     """
     resolved = out_dir.resolve()
     protected = PROTECTED_ROOT.resolve()
@@ -343,17 +281,13 @@ def load_refusal(allow_busy: bool) -> str | None:
 def campaign_lock(out_dir: Path) -> Iterator[None]:
     """Hold an exclusive lock for the whole campaign, or refuse.
 
-    This is the serial guarantee, asserted rather than left to the caller: the
-    driver never spawns a second solve itself, and this is what stops a second
-    *driver* from doing it. `flock` is per open file description, so a second
-    attempt fails whether it comes from another process or from this one.
+    The serial guarantee against a second *driver*. `flock` is per open file
+    description, so a second attempt fails from this process too.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / LOCK_NAME
-    # "a+" and not "w": a truncating open would wipe the holder's pid line
-    # BEFORE the flock below has even failed, so the refusal could not name the
-    # process it lost to -- the one diagnostic the file exists to carry,
-    # destroyed by the event that needs it.
+    # "a+", not "w": truncating before the flock fails would wipe the holder's
+    # pid line, which the refusal names.
     handle = path.open("a+")
     try:
         try:
@@ -400,17 +334,11 @@ def campaign_stamp(
 ) -> str:
     """The configuration an out-dir's rows belong to, one field per line.
 
-    The roster and the gate setting are in here for the same reason the commit
-    is: resuming with `--instances a b` otherwise passes every check and quietly
-    produces a partial campaign, and resuming with `--lns-arm on|off` passes too
-    and then overwrites the recorded gate reading with a forced non-decision --
-    destroying exactly the "counter reading that justified skipping" the
-    acceptance criterion asks for.
-
-    Each arm's FLAGS are in here because the arm name alone does not identify
-    an arm. The `campaign=ablation` line is constant: it is kept from when this
-    driver ran other arm sets, so an out-dir stamped then still resumes, and so
-    `campaign_refusal` can recognise one of theirs.
+    Roster and gate setting are stamped like the commit: else `--instances a b`
+    resumes into a partial campaign, and `--lns-arm on|off` overwrites the
+    recorded gate reading that justified a skip. Arm FLAGS are stamped because
+    a name does not identify an arm. The constant `campaign=ablation` line lets
+    older out-dirs resume and lets `campaign_refusal` recognise other campaigns.
     """
     return (
         f"campaign={ABLATION_CAMPAIGN}\n"
@@ -426,9 +354,8 @@ def campaign_stamp(
 def recorded_campaign(out_dir: Path) -> str | None:
     """The campaign an out-dir's stamp names, or None where it names none.
 
-    None for an absent stamp and for one written before the stamp carried the
-    campaign -- every such out-dir is an ablation, but saying so is the
-    caller's decision, not this reader's.
+    None for an absent stamp or one predating the field; calling such an
+    out-dir an ablation is the caller's decision.
     """
     path = out_dir / STAMP_NAME
     if not path.exists():
@@ -443,10 +370,8 @@ def recorded_campaign(out_dir: Path) -> str | None:
 def stamp_conflict(out_dir: Path, stamp: str, *, resume: bool) -> str | None:
     """Refuse an out-dir written by a different engine, budget, seed set or arm set.
 
-    Resume matches on a `(instance, arm, seed)` triple being recorded, which says
-    nothing about what produced it. Without this, a campaign interrupted at one
-    commit and resumed at another reports arm effects that are partly engine
-    differences, and only `wall_seconds` would hint at it.
+    A recorded resume triple says nothing about what produced it; without this,
+    a resume at another commit reports engine differences as arm effects.
     """
     return stamp_refusal(
         out_dir / STAMP_NAME,
@@ -462,8 +387,7 @@ def stamp_conflict(out_dir: Path, stamp: str, *, resume: bool) -> str | None:
 def recorded_keys(path: Path) -> set[tuple[str, str, int]]:
     """The `(instance, arm, seed)` triples already in `results.csv`.
 
-    A row with an unparseable seed is not a recorded run: it is skipped here so
-    that the campaign re-runs it rather than treating a corrupt line as done.
+    A row with an unparseable seed is not recorded, so the campaign re-runs it.
     """
     if not path.exists():
         return set()
@@ -481,21 +405,11 @@ def recorded_keys(path: Path) -> set[tuple[str, str, int]]:
 def header_conflict(path: Path) -> str | None:
     """The reason an existing `results.csv` cannot be appended to, or None.
 
-    `open_results` leaves a non-empty file alone, and `append_result` writes one
-    value per `RESULT_COLUMNS` entry -- so a file whose header is a DIFFERENT
-    schema gains rows that are wider or narrower than the header above them, at
-    exit 0. `csv.DictReader` then binds each value to the wrong name (a row
-    written after #150 read under a pre-#150 header hands the repair count to
-    `search_config` and drops the last cell into `restkey`), and the campaign
-    scores columns that never described it.
-
-    The campaign stamp usually catches this first, because a schema change
-    coincides with a commit change and the stamp records the commit. Usually is
-    not always: the stamp file can be absent -- deleted, or an out-dir from a
-    driver that predates it -- and then nothing between the old header and the
-    new rows. Checked here rather than inside `open_results` so the refusal
-    reads like the campaign's other refusals, and so `execute_runs`' own call
-    stays a create-if-missing.
+    Appending `RESULT_COLUMNS`-wide rows under another schema's header exits 0
+    and makes `csv.DictReader` bind values to the wrong names (#150). The stamp
+    usually catches a schema change via the commit, but can be absent. Checked
+    here, not in `open_results`, so it reads like the other refusals and
+    `execute_runs` keeps a create-if-missing call.
     """
     if not path.exists() or not path.read_bytes():
         return None
@@ -528,9 +442,8 @@ def append_result(path: Path, row: dict[str, str]) -> None:
 def runner_command(args: argparse.Namespace, sha: str, run: Run, out_dir: Path) -> list[str]:
     """The `cbls_minlplib` invocation for one run.
 
-    Its `--instance` is a second lock on the published table: the runner refuses
-    to write `comparison.csv` from a subset run whatever else is passed, so even
-    the control arm -- whose flags are all default -- cannot reach it.
+    Its `--instance` keeps even the all-default control arm off `comparison.csv`:
+    the runner refuses a subset run there.
     """
     return runner_contract.runner_command(
         args.build_dir,
@@ -553,17 +466,16 @@ def locked_command(args: argparse.Namespace, sha: str, run: Run, out_dir: Path) 
 class LockCommandError(Exception):
     """The lock prefix appears not to have started the solve: stop, record nothing.
 
-    A recorded failed row enters the resume set, so a lock that is down for a
-    while would burn through the rest of the plan in seconds and leave rows for
-    solves that never happened, which no resume would ever retry.
+    A recorded failed row enters the resume set, so a down lock would burn the
+    rest of the plan in seconds into rows no resume retries.
     """
 
 
 def solution_dir(out_dir: Path, run: Run) -> Path:
     """Where the runner leaves this run's verified assignment, one directory per run.
 
-    Per run, not per instance: every arm and seed of an instance writes an
-    `<instance>.sol`, and the check must read the one this run wrote.
+    Per run: every arm and seed writes `<instance>.sol`, and the check must read
+    this run's.
     """
     return out_dir / "runs" / f"{run.slug}.sol.d"
 
@@ -571,10 +483,8 @@ def solution_dir(out_dir: Path, run: Run) -> Path:
 def read_runner_row(path: Path, run: Run, sha: str) -> dict[str, str]:
     """The single result row the runner wrote, checked against what was asked for.
 
-    The checks are cheap and each of them has a real failure behind it: a runner
-    that wrote the header and died leaves no row; a stale file from an earlier
-    invocation carries another instance or another commit and would be recorded
-    under this run's arm and seed.
+    Guards a header-only file from a dead runner, and a stale file for another
+    instance or commit that would be recorded under this run's arm and seed.
     """
     with path.open(newline="") as fh:
         rows = list(csv.DictReader(fh))
@@ -585,10 +495,8 @@ def read_runner_row(path: Path, run: Run, sha: str) -> dict[str, str]:
         raise RuntimeError(f"{path} is for {row['instance']}, expected {run.instance}")
     if row["commit_sha"] != sha:
         raise RuntimeError(f"{path} was written at {row['commit_sha']}, expected {sha}")
-    # `row.get(...) is None`, not `column not in row`: `csv.DictReader` pads a
-    # TRUNCATED data line by binding the missing columns to None, so the key is
-    # present and a torn row would pass this check and then hand None to
-    # everything downstream. The runner writes "NaN", never an empty cell.
+    # `is None`, not `not in`: `csv.DictReader` pads a truncated line with None
+    # values under present keys. The runner writes "NaN", never an empty cell.
     missing = [column for column in _RUNNER_COLUMNS if row.get(column) is None]
     if missing:
         raise RuntimeError(f"{path} is missing column(s) {', '.join(missing)}")
@@ -619,30 +527,22 @@ def failed_row(
 ) -> dict[str, str]:
     """A row for a run whose process exited nonzero.
 
-    Every measured cell is "NaN" and `feasible` is "false", so nothing here can
-    be read as a result: the report's `csv_number` maps "NaN" to NaN and a NaN
-    never reaches a mean, and the gate's `_repairs_of` reads it as "no reading"
-    rather than as zero repairs.
+    Every measured cell is "NaN" and `feasible` "false": the report's
+    `csv_number` keeps NaN out of means, and the gate's `_repairs_of` reads it as
+    "no reading", not zero repairs.
     """
     row = {**_asked(run, args, sha), **dict.fromkeys(_RUNNER_COLUMNS, "NaN")}
     row["feasible"] = "false"
-    # The prefix is the contract with the report, which holds these rows out of
-    # every count rather than reading `feasible=false` as a lost feasibility.
+    # The prefix tells the report to hold the row out of every count, not read
+    # `feasible=false` as lost feasibility.
     row["note"] = f"{RUNNER_FAILED_NOTE}-{kind or f'exit-{returncode}'}"
     return row
 
 
-#: Everything `read_runner_row` can raise on a file a dead process left behind.
-#: Wider than `(RuntimeError, OSError)`: a torn header reaches `row["instance"]`
-#: as a `KeyError`, a half-written line can be invalid UTF-8
-#: (`UnicodeDecodeError`), and `csv` raises its own `Error` on a malformed
-#: field. Any of them escaping would wedge a thirteen-hour campaign at the one
-#: point built to survive a bad file.
-#:
-#: `UnicodeDecodeError` rather than its `ValueError` base class, deliberately:
-#: the base would also catch a bad `int()`/`float()` inside `read_runner_row`
-#: itself and convert a genuine bug in this module into a plausible-looking
-#: `runner-failed-unreadable-row`, which is the one outcome nobody re-reads.
+#: Everything `read_runner_row` can raise on a dead process's file: a torn header
+#: (`KeyError`), invalid UTF-8, a malformed `csv` field. One escaping would wedge
+#: the campaign. `UnicodeDecodeError`, not its `ValueError` base, which would
+#: disguise a bug in this module as `runner-failed-unreadable-row`.
 UNREADABLE_ROW = (RuntimeError, OSError, KeyError, UnicodeDecodeError, csv.Error)
 
 
@@ -651,24 +551,12 @@ def _failed_run_row(
 ) -> dict[str, str]:
     """The row to record for a run whose process exited nonzero.
 
-    The runner's OWN row where it wrote one, `failed_row` otherwise.
-
-    The runner exits nonzero on its error tally (#153), so a solve that threw --
-    which used to exit 0 and be recorded as a plain result -- now arrives here.
-    Substituting `failed_row` for the row the runner already wrote would LOSE
-    information: the runner looked the instance's published bounds up and put
-    `primal_bks`/`dual_bound`/`n_int_vars` on the row, which this driver never
-    reads, and its note says `solve-error` rather than `exit-3`. Both rows are
-    held out of every count identically, so keeping the richer one costs the
-    scoring nothing and tells the reader which of read, build or solve threw.
-
-    The runner's row is taken only when the exit status is the one the runner
-    uses to REPORT its error tally, the row is READABLE (`read_runner_row` checks
-    it is a single row for this instance at this commit) and its note is one no
-    completed search writes. A crash, a signal, or a nonzero exit next to a row
-    claiming a measurement all fall back to `failed_row` -- the driver must not
-    let a process failure enter the campaign as a result, and a row left behind
-    by a process that died is not evidence of anything.
+    The runner's OWN row where it wrote one (exit `RUNNER_EXIT_ERRORED`, #153):
+    it carries `primal_bks`/`dual_bound`/`n_int_vars` and a note naming which of
+    read, build or solve threw, and is held out of counts like `failed_row`.
+    Taken only when the exit is `RUNNER_EXIT_ERRORED`, `read_runner_row` accepts
+    it and no completed search wrote its note; a crash, a signal or a row
+    claiming a measurement fall back to `failed_row`.
     """
     if returncode != RUNNER_EXIT_ERRORED:
         return failed_row(run, args, sha, returncode)
@@ -677,8 +565,7 @@ def _failed_run_row(
     except UNREADABLE_ROW:
         return failed_row(run, args, sha, returncode)
     if completed_search(runner["note"]):
-        # The process failed, but the row it left behind says a search ran and
-        # reported something. The two cannot both be true; record the failure.
+        # A failed process cannot have completed a search; record the failure.
         return failed_row(run, args, sha, returncode, "row-claims-a-result")
     return result_row(run, args, sha, runner)
 
@@ -698,8 +585,7 @@ def _progress(index: int, total: int, run: Run, started: float, elapsed_each: li
 def block_of(run: Run) -> tuple[str, int]:
     """The interleave block a run belongs to: one (instance, seed) pair.
 
-    Every arm in a block runs back to back, which is what makes the comparison
-    between them a comparison at one point in the machine's life.
+    Its arms run back to back, so they meet the same machine state.
     """
     return (run.instance, run.seed)
 
@@ -709,22 +595,11 @@ def drop_partial_block(
 ) -> set[tuple[str, str, int]]:
     """Un-record the trailing block a resume would otherwise finish hours late.
 
-    THE INTERLEAVE IS THE PROTOCOL, and a plain resume breaks it. The plan runs
-    every arm for one (instance, seed) back to back precisely so the control
-    and the arms meet the same machine; an interruption lands inside such a
-    block with probability (k-1)/k -- 80% at five arms -- and a resume that
-    simply skips what is recorded then finishes that block after however long
-    the campaign was down. Nothing downstream can see it: the rows look like
-    every other row.
-
-    So the trailing partial block is dropped and re-run whole. Its rows are
-    moved aside rather than deleted -- `--no-resume` already keeps what it
-    replaces, and a discarded solve is still a measurement someone may want to
-    look at.
-
-    Only the LAST block with any recorded run is considered: earlier blocks were
-    completed in one sitting, and a block that is partial for any other reason
-    (a roster filter, a gate that ran the arm later) is not something to redo.
+    A plain resume breaks the interleave: an interruption lands inside a block
+    with probability (k-1)/k (80% at five arms), and finishing it later is
+    invisible downstream. So the trailing partial block re-runs whole, its rows
+    moved aside, not deleted. Only the LAST recorded block: an earlier partial
+    one (roster filter, gate) is not something to redo.
     """
     ordered_blocks = list(dict.fromkeys(block_of(r) for r in runs))
     with_rows = {block_of(r) for r in runs if r.key in done}
@@ -750,13 +625,9 @@ def drop_partial_block(
                 kept.append([row.get(f, "") for f in fields])
                 continue
             (moved if key in dropped else kept).append([row.get(f, "") for f in fields])
-    # THE ASIDE IS WRITTEN AND FSYNCED FIRST, then the results file is
-    # rewritten. The other order commits the truncated file before the rows
-    # exist anywhere else, so a Ctrl-C, an OOM kill or a full disk in that
-    # window loses those completed solves from BOTH files -- which is deletion,
-    # not the "moved aside" this function documents. Doing it this way can
-    # duplicate rows if the process dies between the two steps; a duplicate is
-    # recoverable by hand and a loss is not.
+    # Aside written and fsynced BEFORE rewriting results: the other order can
+    # lose the rows from both files. This order can only duplicate them, which
+    # is recoverable by hand.
     aside = results.with_name("results.split-block.csv")
     with aside.open("a", newline="") as fh:
         out = csv.writer(fh)
@@ -782,16 +653,13 @@ def execute_runs(
 ) -> None:
     """Run every plan entry that is not already recorded, one solve at a time.
 
-    Serial by construction: a plain loop over `run_process`, which blocks.
-    There is no concurrency switch to get wrong, and `campaign_lock` above stops
-    a second driver from supplying one.
+    Serial by construction (a blocking loop over `run_process`); `campaign_lock`
+    stops a second driver.
     """
     results = out_dir / RESULTS_NAME
     (out_dir / "runs").mkdir(parents=True, exist_ok=True)
-    # Here and not only in `execute`: `append_result` opens the file for append,
-    # so a results.csv that never got its header would gain data rows with no
-    # header, and the next `recorded_keys` would read the first RUN as the
-    # column names and resume past it.
+    # Here too, not only in `execute`: a headerless results.csv would make
+    # `recorded_keys` read the first run as column names and resume past it.
     open_results(results)
     done = recorded_keys(results) if args.resume else set()
     if args.resume:
@@ -822,10 +690,9 @@ def execute_runs(
             # A row left by an earlier attempt must not read as this solve having run.
             runner_csv.unlink(missing_ok=True)
         completed = run_process(cmd, log=out_dir / "runs" / f"{run.slug}.log")
-        # The runner opens its CSV before any solve, so a solve that dies, by a
-        # signal too, leaves the file and stays a failed run. No file means the
-        # runner never got that far: the prefix refused or was killed while it
-        # queued, or a failure that would repeat on every run (a bad flag).
+        # The runner opens its CSV before solving, so a dead solve (signal too)
+        # leaves it. No file means the prefix refused or died queued, or a
+        # failure repeating on every run (a bad flag).
         if args.lock_command and completed.returncode != 0 and not runner_csv.exists():
             raise LockCommandError(
                 f"{run.slug}: exit {completed.returncode} with no runner row; the lock prefix "
@@ -833,12 +700,8 @@ def execute_runs(
                 f"for it; fix the cause and resume. See {out_dir / 'runs' / f'{run.slug}.log'}"
             )
         if completed.returncode != 0:
-            # Recorded as a failed run rather than raised. An instance that
-            # crashes only under one arm, at hour nine, otherwise makes the
-            # campaign unfinishable except by hand-listing the rest of the
-            # roster -- and a resume would retry the same crash forever. The
-            # row enters the resume set so the campaign moves on, and the
-            # report counts it in its own bucket instead of averaging it in.
+            # Recorded, not raised: else a crash under one arm is retried on
+            # every resume forever. The report buckets it apart.
             row = _failed_run_row(run, args, sha, completed.returncode, out_dir)
             print(
                 f"    -> FAILED (exit {completed.returncode}); recorded as a failed run "
@@ -856,9 +719,8 @@ def execute_runs(
                 out_dir / "runs" / f"{run.slug}.csv", args.inst_dir, solution_dir(out_dir, run)
             )
         except ValueError as exc:
-            # The check could not be applied (a solution or a SCIP model it does
-            # not recognise). Not a verdict either way, so the run is held out
-            # like any other failed one rather than wedging the campaign.
+            # Uncheckable (unrecognised solution or SCIP model): no verdict, so
+            # held out as failed rather than wedging the campaign.
             print(f"    -> UNCHECKABLE row ({exc}); recorded as a failed run", file=sys.stderr)
             append_result(results, failed_row(run, args, sha, 0, "independent-check-error"))
             elapsed_each.append(time.monotonic() - began)
@@ -871,10 +733,8 @@ def execute_runs(
         try:
             runner = read_runner_row(out_dir / "runs" / f"{run.slug}.csv", run, sha)
         except UNREADABLE_ROW as exc:
-            # The runner exited 0 but its row cannot be read -- a full disk
-            # reaches this. Raising instead would wedge the campaign: every
-            # resume re-drops the block and dies at the same run, on an
-            # unattended thirteen-hour job.
+            # Exit 0 but unreadable row (e.g. a full disk). Raising would wedge
+            # the campaign: every resume re-drops the block and dies here.
             print(f"    -> UNREADABLE row ({exc}); recorded as a failed run", file=sys.stderr)
             append_result(results, failed_row(run, args, sha, 0, "unreadable-row"))
             elapsed_each.append(time.monotonic() - began)
@@ -898,8 +758,7 @@ class GateDecision:
     reason: str
     instances_with_repairs: int
     total_repairs: int
-    #: Probe runs that produced an lns_repairs reading, and those that did not.
-    #: Held apart because a row where no solve ran is not a reading of zero.
+    #: Probe runs with and without an lns_repairs reading: no solve is not zero.
     probed_runs: int
     unread_runs: int = 0
 
@@ -919,14 +778,9 @@ class GateDecision:
 def _repairs_of(row: dict[str, str]) -> int | None:
     """A row's `lns_repairs` as a count, or None where the row has no reading.
 
-    None, NOT zero. The runner writes "NaN" for an instance it skipped as
-    unsupported (exit 0) and for a solve that threw (exit 3 since #153, whose
-    row `_failed_run_row` still records), so such rows reach the gate looking
-    like completed runs. Folding them to 0 let a
-    row where nothing ran vote for SKIP -- the opposite of what the runner's own
-    comment on that cell says must happen, and a skip decided partly by
-    instances that never solved would not be the "counter reading that
-    justified skipping" the acceptance criterion asks for.
+    None, NOT zero: the runner writes "NaN" for an unsupported instance (exit 0)
+    and a solve that threw (exit 3, #153, row kept by `_failed_run_row`); as 0
+    such rows would vote for SKIP without a counter reading (#143).
     """
     try:
         value = float(row["lns_repairs"])
@@ -940,9 +794,8 @@ def _repairs_of(row: dict[str, str]) -> int | None:
 def decide_lns_gate(rows: Sequence[dict[str, str]]) -> GateDecision:
     """Read the probe's `lns_repairs` counters and decide whether the arm runs.
 
-    A driver decision recorded in the output, not a human one made in a shell:
-    the campaign either runs the arm or writes down the reading that says it
-    would have measured nothing.
+    Recorded in the output: the campaign runs the arm or writes down the reading
+    that says it would measure nothing.
     """
     per_instance: dict[str, int] = {}
     unread = 0
@@ -968,10 +821,7 @@ def decide_lns_gate(rows: Sequence[dict[str, str]]) -> GateDecision:
             f"this budget, so --no-lns is a real arm{unread_note}"
         )
         return GateDecision(True, reason, hits, total, read, unread)
-    # A skip has to be a reading, not an absence of one. If most of the probe
-    # produced no counter at all there is nothing to skip on, so the arm runs:
-    # the campaign spends the time rather than publishing a decision its own
-    # data does not support.
+    # A skip needs a reading: below the readable fraction the arm runs.
     if read < GATE_MIN_READABLE_FRACTION * len(rows):
         reason = (
             f"only {read} of {len(rows)} probe run(s) produced an lns_repairs reading, below "
@@ -1015,10 +865,8 @@ def resolve_gate(
         execute_runs(args, sha, probe_plan(roster, args.seeds[0]), out_dir, "gate probe")
         decision = decide_lns_gate(probe_rows(out_dir / RESULTS_NAME))
     gate_path = out_dir / GATE_NAME
-    # A forced --lns-arm must never overwrite a recorded reading with a
-    # non-reading. The acceptance criterion asks for the counter reading that
-    # justified a skip, and only the probe produces one; a `probed_runs: 0,
-    # total_repairs: 0` record written over it would destroy exactly that.
+    # A forced --lns-arm never overwrites a recorded probe reading: it is the
+    # counter reading that justified a skip (#143).
     if args.lns_arm != "auto" and gate_path.exists():
         print(
             f"--lns-arm {args.lns_arm}: keeping the recorded gate reading in {gate_path.name} "
@@ -1039,10 +887,9 @@ def resolve_gate(
 def estimate_hours(runs: int, time_limit: float) -> float:
     """Solving hours for a run count, from the budget alone.
 
-    A floor, not a forecast: every instance on this roster uses its whole budget
-    (the committed table's `wall_seconds` are 60.0 to 60.1 across all fifty), so
-    the only thing this leaves out is per-process model building, which is
-    seconds per run against a sixty-second solve.
+    A floor: every roster instance uses its whole budget (committed
+    `wall_seconds` 60.0 to 60.1 across all fifty); it omits only model building,
+    seconds per run.
     """
     return runs * time_limit / 3600.0
 
@@ -1091,16 +938,11 @@ def execute(args: argparse.Namespace, sha: str, roster: Sequence[str], out_dir: 
         return 2
     results = out_dir / RESULTS_NAME
     if not args.resume and results.exists():
-        # `--no-resume` means "start this one over", and it is what the
-        # stamp-conflict message above offers as the way out of a configuration
-        # mismatch. Without this it does the opposite: `open_results` will not
-        # truncate a file that already holds rows and `execute_runs` appends, so
-        # the old rows stay and `build_cells` averages two sittings -- across
-        # commits, two engines -- into one cell. Duplicating a triple also
-        # inflates `k` in the noise-floor scale while deflating the control's
-        # stdev, which shrinks the floor by roughly a third at three seeds and
-        # promotes effects from "inside the noise" to results. Moved aside
-        # rather than deleted: they are hours of solving.
+        # `--no-resume` starts over: else `execute_runs` appends to the old rows,
+        # `build_cells` averages two sittings (maybe two engines) into one cell,
+        # and duplicate triples inflate `k` and deflate the control's stdev,
+        # shrinking the noise floor by roughly a third at three seeds. Moved
+        # aside, not deleted: hours of solving.
         superseded = results.with_suffix(f".superseded-{int(time.time())}.csv")
         results.rename(superseded)
         print(f"--no-resume: moved the previous rows to {superseded}", file=sys.stderr)
@@ -1169,10 +1011,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--report-only", action="store_true", help="score an existing results.csv and stop"
     )
-    # `common_preflight` is shared with run_benchmark.py, whose `_data_problems` asks
-    # whether the comparison_all.csv merge would drop the SCIP rows. This
-    # campaign never merges anything, so the answer is fixed here rather than
-    # exposed as a flag nobody should touch.
+    # `common_preflight` asks whether the comparison_all.csv merge would drop
+    # SCIP rows; this campaign never merges, so fixed rather than a flag.
     parser.set_defaults(merge=False)
     return parser.parse_args(argv)
 
@@ -1180,12 +1020,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 def campaign_refusal(out_dir: Path) -> str | None:
     """Refuse an out-dir whose stamp names a campaign other than the ablation.
 
-    This driver once ran two more arm sets on the held-out roster (#145's
-    `transfer-145`, #331's `presolve-322`), whose stamps say so. Their rows
-    have different arms, so neither resuming into them nor scoring them as an
-    ablation is meaningful; the code that ran and scored them is in git history
-    at `ef795b55`. A stamp with no campaign line predates the field and is an
-    ablation.
+    `transfer-145` (#145) and `presolve-322` (#331) rows have other arms, so
+    neither resuming nor scoring them is meaningful (their code: `ef795b55`). A
+    stamp with no campaign line predates the field and is an ablation.
     """
     stamped = recorded_campaign(out_dir)
     if stamped is None or stamped == ABLATION_CAMPAIGN:
@@ -1209,14 +1046,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         if not results.exists():
             print(f"{results} not found; nothing to report on", file=sys.stderr)
             return 2
-        # A torn final row is the normal state of a campaign that was killed
-        # mid-append, and `load_rows` raises on one rather than skipping it the
-        # way `recorded_keys` does. So it has to be repaired before scoring --
-        # but NOT IN PLACE. This is the way the README invites a reader to watch
-        # a running campaign from a second terminal, and the row that looks torn
-        # from here is very often one the running driver has already fsynced and
-        # already struck off its in-memory `done` set: repairing the live file
-        # would delete that run from the record permanently. Score a copy.
+        # `load_rows` raises on a torn final row, so repair before scoring, but
+        # on a COPY: a live campaign may be mid-append, and repairing in place
+        # would permanently delete a run it already struck off `done`.
         with tempfile.TemporaryDirectory() as scratch:
             snapshot = Path(scratch) / RESULTS_NAME
             snapshot.write_bytes(results.read_bytes())
@@ -1238,8 +1070,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     busy = load_refusal(args.allow_busy)
     if busy and not args.dry_run:
         problems = [*problems, busy]
-    # Refused here, not on the first solve: every run would otherwise fail with
-    # exit 127 and be recorded as a failed run, hours of them, with no solve.
+    # Refused up front: else every run fails with exit 127 and is recorded failed.
     lock_program = shlex.split(args.lock_command)[:1]
     if lock_program and shutil.which(lock_program[0]) is None:
         problems = [*problems, f"--lock-command: {lock_program[0]} is not on PATH"]
@@ -1262,9 +1093,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 def run_locked(args: argparse.Namespace, sha: str, roster: Sequence[str], out_dir: Path) -> int:
     """Build and run the campaign under both locks, or refuse with exit 2.
 
-    The machine-wide `wallclock_lock` is the one `run_benchmark.py` also takes:
-    two timed MINLPLib drivers must never share the machine, whichever two they
-    are. `campaign_lock` additionally guards this out-dir's records.
+    `wallclock_lock` is shared with `run_benchmark.py`, so no two timed MINLPLib
+    drivers share the machine; `campaign_lock` guards this out-dir's records.
     """
     try:
         with wallclock_lock("run_ablation.py"), campaign_lock(out_dir):

@@ -1,76 +1,47 @@
 """Score the MINLPLib ablation campaign of issue #143.
 
-Reads the `results.csv` that `run_ablation.py` appends to and reports, for each
-arm, its per-instance and aggregate effect against **the control from the same
-sitting** -- never against the published table, which was measured at another
-time on a differently-loaded machine.
+Reads `run_ablation.py`'s `results.csv` and reports each arm's per-instance and
+aggregate effect against **the control from the same sitting**, never the
+published table, measured under other machine load.
 
-THE NOISE FLOOR IS MEASURED, NOT ASSUMED. Issue #143 quotes a "3-4 gap point"
-noise floor from an earlier campaign; nothing here uses that number. The only
-measurement of run-to-run noise this campaign contains is the control's own
-spread across its seeds, and that is what the floor is built from:
+THE NOISE FLOOR IS MEASURED from the control's across-seed spread, not the
+"3-4 gap point" figure #143 quotes from an earlier campaign:
 
-* For each instance whose control produced at least two feasible runs with a
-  finite gap, `s_i` is the sample standard deviation (ddof=1) of those gaps.
-* The effect statistic for an instance is a difference of per-arm mean gaps, so
-  its noise scale is `se_i = s_i * sqrt(1/k_arm + 1/k_control)`, with `k` the
-  number of comparable runs on each side.
-* The **per-instance floor** is `t * se_i`, a two-sided 95% band, with `t` the
-  Student multiplier for `k_control - 1` degrees of freedom -- 4.30 at three
-  seeds, not 1.96. Three seeds is a small sample and the band has to say so;
-  using 2.0 there would print a band about half its nominal width.
-* That band is then RAISED, where it falls below it, to the runner's own tie
-  band for the instance -- `min_move_points`, the one number in this module that
-  is not measured. A control that returned ~1e-7 on every seed measures a
-  spread, but not one the gap it bounds can resolve, and scoring a 1e-5 delta
-  against it is reading noise the runner would not call a difference at all.
-  The instances this touches are counted and disclosed on their own line,
-  because for them "the floor is measured" stops being the whole truth. It is
-  a per-instance quantity and not a constant for the reason the next bullet
-  gives about imputation: a gap point is a percentage of the published bound,
-  so the same objective difference is a different number of points at every
-  scale on this roster.
-* An instance whose control produced **fewer than two** comparable runs, or an
-  identical gap on every seed, has no measured spread and is **not scored**. It
-  is counted and listed in its own line instead. Noise cannot be imputed onto it
-  from other instances: this
-  roster's gaps span six orders of magnitude, so borrowing the median absolute
-  spread (~1 gap point) onto an instance whose gap is ~1e6 hands it a floor it
-  clears automatically, which manufactures a significant result rather than
-  measuring one.
+* `s_i`: sample standard deviation (ddof=1) of the control's gaps, for an
+  instance with at least two feasible runs with a finite gap.
+* The effect is a difference of per-arm mean gaps, so its scale is
+  `se_i = s_i * sqrt(1/k_arm + 1/k_control)`, `k` the comparable runs per side.
+* **Per-instance floor** `t * se_i`: a two-sided 95% band, `t` the Student
+  multiplier at `k_control - 1` degrees of freedom (4.30 at three seeds, not
+  1.96; 2.0 would print a band about half its nominal width).
+* The band is RAISED, where below it, to the runner's tie band
+  (`min_move_points`, the one unmeasured number here): a ~1e-7 control spread
+  is not one a 1e-5 delta can be scored against. Raised instances are counted
+  and disclosed on their own line. Per-instance, since a gap point is a
+  percentage of the bound and so scales differently on every instance.
+* Fewer than two comparable control runs, or an identical gap on every seed:
+  no measured spread, so **not scored**, but counted and listed. Not imputed:
+  gaps span six orders of magnitude, and the median spread (~1 gap point) on a
+  ~1e6 gap would manufacture significance.
 
-THE VERDICT IS SCALE-FREE, AND THIS IS THE POINT ON WHICH AN EARLIER CUT WAS
-WRONG. Gap-to-BKS is a percentage of wildly differing magnitudes across this
-roster: in the committed table `gear4` alone is 1.65e6 gap points, 98.5% of the
-sum over all finite gaps, where the median instance is 1.00. An unweighted mean
-of per-instance deltas is therefore not an average over the roster at all -- it
-is `gear4`'s seed draw, and a uniform 10-point regression on all 45 other
-instances moves it by less than its own noise. So the verdict is built from
-statistics that do not care about scale:
+THE VERDICT IS SCALE-FREE. In the committed table `gear4` alone is 1.65e6 gap
+points, 98.5% of the sum over all finite gaps (median instance 1.00), so an
+unweighted mean delta is `gear4`'s seed draw: a uniform 10-point regression on
+all 45 other instances moves it by less than its own noise. So:
 
-* Each instance is judged against **its own** floor. `moved worse` and
-  `moved better` count the instances whose delta exceeds it.
-* Those counts are read with an exact two-sided **sign test**. An arm that
-  moved nothing outside its own floor is "inside the noise", with the typical
-  floor quoted; an arm that moved instances in both directions in comparable
-  numbers is reported as mixed rather than as an effect.
-* The **median** delta is the location statistic quoted, never the mean.
+* Each instance is judged against **its own** floor; `moved worse` and
+  `moved better` count instances whose delta exceeds it.
+* The counts get an exact two-sided **sign test**. Nothing outside the floor is
+  "inside the noise" (typical floor quoted); comparable moves both ways are
+  "mixed", not an effect.
+* The **median** delta is quoted, never the mean. The mean is printed with the
+  largest single instance's share of it.
 
-The mean is still printed, immediately followed by the share of it contributed
-by the single largest instance, so a reader who reaches for it can see at once
-whether it describes the roster or one instance.
-
-WHAT DOES NOT GET AVERAGED. A gap is defined only for a run that was feasible
-AND has a finite published bound to be scored against, so an arm that is
-feasible where the control is not has no delta at all -- there is no control gap
-to subtract. Silently averaging that instance in (as a NaN, or by pretending the
-missing side scored zero) is the failure this module is written to avoid: every
-instance lands in exactly one of six buckets, the buckets are counted in the
-report, and only `both-feasible` contributes to a mean. The sixth,
-`no-runs-recorded`, is the same refusal applied to an absence of RUNS: a cell
-whose every row crashed or errored has `feasible_runs == 0` without that being
-a measurement of anything, so it is bucketed apart rather than read as a side
-losing feasibility.
+WHAT DOES NOT GET AVERAGED. A gap needs a feasible run AND a finite published
+bound, so an arm feasible where control is not has no delta. Every instance
+lands in exactly one of six buckets, all counted; only `both-feasible` enters a
+mean. `no-runs-recorded` holds a cell whose every row crashed or errored: its
+`feasible_runs == 0` is not a measurement, so not a side losing feasibility.
 """
 
 from __future__ import annotations
@@ -99,25 +70,17 @@ CONTROL_ARM = "control"
 #: The report's first line.
 ABLATION_HEADING = "=== MINLPLib ablation campaign (issue #143) ==="
 
-#: Notes known to mean NO SEARCH COMPLETED. Nothing is classified by this tuple
-#: any more -- `completed_search` decides that from `COMPLETED_SEARCH_NOTES`
-#: alone -- but a held-out row still has to be REPORTED, and "3 run(s) completed
-#: no search (solve-error)" is a different sentence from
-#: "(unsupported: NL_UNKNOWN_OPCODE 42; at row 3)" repeated three times. So these
-#: are the labels `no_search_label` collapses a known note to, in the order the
-#: report lists them; a note matching none of them keeps its own text and is
-#: called out as unrecognised.
+#: Labels `no_search_label` collapses a held-out row's known note to, in report
+#: order; classification is `completed_search`'s alone. Any other note keeps its
+#: text and is called unrecognised.
 #:
-#: `RUNNER_FAILED_NOTE` is first because `note_order` sorts the disclosure line
-#: by this tuple's index and the driver's crashes are reported ahead of the
-#: runner's own notes -- on their own line, which is also why nothing starting
-#: with it ever reaches `no_search_label`: `build_cells` filters `runner_failed`
-#: rows out before labelling. The runner's five are, by writer:
+#: `RUNNER_FAILED_NOTE` is first so `note_order` lists driver crashes ahead of
+#: runner notes; `build_cells` filters those rows out before labelling. The
+#: runner's five, by writer:
 #:
 #:   * `not-found`, `read-error`, `build-error`  -- `write_preread_row`, before
-#:     a model exists at all;
-#:   * `unsupported`/`unsupported: <reason>`     -- the reader or the adapter
-#:     declined the instance;
+#:     a model exists;
+#:   * `unsupported`/`unsupported: <reason>`     -- reader or adapter declined;
 #:   * `solve-error`                             -- `cbls::solve` threw.
 NO_SEARCH_NOTES: tuple[str, ...] = (
     RUNNER_FAILED_NOTE,
@@ -128,29 +91,21 @@ NO_SEARCH_NOTES: tuple[str, ...] = (
     "unsupported",
 )
 
-#: What `no_search_label` prefixes a note no list recognises with. Kept as a
-#: constant because the report keys its third disclosure clause off it and a test
-#: asserts on it.
+#: Prefix for a note no list recognises; the third disclosure clause keys off it
+#: and a test asserts on it.
 UNRECOGNISED_NOTE = "unrecognised-note"
 
-#: How much of an unfamiliar note the disclosure line reproduces. A known note
-#: collapses to its prefix, but an unknown one is printed verbatim so a reader
-#: can see what the row said -- and the runner's own `infeasible(...)` notes run
-#: to several hundred characters with a curated root-cause paragraph glued on.
-#: One such note added to the allowlist's blind side would otherwise put a
-#: paragraph on the report's headline. Enough to identify the note, not enough to
-#: swallow the line.
+#: Characters of an unrecognised note the disclosure line reproduces: enough to
+#: identify it, since `infeasible(...)` notes run to several hundred characters.
 UNRECOGNISED_NOTE_CHARS = 60
 
 
 def no_search_label(note: str) -> str:
     """A held-out row's note collapsed to the label the report lists it under.
 
-    A known no-search note collapses to its prefix, so the long
-    `unsupported: <reason>` form and the driver's `runner-failed-exit-139` do
-    not each become their own histogram bucket. Anything else keeps its text and
-    is marked unrecognised: it is held out either way, and a reader who is being
-    told a row was not scored needs to be able to see what the row said.
+    A known note collapses to its prefix, so `unsupported: <reason>` and
+    `runner-failed-exit-139` share buckets; anything else keeps its text, marked
+    unrecognised, so the reader sees what an unscored row said.
     """
     for prefix in NO_SEARCH_NOTES:
         if note.startswith(prefix):
@@ -168,71 +123,39 @@ def note_order(label: str) -> tuple[int, str]:
     return (len(NO_SEARCH_NOTES), label)
 
 
-#: The relative band inside which the RUNNER ITSELF calls two objectives equal.
-#: `classify_against_bks` (minlplib.cpp) returns `matches-bks` when the two
-#: differ by at most `tie_band = 1e-6 * (|primal_bks| + 1)` objective units, and
-#: says in its own comment why that band is relative rather than absolute --
-#: reusing an absolute one published `ex8_4_5` (BKS 3.07e-4) as a match when it
-#: was 1.38% worse. This module reuses the runner's number rather than inventing
-#: a second one.
+#: The runner's own relative tie band: `classify_against_bks` (minlplib.cpp)
+#: returns `matches-bks` within `1e-6 * (|primal_bks| + 1)` objective units.
+#: Reused here, not reinvented; minlplib.cpp says why it is relative.
 OBJ_TIE_RELATIVE = 1e-6
 
 #: Where `safe_gap` stops dividing. Below it a "gap point" is a raw objective
 #: residual rather than a percentage, so the floor is in objective units too.
 GAP_ABSOLUTE_BRANCH = 1e-12
 
-#: The tie band in GAP POINTS as |primal_bks| grows without bound, and the floor
-#: used for an instance whose recorded bound cannot say better. See
-#: `min_move_points` for why this is the infimum and never over-suppresses.
+#: The tie band in GAP POINTS as |primal_bks| grows (its infimum), and the floor
+#: when the bound cannot say better; see `min_move_points`.
 MIN_MOVE_POINTS = 1e-4
 
 
 def min_move_points(primal_bks: float) -> float:
     """The smallest gap-point delta that can be a move on this instance.
 
-    WHY A FLOOR AT ALL. The measured band is the control's own across-seed
-    spread, and the spread guard below rejects only an EXACT zero. This roster's
-    near-zero instances are not exact: a control at gap ~1e-7 on all three seeds
-    measures a spread of ~1e-7 and a band of ~3.5e-7 gap points, which a 1e-5
-    delta clears -- and four such instances clearing it printed "the arm is
-    WORSE than the control" beside "median gap delta +0.00" (issue #151). A
-    floor must be meaningful in the units of the thing it bounds.
+    The spread guard rejects only an EXACT zero, so a control at gap ~1e-7 on
+    every seed gives a ~3.5e-7 band that a 1e-5 delta clears (#151). The floor
+    is the runner's tie band in OBJECTIVE units pushed through `safe_gap`:
+    `100*(obj-ref)/|ref|` for `|ref| >= GAP_ABSOLUTE_BRANCH`, so
+    `OBJ_TIE_RELATIVE * (|ref| + 1)` becomes `1e-4 * (1 + 1/|ref|)` gap points,
+    from the recorded `primal_bks` with no re-measurement.
 
-    WHY THIS FLOOR AND NOT ONE OF THE OTHER TWO #151 LISTS. Both of the others
-    were checked against the numbers in the report that prompted it and neither
-    fixes it:
+    #151's alternatives fail: a relative-spread test passes ~1e-7 gaps with
+    ~1e-7 spreads (ratio order 1); a floor at a multiple of the gap's numerical
+    resolution is cleared, since ~1e-7 is ~1e16 ulps at ~1e-23 resolution. A
+    flat `MIN_MOVE_POINTS` (the infimum, safe but loose below `|ref|` 1) is five
+    orders of magnitude too permissive on `ex6_2_6`/`ex6_2_11` (`|primal_bks|`
+    ~2.6e-6, tie band ~38 gap points, gaps -8.3e-5 and +9.5e-6).
 
-    * a RELATIVE-SPREAD test -- score only where `s_i` is a large enough
-      fraction of the gap -- passes the exact instances at issue, whose gaps
-      are ~1e-7 and whose spreads are ~1e-7: the ratio is order 1, so every
-      relative test waves them through;
-    * REFUSING to score an instance whose spread is below a multiple of its own
-      gap's NUMERICAL resolution fails from the other side -- a double near 1e-7
-      resolves to ~1e-23, so a 1e-7 spread is ~1e16 ulps and clears any sane
-      multiple.
-
-    So the floor is absolute, which is #151's first option -- but "absolute" has
-    to mean absolute in OBJECTIVE units, and a gap point is not one. `safe_gap`
-    reports `100*(obj-ref)/|ref|` wherever `|ref| >= GAP_ABSOLUTE_BRANCH`, so
-    the runner's own tie band of `OBJ_TIE_RELATIVE * (|ref| + 1)` objective
-    units is `1e-4 * (1 + 1/|ref|)` gap points -- a function of the instance,
-    not a constant. Pushing the runner's band through `safe_gap` per instance is
-    what this returns, and `primal_bks` is already a recorded column, so it
-    costs no re-measurement and no schema change.
-
-    A single constant would not do. Its only defensible value is the infimum of
-    that expression, `MIN_MOVE_POINTS` = 1e-4, reached as `|ref|` grows: safe
-    (it can never suppress a move the runner would call a real difference) but
-    loose wherever `|ref| < 1`, and this roster goes far below 1. `ex6_2_6` and
-    `ex6_2_11` have `|primal_bks|` ~2.6e-6, where the runner's tie band is ~38
-    GAP POINTS -- their whole recorded gaps (-8.3e-5, +9.5e-6) sit inside it.
-    A flat 1e-4 there is five orders of magnitude too permissive, which is #151
-    unfixed on the campaign's own roster.
-
-    The fallback is that infimum, for a row whose `primal_bks` is missing or
-    non-finite. Such an instance has no finite gap either, so it is
-    `no-comparable-gap` and never reaches a floor; the fallback is there so that
-    a malformed cell errs toward the wider band rather than raising.
+    Missing or non-finite `primal_bks` falls back to the infimum: such a row has
+    no finite gap and never reaches a floor, so it errs wide rather than raising.
     """
     if not math.isfinite(primal_bks):
         return MIN_MOVE_POINTS
@@ -244,33 +167,21 @@ def min_move_points(primal_bks: float) -> float:
     return 100.0 * OBJ_TIE_RELATIVE * (reference + 1.0) / reference
 
 
-#: The gate probe's rows. Same configuration as the control, run over the roster
-#: hours earlier for the sole purpose of reading `lns_repairs`, so they are held
-#: out of every effect estimate and reported on their own as a drift check.
+#: The gate probe: control's configuration, run hours earlier only to read
+#: `lns_repairs`; held out of every effect estimate, reported as a drift check.
 PROBE_ARM_NAME = "gate-probe"
 
-#: Unanimous movers required before a direction is named without a significant
-#: sign test. Below it the movers are reported individually instead: one or two
-#: instances clearing their own floors is a fact about those instances, not an
-#: arm effect over the roster.
+#: Unanimous movers required to name a direction without a significant sign
+#: test; below it movers are listed individually, not called an arm effect.
 MIN_UNANIMOUS_MOVERS = 4
 
 
 def format_points(value: float, *, signed: bool = True) -> str:
     """A gap-point quantity with enough digits to be visible.
 
-    `%.2f` was the only format this report used, and below 0.1 it shows fewer
-    than two significant figures -- rendering as `0.00` every quantity between
-    a floor (1e-4 and up, see `min_move_points`) and 0.005. That is how a
-    verdict naming a direction came to sit beside "median gap delta +0.00
-    points" with four movers whose deltas all printed as `+0.00 / 0.00`,
-    leaving a reader unable to identify the instances that drove it.
-
-    Two decimals where two decimals carry two significant figures, three
-    significant figures where they would not. An exact zero keeps the familiar
-    `+0.00`, because there it is the truth rather than a rounding of one -- and
-    a NEGATIVE exact zero is normalised into it, so an underflowed difference
-    cannot print as `-0.00` and read as a direction.
+    Two decimals from 0.1 up, three significant figures below, so a floor (1e-4
+    and up) never prints as `0.00`. An exact zero, negative too, prints `+0.00`
+    (`0.00` unsigned), so it cannot read as a direction.
     """
     if value == 0.0:
         return "+0.00" if signed else "0.00"
@@ -285,10 +196,8 @@ ARM_ONLY_FEASIBLE = "arm-only-feasible"
 CONTROL_ONLY_FEASIBLE = "control-only-feasible"
 NEITHER_FEASIBLE = "neither-feasible"
 NO_COMPARABLE_GAP = "no-comparable-gap"
-#: One side recorded no completed run at all -- every row there crashed, or
-#: carried a note no completed search writes (a known no-search note, or one
-#: this module does not recognise). There is nothing to compare, in either
-#: direction: an absence of runs is not an absence of feasibility.
+#: One side has no completed run (every row crashed or carries a no-search or
+#: unrecognised note): an absence of runs is not an absence of feasibility.
 NO_RUNS_RECORDED = "no-runs-recorded"
 
 BUCKETS = (
@@ -310,27 +219,19 @@ class RunRow:
     seed: int
     feasible: bool
     gap: float
-    #: The published best-known primal value this row's gap was computed
-    #: against. Read only to size the floor: `safe_gap` divides by it, so the
-    #: same objective difference is a wildly different number of gap points at
-    #: different scales. Already a recorded column -- nothing new is measured.
+    #: Published best-known primal value behind this row's gap. Read only to
+    #: size the floor, since `safe_gap` divides by it.
     primal_bks: float
     lns_repairs: float
-    #: Of those repairs, the ones LNS actually KEPT (#150). Read alongside
-    #: `lns_repairs` because the two answer different questions: the attempt
-    #: count says LNS spent budget, this one says whether any of it bought a
-    #: better search state. NaN carries the same "no reading" meaning here as
-    #: everywhere else -- a row where no solve ran has neither number.
+    #: Repairs LNS KEPT (#150): attempts say LNS spent budget, this says whether
+    #: it bought a better state. NaN means no reading (no solve ran).
     lns_repairs_accepted: float
     wall: float
-    #: The runner's note cell. Read because a row the DRIVER wrote for a process
-    #: that crashed carries `feasible=false` like any infeasible run, and
-    #: nothing else distinguishes them: three segfaults on one instance under
-    #: one arm would otherwise be scored as that arm losing feasibility there.
+    #: The note cell: the only thing telling a driver-written crash row
+    #: (`feasible=false`) from an infeasible run.
     note: str = ""
-    #: The budget and the engine commit the row was run at. Read so the report
-    #: can say what it measured -- and refuse a file that mixes budgets, whose
-    #: arms would then differ by budget as well as by arm.
+    #: Budget and engine commit, so the report states what it measured and
+    #: refuses a file mixing budgets.
     time_limit: float = math.nan
     commit: str = ""
 
@@ -343,13 +244,9 @@ class RunRow:
     def no_search(self) -> bool:
         """Whether NO SEARCH COMPLETED on this row, crash or exit-0 alike.
 
-        A superset of `runner_failed`. The two are counted separately in the
-        report because the reader needs to know which happened, but they are
-        held out of the scoring identically: neither is a measurement.
-
-        Decided by the ALLOWLIST, not by a list of failures (#153): a note this
-        module has never heard of is not a measurement of anything, so it is
-        held out and disclosed rather than read as a lost feasibility.
+        A superset of `runner_failed`, counted apart but held out identically.
+        Decided by the ALLOWLIST (#153), so an unknown note is held out and
+        disclosed, not read as lost feasibility.
         """
         return not completed_search(self.note)
 
@@ -384,39 +281,27 @@ class Cell:
     arm: str
     runs: int
     feasible_runs: int
-    #: Finite gaps of the feasible runs -- the only values a mean may be taken of.
+    #: Finite gaps of the feasible runs: the only values a mean may be taken of.
     gaps: tuple[float, ...]
     repairs: tuple[float, ...]
-    #: Rows whose runner process crashed. Excluded from `runs` and
-    #: `feasible_runs` so they cannot read as a lost feasibility, and surfaced
-    #: in the report so they are not silently dropped either.
+    #: Crashed-process rows: excluded from `runs`/`feasible_runs`, surfaced in
+    #: the report.
     failed_runs: int = 0
-    #: Rows the RUNNER wrote for a solve that never completed -- `solve-error`
-    #: and the rest of `NO_SEARCH_NOTES`, plus any note this module does not
-    #: recognise. Held out exactly as `failed_runs` is, and counted separately
-    #: only so the report can say which of the two happened.
+    #: Runner rows for a solve that never completed (`NO_SEARCH_NOTES` or an
+    #: unrecognised note). Held out like `failed_runs`, counted apart.
     no_search_runs: int = 0
-    #: What those rows' notes collapse to under `no_search_label`, in
-    #: `note_order`. The distinction is not cosmetic: `not-found` and
-    #: `unsupported` are roster problems that hit every arm alike, where
-    #: `solve-error` can depend on the configuration and so is a property OF THE
-    #: ARM -- and an `unrecognised-note(...)` entry says the scorer held a row
-    #: out because it could not tell which of those it was.
+    #: Those rows' `no_search_label`s, in `note_order`: `not-found` and
+    #: `unsupported` hit every arm alike, `solve-error` can be the arm's own.
     no_search_notes: tuple[str, ...] = ()
     #: The instance's published primal bound, for sizing the floor. NaN where no
     #: row recorded one.
     primal_bks: float = math.nan
-    #: The `repairs` entries' accepted halves, in the same row order. Defaulted
-    #: for the same reason `seed_gaps` is: only the repair line reads it, and a
-    #: hand-built cell that says nothing about acceptance contributes nothing to
-    #: that line -- which the line then reports as "no accepted reading", not as
-    #: a fabricated zero. See `_repair_cell`.
+    #: `repairs`' accepted halves, same order. Defaulted: only the repair line
+    #: reads it, reporting an empty one as "no accepted reading", not zero
+    #: (`_repair_cell`).
     repairs_accepted: tuple[float, ...] = ()
-    #: The same gaps keyed by seed, so a same-seed comparison is possible. The
-    #: drift check needs it: averaging the seed away first is what turned an
-    #: earlier drift line into a measurement of seed variance. Defaulted because
-    #: only that check reads it, and every other construction site would
-    #: otherwise carry a field it never uses.
+    #: Gaps keyed by seed, for the drift check's same-seed comparison (averaging
+    #: seeds away measures seed variance). Defaulted: only that check reads it.
     seed_gaps: dict[int, float] = field(default_factory=dict)
 
     @property
@@ -433,13 +318,8 @@ def build_cells(rows: Iterable[RunRow]) -> dict[tuple[str, str], Cell]:
         key: Cell(
             instance=key[0],
             arm=key[1],
-            # Rows where no search completed are not runs. Counting them would
-            # put an arm that segfaulted -- or an arm whose configuration
-            # provoked an exception, whose row is well-formed and reaches the
-            # campaign through the driver's failed-run path (#153) -- into
-            # `control-only-feasible`, the bucket that means "this arm lost
-            # feasibility here", which is a claim about the search rather than
-            # about the process table.
+            # No-search rows (crashes, or exceptions via the failed-run path,
+            # #153) are not runs, else they read as `control-only-feasible`.
             runs=sum(1 for r in group if not r.no_search),
             feasible_runs=sum(1 for r in group if r.feasible and not r.no_search),
             failed_runs=sum(1 for r in group if r.runner_failed),
@@ -479,25 +359,16 @@ class Comparison:
     #: `gap_to_bks%` is a distance from the best known solution. None unless the
     #: bucket is `both-feasible`.
     delta: float | None
-    #: Feasible-run count difference, which is a result in its own right on the
-    #: instances where no gap comparison exists. **None where either side
-    #: recorded no run at all**: a difference taken against an absence is the
-    #: same manufactured claim `classify` refuses to bucket, and leaving a
-    #: number here would leave defect 1 sitting in the data model for the next
-    #: summariser to find.
+    #: Feasible-run count difference, a result where no gap comparison exists.
+    #: **None where either side recorded no run**, as `classify` refuses.
     feasibility_delta: int | None
 
 
 def classify(control: Cell, treatment: Cell) -> str:
     """Which bucket an instance falls in for this arm."""
     if control.runs == 0 or treatment.runs == 0:
-        # NO RUNS IS NOT NO FEASIBILITY, and this test has to come first.
-        # `feasible_runs == 0` is true of a cell whose every row crashed or
-        # errored, so deciding the bucket from it manufactures a verdict out of
-        # a process table: three segfaults on the arm read as
-        # `control-only-feasible` ("this arm lost feasibility here") and three
-        # on the CONTROL read as `arm-only-feasible` -- an arm win produced by
-        # three crashes. Neither claim is measured, so neither is made.
+        # NO RUNS IS NOT NO FEASIBILITY, so this test comes first: crashes on
+        # either side would otherwise read as one side losing feasibility.
         return NO_RUNS_RECORDED
     if control.feasible_runs == 0 and treatment.feasible_runs == 0:
         return NEITHER_FEASIBLE
@@ -506,8 +377,8 @@ def classify(control: Cell, treatment: Cell) -> str:
     if treatment.feasible_runs == 0:
         return CONTROL_ONLY_FEASIBLE
     if not control.gaps or not treatment.gaps:
-        # Feasible on both sides, but at least one has no finite gap -- the
-        # instance has no published bound, or the objective was not finite there.
+        # Feasible both sides, but a side lacks a finite gap (no published
+        # bound, or a non-finite objective).
         return NO_COMPARABLE_GAP
     return BOTH_FEASIBLE
 
@@ -538,21 +409,17 @@ class NoiseFloor:
     """The measured noise floor for one arm's comparison against the control."""
 
     per_instance: dict[str, float]
-    #: Instances whose control supplied a real `s_i`, and those whose control
-    #: gave fewer than two comparable runs so no floor could be measured. The
-    #: second group is NOT scored -- see the module docstring for why imputing
-    #: onto it manufactures results on this roster.
+    #: Instances with a real control `s_i`, and those without one (NOT scored;
+    #: module docstring).
     measured: int
     unmeasured: int
-    #: Measured instances whose Student band came out below their own
-    #: `min_move_points` and were raised to it. Reported, because "the floor is
-    #: measured" stops being the whole truth for them.
+    #: Measured instances whose Student band was raised to `min_move_points`;
+    #: reported, as their floor is not purely measured.
     floored: int
-    #: The typical per-instance floor -- the headline number to quote.
+    #: The typical per-instance floor: the headline number to quote.
     median_floor: float
-    #: The median control standard deviation across the campaign. Not restricted
-    #: to the instances that got a floor: it describes the run-to-run noise of
-    #: the sitting, which is what a reader wants beside the typical floor.
+    #: Median control standard deviation over every instance, not only floored
+    #: ones: the sitting's run-to-run noise.
     median_spread: float
 
 
@@ -561,11 +428,8 @@ def control_spreads(
 ) -> dict[str, float]:
     """Per-instance control standard deviation, where two or more runs allow one.
 
-    Computed over every instance the control covers, not only the compared ones,
-    so the median quoted in the report describes the campaign's run-to-run noise
-    rather than whichever subset happened to be comparable. Nothing BORROWS it:
-    an instance with no spread of its own is not scored at all -- see the module
-    docstring for why imputing onto this roster manufactures results.
+    Over every control instance, not only compared ones, so the quoted median
+    describes the campaign. Never borrowed: an instance without one is not scored.
     """
     spreads: dict[str, float] = {}
     for instance in instances:
@@ -573,14 +437,10 @@ def control_spreads(
         if control is None or len(control.gaps) < 2:
             continue
         spread = statistics.stdev(control.gaps)
-        # A spread of exactly zero is NOT a measurement of "no noise" -- it is
-        # three seeds that happened to land on the same value, which on this
-        # roster is the normal state of an instance solved to its bound. The
-        # published table has four instances at gap exactly 0 and around
-        # fourteen more within 1e-7. Scored with a floor of 0.0, any nonzero
-        # delta clears it, so a 1e-9 move became "outside the measured floor"
-        # and, with the unanimity rule below, a roster-wide verdict. Treated as
-        # unmeasured instead: counted, listed, not scored.
+        # An exactly-zero spread is seeds landing on one value (normal for an
+        # instance solved to its bound: the published table has four at gap 0
+        # and around fourteen within 1e-7), not "no noise"; a 0.0 floor would
+        # let any nonzero delta count. Unmeasured: counted, listed, not scored.
         if spread > 0.0:
             spreads[instance] = spread
     return spreads
@@ -589,10 +449,8 @@ def control_spreads(
 def noise_floor(comparisons: Sequence[Comparison], spreads: dict[str, float]) -> NoiseFloor:
     """The floor for this arm, from the control's own across-seed spread.
 
-    One floor per instance and no aggregate floor: an aggregate would only ever
-    be read against an aggregate effect, and on a roster whose gaps span six
-    orders of magnitude the only aggregate worth quoting is a rank statistic,
-    which has no gap-point floor to be compared with.
+    Per instance only: across six orders of magnitude the only aggregate worth
+    quoting is a rank statistic, which has no gap-point floor.
     """
     compared = [c for c in comparisons if c.bucket == BOTH_FEASIBLE]
     per_instance: dict[str, float] = {}
@@ -600,19 +458,16 @@ def noise_floor(comparisons: Sequence[Comparison], spreads: dict[str, float]) ->
     for comparison in compared:
         spread = spreads.get(comparison.instance)
         if spread is None:
-            # No measured spread, so no floor. Not imputed: see the module
-            # docstring. The instance is counted and listed, never scored.
+            # No measured spread: counted and listed, never scored or imputed.
             unmeasured += 1
             continue
         measured += 1
         scale = math.sqrt(1.0 / len(comparison.treatment.gaps) + 1.0 / len(comparison.control.gaps))
-        # The two-sided 95% Student multiplier at `k_control - 1` df: at three
-        # seeds 4.30, not the normal 1.96 or a flat 2.0, which prints a band
-        # about half its nominal width.
+        # Two-sided 95% Student multiplier at `k_control - 1` df (4.30 at three
+        # seeds; 1.96 or 2.0 would print a band about half its nominal width).
         band = t975(len(comparison.control.gaps) - 1) * spread * scale
-        # A floor must be meaningful in the UNITS OF THE THING IT BOUNDS, and a
-        # measured spread finer than the runner's own tie band is not one. See
-        # `min_move_points`.
+        # Raised to the runner's tie band: a finer spread is not meaningful in
+        # the gap's units (`min_move_points`).
         reference = comparison.control.primal_bks
         if not math.isfinite(reference):
             reference = comparison.treatment.primal_bks
@@ -638,32 +493,22 @@ class ArmSummary:
     arm: str
     comparisons: tuple[Comparison, ...]
     counts: dict[str, int]
-    #: Printed, never used for the verdict, and always beside `largest_delta`
-    #: -- see the module docstring on why a mean over this roster is one
-    #: instance's number wearing the roster's name.
+    #: Printed beside `largest_delta`, never used for the verdict (module
+    #: docstring: the mean is one instance's number).
     mean_delta: float | None
-    #: The single largest |delta| and the instance it belongs to, printed beside
-    #: the mean so a reader can see at once whether the mean describes the
-    #: roster. NOT a share: `max|d| / sum|d|` is bounded in [1/n, 1] and so
-    #: reads as reassuring exactly when mixed signs cancel -- deltas of +100
-    #: and -99 give a mean of +0.5 and a "50%" share, when that instance
-    #: contributes two hundred times the mean. The raw number cannot mislead
-    #: that way.
+    #: The largest |delta| and its instance, beside the mean. NOT a share:
+    #: `max|d| / sum|d|` reassures exactly when signs cancel (+100 and -99 give
+    #: mean +0.5 and a "50%" share, though that instance is 200x the mean).
     largest_delta: float
     largest_delta_instance: str
     median_delta: float | None
-    #: Median delta over the MOVERS alone. Quoted whenever a direction is named,
-    #: so that "the arm is WORSE" always carries a number that is nonzero by
-    #: construction: every mover exceeds its own floor, which is at least
-    #: `MIN_MOVE_POINTS`. The roster median is quoted beside it -- it can be a
-    #: true `+0.00` when most scored instances did not move, and saying so is
-    #: the point -- but it is no longer the only figure the sentence offers.
+    #: Median delta over the MOVERS, quoted with any named direction so it
+    #: carries a nonzero number (every mover exceeds a floor of at least
+    #: `MIN_MOVE_POINTS`); the roster median, possibly a true `+0.00`, is
+    #: reported too.
     mover_median_delta: float | None
-    #: Median of the MOVERS' OWN floors. Quoted beside the roster's typical
-    #: floor whenever anything moved, because those two can differ by orders of
-    #: magnitude on this roster and #151 was filed on a report that printed only
-    #: the first: "typical per-instance floor +/-3.51 points" while the four
-    #: instances that produced the verdict had floors of ~3.5e-7.
+    #: Median of the MOVERS' OWN floors, beside the typical floor whenever
+    #: anything moved: the two can differ by orders of magnitude (#151).
     mover_median_floor: float | None
     #: Instances whose delta exceeds THEIR OWN floor, by direction.
     moved_worse: int
@@ -671,34 +516,24 @@ class ArmSummary:
     #: Exact two-sided sign-test p-value over those two counts.
     sign_p: float
     feasibility_delta: int
-    #: How many instances the balanced delta above is summed over -- the
-    #: denominator that makes a `+0` on it readable as "no difference over N"
-    #: rather than as "no difference" over an empty set.
+    #: Instances the balanced delta sums over, so `+0` reads as "over N".
     feasibility_balanced: int
-    #: Feasible-run delta restricted to instances with equal run counts on both
-    #: sides, and how many instances that leaves out. An unequal-`k` instance
-    #: (the in-progress one on an interrupted campaign) otherwise contributes a
-    #: difference that is bookkeeping rather than a result.
+    #: Feasible-run delta over equal-run-count instances, and how many are left
+    #: out: an unequal-`k` one (interrupted campaign) is bookkeeping, not a result.
     feasibility_delta_balanced: int
     feasibility_unbalanced: int
     floor: NoiseFloor
-    #: Scored instances with rows on only one side, so in no bucket at all. An
-    #: interrupted campaign always ends mid-instance-block, so its last instance
-    #: has control rows and not every arm's. It has to be visible: without it the
-    #: bucket counts sit quietly short of the "instances scored" line above, and
-    #: this module's own promise that every instance lands in exactly one bucket
-    #: is false for precisely the instances a reader would want to ask about.
+    #: Scored instances with rows on only one side, so in no bucket (e.g. an
+    #: interrupted campaign's last instance). Shown so bucket counts reconcile
+    #: with "instances scored".
     uncompared: int = 0
 
     @property
     def comparable(self) -> int:
-        """Instances with a delta at all -- the denominator of `mean_delta`.
+        """Instances with a delta: the denominator of `mean_delta`.
 
-        Distinct from `scored`, which is the denominator of `median_delta`, and
-        the two were printed as parallel lines with neither naming its own. Ten
-        scored instances at delta 0 beside ten unscored at +900 prints a median
-        of +0.00 and a mean of +450.00, and a reader with no denominators cannot
-        tell that they are statistics over different sets.
+        `scored` is `median_delta`'s; both are printed so the two statistics'
+        different sets are visible.
         """
         return sum(1 for c in self.comparisons if c.delta is not None)
 
@@ -722,18 +557,14 @@ class ArmSummary:
     def verdict(self) -> str:
         """The arm's effect, judged instance by instance and then by sign test.
 
-        Never from the mean: this roster's gaps span six orders of magnitude, so
-        an unweighted mean is the largest instance's seed draw. See the module
-        docstring.
+        Never from the mean (module docstring).
         """
         comparable = sum(1 for c in self.comparisons if c.delta is not None)
         if comparable == 0:
             return "no instance is comparable on gap; read the feasibility counts instead"
         if not self.floor.per_instance:
-            # Comparable, but nothing to judge the comparison BY. Distinct from
-            # the line above and it has to say so: "no instance is comparable"
-            # would be false here and would send a reader to the feasibility
-            # counts for an arm whose gaps are all present.
+            # Comparable, but no floor to judge by; "no instance is comparable"
+            # would be false here.
             return (
                 f"{comparable} instance(s) are comparable on gap, but none has a measurable "
                 "noise floor -- every control either produced fewer than two comparable runs "
@@ -751,21 +582,11 @@ class ArmSummary:
                 f"own measured floor ({typical}); median gap delta over those {self.scored} "
                 f"instance(s) {format_points(self.median_delta)} points"
             )
-        # THE DELTA A NAMED DIRECTION IS A CLAIM ABOUT IS THE MOVERS' OWN.
-        # The roster-wide median is legitimately +0.00 whenever most scored
-        # instances held inside their floors, and printing it in the same
-        # sentence as "the arm is WORSE than the control" is exactly the
-        # contradiction issue #151 forbids -- a verdict naming a direction may
-        # not coexist with a median delta of +0.00. It is not suppressed, only
-        # moved: `median per-instance gap delta` in the report below still
-        # reports it over the scored instances, with its denominator named.
-        #
-        # The movers' median CANNOT be zero here, which is what makes this a
-        # fix rather than a relabelling: every mover's |delta| exceeds its own
-        # floor, which is itself bounded below by the runner's tie band, and a
-        # direction is named only when the movers are unanimous or the sign
-        # test resolves -- either way more than half of them share a sign, so
-        # the median sits on that side.
+        # A named direction quotes the MOVERS' median: a verdict naming a
+        # direction may not sit beside a roster median of +0.00 (#151), which is
+        # still reported below with its denominator. The movers' median cannot
+        # be zero: each |delta| exceeds a floor at least the tie band, and a
+        # direction needs unanimity or a resolved sign test, so most share a sign.
         mover_delta = self.mover_median_delta
         summary = (
             f"{moved} of {self.scored} scored instance(s) moved outside their own floor "
@@ -776,13 +597,9 @@ class ArmSummary:
             f"+/-{format_points(self.mover_median_floor or 0.0, signed=False)}; the other "
             f"{self.held} scored instance(s) held inside their own floor"
         )
-        # A roster-level direction needs either a significant sign test or
-        # enough unanimous movers to be worth the name. One mover is not a
-        # roster verdict: an earlier cut named a direction off a single
-        # instance, printing "the arm is WORSE than the control" in the same
-        # sentence as "sign test p = 1.000" and "median gap delta +0.00".
-        # MIN_UNANIMOUS_MOVERS unanimous movers give p = 0.125 -- short of
-        # significance, which is why the line says so rather than claiming it.
+        # A roster-level direction needs a significant sign test or
+        # MIN_UNANIMOUS_MOVERS unanimous movers; those give p = 0.125, short of
+        # significance, so the line says so.
         unanimous = self.moved_worse == 0 or self.moved_better == 0
         if not unanimous and self.sign_p > 0.05:
             return f"MIXED, no consistent direction: {summary}"
@@ -822,8 +639,7 @@ def summarize_arm(
             moved_worse += 1
         elif comparison.delta < -band:
             moved_better += 1
-    # The mean is reported only alongside the largest single delta, so a reader
-    # can see immediately whether it describes the roster.
+    # The mean is reported only beside the largest single delta.
     mean_delta = statistics.fmean(deltas) if deltas else None
     scored_deltas = [
         c.delta for c in comparisons if c.delta is not None and c.instance in floor.per_instance
@@ -855,18 +671,14 @@ def summarize_arm(
         mean_delta=mean_delta,
         largest_delta=largest[0],
         largest_delta_instance=largest[1],
-        # The MEDIAN quoted in the verdict is over the SCORED instances only,
-        # so the sentence "none of N scored instances moved" cannot sit beside
-        # a median drawn from a wider set that includes an unscored +900.
+        # Over SCORED instances only, matching the verdict's "N scored" wording.
         median_delta=statistics.median(scored_deltas) if scored_deltas else None,
         mover_median_delta=statistics.median(mover_deltas) if mover_deltas else None,
         mover_median_floor=statistics.median(mover_floors) if mover_floors else None,
         moved_worse=moved_worse,
         moved_better=moved_better,
         sign_p=sign_test_p(moved_worse, moved_better),
-        # A cell with no completed run on one side contributes no feasibility
-        # comparison EITHER WAY -- summing its `feasible_runs` difference is the
-        # same manufactured claim `classify` refuses to bucket.
+        # No completed run on one side: no feasibility comparison either way.
         feasibility_delta=sum(
             c.feasibility_delta for c in comparisons if c.feasibility_delta is not None
         ),
@@ -884,9 +696,8 @@ def summarize_arm(
 def scored_instances(rows: Sequence[RunRow]) -> list[str]:
     """Roster order, minus the instances published as documented failures.
 
-    `elec25`/`elec50` are excluded from every quality claim under epic #87. They
-    are reported separately rather than dropped: an arm that changes them is
-    still a finding, just not one that can be folded into an aggregate.
+    `elec25`/`elec50` are excluded from quality claims (#87) and reported
+    separately: a change there is a finding, not an aggregate input.
     """
     seen: list[str] = []
     for row in rows:
@@ -898,11 +709,9 @@ def scored_instances(rows: Sequence[RunRow]) -> list[str]:
 def drift_check(cells: dict[tuple[str, str], Cell], instances: Sequence[str]) -> str:
     """The probe against the campaign control -- one configuration, two times.
 
-    This is the only direct measurement of machine drift the campaign contains,
-    and it is why the probe's rows are kept rather than thrown away: the two sets
-    are the same configuration run hours apart, so their disagreement is drift
-    plus seed-free run-to-run noise, and it can be read against the same floor
-    the arms are judged by.
+    The campaign's only direct drift measurement: one configuration hours
+    apart, so the disagreement is drift plus seed-free noise, read against the
+    arms' floor.
     """
     pairs: list[float] = []
     for instance in instances:
@@ -910,12 +719,8 @@ def drift_check(cells: dict[tuple[str, str], Cell], instances: Sequence[str]) ->
         control = cells.get((instance, CONTROL_ARM))
         if probe is None or control is None:
             continue
-        # SAME SEED ON BOTH SIDES, and this is what makes the line a drift
-        # measurement rather than a restatement of seed variance. The probe is
-        # one seed; comparing it against the control's mean over all three
-        # would differ by ~s*sqrt(2/3) from seeds alone, which is not drift and
-        # which an earlier cut printed as though it were, under a closing
-        # sentence telling the reader to discount arm effects smaller than it.
+        # SAME SEED ON BOTH SIDES: against the control's three-seed mean the
+        # one-seed probe differs by ~s*sqrt(2/3) from seeds alone, not drift.
         shared = set(probe.seed_gaps) & set(control.seed_gaps)
         for seed in sorted(shared):
             pairs.append(abs(probe.seed_gaps[seed] - control.seed_gaps[seed]))
@@ -938,20 +743,11 @@ def drift_check(cells: dict[tuple[str, str], Cell], instances: Sequence[str]) ->
 def _repair_totals(cells: Iterable[Cell]) -> tuple[float, float]:
     """LNS destroy-repairs summed over cells: attempted, then accepted.
 
-    A NaN is skipped rather than read as zero: the runner writes it on a row
-    where no solve completed, and "no reading" is not "no repairs" -- that is
-    the same distinction the gate turns on. The two sums are taken
-    independently for that reason; they are not a count and a subset of the
-    same rows once unreadable cells are dropped from each. (So a row that
-    somehow carried one reading and not the other could make accepted exceed
-    attempted. The runner cannot write such a row -- `LnsCells` gives a row
-    both cells or neither -- and the alternative, dropping a row from both
-    sums, would turn a whole missing COLUMN into "0 attempted, 0 accepted",
-    which is the louder lie.)
-
-    A side on which NOTHING carried a reading totals NaN, not 0.0 -- see
-    `_repair_cell`. `math.fsum(())` is 0.0, and 0 here is the strongest claim
-    either counter can make.
+    NaN (no solve completed) is skipped, not read as zero, in each sum
+    independently: dropping a row from both would turn a missing COLUMN into
+    "0 attempted, 0 accepted". Accepted could then exceed attempted only on a
+    row with one reading, which `LnsCells` never writes (both cells or
+    neither). A side with no reading totals NaN, not `math.fsum(())`'s 0.0.
     """
     materialised = list(cells)
     attempted = [r for cell in materialised for r in cell.repairs if math.isfinite(r)]
@@ -965,13 +761,9 @@ def _repair_totals(cells: Iterable[Cell]) -> tuple[float, float]:
 def _repair_cell(total: float, noun: str) -> str:
     """One half of the repair line, or the fact that nothing measured it.
 
-    NaN is not zero. It is a side on which no row carried that counter at all --
-    every campaign written before the column existed, which `--report-only`
-    re-scores from its own `results.csv`. `lns_repairs` predates
-    `lns_repairs_accepted` by seven issues, so the two columns went missing at
-    different times and both cases are live. Printing 0 for either would
-    publish the strongest claim the counter can make ("LNS repaired nothing",
-    "LNS kept nothing") out of a file that never measured it.
+    NaN is not zero: no row carried that counter (a campaign predating the
+    column, re-scored by `--report-only`; the two columns arrived at different
+    times, #150). 0 would claim "LNS repaired/kept nothing" unmeasured.
     """
     return f"no {noun} reading" if math.isnan(total) else f"{total:g} {noun}"
 
@@ -1001,12 +793,8 @@ def _instance_lines(summary: ArmSummary) -> list[str]:
 def _floor_lines(summary: ArmSummary) -> list[str]:
     floor = summary.floor
     if not floor.per_instance:
-        # The reason is TWO-PART, and the verdict on the next line has said so
-        # since the exact-zero-spread guard went in: an instance is unmeasurable
-        # either because its control produced fewer than two comparable runs OR
-        # because every seed returned an identical gap. This string named only
-        # the first, and so contradicted the verdict beneath it on a campaign
-        # where every control had three feasible runs with finite gaps.
+        # Both reasons, matching the verdict: fewer than two comparable runs OR
+        # an identical gap on every seed.
         return [
             "  noise floor: not measurable -- every control either produced fewer than two "
             "comparable runs or returned an identical gap on every seed"
@@ -1057,10 +845,8 @@ def _arm_section(summary: ArmSummary) -> list[str]:
     lines: list[str] = []
     lines.append(f"--- {summary.arm} ---")
     lines.append("  " + "  ".join(f"{k}={v}" for k, v in summary.counts.items()))
-    # The denominator is printed even when it is zero. `+0 over instances
-    # with equal run counts` is unreadable on an all-held-out campaign,
-    # where the honest reading is "+0 over 0 instances" -- a sum over an
-    # empty set, not a measurement that the arm changed nothing.
+    # The denominator is printed even at zero: "+0 over 0 instances" is an
+    # empty sum, not a measurement that the arm changed nothing.
     lines.append(
         f"  feasible-run delta over the roster: {summary.feasibility_delta_balanced:+d} "
         f"over the {summary.feasibility_balanced} instance(s) with equal run counts on "
@@ -1074,18 +860,10 @@ def _arm_section(summary: ArmSummary) -> list[str]:
             "campaign or rows held out above -- rather than a result)"
         )
     )
-    # Issue #143 asks for the repair counts wherever the LNS arm is RUN, not
-    # only for the reading that would justify skipping it. Both sides are
-    # printed for every arm: the control's is the campaign's own answer to
-    # "is LNS doing work at this budget", measured over all three seeds
-    # rather than the gate probe's one.
-    #
-    # The accepted half (#150) is printed beside it because the attempt
-    # count alone cannot separate "LNS is working" from "LNS is spending".
-    # It is reported and not gated on: a rejected repair still randomises,
-    # still repairs and still costs seconds, so zero acceptances does NOT
-    # make an LNS arm equivalent to a no-LNS one -- see run_ablation.py's
-    # LNS_GATE_MIN_REPAIRS note.
+    # Repair counts for both sides of every arm (#143); the control's answers
+    # "is LNS working at this budget" over all seeds. Accepted (#150) separates
+    # working from spending; reported, not gated on (run_ablation.py's
+    # LNS_GATE_MIN_REPAIRS).
     control_attempted, control_accepted = _repair_totals(c.control for c in summary.comparisons)
     arm_attempted, arm_accepted = _repair_totals(c.treatment for c in summary.comparisons)
     lines.append(
@@ -1095,10 +873,8 @@ def _arm_section(summary: ArmSummary) -> list[str]:
         f"arm {_repair_cell(arm_attempted, 'attempted')}, "
         f"{_repair_cell(arm_accepted, 'accepted')}"
     )
-    # SPLIT BY SIDE. The reason these rows are held out is that whether a
-    # solve crashes or throws can depend on the configuration, which makes
-    # the side the single most informative thing about them -- a total hides
-    # exactly the arm property it is reporting.
+    # SPLIT BY SIDE: whether a solve crashes can depend on the configuration,
+    # which a total would hide.
     crashed_control = sum(c.control.failed_runs for c in summary.comparisons)
     crashed_arm = sum(c.treatment.failed_runs for c in summary.comparisons)
     if crashed_control or crashed_arm:
@@ -1119,13 +895,9 @@ def _arm_section(summary: ArmSummary) -> list[str]:
         key=note_order,
     )
     if unsearched_control or unsearched_arm:
-        # The justification differs by note and the line has to say which
-        # it is making. `solve-error` is the arm-dependent one -- whether a
-        # solve throws can depend on the configuration -- while
-        # `not-found`/`read-error`/`build-error`/`unsupported` hit every arm
-        # identically and are roster problems, not arm properties. Printing
-        # the arm-dependence argument under a list of `not-found` would be
-        # the same overreach in miniature.
+        # The justification differs by note: `solve-error` can depend on the
+        # arm; `not-found`/`read-error`/`build-error`/`unsupported` are roster
+        # problems hitting every arm alike.
         arm_dependent = [n for n in observed if n == "solve-error"]
         unrecognised = [n for n in observed if n.startswith(UNRECOGNISED_NOTE)]
         roster_wide = [
@@ -1142,10 +914,8 @@ def _arm_section(summary: ArmSummary) -> list[str]:
                 "so scoring it would read a missing or unsupported instance as one"
                 if roster_wide
                 else "",
-                # The allowlist's whole point: a note nobody taught this
-                # module cannot be classified, so it is held out and SAID,
-                # rather than scored as an infeasibility on the strength of
-                # its `feasible=false` cell.
+                # An unknown note is held out and SAID, not scored as
+                # infeasible from its `feasible=false` cell.
                 f"{', '.join(unrecognised)} is a note this report does not recognise, and it "
                 "scores only the notes a completed search is known to write -- so an "
                 "unfamiliar one is held out and named here rather than counted"
@@ -1154,12 +924,8 @@ def _arm_section(summary: ArmSummary) -> list[str]:
             )
             if part
         )
-        # "not scored" rather than "completed no search": a row held out
-        # only because its note is UNRECOGNISED may well have completed a
-        # search -- an allowlist that has fallen behind the runner is the
-        # acknowledged cost of the inversion, and the headline is the part a
-        # reader quotes. The `why` clause below draws the distinction; the
-        # count above it must not assert the stronger claim.
+        # "not scored", not "completed no search": an UNRECOGNISED-note row may
+        # have completed a search the allowlist does not yet know.
         lines.append(
             f"  {unsearched_control + unsearched_arm} run(s) not scored "
             f"(control {unsearched_control}, arm {unsearched_arm}; {', '.join(observed)}) and "
@@ -1210,17 +976,14 @@ def render_report(
 ) -> str:
     """The whole campaign report, as text.
 
-    A file that mixes budgets is refused outright: every comparison in it
-    would be a comparison of budgets as well as of arms.
+    A file mixing budgets is refused: it would compare budgets, not only arms.
     """
     rows = load_rows(results)
     if not rows:
         return f"{results} holds no rows"
     budgets = sorted({r.time_limit for r in rows if math.isfinite(r.time_limit)})
     commits = sorted({r.commit for r in rows if r.commit})
-    # A row with no recorded budget is a budget of its own: rows from a file
-    # written before `time_limit` was recorded, merged with newer ones, are not
-    # known to share one.
+    # A row with no recorded budget counts as a budget of its own.
     unrecorded = any(not math.isfinite(r.time_limit) for r in rows)
     if len(budgets) > 1 or (budgets and unrecorded):
         named = [f"{b:g}s" for b in budgets] + (["not recorded"] if unrecorded else [])
@@ -1231,15 +994,12 @@ def render_report(
         )
     cells = build_cells(rows)
     instances = scored_instances(rows)
-    # Only name the documented failures a file actually carries: a subset run
-    # may have neither.
+    # Name only the documented failures present; a subset run may have neither.
     present = {r.instance for r in rows}
     excluded = [name for name in CLAIM_EXCLUDED if name in present]
     arms = [a for a in dict.fromkeys(r.arm for r in rows) if a not in (CONTROL_ARM, PROBE_ARM_NAME)]
-    # Rows where no search completed carry a 0.0 wall (`write_preread_row` and
-    # the `solve-error` `write_unsolved_row` both pass one), so averaging them in
-    # drags the headline toward zero while every other line insists they record
-    # nothing.
+    # No-search rows carry a 0.0 wall (`write_preread_row`, `solve-error`'s
+    # `write_unsolved_row`), which would drag the mean toward zero.
     walls = [r.wall for r in rows if math.isfinite(r.wall) and not r.no_search]
     mean_wall = statistics.fmean(walls) if walls else math.nan
     lines = [

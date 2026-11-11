@@ -1,39 +1,28 @@
 """Check and mark a staging directory's rows in SCIP, solving nothing (#307).
 
-`run_benchmark.py` checks every staged verified row in SCIP after its solves
-(`verify_staged`) and leaves `<instance>.checked` beside it, holding the row
-file's sha256; `gm_ratio.py --cbls-staging` scores a staging directory without
-`--partial` only when every staged row carries a matching marker. Two kinds of
-row have none:
+`gm_ratio.py --cbls-staging` scores without `--partial` only when every staged
+row has an `<instance>.checked` marker holding its sha256. Rows staged by a
+driver older than the marker, or left by a driver killed between solve and
+check, have none, and a later `run_benchmark.py` refuses the commit-stamped
+directory (or re-solves everything with `--no-resume`). This tool runs
+`run_benchmark.check_and_mark` on every whole, stageable row, whatever commit
+staged it: a row SCIP rejects is demoted to `VERIFY-FAILED` and marked, an
+unchanged marked row is skipped, and header-only, torn or unstageable rows
+and missing `<instance>.csv` are left alone and listed.
 
-* rows staged by a driver older than the marker, and
-* rows a driver killed between its solve and its check left behind.
+An unmarked row keeps a non-partial score refused; clear it by re-solving at
+the stamp's commit (`run_benchmark.py --instances NAME`). Renaming it
+`.rejected` by hand is not a no-solution: the scorer wants two failed attempts
+in the driver's record (#312).
 
-A re-run of `run_benchmark.py` cannot mark either kind when the checkout has
-moved on: its staging stamp records the commit, so a later driver refuses the
-directory, or with `--no-resume` solves every row again. This tool runs the
-same check (`run_benchmark.check_and_mark`) on every staged row that is whole
-and stageable, whatever commit staged it, and marks it. A row SCIP rejects is
-demoted to `VERIFY-FAILED` and marked, as the driver does. A row already
-marked and unchanged is skipped. Header-only, torn and unstageable rows, and
-instances with no `<instance>.csv`, are left alone and listed.
+Refuses a stamp naming another roster (`bounds.csv` fingerprint) or host:
+SCIP would check against the wrong models, and a demotion is permanent. Holds
+the wall-clock lock so it never reads a row a driver here is writing. A row
+whose check raises (no `.sol`, a `.sol` for another instance, no `.nl`, a row
+changed under it) is left unmarked and listed, and the exit is nonzero.
 
-A row left unmarked keeps a non-partial score refused. Clear it by re-solving
-it with the driver at the commit the staging stamp names (`run_benchmark.py
---instances NAME`). Renaming it to `.rejected` by hand does not make it a
-no-solution: the scorer wants two failed attempts in the driver's record (#312).
-
-It refuses a staging directory whose stamp names another roster (`bounds.csv`
-fingerprint) or another host than `--inst-dir` and this machine: SCIP would
-check the rows against the wrong models, and a rejection demotes a row for
-good. It takes the machine's wall-clock lock, as the driver does, so it never
-reads a row while a driver on this host is writing one. A row whose check
-raises (no `.sol`, a `.sol` for another instance, no `.nl`, a row that changed
-under it) is left unmarked and listed, and the exit status is nonzero.
-
-It cannot see a runner's exit status: a row whose runner exited nonzero is set
-aside as `.rejected` by the driver at once, and only a driver killed between
-the runner's exit and that rename leaves such a row in place.
+It cannot see a runner's exit status; only a driver killed between a nonzero
+runner exit and its `.rejected` rename leaves such a row in place.
 
 Usage:
     .venv/bin/python3 benchmarks/minlplib/check_staged.py \\
@@ -129,9 +118,8 @@ def check_staged(inst_dir: Path, stage: Path, names: Sequence[str]) -> CheckRepo
         elif (reason := skip_reason(stage, name)) is not None:
             report.skipped[name] = reason
         else:
-            # Any error, not a list of them: SCIP's reader and the solution
-            # parser raise their own kinds, and one bad row must not hide the
-            # rest of the report.
+            # Any error: SCIP's reader and the solution parser raise their own
+            # kinds, and one bad row must not hide the rest of the report.
             try:
                 report.demoted += check_and_mark(inst_dir, stage, name)
             except Exception as exc:  # noqa: BLE001
