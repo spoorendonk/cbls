@@ -42,10 +42,9 @@
 
 namespace {
 
-// The search-flag families this runner's models can use (#198). Its models are
-// scalar -- no List or Set variable, so the engine resolves the structural
-// batch to probability 0 -- and a structural flag would be recorded and read by
-// nothing. validate_search_flags() refuses one.
+// The search-flag families this runner's scalar models can use (#198): with no
+// List or Set variable a structural flag would be recorded and read by nothing,
+// so validate_search_flags() refuses one.
 constexpr unsigned kSearchFlagFamilies = cbls::bench::kScalarRunnerSearchFlags;
 
 // The thread count every MINLPLib campaign runs at: Simon's decision of
@@ -55,24 +54,22 @@ constexpr int kCampaignThreads = 16;
 
 struct Args {
     std::string inst_dir = "benchmarks/instances/minlplib";
-    // 60s per instance. The previously published run used 5s, which is a stingy
-    // budget for a general-purpose non-convex MINLP heuristic (issue #88).
+    // 60s per instance: 5s is a stingy budget for a general-purpose non-convex
+    // MINLP heuristic (#88).
     double time_limit = 60.0;
     bool time_limit_set = false;
     uint64_t seed = 1;
     bool seed_set = false;
-    // Absolute constraint-violation tolerance for "feasible". Stated explicitly
-    // rather than inherited, because it is a published property of these
-    // results: it matches SCIP's numerics/feastol default, which keeps the SCIP
-    // baseline (#89) comparable. Same value as the engine default.
+    // Absolute violation tolerance for "feasible", stated because it is a
+    // published property: the engine default, matching SCIP's numerics/feastol
+    // so the SCIP baseline (#89) stays comparable.
     double feas_tol = cbls::kDefaultFeasibilityTolerance;
     bool feas_tol_set = false;
     std::vector<std::string> instances;  // optional override
-    // Portfolio workers (#262). 1 is the single-threaded `solve()` the committed
-    // table was measured with; >1 runs `ParallelSearch` on that many threads.
-    // Every campaign runs at kCampaignThreads (Simon, 2026-11-01, #255, #256).
-    // A run at another count is a different search, so every row records its
-    // count in `search_config` and thread counts are never mixed in one table.
+    // Portfolio workers (#262): 1 is the committed table's single-threaded
+    // `solve()`, >1 runs `ParallelSearch`; campaigns run at kCampaignThreads.
+    // Another count is a different search, so each row records it in
+    // `search_config` and a table never mixes counts.
     int threads = 1;
     bool commit_set = false;
     std::string commit_sha = "unknown";
@@ -84,26 +81,21 @@ struct Args {
     // optional: where each verified row's assignment is written, one
     // `<instance>.sol` per instance, for the DAG-independent check (#205)
     std::string solution_dir;
-    // The ablation arm (#136). Its canonical spelling is recorded on every row
-    // this run writes, so a results file states the configuration it was
-    // produced under instead of leaving the reader to remember which binary
-    // produced which table.
+    // The ablation arm (#136); its canonical spelling is recorded on every row
+    // this run writes, so a results file states its own configuration.
     cbls::bench::SearchFlags search;
     std::string search_config;  // search_config_string(search); filled in by parse_args
 };
 
-// Flag-value parsing lives in benchmarks/common/runner_args.h, shared with the
-// other runners so that a fix to one cannot silently diverge from the rest. The
-// reporting policy is documented there and is unchanged: a bad double is
-// reported and returned as NaN for the positivity guards below to turn into
-// exit 2, and a bad integer is reported and exits 2 directly.
+// Flag-value parsing: benchmarks/common/runner_args.h, shared with the other
+// runners so a fix cannot diverge. A bad double is reported and returned as NaN
+// for the guards below to exit 2 on; a bad integer is reported and exits 2.
 using cbls::bench::parse_double;
 using cbls::bench::parse_int64;
 
-/// The numeric and search-configuration flags' guards. Kept apart from the flag
-/// table because they are about the *values*, not about which flags were typed:
-/// the parse layer reports a bad token and hands the guard a NaN, and the guard
-/// is what decides the exit code.
+/// The numeric and search-configuration flags' value guards, apart from the
+/// flag table: the parse layer reports a bad token and hands over NaN, the
+/// guard decides the exit code.
 void check_flag_values(Args& a) {
     std::string flag_error;
     if (!cbls::bench::validate_search_flags(a.search, kSearchFlagFamilies, a.time_limit_set,
@@ -112,20 +104,18 @@ void check_flag_values(Args& a) {
         std::exit(2);
     }
     a.search_config = cbls::bench::search_config_string(a.search, kSearchFlagFamilies);
-    // The portfolio's size is part of the configuration the row describes, so
-    // the row records it. Written only off the single-threaded default, as the
-    // opt-in search flags are, so a `--threads 1` row's cell is the one the
-    // committed tables hold.
+    // The portfolio size is part of the row's configuration; written only off
+    // 1, as the opt-in search flags are, so a `--threads 1` row's cell is the
+    // one the committed tables hold.
     if (a.threads != 1) {
         a.search_config += (a.search_config.empty() ? "" : ";");
         a.search_config += "threads=" + std::to_string(a.threads);
     }
     if (a.search.no_time_limit) {
         // The wall-clock-free arm (#136): solve() disables its clock at
-        // `time_limit <= 0`, which is what makes an iteration-budgeted run
-        // deterministic. validate_search_flags has already insisted on a
-        // positive --max-iterations, so the run still has a budget and cannot
-        // return instantly with a table of empty results.
+        // `time_limit <= 0`, making an iteration-budgeted run deterministic;
+        // validate_search_flags has required a positive --max-iterations, so
+        // the run still has a budget.
         a.time_limit = 0.0;
     } else if (!(a.time_limit > 0.0)) {
         std::fprintf(stderr, "--time-limit must be > 0 (got %g)\n", a.time_limit);
@@ -138,21 +128,12 @@ void check_flag_values(Args& a) {
 }
 
 /// The first flag that makes this run other than the full published
-/// measurement, or nullptr: what `resolve_out_csv` refuses to publish under.
-/// A run that is not the full published measurement must never overwrite the
-/// published results table. A partial roster would truncate it to the rows it
-/// ran; an ablation arm would republish it as though the default
-/// configuration had produced it, which is worse -- the numbers would look
-/// like the published ones and would not be (#136).
-///
-/// The BUDGET and the numerics belong in this ladder too, and the sibling
-/// uc-chped runner has always had them. `--time-limit 1` over the full
-/// roster satisfies every other rung and republishes the table with
-/// one-second results -- the #88 hazard by name -- and `--seed`/`--feas-tol`
-/// do the same with rows that differ from the published protocol in a way no
-/// column records. `--commit` is required for the converse reason: a
-/// published row whose provenance reads "unknown" is one a later reader
-/// cannot tell engine drift from a bug with.
+/// measurement, or nullptr: what `resolve_out_csv` refuses to publish under. A
+/// partial roster would truncate the table; an ablation arm would republish it
+/// as the default configuration's (#136); `--time-limit 1` would publish
+/// one-second results (#88); `--seed`/`--feas-tol` change rows in a way no
+/// column records. (`--commit` is required by check_published_write: an
+/// "unknown" provenance cannot tell engine drift from a bug.)
 const char* unpublishable_flag(const Args& a) {
     if (!a.instances.empty()) {
         return "--instance";
@@ -187,14 +168,11 @@ void resolve_out_csv(Args& a) {
     if (!target.has_value()) {
         return;
     }
-    // Even a full-protocol run does not write the published files itself any
-    // more (#205). The `feasible` column it writes is this engine's verdict on
-    // its own DAG: `worst_residual` reads the very node values the search
-    // optimised, so an evaluation bug the two share -- a domain error read as a
-    // satisfiable number was one -- cannot be caught by it. `run_benchmark.py`
-    // stages every instance, checks each verified row's assignment in SCIP from
-    // the `.nl` (independent_check.py) and only then publishes. A row written
-    // here would skip that check.
+    // Every publish from here is refused (#205): `feasible` is this engine's
+    // verdict on its own DAG (`worst_residual` reads the node values the search
+    // optimised), so an evaluation bug both share goes uncaught.
+    // `run_benchmark.py` checks each verified row's assignment in SCIP from the
+    // `.nl` (independent_check.py) before it publishes.
     std::fprintf(stderr,
                  "the published %s %s is written only by benchmarks/minlplib/run_benchmark.py, "
                  "which checks every verified row outside this engine's DAG "
@@ -226,15 +204,13 @@ bool lies_under(const std::string& file, const std::string& dir) {
     return fi != f.end();
 }
 
-/// `--counters` names a file of its own: never the table, the trace, the
-/// table's temp file, nor anything under the instance directory (the published
-/// table and trace, `bounds.csv`, the SCIP baseline, the notes, `heldout/`) or
-/// the solution directory, each of which it would truncate on open or have
-/// renamed over (the hole `resolve_out_csv` closes for `--trace`). The
-/// instance directory is refused whole: the files the runner and its siblings
-/// read there cannot be listed here without drifting from the loaders, and a
-/// run that reads one before truncating it still loses it on disk. Symlinks
-/// are resolved; a hardlink into the tree under another name is not caught.
+/// `--counters` names a file of its own: not the table, its temp file, the
+/// trace, nor anything under the instance or solution directory, which it would
+/// truncate on open or have renamed over. The instance directory is refused
+/// whole: the files read there (published table and trace, `bounds.csv`, the
+/// SCIP baseline, the notes, `heldout/`) cannot be listed here without drifting
+/// from the loaders. Symlinks are resolved; a hardlink under another name is
+/// not caught.
 void check_counters_path(const Args& a) {
     if (a.counters_csv.empty()) {
         return;
@@ -302,9 +278,8 @@ Args parse_args(int argc, char** argv) {
                 cbls::bench::search_flags_usage(kSearchFlagFamilies).c_str());
             std::exit(0);
         } else if (s.rfind("--", 0) == 0) {
-            // A typo'd flag must not silently become the instance directory:
-            // this tool's output is published, so a misparsed argument would
-            // produce a plausible-looking but wrong results table.
+            // A typo'd flag must not become the instance directory and yield a
+            // plausible but wrong published table.
             std::fprintf(stderr, "Unknown or incomplete option: %s (see --help)\n", s.c_str());
             std::exit(2);
         } else {
@@ -445,11 +420,10 @@ public:
         if (!p.feasible || !std::isfinite(p.objective)) {
             return;  // no incumbent yet
         }
-        // Flushed per row, as the results CSV is: a run is tens of minutes long
-        // and an interrupted one must not lose its buffered profile.
-        // NOTE: p.objective is the internally *minimised* value, so a maximize
-        // instance appears negated here relative to comparison.csv. Improvement
-        // ratios are invariant under that, but raw values are not.
+        // Flushed per row: a run is tens of minutes, and an interrupted one must
+        // keep its profile. p.objective is the internally *minimised* value, so
+        // a maximize instance is negated vs comparison.csv: improvement ratios
+        // are invariant, raw values are not.
         out_ << instance_ << "," << p.time_seconds << "," << p.objective << ","
              << (p.new_best ? 1 : 0) << '\n';
         out_.flush();
@@ -497,19 +471,16 @@ struct Tally {
     int skipped_unsupported = 0;
     int not_found = 0;
     int errored = 0;  // read/build/solve exceptions; decides the exit status
-    // Of `errored`, the ones that threw INSIDE solve(). Held apart because the
-    // model was closed first, so such an instance is counted in `closed` and
-    // would otherwise be reported as an infeasibility -- the very claim the
-    // nonzero exit status exists to deny.
+    // Of `errored`, those that threw INSIDE solve(): the model was closed
+    // first, so they are in `closed` too and must not be reported as
+    // infeasibilities, the claim the nonzero exit exists to deny.
     int solve_errored = 0;
     // Solves whose portfolio completed fewer workers than `--threads` asked
     // for (#170): the row is written, but it is not the N-thread run it says.
     int lost_workers = 0;
-    // Instances whose .nl file was present, counted once each. Derived from the
-    // buckets it used to be summed from, `parsed + skipped_unsupported +
-    // errored`, double-counted every outcome reached AFTER the read succeeded:
-    // a build error, a solve error and an adapter-declined instance each landed
-    // in two of those three.
+    // Instances whose .nl file was present, counted once each: summing
+    // `parsed + skipped_unsupported + errored` double-counts every outcome
+    // after a successful read (build error, solve error, adapter-declined).
     int with_file = 0;
     int integrality_mismatch = 0;
     int verify_failed = 0;  // reported feasible but failed the independent re-check
@@ -517,24 +488,19 @@ struct Tally {
     int nonfinite_obj = 0;  // infeasible with a non-finite objective at the closest approach
 };
 
-// Exit status for a run that reached the end of its roster. 1 and 2 are already
-// taken -- 1 for "no roster to run" and for an exception escaping main, 2 for a
-// bad flag or an unwritable output file (benchmarks/common/runner_args.h) -- so
-// an error tally gets a code of its own and a consumer can tell the two apart.
-//
-// Mirrored in Python as `runner.RUNNER_EXIT_ERRORED`; a test pins that
-// constant against this literal, because the drivers branch on the value.
+// Exit status for a run that reached the end of its roster with errors: 1 (no
+// roster to run, or an exception escaping main) and 2 (a bad flag or an
+// unwritable output file, benchmarks/common/runner_args.h) are taken, so a
+// consumer can tell the cases apart. Mirrored as Python
+// `runner.RUNNER_EXIT_ERRORED`, pinned to this literal by a test because the
+// drivers branch on the value.
 constexpr int kExitErrored = 3;
 
 /// The process exit status for a run that reached the end of its roster.
-///
-/// `errored` is `Tally::errored`: a read, a build or a solve that THREW. It is
-/// deliberately the only argument. `skipped_unsupported` and `not_found` are
-/// COVERAGE GAPS -- an operator this adapter does not implement, or an instance
-/// nobody downloaded -- and the runner buckets them apart from errors exactly so
-/// that a gap is not reported as a failure. `failed_nonfinite` and
-/// `verify_failed` are measurements: a search ran to completion and the row says
-/// what it reported.
+/// `errored` (`Tally::errored`: a read, build or solve that THREW) is
+/// deliberately the only input: `skipped_unsupported` and `not_found` are
+/// coverage gaps, bucketed apart so a gap is not reported as a failure, and
+/// `failed_nonfinite`/`verify_failed` are measurements of a completed search.
 int run_exit_status(int errored) {
     return errored > 0 ? kExitErrored : 0;
 }
@@ -555,8 +521,7 @@ struct Residual {
 
 Residual worst_residual(const cbls::NlProblem& prob, const cbls::NlToModelResult& built,
                         double tol) {
-    // Always the model `built` owns; taking it separately invited passing a
-    // different one.
+    // Always `built`'s own model, so a mismatched one cannot be passed.
     const cbls::Model& model = built.model;
     // Map constraint node id -> NL row so the worst offender can be named. Range
     // rows record only their upper node, so the lower half maps to -1.
@@ -609,15 +574,11 @@ const char* bound_type_name(cbls::NlBoundType t) {
     return "?";
 }
 
-// Signed gap in percent, oriented so a POSITIVE value always means "worse than
-// the reference" regardless of objective sense: for a minimize instance a larger
-// objective is worse, for a maximize one a smaller one is. Without the flip a
-// maximize row reads like a 64% improvement when it is a 64% miss.
-//
-// NOTE: when |ref| < 1e-12 the return value is an ABSOLUTE residual, not a
-// percent — a percentage against zero is meaningless. Consumers must not bucket
-// those rows as percentages; the CSV does not distinguish them, so the README
-// records which instances they are (mathopt1, prob09, least).
+// Signed gap in percent, POSITIVE meaning "worse than the reference" in either
+// objective sense (unflipped, a maximize row's 64% miss reads as a 64% gain).
+// When |ref| < 1e-12 it returns an ABSOLUTE residual, not a percent; the CSV does
+// not mark these, so consumers must not bucket them as percentages and the
+// README lists them (mathopt1, prob09, least).
 double safe_gap(double obj, double ref, bool maximizing) {
     if (std::isnan(obj) || std::isnan(ref)) {
         return std::numeric_limits<double>::quiet_NaN();
@@ -633,12 +594,11 @@ double safe_gap(double obj, double ref, bool maximizing) {
 using BoundsMap = std::unordered_map<std::string, Bounds>;
 using NotesMap = std::unordered_map<std::string, std::string>;
 
-// The runner's per-instance work is split along the questions it answers about
-// a row, each of which has its own policy and its own failure mode: could the
-// instance be read and built at all, is the assignment the search returned
-// really a solution, where does a verified objective stand against the published
-// bound, and why is an unverified one not one. run_instance below asks them in
-// order; run_benchmark owns only the roster, the output files and the tally.
+// Per-instance work is split by the question each step answers, each with its
+// own policy and failure mode: can it be read and built, is the returned
+// assignment really a solution, where does a verified objective stand against
+// the published bound, why is an unverified one not one. run_instance asks
+// them in order; run_benchmark owns only the roster, output files and tally.
 
 /// A CSV cell for a double: NaN spelled the way the readers of this table
 /// expect, rather than the stream's locale-dependent "nan".
@@ -652,15 +612,9 @@ std::string cell(double v) {
 }
 
 /// `cell` at a precision that round-trips a double, for a value the analysis
-/// COMPARES rather than displays.
-///
-/// `cell`'s default stream rounds to six significant figures, which is right for
-/// a table a human reads. It is wrong for `first_feasible_objective`: the #149
-/// analysis buckets an instance as `arrival-invariant` when every seed's first
-/// feasible objective is EQUAL, and that bucket counts as *evidence against* the
-/// effect. At six figures 1234567.1 and 1234567.9 print identically, so the
-/// rounding could manufacture the refutation on a badly-scaled instance. Two
-/// seeds that genuinely arrive at the same point still print the same string.
+/// COMPARES: the #149 analysis buckets an instance `arrival-invariant` (evidence
+/// against the effect) when every seed's first feasible objective is EQUAL, and
+/// at six figures 1234567.1 and 1234567.9 would print alike and manufacture it.
 std::string precise_cell(double v) {
     if (std::isnan(v)) {
         return "NaN";
@@ -670,23 +624,11 @@ std::string precise_cell(double v) {
     return os.str();
 }
 
-/// The row's two LNS counter cells: destroy-repairs ATTEMPTED, and the subset
-/// of those the accept rule KEPT.
-///
-/// Both default to "NaN", which is what a row must carry wherever no solve
-/// completed. Writing 0 there would be a different claim -- "LNS ran and never
-/// repaired" is the reading that gates the #143 LNS arm, and a row where
-/// nothing ran must not be able to vote in it. The same rule binds the accepted
-/// cell, where a 0 would claim the repairs ran and were all rolled back.
-///
-/// Bundling the pair is what keeps one of them from being given a number while
-/// the other is left at NaN, so EVERY row writer below goes through this type
-/// -- the completed-solve row included, where the two cells are always known
-/// together and routing them separately would leave the invariant resting on
-/// nobody editing the stream expression. `write_preread_row` below included:
-/// its cells are always NaN, which is exactly why hard-coding them there
-/// would leave the one writer that can never be right by accident as the
-/// only one outside the rule.
+/// The row's two LNS counter cells: destroy-repairs ATTEMPTED and the subset the
+/// accept rule KEPT. Both default to "NaN" for a row where no solve completed:
+/// a 0 would claim "LNS ran and never repaired" (or "all rolled back"), the
+/// reading that gates the #143 LNS arm. EVERY row writer, write_preread_row
+/// included, goes through this pair, so neither cell gets a number alone.
 struct LnsCells {
     std::string attempted = "NaN";
     std::string accepted = "NaN";
@@ -698,37 +640,22 @@ LnsCells lns_cells(const cbls::SearchResult& result) {
 }
 
 /// The row's first-feasible pair (#149): the objective at the first feasible
-/// point the search recorded, and the seconds it took to get there.
-///
-/// A pair type for the same reason `LnsCells` is one -- the two cells are known
-/// together or not at all, and every row writer below goes through this type so
-/// that no writer can give one of them a number while leaving the other at NaN.
-///
-/// Both default to "NaN", which is what a row must carry wherever no search
-/// completed. A 0 in either would be a different claim: "reached feasibility
-/// instantly, at objective zero" is a measurement, and a row where nothing ran
-/// must not be able to enter the #149 correlation as one.
-///
-/// `seconds` is the cell that says whether a feasible point was recorded at
-/// all. `objective` can be NaN or inf on a row that DID reach feasibility --
-/// that is the non-finite-objective witness of #100, faithfully reported --
-/// so a reader must exclude non-finite objectives rather than assume a number.
+/// point the search recorded and the seconds to reach it; a pair through every
+/// writer for LnsCells' reason. Both default to "NaN" where no search
+/// completed: a 0 would claim "feasible instantly, at objective zero" and enter
+/// the #149 correlation. `seconds` says whether a point was recorded at all;
+/// `objective` can be NaN or inf on a row that was (#100), so a reader must
+/// exclude non-finite objectives.
 struct FirstFeasibleCells {
     std::string objective = "NaN";
     std::string seconds = "NaN";
 };
 
-/// The first-feasible pair of a completed solve, as cells.
-///
-/// `maximizing` un-negates the objective the same way the row's `objective`
-/// cell is un-negated: `solve()` minimises, so a maximize instance was built
-/// with a negated objective and the raw value is the wrong sign for the
-/// published bound it will be read beside. Applied unconditionally rather than
-/// under an `isfinite` guard, so a first feasible point whose objective blew up
-/// keeps the sign its magnitude implies. No `result.feasible` guard either --
-/// the final objective's un-negation carries one, but it would be redundant
-/// here: a run that never reached feasibility latched nothing, so both cells
-/// are already NaN and `-NaN` is NaN.
+/// The first-feasible pair of a completed solve, as cells. `maximizing`
+/// un-negates the objective as the row's `objective` cell is (`solve()`
+/// minimises). No `isfinite` guard, so a blown-up objective keeps the sign its
+/// magnitude implies; no `result.feasible` guard: a run that never reached
+/// feasibility latched nothing, both cells are NaN, and `-NaN` is NaN.
 FirstFeasibleCells first_feasible_cells(const cbls::SearchResult& result, bool maximizing) {
     double obj = result.first_feasible_objective;
     if (maximizing) {
@@ -739,16 +666,12 @@ FirstFeasibleCells first_feasible_cells(const cbls::SearchResult& result, bool m
     return {precise_cell(obj), cell(result.time_to_first_feasible)};
 }
 
-/// A row for an instance whose bounds have not been looked up yet -- nothing is
-/// known about it, so every numeric cell is NaN. Such a row is still written:
-/// bounds.csv is the roster of record, so a silently absent row would make the
-/// results table disagree with the roster it claims to cover, visible only on
-/// stdout.
+/// A row for an instance whose bounds have not been looked up: every numeric
+/// cell NaN. Still written: bounds.csv is the roster of record, and the table
+/// must not silently disagree with it.
 void write_preread_row(std::ostream& csv, const Args& args, const std::string& name,
                        const std::string& note) {
-    // Through `LnsCells` like the other two, rather than a hard-coded pair of
-    // NaNs: the invariant that type carries is worth nothing if the writer for
-    // the rows that are ALWAYS unmeasured is the one exempt from it.
+    // Through the cell types like every writer (LnsCells), not literal NaNs.
     const LnsCells lns;
     const FirstFeasibleCells ff;
     csv << name << ",NaN,NaN,NaN,NaN,NaN,0,false," << note << "," << args.commit_sha << ",NaN,NaN,"
@@ -756,17 +679,14 @@ void write_preread_row(std::ostream& csv, const Args& args, const std::string& n
         << args.search_config << "\n";
 }
 
-/// A row for an instance that was built but produced no publishable objective.
 /// The returned assignment of a DAG-verified row, for the DAG-independent check
 /// (#205): `benchmarks/minlplib/independent_check.py` loads the `.nl` in SCIP and
-/// checks these values there, so an evaluation bug this engine shares with its
-/// own re-check (`worst_residual` reads the same DAG node values the search
-/// does) cannot publish a `feasible` row. One value per NL column, in column
-/// order, at full precision; `objective` is the true-sense value the row
-/// reports, also at full precision (the CSV's own cell is rounded to six
-/// digits). Written to a temp file and renamed, so a crash leaves no half file;
-/// an unwritable directory ends the run (exit 2), as an unwritable `--out` does,
-/// because a verified row without its solution cannot be checked.
+/// checks these values, so an evaluation bug shared with `worst_residual` (same
+/// DAG node values) cannot publish a `feasible` row. One full-precision value per
+/// NL column in order; `objective` is the true-sense value at full precision (the
+/// CSV cell has six digits). Temp file then rename, so a crash leaves no half
+/// file; an unwritable directory exits 2, as an unwritable `--out` does, since a
+/// verified row without its solution cannot be checked.
 void write_solution(const Args& args, const std::string& name, const cbls::NlToModelResult& built,
                     double obj) {
     if (args.solution_dir.empty()) {
@@ -794,6 +714,7 @@ void write_solution(const Args& args, const std::string& name, const cbls::NlToM
     }
 }
 
+/// A row for an instance that was built but produced no publishable objective.
 void write_unsolved_row(std::ostream& csv, const Args& args, const std::string& name,
                         const Bounds& b, double wall, const std::string& note, int n_discrete,
                         const LnsCells& lns, const FirstFeasibleCells& ff) {
@@ -830,12 +751,11 @@ bool read_instance(std::ostream& csv, const Args& args, const std::string& name,
     return true;
 }
 
-/// Integrality cross-check: the NL header declares how many columns are
-/// discrete, and Gay's variable ordering places them. If that disagrees with
-/// MINLPLib's own nbinvars+nintvars, the model just built is not the instance the
-/// published bound refers to -- say so rather than reporting a gap against a
-/// bound for a different problem. Called only on a row that will be written, so
-/// that a counted mismatch always has a row explaining it.
+/// Integrality cross-check: if the NL header's discrete-column count (placed by
+/// Gay's variable ordering) disagrees with MINLPLib's nbinvars+nintvars, the model
+/// is not the instance the published bound refers to; say so rather than report
+/// a gap. Called only on a row that will be written, so every counted mismatch
+/// has a row explaining it.
 std::string integrality_check(const cbls::NlProblem& prob, const Bounds& b, const std::string& name,
                               Tally& t) {
     if (b.n_disc < 0 || b.n_disc == prob.n_discrete_vars) {
@@ -887,28 +807,15 @@ bool verify_assignment(const cbls::NlProblem& prob, const cbls::NlToModelResult&
     return false;
 }
 
-/// Where a verified objective stands against the published BKS.
-///
-/// Claiming to beat a published MINLPLib bound needs a margin that is actually
-/// meaningful. Two things set the floor: relative floating-point noise on the
-/// objective value, and the feasibility tolerance itself -- we accept solutions
-/// violating a constraint by up to feas_tol, and that slack buys a small
-/// objective gain. A "win" at that scale is a tolerance artifact, not a better
-/// solution. Anything inside the band is reported as a tie, so the
-/// better-than-bks count means something and warrants scrutiny.
-///
-/// Two different bands, deliberately not the same number. `win_slack` is the
-/// margin an improvement must exceed to be claimed. `tie_band` is much tighter
-/// and purely relative -- it is what it takes to call two objectives *equal*.
-/// Reusing win_slack for both published ex8_4_5 (BKS 3.07e-4) as "matches-bks"
-/// when it was in fact 1.38% worse: there the absolute floor of 10*feas_tol =
-/// 1e-5 dwarfs the objective's own magnitude.
-///
-/// Three outcomes, not two. A row can improve on BKS by more than the tie band
-/// yet less than win_slack: we will not claim that as a win (the feasibility
-/// slack alone could buy it), but calling it "worse than BKS" when its objective
-/// is better is simply false. It gets its own label so the worse count means
-/// what it says.
+/// Where a verified objective stands against the published BKS. A claimed win
+/// must exceed `win_slack`, floored by relative float noise and by feas_tol (an
+/// accepted violation buys a small objective gain): inside it a "win" is a
+/// tolerance artifact, so better-than-bks stays worth scrutiny. `tie_band` is
+/// much tighter and purely relative: what it takes to call two objectives
+/// *equal*. Must not reuse win_slack as the tie band, else ex8_4_5 (BKS
+/// 3.07e-4, 1.38% worse) reads matches-bks under the 10*feas_tol = 1e-5 floor.
+/// An improvement inside win_slack but beyond tie_band is not claimed as a win,
+/// nor is it "worse": it is within-tolerance-of-bks, so the worse count is true.
 std::string classify_against_bks(double obj, const Bounds& b, bool maximizing, double feas_tol,
                                  Tally& t) {
     const double win_slack = std::max(1e-6 * (std::abs(b.primal) + 1.0), 10.0 * feas_tol);
@@ -949,11 +856,9 @@ std::string describe_infeasible(const cbls::NlProblem& prob, const cbls::NlToMod
     } else if (r.worst > 0.0) {
         row_label = "range-lower-half";
     }
-    // A non-finite objective at the closest approach is its own failure mode,
-    // not generic hardness: the objective is folded in as an `obj <= bound` soft
-    // constraint, so an infinite objective makes that constraint's violation
-    // swamp the real ones and the search loses the feasibility signal entirely.
-    // Call it out by name.
+    // A non-finite objective at the closest approach is its own failure mode:
+    // folded in as `obj <= bound`, an infinite objective swamps the real
+    // violations and the search loses the feasibility signal. Named in the row.
     if (built.objective_node_id >= 0 &&
         !std::isfinite(built.model.node_value(built.objective_node_id))) {
         ++t.nonfinite_obj;
@@ -972,19 +877,13 @@ std::string describe_infeasible(const cbls::NlProblem& prob, const cbls::NlToMod
     return buf.data();
 }
 
-/// Curated root-cause annotation, if this instance has one. Scoped to rows we
-/// could NOT solve: analysis_notes.csv explains why an *unsolved* instance is a
-/// solver defect or genuine hardness, so pasting that verdict onto a row that now
-/// solves would publish a stale claim the data itself contradicts. Warn loudly
-/// instead, so the note gets retired.
+/// Curated root-cause annotation, if any. analysis_notes.csv explains why an
+/// *unsolved* instance is a solver defect or genuine hardness, so a row that now
+/// solves gets a loud stale warning, not a verdict its own data contradicts.
 void merge_analysis_note(const NotesMap& analysis_notes, const std::string& name,
                          bool result_feasible, bool verified, std::string& note) {
     auto an = analysis_notes.find(name);
-    // The three-way split lives in note_policy.h so it can be tested without a
-    // solve. It used to be a nested conditional here, guarded on !result.feasible
-    // with an inner `if (verified)` -- and `verified` is false throughout that
-    // branch, so the "now solved" warning was unreachable and a curated note on a
-    // row that had started solving was dropped in silence.
+    // The three-way split is note_policy.h's, testable without a solve.
     using cbls::minlplib::NoteAction;
     switch (cbls::minlplib::note_action(an != analysis_notes.end(), result_feasible, verified)) {
         case NoteAction::kStale:
@@ -995,9 +894,7 @@ void merge_analysis_note(const NotesMap& analysis_notes, const std::string& name
             note += " | " + an->second;
             break;
         case NoteAction::kNone:
-            // No note, or feasible-but-VERIFY-FAILED: that failure is a
-            // solver-bookkeeping mismatch, not the infeasibility the note
-            // describes, so it is neither retired nor pasted on.
+            // No note, or feasible but VERIFY-FAILED (see note_policy.h).
             break;
     }
 }
@@ -1022,11 +919,10 @@ void print_console_row(const Bounds& b, bool verified, double obj, double gap_bk
     std::printf("%8.2fs  %s\n", wall, note.c_str());
 }
 
-/// Everything that has to go right before a solve: the .nl present, read, built
-/// and supported. Returns false having written the instance's row and bumped the
-/// tally when it never reaches one -- each of those outcomes is a different
-/// bucket in the tally and a differently shaped row, which is why they are
-/// answered here rather than folded into the scoring below.
+/// Everything before a solve: the .nl present, read, built and supported.
+/// Returns false having written the row and bumped the tally when one fails;
+/// each outcome is its own tally bucket and row shape, hence answered here
+/// rather than in the scoring below.
 bool prepare_instance(std::ostream& csv, const Args& args, const std::string& name,
                       const BoundsMap& bounds, cbls::NlProblem& prob, cbls::NlToModelResult& built,
                       Bounds& b, Tally& t) {
@@ -1192,10 +1088,9 @@ void run_instance(std::ostream& csv, std::ofstream& trace, std::ofstream& counte
     cbls::SearchResult result;
     SearchCost cost;
     try {
-        // Test seam: the solve-error path needs a solve that throws, and since
-        // #202 the engine no longer throws on the empty model the test used to
-        // provoke it with. Only `tests/python/test_minlplib_run_benchmark.py`
-        // sets this.
+        // Test seam for the solve-error path, which needs a throwing solve (the
+        // engine no longer throws on an empty model, #202). Only
+        // `tests/python/test_minlplib_run_benchmark.py` sets it.
         if (const char* boom = std::getenv("CBLS_MINLPLIB_THROW_IN_SOLVE");
             boom != nullptr && name == boom) {
             throw std::runtime_error("CBLS_MINLPLIB_THROW_IN_SOLVE names this instance");
@@ -1379,22 +1274,15 @@ int run_benchmark(int argc, char** argv) {
         std::fprintf(stderr, "Failed to open %s for writing\n", args.out_csv.c_str());
         return 2;
     }
-    // `search_config` stays last and is written on EVERY row, the early-exit
-    // ones included: a short row would make a reader's column count depend on
-    // how the instance failed, and a row with no configuration on it is a row
-    // nobody can reproduce (#136). `lns_repairs` and `lns_repairs_accepted` go
-    // in front of it for the same reason the other counters do -- they describe
-    // the run, not the arm -- and they are published because an ablation that
-    // asks whether LNS is worth its budget has to be able to read both whether
-    // LNS did anything at all (#143) and whether any of it was kept (#150).
-    //
-    // `first_feasible_objective` and `time_to_first_feasible` join them on the
-    // same footing (#149): they describe where the run ARRIVED in the feasible
-    // region, as against the final objective the descent afterwards reached, and
-    // publishing them is what makes the first-feasible/final correlation
-    // computable from an ordinary campaign instead of a bespoke instrumented
-    // run. Recording them changes no trajectory -- see
-    // `SearchResult::first_feasible_objective`.
+    // `search_config` stays last and is on EVERY row, early exits included: a
+    // short row makes the column count depend on how the instance failed, and
+    // a row with no configuration cannot be reproduced (#136). The run's
+    // counters go before it: `lns_repairs`/`lns_repairs_accepted` say whether
+    // LNS did anything (#143) and whether any was kept (#150);
+    // `first_feasible_objective`/`time_to_first_feasible` (#149) say where the
+    // run ARRIVED in the feasible region, so the first-feasible/final
+    // correlation is computable from an ordinary campaign. Recording them
+    // changes no trajectory (see `SearchResult::first_feasible_objective`).
     csv << "instance,objective,primal_bks,dual_bound,gap_to_bks%,gap_to_dual%,"
            "wall_seconds,feasible,note,commit_sha,max_violation,n_int_vars,lns_repairs,"
            "lns_repairs_accepted,first_feasible_objective,time_to_first_feasible,"
@@ -1434,9 +1322,8 @@ int run_benchmark(int argc, char** argv) {
 }  // namespace
 
 int main(int argc, char** argv) {
-    // A benchmark run is long, and an exception escaping main is std::terminate
-    // -- an abort with no message, indistinguishable from a crash. Say what
-    // failed and exit non-zero instead (bugprone-exception-escape).
+    // An exception escaping main is std::terminate, an abort with no message
+    // that looks like a crash: report it and exit 1 (bugprone-exception-escape).
     try {
         return run_benchmark(argc, argv);
     } catch (const std::exception& e) {

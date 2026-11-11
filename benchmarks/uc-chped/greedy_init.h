@@ -10,12 +10,9 @@
 
 namespace cbls::uc_chped {
 
-// The greedy warm start is five decisions taken in sequence, each of which can
-// be read, changed and reasoned about on its own: which units are cheap, which
-// commitments the initial state already forces, which further units to commit
-// per period, how to spread demand over what is committed, and how to write the
-// result back into the model. They are separate functions for that reason, not
-// to shorten a body.
+// The greedy warm start is five sequential decisions, one function each so
+// each can be read and changed alone: cheap units, forced commitments,
+// per-period commitment, dispatch, write-back.
 namespace greedy_detail {
 
 /// Unit indices cheapest-first by average cost per MW at Pmax. F(Pmax)/Pmax

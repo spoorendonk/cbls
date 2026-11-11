@@ -1,21 +1,15 @@
-// UC-CHPED benchmark runner.
+// UC-CHPED benchmark runner: loads each `ucp*.jsonl` from
+// `benchmarks/instances/uc-chped/`, builds the unit-commitment-with-valve-point
+// model, runs a fixed-time ViolationLS pass per (instance, horizon), and writes
+// a per-row table to `benchmarks/instances/uc-chped/comparison.csv`.
 //
-// Loads each `ucp*.jsonl` from `benchmarks/instances/uc-chped/`, builds the
-// unit-commitment-with-valve-point model, runs a fixed-time ViolationLS pass per
-// (instance, horizon), and writes a per-row table to
-// `benchmarks/instances/uc-chped/comparison.csv`.
+// `--feas-tol` (default `cbls::kDefaultFeasibilityTolerance`) is stated and
+// recorded on every row, not inherited: a published result must not change
+// when an engine default moves (#103).
 //
-// The feasibility tolerance is stated explicitly (`--feas-tol`, default
-// `cbls::kDefaultFeasibilityTolerance`) and recorded on every row, rather than
-// inherited from the engine default. That inheritance is what made the
-// previously published rows uninterpretable when the default moved from 1e-9 to
-// 1e-6, and they had to be deleted (issue #103): a published result must not
-// silently change when an engine default moves.
-//
-// Two different tolerances appear in the output and they are not the same
-// number: `feasible` is the engine's verdict at `--feas-tol`; `verified` is an
-// independent re-check by verify_uc_chped(), whose UC-semantic checks use an
-// absolute 1e-4 and whose leading cbls::verify_model() pass uses 1e-6.
+// Two tolerances, not one number: `feasible` is the engine's verdict at
+// `--feas-tol`; `verified` is verify_uc_chped()'s re-check, its UC-semantic
+// checks at an absolute 1e-4 and its leading cbls::verify_model() pass at 1e-6.
 
 #include "data.h"
 #include "greedy_init.h"
@@ -52,20 +46,16 @@
 
 namespace {
 
-// The search-flag families this runner's models can use (#198). Its models are
-// scalar -- no List or Set variable, so the engine resolves the structural
-// batch to probability 0 -- and a structural flag would be recorded and read by
-// nothing. validate_search_flags() refuses one.
+// The search-flag families this runner's scalar models can use (#198): with no
+// List or Set variable a structural flag would be recorded and read by nothing,
+// so validate_search_flags() refuses one.
 constexpr unsigned kSearchFlagFamilies = cbls::bench::kScalarRunnerSearchFlags;
 
 constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
 
-/// The tolerance `verify_uc_chped()` applies to its UC-semantic checks,
-/// distinct from the engine's `--feas-tol`. Passed explicitly at the call site
-/// so this constant and the verifier cannot drift apart. Not the whole story:
-/// that function also runs `cbls::verify_model()` at its own 1e-6, and checks
-/// the objective recomputation on a relative band rather than this absolute
-/// one, so `verified` is a verdict over all three.
+/// verify_uc_chped()'s UC-semantic tolerance, distinct from `--feas-tol`,
+/// passed at the call site so the two cannot drift. `verified` also covers its
+/// cbls::verify_model() pass at 1e-6 and a relative-band objective recheck.
 constexpr double kVerifierTolerance = 1e-4;
 
 struct InstanceSpec {
@@ -73,13 +63,12 @@ struct InstanceSpec {
     std::vector<int> periods;
 };
 
-/// This runner's published search protocol: the engine's defaults with compound
-/// moves (Novelty Jump) OFF. The engine turned them on by default on 2026-10-07,
-/// but a single-seed 10s smoke at b8f52f4 (at load above 1.5: an indication, not
-/// a result) found them worse on 16 of the 19 (instance, horizon) rows that
-/// differed (typically +0.2-1% objective, up to +2.4% on ucp13 3p), against
-/// better on MINLPLib. `--compound-moves` is then an ablation arm,
-/// refused onto the published table like any other.
+/// The published search protocol: engine defaults with compound moves (Novelty
+/// Jump, engine default since 2026-10-07) OFF. A single-seed 10s smoke at
+/// b8f52f4 (load above 1.5: an indication, not a result) found them worse on 16
+/// of the 19 (instance, horizon) rows that differed (typically +0.2-1%
+/// objective, up to +2.4% on ucp13 3p), against better on MINLPLib.
+/// `--compound-moves` is an ablation arm, refused onto the published table.
 cbls::bench::SearchFlags published_search_flags() {
     cbls::bench::SearchFlags f;
     f.compound_moves = false;
@@ -89,58 +78,42 @@ cbls::bench::SearchFlags published_search_flags() {
 struct Args {
     std::string inst_dir = "benchmarks/instances/uc-chped";
     bool do_verify = false;
-    // Unset means "use the per-horizon budget map". A uniform override exists so
-    // the roster can be smoke-tested in seconds; whichever budget applied is
-    // written to the row's time_limit_s, so a short run is self-describing
-    // rather than indistinguishable from a full one.
+    // Unset: the per-horizon budget map. The uniform override is for smoke
+    // tests; the budget applied is written to each row's time_limit_s, so a
+    // short run is self-describing.
     bool time_limit_set = false;
     double time_limit = 0.0;
-    // Seed for both the FJ warm-start RNG and solve(). One knob, so the two
-    // cannot drift apart.
+    // Seeds both the FJ warm-start RNG and solve(), so the two cannot drift.
     uint64_t seed = 42;
-    // Absolute constraint-violation tolerance for "feasible". Stated explicitly
-    // rather than inherited, because it is a published property of these
-    // results. Same value as the engine default, which matches SCIP's
+    // Absolute violation tolerance for "feasible", stated because it is a
+    // published property; the default is the engine's, which matches SCIP's
     // numerics/feastol.
     double feas_tol = cbls::kDefaultFeasibilityTolerance;
     std::vector<std::string> instances;  // optional roster filter (base names)
-    // Optional horizon filter: only these periods of the selected files. A tuning
-    // study (#262) scores one (instance, horizon) per run, and a file's horizons
-    // otherwise all run in one call. Held as typed, so a refusal names the value
-    // the caller gave.
+    // Optional horizon filter on the selected files: a tuning study (#262)
+    // scores one (instance, horizon) per run. Held as typed, so a refusal names
+    // the value given.
     std::vector<int64_t> periods;
-    // Portfolio workers. 1 is the single-threaded `solve()` this table has always
-    // measured; >1 runs `ParallelSearch` on that many threads, a different run at
-    // any thread count, so it is not the published protocol.
+    // Portfolio workers: 1 is the single-threaded `solve()` the table measures;
+    // >1 runs `ParallelSearch`, a different run, so not the published protocol.
     int threads = 1;
     bool commit_set = false;
     std::string commit_sha = "unknown";
     std::string out_csv;    // default: <inst_dir>/comparison.csv
     std::string trace_csv;  // optional: anytime profile (incumbent vs wall time, #147)
-    // The ablation arm (#136). Its canonical spelling is recorded on every
-    // measured row, so a results file states the configuration it was produced
-    // under instead of leaving the reader to remember which binary produced it.
+    // The ablation arm (#136); its canonical spelling is recorded on every
+    // measured row, so a results file states its own configuration.
     cbls::bench::SearchFlags search = published_search_flags();
     // search_config_string(search), plus threads=N off 1; filled in by parse_args
     std::string search_config;
 };
 
-// The parse rule itself lives in include/cbls/arg_parse.h and the runners'
-// report-and-exit policy in benchmarks/common/runner_args.h; what follows is
-// only why this runner cares. Numeric flags go through std::stod / std::stoll rather than std::atof
-// / std::atoll: the ato* family has no error path, so a typo'd value silently became 0 and a run
-// that never searched would report like a solver result
-// (bugprone-unchecked-string-to-number-conversion). Trailing characters are
-// rejected too, so `--time-limit 60s` no longer quietly means 60.
-//
-// A bad double yields NaN rather than exiting: both double flags have a
-// `> 0.0` guard below that NaN fails, so the parse layer adds a diagnostic
-// without moving where the failure is reported. Integer flags have no such
-// guard and so report and exit 2 directly.
-//
-// The rule and this policy are shared with the other runners rather than copied
-// a third time -- a copy is where a fix to one silently diverges from the
-// rest, which is what #130 factored out.
+// Parse rule: include/cbls/arg_parse.h; report-and-exit policy:
+// benchmarks/common/runner_args.h, shared rather than copied (#130). Numbers go
+// through std::stod/std::stoll with trailing characters rejected, since std::ato*
+// has no error path and a typo would run as 0
+// (bugprone-unchecked-string-to-number-conversion). A bad double yields NaN for
+// the `> 0.0` guards below to fail; a bad integer reports and exits 2 directly.
 using cbls::bench::parse_double;
 using cbls::bench::parse_int64;
 
@@ -151,10 +124,9 @@ bool is_positive_finite(double v) {
     return v > 0.0 && std::isfinite(v);
 }
 
-/// The numeric flags' guards. Kept apart from the flag table below because they
-/// are about the *values*, not about which flags were typed: the parse layer
-/// reports a bad token and hands the guard a NaN, and the guard is what decides
-/// the exit code (tests/python/test_run_benchmark.py pins both halves).
+/// The numeric flags' value guards, apart from the flag table: the parse layer
+/// reports a bad token and hands over NaN, the guard decides the exit code
+/// (tests/python/test_run_benchmark.py pins both halves).
 void check_numeric_flags(Args& a) {
     std::string flag_error;
     if (!cbls::bench::validate_search_flags(a.search, kSearchFlagFamilies, a.time_limit_set,
@@ -163,23 +135,18 @@ void check_numeric_flags(Args& a) {
         std::exit(2);
     }
     a.search_config = cbls::bench::search_config_string(a.search, kSearchFlagFamilies);
-    // The portfolio's size is part of the configuration the row describes, so a
-    // campaign's scorer can name it and refuse a mix (#363). Written only off the
-    // single-threaded default, so a `--threads 1` row's cell stays as published.
+    // The portfolio size is part of the row's configuration, so a campaign
+    // scorer can refuse a mix (#363); written only off 1, so a `--threads 1`
+    // row's cell stays as published.
     if (a.threads != 1) {
         a.search_config += (a.search_config.empty() ? "" : ";");
         a.search_config += "threads=" + std::to_string(a.threads);
     }
-    // A NaN from parse_double fails this guard, as does a literal 0 or a
-    // negative: solve() with a non-positive budget returns having searched
-    // nothing, which would publish a full-looking table of empty results.
-    // std::stod also accepts "inf", which would never terminate, so the guard
-    // tests isfinite as well as positivity.
-    // The wall-clock-free arm (#136) is the one way past the guard below:
-    // solve() disables its clock at `time_limit <= 0`, and
-    // validate_search_flags has already insisted on a positive
-    // --max-iterations, so such a run still has a budget rather than returning
-    // instantly with a table of empty results.
+    // NaN, 0 or negative fails: solve() would return having searched nothing,
+    // a full-looking table of empty results; isfinite too, as "inf" would never
+    // terminate. The wall-clock-free arm (#136) is the one way past: solve()
+    // disables its clock at `time_limit <= 0`, and validate_search_flags has
+    // required a positive --max-iterations, so the run still has a budget.
     if (a.search.no_time_limit) {
         a.time_limit_set = true;
         a.time_limit = 0.0;
@@ -187,31 +154,22 @@ void check_numeric_flags(Args& a) {
         std::fprintf(stderr, "--time-limit must be > 0 (got %g)\n", a.time_limit);
         std::exit(2);
     }
-    // isfinite as well as > 0: std::stod accepts "inf", and an infinite
-    // tolerance calls every assignment feasible, publishing a full-looking table
-    // of rows the verifier would reject.
+    // isfinite too: std::stod accepts "inf", and an infinite tolerance calls
+    // every assignment feasible, publishing rows the verifier would reject.
     if (!is_positive_finite(a.feas_tol)) {
         std::fprintf(stderr, "--feas-tol must be > 0 (got %g)\n", a.feas_tol);
         std::exit(2);
     }
 }
 
-/// The reason this run is not the full published measurement, or nullptr when
-/// it is. Held apart from the files it guards because it is the same answer for
-/// BOTH published artifacts -- the results table and the anytime trace (#147).
-///
-/// A run that is not the full published measurement must never overwrite a
-/// published artifact. Both a partial roster and a shortened budget qualify --
-/// `--time-limit 2` is the obvious smoke test, and it would otherwise replace
-/// the table with two-second results (the #88 hazard).
-///
-/// An ablation arm is not the published protocol either, and it is the more
-/// dangerous case: its rows would look exactly like the published ones while
-/// having been produced by a different search (#136). Tested before
-/// --time-limit because `--no-time-limit` forces a uniform budget of zero, and
-/// reporting such a run as "--time-limit" would name a flag the caller never
-/// typed. (It is reported as --max-iterations, which --no-time-limit requires
-/// and which sorts first among the arm's non-default flags.)
+/// The reason this run is not the full published measurement, or nullptr. One
+/// answer for both published artifacts, results table and trace (#147), which
+/// such a run must never overwrite: a partial roster, threads off 1, a
+/// shortened budget (`--time-limit 2` would publish 2s results, #88), or an
+/// ablation arm, whose rows look published but come from another search (#136).
+/// The arm is tested before --time-limit because `--no-time-limit` forces a
+/// zero budget; it reports --max-iterations (which --no-time-limit requires and
+/// which sorts first among the arm's flags), not a flag never typed.
 const char* non_published_protocol(const Args& a) {
     if (!a.instances.empty()) {
         return "--instance";
@@ -237,12 +195,10 @@ const char* non_published_protocol(const Args& a) {
 #define CBLS_RUNNER_BUILD_TYPE ""  // built outside CMakeLists.txt: unknown, so refused
 #endif
 
-/// Why this binary must not write a published artifact, or nullptr when it may.
-/// Read from the binary's own compile-time state rather than from a build
-/// directory, because the runner is invoked directly and `preflight.py` (which
-/// checks the build directory) is a step a caller can skip (#146). A Debug,
-/// sanitizer or frame-pointer binary measures a different engine at a
-/// wall-clock budget.
+/// Why this binary must not write a published artifact, or nullptr. Read from
+/// compile-time state because the runner is invoked directly and `preflight.py`'s
+/// build-directory check can be skipped (#146): a Debug, sanitizer or
+/// frame-pointer binary measures a different engine at a wall-clock budget.
 const char* build_refusal() {
     if (std::string_view(CBLS_RUNNER_BUILD_TYPE) != "Release") {
         return "not a Release build";
@@ -277,11 +233,10 @@ void resolve_out_csv(Args& a) {
     if (!target.has_value()) {
         return;
     }
-    // Without --verify every `verified` cell is empty, and an independent
-    // re-check is one of the published run's own acceptance criteria (#146).
-    // The trace has no such column, but it is only ever written by that same
-    // published run, so a trace-only publish is held to it too: refusing fails
-    // closed, and the message says why for the artifact actually named.
+    // An independent re-check is an acceptance criterion of the published run
+    // (#146); without --verify every `verified` cell is empty. A trace-only
+    // publish is held to it too, as only that run writes the trace: refusing
+    // fails closed, and the message names the artifact actually given.
     if (!a.do_verify) {
         std::fprintf(
             stderr,
@@ -317,9 +272,8 @@ Args parse_args(int argc, char** argv) {
         } else if (c.value_flag("--seed", v)) {
             const int64_t seed = parse_int64("--seed", v);
             // The seed is published on every measured row so a run can be
-            // repeated. A negative one wraps to a uint64_t that --seed itself
-            // then rejects as out of range, so the recorded value would not be
-            // usable as an input.
+            // repeated; a negative one wraps to a uint64_t that --seed rejects,
+            // so the recorded value would not be usable as an input.
             if (seed < 0) {
                 std::fprintf(stderr, "--seed must be >= 0 (got %lld)\n",
                              static_cast<long long>(seed));
@@ -355,10 +309,8 @@ Args parse_args(int argc, char** argv) {
                 cbls::bench::search_flags_usage(kSearchFlagFamilies).c_str());
             std::exit(0);
         } else if (!s.empty() && s[0] == '-') {
-            // A typo'd flag must not silently become the instance directory:
-            // this tool's output is published, so a misparsed argument would
-            // produce a plausible-looking but wrong results table. The test is
-            // on a single leading dash, not two, so `-x` is caught as well.
+            // A typo'd flag must not become the instance directory and yield a
+            // plausible but wrong published table; one leading dash, so `-x` too.
             std::fprintf(stderr, "Unknown or incomplete option: %s (see --help)\n", s.c_str());
             std::exit(2);
         } else if (inst_dir_set) {
@@ -377,20 +329,18 @@ Args parse_args(int argc, char** argv) {
     return a;
 }
 
-/// The scratch file must not outlive a failed run: it sits in a tracked
-/// directory, is not ignored, and a later `git add -A` would commit a truncated
-/// shadow of the published table beside it. A kill -9 can still leave one, which
-/// is the case the rename is for; every path this program controls cleans up.
+/// The scratch file must not outlive a failed run: it sits in a tracked,
+/// unignored directory where `git add -A` would commit a truncated shadow of the
+/// table. Every path this program controls cleans up; a kill -9 can still leave
+/// one, which is why the table is written to it and renamed.
 void remove_temp(const std::string& path) {
     std::error_code ec;
     std::filesystem::remove(path, ec);
 }
 
-/// Removes the scratch file unless the run reached its rename. RAII rather than
-/// a call on each error path, because the solve loop can throw -- Model::var
-/// raises out_of_range, make_subinstance raises invalid_argument -- and an
-/// exception unwinds past every such call, leaving the scratch file behind in a
-/// tracked directory that does not ignore it.
+/// Removes the scratch file unless the run reached its rename. RAII, not a call
+/// per error path, because the solve loop can throw (Model::var out_of_range,
+/// make_subinstance invalid_argument) past every such call.
 class TempFileGuard {
 public:
     explicit TempFileGuard(std::string path) : path_(std::move(path)) {}
@@ -410,10 +360,8 @@ private:
     bool armed_ = true;
 };
 
-/// One CSV line. The first nine fields are the schema the pre-#103 table
-/// published, in their original order, so a reader of the old file reads the
-/// same columns here; everything the old file could not record is appended
-/// after them.
+/// One CSV line. The first nine fields are the pre-#103 schema in its original
+/// order, so a reader of the old file reads the same columns; the rest append.
 struct Row {
     std::string instance;
     int periods = 0;
@@ -432,9 +380,8 @@ struct Row {
     double max_violation = kNaN;
     double feas_tol = kNaN;
     std::string commit_sha;
-    // Empty on the cited Pedroso rows, which are not measurements of this
-    // engine and so carry no configuration, exactly as they carry no seed or
-    // tolerance. Every row this runner MEASURES carries it (#136).
+    // Empty on the cited Pedroso rows, which are not measurements of this engine
+    // (as they carry no seed or tolerance); every MEASURED row carries it (#136).
     std::string search_config;
 };
 
@@ -460,10 +407,8 @@ std::string fixed2(double v) {
     return {buf.data()};
 }
 
-// The CSV cell rule is shared with the anytime trace (benchmarks/uc-chped/
-// trace_recorder.h) rather than written twice: this runner now emits two CSV
-// files, and a second copy of the substitution list is where one of them
-// silently stops escaping something the other does.
+// The CSV cell rule, shared with the anytime trace (trace_recorder.h) so the
+// two output files cannot diverge in what they substitute.
 using cbls::uc_chped::csv_text;
 
 const char* const kCsvHeader =
@@ -566,15 +511,12 @@ struct Tally {
     int lost_workers = 0;
 };
 
-/// Restate an instance's published Table 2 bounds as cited reference rows.
-/// Regenerated from `known_bounds` rather than copied forward from the previous
-/// file, so the ten cited rows survive every regeneration without the writer
-/// having to parse its own output. The bounds live in the instance jsonl, so
-/// run_benchmark() refuses to write anything unless every rostered instance
-/// loaded -- otherwise a run from the wrong directory would replace the
-/// published table with one missing these rows. Instances with no published bounds
-/// (ucp100/ucp200) contribute none -- inventing a citation for them would be
-/// worse than omitting it.
+/// Restate an instance's published Table 2 bounds as cited reference rows,
+/// regenerated from `known_bounds` each run so the ten cited rows survive
+/// without the writer parsing its own output. run_benchmark() refuses to write
+/// unless every rostered instance loaded, else a wrong-directory run would drop
+/// them. Instances with no published bounds (ucp100/ucp200) get none: an
+/// invented citation would be worse than none.
 void write_reference_rows(std::ostream& csv, const cbls::uc_chped::UCInstance& base,
                           const std::vector<int>& periods) {
     for (int horizon : periods) {
@@ -598,9 +540,8 @@ void write_reference_rows(std::ostream& csv, const cbls::uc_chped::UCInstance& b
     }
 }
 
-/// Build, warm-start and search one model. Separated from run_one because it is
-/// the measured part -- what the published row is a measurement *of* -- and
-/// nothing about it depends on how the row is scored or printed.
+/// Build, warm-start and search one model: the measured part of the row,
+/// independent of how it is scored or printed.
 cbls::SearchResult solve_instance(const Args& args, const cbls::uc_chped::UCInstance& inst,
                                   cbls::uc_chped::UCModel& ucm, double tlim,
                                   cbls::SolveCallback* callback) {
@@ -609,12 +550,9 @@ cbls::SearchResult solve_instance(const Args& args, const cbls::uc_chped::UCInst
     {
         cbls::RNG init_rng(args.seed);
         cbls::ViolationManager init_vm(ucm.model);
-        // The polish pass is bounded by its 200 iterations; the 1s is only a
-        // safety cap on a pathological model. Under --no-time-limit it is
-        // dropped (0 = no wall clock), because a clock anywhere in the run is
-        // exactly what makes an iteration-budgeted arm stop being reproducible
-        // -- a slow machine would truncate the warm start and start the search
-        // from a different point (#136).
+        // The 200 iterations bound the polish; 1s is only a safety cap. Dropped
+        // (0 = no wall clock) under --no-time-limit: a clock anywhere lets a slow
+        // machine truncate the warm start of an iteration-budgeted arm (#136).
         const double init_limit = args.search.no_time_limit ? 0.0 : 1.0;
         cbls::fj_nl_initialize(ucm.model, init_vm, 200, &init_rng, init_limit);
     }
@@ -673,9 +611,8 @@ struct Scored {
     bool have_objective = false;
 };
 
-/// Scoring policy: which of the result's numbers are usable at all. This is
-/// where the row's numeric columns are decided, and it is deliberately a
-/// separate step from the verifier's veto below.
+/// Scoring policy: which of the result's numbers are usable, deciding the row's
+/// numeric columns; deliberately separate from the verifier's veto below.
 Scored score_result(const Args& args, const cbls::uc_chped::UCInstance& inst,
                     const std::string& instance_name, double tlim,
                     const cbls::SearchResult& result) {
@@ -701,10 +638,9 @@ Scored score_result(const Args& args, const cbls::uc_chped::UCInstance& inst,
         row.ub = it->second.second;
     }
 
-    // `feasible` does not imply a finite objective: SearchResult documents
-    // `feasible == true` with `objective == +inf` as a feasibility witness whose
-    // objective overflowed (#100), and tells callers to test isfinite before
-    // using the value. An "inf" in a numeric column would read as a solve result.
+    // `feasible` does not imply a finite objective: +inf is a feasibility
+    // witness whose objective overflowed (#100, SearchResult), and "inf" in a
+    // numeric column would read as a solve result.
     s.have_objective = result.feasible && std::isfinite(result.objective);
     if (s.have_bounds && s.have_objective && row.lb != 0.0) {
         s.gap = 100.0 * (result.objective - row.lb) / row.lb;
@@ -754,9 +690,8 @@ void run_one(std::ostream& csv, std::ofstream& trace, const Args& args,
     std::printf("%-20s %6d %6d ", inst.name.c_str(), inst.n_units, horizon);
     std::fflush(stdout);
 
-    // The trace rows carry the horizon as well as the instance name: this
-    // runner solves one row per (instance, horizon) pair, so a trace keyed on
-    // the instance alone could not be read back to the row it describes (#147).
+    // Trace rows carry the horizon too: one row per (instance, horizon), so the
+    // instance alone cannot key a trace row to its solve (#147).
     cbls::uc_chped::TraceRecorder recorder(trace, instance_name, horizon, tlim, args.commit_sha);
     const cbls::SearchResult result =
         solve_instance(args, inst, ucm, tlim, trace.is_open() ? &recorder : nullptr);
@@ -766,14 +701,8 @@ void run_one(std::ostream& csv, std::ofstream& trace, const Args& args,
                    stderr);
         ++tally.lost_workers;
     }
-    // Close the trace for this solve, so every (instance, horizon) the runner
-    // started appears in it exactly once at its final time. Without this the
-    // record stops at the last periodic sample -- up to a second and a half
-    // short of the budget, and on a solve that improved inside that window it
-    // ends on a rising incumbent, which reads as "still improving when the
-    // clock stopped" when a flat tail followed. A horizon that never found a
-    // valued incumbent would write no rows at all, and an absent horizon is
-    // indistinguishable from a filtered roster or a regressed callback.
+    // The closing row: every started (instance, horizon) appears once at its
+    // final time (TraceRecorder::record_final, #147).
     if (trace.is_open()) {
         recorder.record_final(result);
     }
@@ -812,10 +741,9 @@ void run_one(std::ostream& csv, std::ofstream& trace, const Args& args,
     csv.flush();
 }
 
-/// Apply `--instance`. Returns false when ANY requested name is absent from the
-/// roster, not merely when none matched: an unmatched name is a typo, and a run
-/// that dropped it silently would publish a table short a row with nothing to
-/// say so. Roster order is preserved and a repeated name contributes one entry.
+/// Apply `--instance`. False when ANY requested name is not in the roster: an
+/// unmatched name is a typo, and dropping it would silently publish a table
+/// short a row. Keeps roster order; a repeated name contributes one entry.
 bool filter_specs(const Args& args, std::vector<InstanceSpec>& specs) {
     if (args.instances.empty()) {
         return true;
@@ -905,14 +833,10 @@ void print_tally(const Args& args, const Tally& tally) {
     }
 }
 
-/// The per-horizon wall-clock budget, unless `--time-limit` overrides it
-/// uniformly.
-///
-/// This map is the thing issue #147's traces exist to defend: every published
-/// gap percentage is a measurement AT one of these numbers, so a horizon whose
-/// incumbent was still improving when its budget expired publishes a budget
-/// artifact rather than an engine result. Collect the evidence with `--trace`
-/// before changing a number here.
+/// The per-horizon wall-clock budget, unless `--time-limit` overrides it.
+/// Every published gap is measured AT one of these, so a horizon still
+/// improving at expiry publishes a budget artifact, not an engine result:
+/// collect `--trace` evidence (#147) before changing a number.
 double horizon_budget(const Args& args, int horizon) {
     if (args.time_limit_set) {
         return args.time_limit;
@@ -925,16 +849,11 @@ double horizon_budget(const Args& args, int horizon) {
     return it != kBudgets.end() ? it->second : kDefaultBudget;
 }
 
-/// Reads every rostered instance, reporting each failure by name. Returns false
-/// if ANY of them failed.
-///
-/// The whole roster is loaded BEFORE any output file is opened. The cited
-/// Pedroso rows are regenerated from each instance's known_bounds, so a run
-/// started from the wrong directory would otherwise replace the published table
-/// with one that has no cited rows at all -- the failure that emptied the
-/// miplib-fj table. Every uc-chped instance is committed in this repo and
-/// nothing downloads them, so a missing .jsonl is a setup error, not a result:
-/// report it and leave the existing files untouched.
+/// Reads every rostered instance, reporting each failure by name; false if ANY
+/// failed. Runs BEFORE any output file opens: the cited rows come from
+/// known_bounds, so a wrong-directory run would otherwise publish a table with
+/// none. The instances are committed and nothing downloads them, so a missing
+/// .jsonl is a setup error: report it and leave the existing files untouched.
 bool load_roster(const Args& args, const std::vector<InstanceSpec>& specs,
                  std::vector<cbls::uc_chped::UCInstance>& loaded) {
     loaded.assign(specs.size(), cbls::uc_chped::UCInstance{});
@@ -954,16 +873,12 @@ bool load_roster(const Args& args, const std::vector<InstanceSpec>& specs,
     return all_loaded;
 }
 
-/// Opens the anytime trace (#147) and writes its header. A run without
-/// `--trace` leaves the stream closed, which is what run_one reads as "pass no
-/// callback".
-///
-/// Called only once the roster has loaded AND the table's temp file is open:
-/// `--trace` truncates on open, so a run that cannot proceed must leave the
-/// trace it was pointed at exactly as it found it. Written in place rather than through the table's
-/// rename dance on purpose -- the value of a trace from an interrupted run is
-/// the rows it already has, so each is flushed as it is written and a killed
-/// job keeps its partial profile.
+/// Opens the anytime trace (#147) and writes its header; without `--trace` the
+/// stream stays closed, which run_one reads as "pass no callback". Called only
+/// after the roster loads and the table's temp file opens, since `--trace`
+/// truncates: a run that cannot proceed leaves the trace as it found it.
+/// Written in place, not renamed: an interrupted run's value is the rows it
+/// already flushed.
 bool open_trace(const Args& args, std::ofstream& trace) {
     if (args.trace_csv.empty()) {
         return true;
@@ -978,10 +893,8 @@ bool open_trace(const Args& args, std::ofstream& trace) {
     return true;
 }
 
-/// The measurement itself: every (instance, horizon) pair in roster order.
-/// Separated from run_benchmark because that function's remaining job is files
-/// -- which ones may be written, opening them, and publishing the table -- and
-/// this one's is the solves.
+/// The measurement: every (instance, horizon) pair in roster order. The files
+/// (which may be written, opening, publishing) stay with run_benchmark.
 void solve_roster(std::ostream& csv, std::ofstream& trace, const Args& args,
                   const std::vector<InstanceSpec>& specs,
                   const std::vector<cbls::uc_chped::UCInstance>& loaded, Tally& tally) {
@@ -1044,10 +957,8 @@ int run_benchmark(int argc, char** argv) {
         return 2;
     }
 
-    // Opened last of the two output files: the table goes through a temp file
-    // and can fail its open harmlessly, while `--trace` truncates in place. A
-    // run that dies on the table's open must not already have emptied the trace
-    // it was pointed at.
+    // Opened after the table's temp file: `--trace` truncates in place, so a
+    // run that fails the table's open must not have emptied it.
     std::ofstream trace;
     if (!open_trace(args, trace)) {
         return 2;
@@ -1062,8 +973,7 @@ int run_benchmark(int argc, char** argv) {
 
     Tally tally;
 
-    // Cited rows first, so the published bounds head the table as they did
-    // before the measured rows.
+    // Cited rows first, so the published bounds head the table.
     for (size_t i = 0; i < specs.size(); ++i) {
         write_reference_rows(csv, loaded[i], specs[i].periods);
     }
@@ -1086,11 +996,9 @@ int run_benchmark(int argc, char** argv) {
 
     print_tally(args, tally);
 
-    // A stream error on the trace is reported but does not unpublish the table:
-    // the table is already renamed into place and is valid on its own. The
-    // nonzero exit is what tells the operator that the profile beside it is
-    // short rows -- a truncated trace read as a complete one would defend a
-    // budget on evidence that was never written.
+    // A trace stream error does not unpublish the table (already in place and
+    // valid alone) but exits nonzero: a truncated trace read as complete would
+    // defend a budget on evidence never written.
     if (!args.trace_csv.empty() && !trace) {
         std::fprintf(stderr, "Error writing %s; the trace is incomplete\n", args.trace_csv.c_str());
         return 2;
@@ -1107,14 +1015,13 @@ int run_benchmark(int argc, char** argv) {
 }  // namespace
 
 int main(int argc, char** argv) {
-    // Line-buffered even into a pipe: the documented command tees this output
-    // to comparison.log, the only record of WHICH checks failed on a VERIFY FAIL
-    // row, and a fully buffered stdout loses the last few KiB of it to a kill
-    // (#146). A few lines per row, so the cost is nothing.
+    // Line-buffered even into a pipe: the documented command tees this to
+    // comparison.log, the only record of WHICH checks failed on a VERIFY FAIL
+    // row, and a fully buffered stdout loses its tail to a kill (#146). A few
+    // lines per row, so no cost.
     (void)std::setvbuf(stdout, nullptr, _IOLBF, BUFSIZ);
-    // A benchmark run is long, and an exception escaping main is std::terminate
-    // -- an abort with no message, indistinguishable from a crash. Say what
-    // failed and exit non-zero instead (bugprone-exception-escape).
+    // An exception escaping main is std::terminate, an abort with no message
+    // that looks like a crash: report it and exit 1 (bugprone-exception-escape).
     try {
         return run_benchmark(argc, argv);
     } catch (const std::exception& e) {

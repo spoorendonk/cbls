@@ -1,49 +1,30 @@
 #pragma once
 
-// The anytime trace for the UC-CHPED runner (#147).
+// The anytime trace for the UC-CHPED runner (#147): what the incumbent was
+// doing when the wall-clock budget stopped, so a bad published gap can be told
+// apart as an engine limitation or a too-short budget.
 //
-// The published output of this benchmark is a gap percentage measured at a
-// wall-clock budget. Without a record of what the incumbent was doing when the
-// clock stopped, a bad number is uninterpretable in either direction: an engine
-// limitation and a budget that was simply too short look identical. This is the
-// record.
+// Shape follows benchmarks/minlplib/minlplib.cpp's TraceRecorder (`new_best`,
+// one row per report), plus four columns this question needs:
 //
-// Shape follows benchmarks/minlplib/minlplib.cpp's TraceRecorder -- same
-// `new_best` column, same one-row-per-report writer. Four columns are added,
-// each because this benchmark cannot answer its question without them:
+//   * `periods` -- one solve per (instance, horizon), so `instance` alone does
+//     not identify a row's solve.
+//   * `time_limit_s` -- "flattened before the budget?" needs the budget, and
+//     the budget map is what these traces exist to change.
+//   * `batches` -- `SolveProgress::iteration`, the ViolationLS batch count (NOT
+//     comparison.csv's GLS `iterations`); separates "converged" from "barely
+//     started" in a flat tail.
+//   * `commit_sha` -- engine commit on every row (#147), as comparison.csv: a
+//     search-trajectory change invalidates a trace.
 //
-//   * `periods`. This runner solves one row per (instance, horizon) pair, not
-//     one per instance, so an `instance` column alone cannot say which solve a
-//     trace row belongs to. Two rows for `ucp13` would otherwise be
-//     indistinguishable.
-//   * `time_limit_s`. The question is whether the incumbent flattened BEFORE
-//     THE BUDGET, so a trace that does not carry the budget is not self-
-//     contained -- and the budget map is exactly what these traces exist to
-//     change, so an archived trace would stop stating what it was measured
-//     under the moment the map is edited.
-//   * `batches`. `SolveProgress::iteration`, the ViolationLS batch count (NOT
-//     comparison.csv's `iterations`, which is the GLS count). It separates a
-//     flat tail that means "converged" from one that means "barely got going",
-//     which are opposite arguments about the budget.
-//   * `commit_sha`. Issue #147's Rules require the engine commit on every row,
-//     for the same reason comparison.csv carries it: a search-trajectory change
-//     silently invalidates a trace, and without the commit the next reader
-//     cannot tell drift from a bug.
+// Unlike minlplib's: takes an `ostream&` (testable into a stringstream),
+// flushes each row, runs identifiers through csv_text, prints ten significant
+// digits. Each is argued at its definition.
 //
-// It also differs from minlplib's in ways that are not the column set: it takes
-// an `ostream&` rather than an `ofstream&` (which is what lets a test drive it
-// into a stringstream), it flushes each row, it runs the identifier cells
-// through csv_text, and it formats to ten significant digits rather than the
-// stream default of six. Each is argued at its own definition below.
-//
-// The header lives here rather than inside uc_chped.cpp so a Catch2 test can
-// drive the recorder through a real solve() without a runner main()
-// (tests/test_uc_chped_trace.cpp). That test pins the recorder's CONTRACT, but
-// it cannot see the runner -- uc_chped.cpp is a main() with no header, so the
-// test builds its own solve() call and stays green if the runner's argument
-// reverts. What stops the RUNNER going back to the `nullptr` this issue exists
-// to fix is tests/python/test_cli.py's test_uc_chped_records_an_anytime_trace,
-// which runs the binary and requires rows rather than a bare header.
+// A header so tests/test_uc_chped_trace.cpp can pin the recorder's contract
+// through a real solve(). That test cannot see the runner's main(); the
+// runner passing a real callback, not `nullptr`, is pinned by
+// tests/python/test_cli.py::test_uc_chped_records_an_anytime_trace.
 
 #include <algorithm>
 #include <cbls/search.h>
@@ -56,16 +37,10 @@
 
 namespace cbls::uc_chped {
 
-/// The CSV cell rule this benchmark's two output files share. A comma inside a
-/// free-text cell would shift every column after it, so the writer substitutes
-/// rather than quoting: these cells are short diagnostics and identifiers, and a
-/// quoted field would need escaping rules the readers of these tables (grep,
-/// awk, a spreadsheet import) do not all implement.
-///
-/// Nothing here quotes, so every character that would end a field or a record
-/// has to be substituted rather than escaped -- including '"', which a reader
-/// that does honour quoting would otherwise treat as opening one, and '\r',
-/// which turns a row into two on a CRLF-aware reader.
+/// The CSV cell rule both output files share: substitute, never quote, since
+/// the readers (grep, awk, spreadsheet import) do not all implement quoting.
+/// So every field or record terminator is replaced: ',' would shift columns,
+/// '"' opens a quote on a quoting reader, '\r' splits a row on a CRLF-aware one.
 inline std::string csv_text(std::string s) {
     std::replace(s.begin(), s.end(), ',', ';');
     std::replace(s.begin(), s.end(), '"', '\'');
@@ -74,13 +49,10 @@ inline std::string csv_text(std::string s) {
     return s;
 }
 
-/// A trace number at the same precision comparison.csv publishes its objective
-/// with. The stream default is six significant digits, which rounds a
-/// six-figure UC objective to the nearest unit -- and "did the incumbent stop
-/// improving before the budget expired?" is exactly the question that reads the
-/// last few digits. Formatted locally rather than by setting precision on the
-/// stream, which would be sticky and would silently reformat whatever else the
-/// caller writes to it.
+/// A trace number at comparison.csv's ten significant digits: the stream
+/// default of six rounds a six-figure UC objective to the unit, and whether the
+/// incumbent flattened is read in the last digits. Local, not a sticky stream
+/// precision that would reformat the caller's other output.
 inline std::string trace_num(double v) {
     std::ostringstream os;
     os.precision(10);
@@ -88,19 +60,15 @@ inline std::string trace_num(double v) {
     return os.str();
 }
 
-/// The trace's column set. Pinned by tests/test_uc_chped_trace.cpp against what
-/// TraceRecorder actually writes, because a header that names one set of columns
-/// while the rows carry another is worse than no trace at all.
+/// The trace's column set, pinned by tests/test_uc_chped_trace.cpp against
+/// what TraceRecorder writes: a header that misnames the rows is worse than none.
 inline constexpr const char* kTraceHeader =
     "instance,periods,time_limit_s,time_seconds,batches,objective,new_best,commit_sha";
 
 /// Writes one row per progress report that has an incumbent, plus one closing
-/// row per solve, identifying the (instance, horizon) solve each belongs to.
-///
-/// Every solve the runner starts therefore appears in the trace, and the last
-/// row for a (instance, periods) pair is always the one at the run's final
-/// time -- see record_final for why the file is unreadable without both
-/// guarantees.
+/// row per solve (record_final), each keyed by its (instance, periods) solve.
+/// With record_final called, every solve appears and its last row is at the
+/// run's final time.
 class TraceRecorder : public cbls::SolveCallback {
 public:
     TraceRecorder(std::ostream& out, std::string instance, int periods, double time_limit_s,
@@ -112,63 +80,37 @@ public:
           commit_sha_(csv_text(std::move(commit_sha))) {}
 
     void on_progress(const cbls::SolveProgress& p) override {
-        // "Is there an incumbent with a value yet?", and that is the WHOLE
-        // predicate: `p.objective` is the search's `best_feasible_obj_`, which
-        // is +inf until the first finite-objective incumbent is recorded and
-        // finite from then on. The +inf case is the feasibility witness whose
-        // objective overflowed (#100) -- feasible, but with no value to plot,
-        // and an "inf" in a numeric column would read as a solve result.
-        //
-        // Deliberately NOT also `!p.feasible`, which minlplib's recorder tests:
-        // that field is real_feasible() on the CURRENT assignment, not on the
-        // incumbent, and after every improvement the objective bound is
-        // tightened below the incumbent and the search moves off the feasible
-        // point it just recorded. Testing it would drop the ~1s periodic
-        // samples whenever the search happened to be mid-flight -- deleting the
-        // flat tail, which is the one thing #147 exists to collect. It would
-        // also make the last row "the last instant the search was incidentally
-        // feasible" rather than "where the budget left it".
+        // The WHOLE predicate is "incumbent with a value": `p.objective` is
+        // `best_feasible_obj_`, +inf until the first finite-objective incumbent
+        // (+inf with a witness is an overflowed objective, #100; "inf" in a
+        // numeric column would read as a result). Must NOT also test
+        // `p.feasible` as minlplib's recorder does: that is real_feasible() on
+        // the CURRENT assignment, which leaves the incumbent once the bound
+        // tightens, so it would drop the ~1s samples of the flat tail #147
+        // collects.
         last_batches_ = p.iteration;
         if (!std::isfinite(p.objective)) {
             return;
         }
-        // Flushed per row, as the results CSV is: a full run is over an hour and
-        // an interrupted one must not lose its buffered profile -- which is the
-        // half of the record that says whether a budget was long enough.
+        // Flushed per row (write_row): a full run is over an hour, and an
+        // interrupted one must keep the profile that judges its budget.
         write_row(p.time_seconds, p.iteration, trace_num(p.objective), p.new_best);
     }
 
-    /// One closing row per solve, written after `solve()` returns.
+    /// One closing row per solve; the runner calls it after `solve()` returns.
     ///
-    /// Without it the trace answers the wrong question twice over.
+    /// Periodic reports come at most once a second and `record_best` resets
+    /// that timer, so without this row the trace can end on an improvement up
+    /// to ~1.5s before the budget and read as "still improving" (measured,
+    /// #147). A solve with no valued incumbent would otherwise write no rows,
+    /// indistinguishable from a filtered roster or a `nullptr` callback; this
+    /// row states it with an EMPTY objective cell, which no periodic row has.
+    /// Hence `max(time_seconds)` per (instance, periods) is the run's end, and
+    /// `new_best` is 0: the row reports where the budget left the search.
     ///
-    ///   1. The engine emits a periodic report at most once a second and
-    ///      `record_best` resets that timer, so an improvement inside the final
-    ///      second is the last thing in the file and the record then ends on a
-    ///      rising incumbent with budget apparently left -- which reads as
-    ///      "still improving when the clock stopped" when what actually
-    ///      followed was a flat second nobody sampled. Measured before this
-    ///      existed: every horizon's last row fell 0.65-1.45s short of its
-    ///      budget, and on one the last row WAS an improvement.
-    ///   2. A solve that never finds a valued incumbent writes no rows at all,
-    ///      and an absent (instance, horizon) is indistinguishable from a
-    ///      filtered roster, an interrupted campaign, or the callback
-    ///      regressing to the `nullptr` this issue exists to remove. "There was
-    ///      never anything to flatten" is a real answer to #147's question and
-    ///      the trace has to be able to state it: the row is written with an
-    ///      EMPTY objective cell, which no periodic row can produce.
-    ///
-    /// So every solve appears in the trace exactly once at its final time,
-    /// `max(time_seconds)` per (instance, periods) is the end of the run rather
-    /// than the last thing that happened to be sampled, and `new_best` is 0
-    /// because this row reports where the budget left the search, not an
-    /// improvement.
-    ///
-    /// `batches` carries the last figure `on_progress` saw, NOT
-    /// `SearchResult::iterations` -- that is the GLS iteration count, a
-    /// different quantity from this column's batch count, and putting it here
-    /// would silently change what the column means on exactly one row per
-    /// solve. A solve that never reported leaves the cell empty.
+    /// `batches` is the last batch count `on_progress` saw, NOT
+    /// `SearchResult::iterations` (the GLS count), so the column means one
+    /// thing on every row; empty when the solve never reported.
     void record_final(const cbls::SearchResult& result) {
         const std::string objective =
             std::isfinite(result.objective) ? trace_num(result.objective) : std::string();
