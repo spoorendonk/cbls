@@ -770,12 +770,13 @@ cited at
   workers on one state set, the CP-SAT arm never takes that path. At its
   defaults CP-SAT picks its own worker count and portfolio, so it may.
 * **CBLS kicks.** One search state, fixed options, no reset to zero or the bound,
-  and by default no Luby schedule. On stagnation it perturbs from `kick_origin()`: the
+  and no Luby schedule. On stagnation it perturbs from `kick_origin()`: the
   incumbent once one exists, an adopted pool solution in a portfolio, in place
   before the first feasible point. Portfolio workers restart from the pool.
-  `luby_restart_unit` and `restart_randomization` are default-off arms, and the
-  runner takes `--luby-restart-unit` and `--restart-randomization`; neither
-  separated in #239's smoke A/B.
+  Luby restarts and restart randomisation were default-off arms; neither
+  separated in #239's smoke A/B, and #383 removed both (in git history at
+  `1f574b52`, with the `--luby-restart-unit` and `--restart-randomization`
+  runner flags).
 
 ## Provenance
 

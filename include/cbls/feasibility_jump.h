@@ -313,19 +313,15 @@ public:
     // the deadline. Only meaningful straight after a batch() call; cleared at
     // each batch entry. Governed by GFJConfig::unproductive_iterations.
     [[nodiscard]] bool batch_stuck() const { return batch_stuck_; }
-    // W <- 1, or each W[c] <- Uniform(1, 2) when `random` (OR-Tools'
-    // start_with_random_weights, #239), and rebuild the scan set. Only the
-    // random fill draws from the RNG.
-    void reset_weights(bool random = false);
-    void resync();  // rebuild the scan set from current state, keep weights
+    void reset_weights();  // W <- 1 and rebuild the scan set
+    void resync();         // rebuild the scan set from current state, keep weights
     // Randomise each jumpable var w.p. p, then apply
     // clamp(round(p*|elements|), 1, |elements|) random structural moves to each
     // List/Set var (#111); if all of that moved nothing, force one variable — a
     // scalar if any can move, else a structure — so the kick is never a no-op
     // (#109). The fallback leaves large models bit-identical to plain p-draws,
     // and a model without List/Set variables keeps its exact draw sequence.
-    // Ends in reset_weights(random_weights).
-    void perturb(double probability, bool random_weights = false);
+    void perturb(double probability);
     void set_rho(double rho) { config_.rho = rho; }
     // Armed by the search loop once it has stagnated; see solve().
     void set_escape_probe(bool on) { escape_probe_ = on; }

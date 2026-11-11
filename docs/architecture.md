@@ -1881,22 +1881,17 @@ origin is the origin, so a rejected repair *moves* the search back to the origin
 nothing: not free, and not a diversification either, since FJ re-descends from a
 point it has already converged on.
 
-**Restart options, both off (#239).** Two CP-SAT ViolationLS restart features
-are kept as `SearchConfig` arms, faithful to OR-Tools main at `266f518`:
-
-- `restart_randomization` is the part of `LsOptions::Randomize` that cbls
-  lacked. At a non-LNS kick, an adoption or a new best's weight reset, the
-  weights restart at Uniform(1, 2) with probability ½, else at 1. With
-  probability ½ a non-LNS kick also takes the restore-only `KickKind::Restart`,
-  which re-weights `kick_origin()` and moves nothing. An LNS kick is unchanged,
-  and still resets the weights to 1.
-- `luby_restart_unit` replaces #102's unproductive-batch trigger with a
-  `unit × luby(k)` schedule of non-improving batches, and resets `k` on each
-  new best. Algorithm 6 has no Luby schedule.
-
-The rest of `Randomize` is already here: ρ is redrawn at each kick and new best,
-and compound moves at each batch (#209). Neither arm separates on the mipfeas
-smoke A/B, so the defaults stay off; the numbers are on #239.
+**Restart options (#239).** Two CP-SAT ViolationLS restart features, faithful
+to OR-Tools main at `266f518`, were opt-in `SearchConfig` arms, off by default:
+restart randomisation (the part of `LsOptions::Randomize` cbls lacked: weights
+restarting at Uniform(1, 2) with probability ½, and a restore-only restart that
+re-weights `kick_origin()` and moves nothing) and a Luby kick schedule in place
+of #102's unproductive-batch trigger. Neither separated on the mipfeas smoke
+A/B (the numbers are on #239), and #383 removed both. The code
+(`restart_randomization`, `luby_restart_unit`, `luby()`), its tests and the
+`--restart-randomization` / `--luby-restart-unit` runner flags are in git
+history at `1f574b52`. The rest of `Randomize` is here: ρ is redrawn at each
+kick and new best, and compound moves at each batch (#209).
 
 **The scalar kick.** `perturb(p)` randomises each jumpable variable
 independently with probability `p`, and then — **only if that moved nothing** —
@@ -2400,9 +2395,9 @@ restart schedules (Luby). The pool gives warm restarts *across* the workers of
 a `ParallelSearch`; a single-threaded `solve()` gets its form of the same idea
 from each kick, once there is an incumbent, restoring it first
 ([Diversification](#diversification)).
-Luby is available as the opt-in `SearchConfig::luby_restart_unit`, but the
-smoke A/B (#239) found it no better than #102's stall trigger and slower to a
-first feasible point, so it stays off.
+A Luby schedule was an opt-in arm until #383 removed it (in git history at
+`1f574b52`): the smoke A/B (#239) found it no better than #102's stall trigger
+and slower to a first feasible point.
 
 ---
 
@@ -2500,8 +2495,6 @@ solve(model, time_limit, seed, use_fj, hook, lns, lns_interval, callback, config
 | `cone_cache_bytes` | 256 MiB (`Model::kDefaultConeCacheBytes`) | `SearchConfig` | cap on the frozen model's cone cache (#271) |
 | `unproductive_iterations` | 300 | `SearchConfig` → `GFJConfig` | end an FJ batch after this many GLS iterations without a new real-violation low, and take the kick as due (#102); `<= 0` = fixed cadence |
 | `fj_objective_tie_break` | true | `SearchConfig` | OR-Tools' affine-objective tie-break before the first feasible point (#218, #226) |
-| `restart_randomization` | false | `SearchConfig` | CP-SAT's restart randomisation as an arm (#239) |
-| `luby_restart_unit` | 0 (off) | `SearchConfig` | Luby kick schedule in place of #102's trigger (#239) |
 | `stop` | none | `SearchConfig` | caller's cancellation flag, read at batch boundaries (#169) |
 | `tracer` | null | `SearchConfig` | caller's event sink, per worker (#169) |
 | `auditor` | null | `SearchConfig` | test-facing consistency hook (#225) |

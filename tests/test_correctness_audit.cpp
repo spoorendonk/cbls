@@ -4,8 +4,8 @@
 // and Float columns with narrow and wide domains; nonlinear rows (products,
 // squares, division, exp/log/sin/sqrt, abs/min/max); and Set/List variables
 // read through lambda sums -- each built around a planted assignment, so every
-// instance is feasible. Each runs under the default search and each opt-in
-// FJ setting, and three things are checked:
+// instance is feasible. Each runs under the default search and with the FJ
+// objective tie-break off, and three things are checked:
 //
 //  1. INCREMENTAL CONSISTENCY. A `SearchAuditor` calls
 //     `FeasibilityJump::audit` before every batch -- after single moves,
@@ -634,14 +634,6 @@ const std::vector<Arm>& arms() {
     static const std::vector<Arm> kArms = {
         {"default", [](SearchConfig&) {}},
         {"no_fj_objective_tie_break", [](SearchConfig& c) { c.fj_objective_tie_break = false; }},
-        {"restart_randomization", [](SearchConfig& c) { c.restart_randomization = true; }},
-        {"luby_restart_unit", [](SearchConfig& c) { c.luby_restart_unit = 1; }},
-        {"all_opt_in",
-         [](SearchConfig& c) {
-             c.fj_objective_tie_break = true;
-             c.restart_randomization = true;
-             c.luby_restart_unit = 1;
-         }},
     };
     return kArms;
 }

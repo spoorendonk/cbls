@@ -94,10 +94,6 @@ struct Args {
     // since #226. Recorded on every row so the scorer refuses to average an
     // on-arm with an off-arm.
     bool objective_tie_break = true;
-    // #239's two restart arms, off as the engine's defaults are, and recorded on
-    // every row likewise.
-    bool restart_randomization = false;
-    int luby_restart_unit = 0;
     // CBLS variables need finite bounds. Implied bounds supply most of them
     // (#120); this is the fallback for a column no constraint bounds. 1e7 rather
     // than the engine's 1e9 because it measured better on the smoke roster — NOT
@@ -151,7 +147,6 @@ void print_usage() {
         "                    [--max-propagation-passes N]\n"
         "                    [--no-compound-moves]\n"
         "                    [--no-objective-tie-break]\n"
-        "                    [--restart-randomization] [--luby-restart-unit N]\n"
         "                    [--no-lns] [--lns-interval N] [--novelty-prob P]\n"
         "                    [--unproductive-iters N] [--perturbation-period N]\n"
         "                    [--threads N]\n"
@@ -185,23 +180,10 @@ int parse_propagation_passes(const char* text) {
     return static_cast<int>(passes);
 }
 
-/// SearchConfig::luby_restart_unit's range (#239): 0 is off, and the field is
-/// an int, so a value past INT_MAX is refused rather than narrowed.
-int parse_luby_restart_unit(const char* text) {
-    const int64_t unit = parse_int64("--luby-restart-unit", text);
-    if (unit < 0 || unit > std::numeric_limits<int>::max()) {
-        std::fprintf(stderr, "--luby-restart-unit must be in [0, %d]\n",
-                     std::numeric_limits<int>::max());
-        std::exit(2);
-    }
-    return static_cast<int>(unit);
-}
-
 /// The search-behaviour arms: the flags that set an engine option rather than
 /// the run (instance, budget, output). True when the current argument was one.
 bool parse_search_flag(cbls::bench::ArgCursor& c, Args& a) {
     const std::string s = c.arg();
-    const char* v = nullptr;
     const bool shared = std::any_of(kSharedSearchFlags.begin(), kSharedSearchFlags.end(),
                                     [&s](const char* flag) { return s == flag; });
     // The shared parse, not a copy of it: the value policy (a non-integer exits
@@ -219,10 +201,6 @@ bool parse_search_flag(cbls::bench::ArgCursor& c, Args& a) {
         a.objective_tie_break = true;
     } else if (s == "--no-objective-tie-break") {
         a.objective_tie_break = false;
-    } else if (s == "--restart-randomization") {
-        a.restart_randomization = true;
-    } else if (c.value_flag("--luby-restart-unit", v)) {
-        a.luby_restart_unit = parse_luby_restart_unit(v);
     } else if (s == "--share-bound") {
         a.share_objective_bound = true;
     } else if (s == "--no-share-bound") {
@@ -436,8 +414,6 @@ void write_result(const Args& args, const nlohmann::json& extra) {
     j["feasibility_tolerance"] = args.feas_tol;
     j["compound_moves"] = args.compound_moves;
     j["objective_tie_break"] = args.objective_tie_break;
-    j["restart_randomization"] = args.restart_randomization;
-    j["luby_restart_unit"] = args.luby_restart_unit;
     j["inf_clamp"] = args.inf_clamp;
     j["propagate_bounds"] = args.propagate_bounds;
     j["max_propagation_passes"] = args.max_propagation_passes;
@@ -503,15 +479,6 @@ int validate_args(const Args& args) {
     if (!cbls::bench::validate_search_flags(search, kSharedSearchFamilies,
                                             /*time_limit_set=*/false, error)) {
         std::fprintf(stderr, "%s\n", error.c_str());
-        return 2;
-    }
-    // A no-effect refusal the shared check cannot make, because Luby restarts
-    // are this runner's own flag: with them on, Search stops watching progress
-    // (search.h, luby_restart_unit), so FJ never reads unproductive_iterations.
-    // Accepted, the pair would be a second config cell for the same run.
-    if (args.luby_restart_unit > 0 &&
-        args.search.unproductive_iters != cbls::SearchConfig{}.unproductive_iterations) {
-        std::fprintf(stderr, "--unproductive-iters has no effect with --luby-restart-unit\n");
         return 2;
     }
     return 0;
@@ -761,8 +728,6 @@ int run_benchmark(int argc, char** argv) {
     cfg.feasibility_tolerance = args.feas_tol;
     cfg.use_compound_moves = args.compound_moves;
     cfg.fj_objective_tie_break = args.objective_tie_break;
-    cfg.restart_randomization = args.restart_randomization;
-    cfg.luby_restart_unit = args.luby_restart_unit;
     // The kSharedSearchFlags arms (#267), field by field rather than through
     // apply_search_flags(), which would also write the fields this runner sets
     // from its own flags above. validate_args() has range-checked the narrowed

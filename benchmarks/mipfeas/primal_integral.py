@@ -128,8 +128,6 @@ CONFIG_KEYS = (
     "feasibility_tolerance",
     "compound_moves",
     "objective_tie_break",
-    "restart_randomization",
-    "luby_restart_unit",
     "inf_clamp",
     "propagate_bounds",
     "max_propagation_passes",
@@ -159,9 +157,8 @@ TUNABLE_DEFAULTS: dict[str, object] = {
 def config_string(result: dict[str, object]) -> str:
     """The `config` cell: every CONFIG_KEYS entry the result carries.
 
-    One key is back-filled, and the opt-in engine flags (`objective_tie_break`,
-    #218; `restart_randomization` and `luby_restart_unit`, #239) dropped when off,
-    and #267's tunable knobs (TUNABLE_DEFAULTS) dropped at their defaults;
+    One key is back-filled, the opt-in engine flag (`objective_tie_break`, #218)
+    dropped when off, and #267's tunable knobs (TUNABLE_DEFAULTS) dropped at their defaults;
     see their lines.
     `share_objective_bound` (#179) did not exist before
     the shared bound, and at one thread it names no behaviour at all -- a single
@@ -181,15 +178,8 @@ def config_string(result: dict[str, object]) -> str:
     # `objective_tie_break=True` and does not match a table scored before it --
     # which is the point: that table was measured on the old default and must
     # be regenerated, not averaged in.
-    for opt_in in (
-        "objective_tie_break",
-        "restart_randomization",
-    ):
-        if cells.get(opt_in) is False:
-            del cells[opt_in]
-    # #239's Luby schedule, whose off arm is a unit of 0 rather than False.
-    if cells.get("luby_restart_unit") == 0:
-        del cells["luby_restart_unit"]
+    if cells.get("objective_tie_break") is False:
+        del cells["objective_tie_break"]
     # #267's tunable knobs, the same rule at their pre-#267 values. The type is
     # compared too, because `1 == True` in Python: `lns=1` is not the default.
     for key, default in TUNABLE_DEFAULTS.items():
