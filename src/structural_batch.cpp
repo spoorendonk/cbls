@@ -96,8 +96,8 @@ void StructuralBatch::resnapshot(const ViolationManager& vm) {
 // out of order. Wins over scanning the whole scope where a candidate walks a small part of a
 // large one: a `ListPartitionGenerator` over every CVRP route, whose move touches one or two
 // (14-15% of instructions on X-n251/X-n502 under GranularBest, callgrind). Loses on a
-// one-variable scope,
-// where R_c IS the scope: one more O(|G_v|) mark-and-copy pass next to the walk's O(cone).
+// one-variable scope, where R_c IS the scope: one more O(|G_v|) mark-and-copy pass next to the
+// walk's O(cone), and cone >= G_v.
 double StructuralBatch::delta_after_walk(const Model& model, const ViolationManager& vm,
                                          const std::vector<int32_t>& walked) {
     score_rows_.clear();

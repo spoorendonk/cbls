@@ -15,11 +15,11 @@ namespace {
 
 // Node budget for the `UpConePartials` pass (#207, #249): none. One forward pass over v's
 // up-cone gives every G_v row's and the objective's slope, equal to `compute_partial`'s up to
-// summation order on finite paths, at about one probe's cost (cost argument:
-// docs/architecture.md, "Per-variable cost"). Where it loses (a dense objective in few
-// variables) one `compute_all_partials(objective)` per sweep would be n times cheaper but goes
-// stale after each committed move of a nonlinear objective, so there is nothing cheaper to
-// fall back to past a budget.
+// summation order on finite paths (both skip zero edges, `add_chain_term`), at about one probe's
+// cost (cost argument: docs/architecture.md, "Per-variable cost"). Where it loses (a dense
+// objective in few variables) one `compute_all_partials(objective)` per sweep would be n times
+// cheaper but goes stale after each committed move of a nonlinear objective, so there is nothing
+// cheaper to fall back to past a budget.
 constexpr size_t kUnboundedUpCone = std::numeric_limits<size_t>::max();
 
 // The objective as `augmented_objective()` reads it: 0 without one, and a

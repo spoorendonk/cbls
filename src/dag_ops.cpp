@@ -13,8 +13,9 @@
 #include <vector>
 
 // The incremental Sum's drift bound (#188) needs TwoSum's exact rounding error, i.e. IEEE double
-// arithmetic as written. -ffast-math may fold the error term to 0, making every inexact update
-// read as exact and silently disabling the phantom-row gate, so it is refused here.
+// arithmetic as written. -ffast-math (or -ffinite-math-only) may fold the error term to 0, making
+// every inexact update read as exact and silently disabling the phantom-row gate, so it is refused
+// here.
 #if defined(__FAST_MATH__) || defined(__FINITE_MATH_ONLY__) && __FINITE_MATH_ONLY__
 #error "src/dag_ops.cpp needs IEEE arithmetic: do not build it with -ffast-math"
 #endif
@@ -178,7 +179,8 @@ struct DirtyFlagGuard {
 // The update is applied in place ahead of the Sum's topological turn, which then takes it as
 // it stands. Each update adds its two TwoSum errors (each at most half an ulp of its result)
 // to `drift_bound`, and every addition to the bound is rounded up (`round_bound_up`), so it
-// never underestimates. A non-finite value (the Sum's, or a term's old or new) re-sums at its
+// never underestimates. Both errors 0 means the update is exact and adds no drift. A
+// non-finite value (the Sum's, or a term's old or new) re-sums at its
 // turn, since `inf - inf` is no update.
 //
 // A Probe that knows the old value applies the commit's update, so an identity move on a

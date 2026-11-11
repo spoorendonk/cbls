@@ -57,7 +57,8 @@ bool movable_domain(const Variable& var) {
     switch (var.type) {
         case VarType::Int: {
             // Exact and UB-free at any magnitude, where an int64_t cast is neither: the window
-            // holds two distinct integers iff floor(hi) - ceil(lo) >= 1.
+            // holds two distinct integers iff floor(hi) - ceil(lo) >= 1. So [0.9, 1.2], which
+            // holds only 1, is immovable.
             const DomainWindow w = int_sample_window(var);
             return std::floor(w.hi) - std::ceil(w.lo) >= 1.0;
         }
