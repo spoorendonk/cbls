@@ -7,7 +7,6 @@ import json
 import math
 import os
 import sys
-import tomllib
 from typing import TYPE_CHECKING
 
 import pytest
@@ -1019,21 +1018,44 @@ def test_held_out_file_skips_comments_and_refuses_repeats(tmp_path: Path) -> Non
         read_held_out(path)
 
 
+#: The roster instances #264's tune study fitted on (its screen and intermediate
+#: sets), read off `benchmarks/tune/mipfeas.study.toml` before it went to git
+#: history at 047f2d4c (#392). Frozen: the study will not run again.
+TUNE_STUDY_ROSTER_INSTANCES = frozenset(
+    {
+        "enlight_hard",
+        "markshare2",
+        "gen-ip054",
+        "gen-ip002",
+        "pk1",
+        "mas76",
+        "neos5",
+        "mad",
+        "binkar10_1",
+        "atlanta-ip",
+        "neos-5114902-kasavu",
+        "chromaticindex1024-7",
+        "csched007",
+        "fastxgemm-n2r6s0t2",
+        "neos-3083819-nubu",
+        "neos-4338804-snowy",
+        "neos-4763324-toguru",
+        "neos-957323",
+        "rail02",
+        "supportcase18",
+        "traininstance2",
+        "uct-subprob",
+    }
+)
+
+
 def test_committed_tuned_list_is_the_tune_studys_roster_instances() -> None:
     # tuned.txt is what #255's reported table leaves out. It must name exactly the
-    # roster instances the tune study fits on (its screen and intermediate sets),
-    # or a scored instance was used for tuning while the table says none was.
-    study = tomllib.loads(
-        (DEFAULT_INSTANCE_DIR.parent.parent / "tune" / "mipfeas.study.toml").read_text()
-    )
-    fitted = {
-        arm["params"]["instance"]
-        for arm in study["instances"]
-        if arm["params"].get("roster") == "roster.csv"
-    }
+    # roster instances the tune study fitted on, or a scored instance was used
+    # for tuning while the table says none was.
     roster = [name for name, _, _ in read_roster(DEFAULT_INSTANCE_DIR / "roster.csv")]
     tuned = read_held_out(DEFAULT_INSTANCE_DIR / "tuned.txt")
-    assert set(tuned.names) == fitted
+    assert set(tuned.names) == TUNE_STUDY_ROSTER_INSTANCES
     assert held_out_problems(roster, tuned) == []
 
 
