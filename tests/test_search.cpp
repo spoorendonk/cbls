@@ -1818,8 +1818,8 @@ TEST_CASE("ParallelSearch records the first-feasible pair on the portfolio clock
     REQUIRE(r.time_to_first_feasible >= 0.0);
     REQUIRE(r.time_to_first_feasible <= wall);
 
-    // One instant on the portfolio clock, latched before the row is stamped; the
-    // gap is scheduler latency (#399), so a loose floor an unshifted ~0 fails.
+    // ttff is latched before its row is stamped, and the gap is scheduler latency
+    // (#399): assert the order, plus a floor loose enough that only an unshifted ~0 fails.
     REQUIRE_FALSE(std::isnan(first.seen));
     REQUIRE(r.time_to_first_feasible <= first.seen + 1e-9);
     REQUIRE(r.time_to_first_feasible >= 0.05 * first.seen);
