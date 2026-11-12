@@ -1818,11 +1818,14 @@ TEST_CASE("ParallelSearch records the first-feasible pair on the portfolio clock
     REQUIRE(r.time_to_first_feasible >= 0.0);
     REQUIRE(r.time_to_first_feasible <= wall);
 
-    // Both on the portfolio clock, so they describe the same instant. The
-    // tolerance covers the gap between a worker recording its own first feasible
-    // point and the wrapper timestamping the row it emits for it.
+    // Both on the portfolio clock, so they describe the same instant, read in a
+    // fixed order: a worker latches its first feasible time before it reports
+    // the row, and `started_at` is read before its own clock starts. The gap is
+    // scheduler latency, unbounded under load (#399), so the check is the order
+    // plus a relative floor that an unshifted reading (~0) still fails.
     REQUIRE_FALSE(std::isnan(first.seen));
-    REQUIRE_THAT(r.time_to_first_feasible, Catch::Matchers::WithinAbs(first.seen, 0.005));
+    REQUIRE(r.time_to_first_feasible <= first.seen + 1e-9);
+    REQUIRE(r.time_to_first_feasible >= 0.5 * first.seen);
 }
 
 // ---------------------------------------------------------------------------
