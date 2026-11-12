@@ -125,7 +125,7 @@ checks, never rewrites: ruff, mypy, clang-format over the tree; runs no tests.
 `clean`/`build`/`test` fences below as local CI, the only gate (no GitHub
 Actions). Internals: `docs/git-hooks.md`.
 
-**Checked by hand before every push**, as no hook enforces it: zero
+**Checked by hand before every push** (no hook does): zero
 clang-tidy warnings (`.venv/bin/clang-tidy -p build <changed files>`) and zero
 first-party compiler warnings in the build log.
 
@@ -217,9 +217,9 @@ above it and add `NOLINTNEXTLINE(readability-function-cognitive-complexity)`.
 
 Builds, ctest, clang-tidy and pushes run under the machine lock
 (`xk lock -- CMD`) with at most 4 jobs (group rules). The fences below are
-what pre-push runs, at `$(nproc)` of the CPUs the push inherits; on a host
-that does not pin pushes to at most 4, set `git config hooks.localCiCpus 0-3`
-(`docs/git-hooks.md`). By hand, run them as
+what pre-push runs; `$(nproc)` counts the CPUs the push inherits. Only on a
+host that does not pin pushes to 4 CPUs (`wcp build` does), set
+`git config hooks.localCiCpus 0-3` (`docs/git-hooks.md`). By hand:
 `xk lock -- taskset -c 0-3 sh -c '…'`.
 Why they look this way: `docs/development.md`.
 
