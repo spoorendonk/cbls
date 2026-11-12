@@ -464,9 +464,9 @@ TEST_CASE("nl_to_model honours a large but finite Int bound", "[minlplib]") {
 }
 
 TEST_CASE("nl_to_model keeps a finite bound beyond the clamp inside the box", "[minlplib]") {
-    // One side finite at or past the clamp, the other missing (#357). The
-    // fallback used to land on the wrong side of the real bound: the box then
-    // excluded it, or collapsed to one point though the bound leaves room. The
+    // Regression for #357: one side finite at or past the clamp, the other
+    // missing, put the fallback on the wrong side of the real bound, so the box
+    // excluded it or collapsed to one point though the bound leaves room. The
     // box must hold the bound exactly and reach past it on the open side.
     // Default clamps: inf_clamp 1e9, int_inf_clamp 1e6.
     auto build = [](bool discrete, const std::string& bound) {
@@ -528,10 +528,10 @@ TEST_CASE("NL reader throws a tagged marker on an unsupported opcode", "[minlpli
 }
 
 TEST_CASE("NL reader refuses a complementarity bound instead of misparsing", "[minlplib]") {
-    // Bound type 5 (`5 k i`) used to match no case and consume no tokens, so the
-    // cursor was left on its payload and the rest of the file was read as
-    // something else (#211). It is now refused with the reader's "unsupported"
-    // wording, which the MINLPLib runner buckets as a coverage gap.
+    // Regression for #211: bound type 5 (`5 k i`) matched no case and consumed
+    // no tokens, so the rest of the file was misread from its payload on. It is
+    // refused with the reader's "unsupported" wording, which the MINLPLib
+    // runner buckets as a coverage gap.
     std::string text = nl_header(2, 1, 1);
     text += "b\n0 0 10\n0 0 10\n";
     text += "r\n5 1 1\n";  // con0: complementary with var 1
@@ -729,9 +729,9 @@ TEST_CASE("nl_to_model builds a closed model", "[minlplib]") {
 }
 
 TEST_CASE("nl_to_model translates FLOOR and CEIL", "[minlplib]") {
-    // FLOOR (13) and CEIL (14) were parsed but not translated, so an instance
-    // using them was skipped as unsupported although the DAG has had Floor and
-    // Ceil since #186 (#211). minimize floor(x0) + ceil(x1).
+    // Regression for #211: FLOOR (13) and CEIL (14) were parsed but not
+    // translated, so an instance using them was skipped as unsupported though
+    // the DAG has had Floor and Ceil since #186. minimize floor(x0) + ceil(x1).
     std::string text = nl_header(2, 0, 1);
     text += "b\n0 -10 10\n0 -10 10\n";
     text += "O0 0\n";
@@ -1107,22 +1107,19 @@ TEST_CASE("MINLPLib ex4_1_8 solves within a loose gap of its published bound",
 
 // #102. st_e40 has 4 variables and, once C1-C3 restrict the three integers to
 // {1,2,3,5,8,10,12}, exactly 343 integer combinations of which 52 are feasible.
-// The engine nevertheless failed it at a 60s wall clock: the search fell into a
-// limit cycle within ~20 GLS iterations -- x1 flipping between two values and x3
-// hopping between the roots of the four rows containing it -- and then spent 92%
-// of a 155 000-iteration run on GLS weight bumps that changed nothing, visiting
-// 3 of the 343 combinations and none of the 52 feasible ones. Neither trapped
-// value is in any feasible combination (every one of the 52 needs x0 >= 5 and
-// x1 >= 5), so the cycle could not be escaped by refining what it was already
-// doing.
+// Pre-#102 the engine failed it at a 60s wall clock: a limit cycle within ~20
+// GLS iterations (x1 flipping between two values, x3 hopping between the roots
+// of its four rows) took 92% of a 155 000-iteration run in GLS weight bumps
+// that changed nothing, visiting 3 of the 343 combinations and none of the 52
+// feasible ones. Neither trapped value is in any feasible combination (every
+// one of the 52 needs x0 >= 5 and x1 >= 5), so refining could not escape it.
 //
-// What let it run for so long was that the outer loop's diversification is
-// gated on perturbation_period (100) non-improving BATCHES of batch_iterations
-// (1000) GLS iterations, and before the first feasible solution no batch ever
-// improves -- a fixed cadence of one kick per 100 000 iterations regardless of
-// what the search is doing. GFJConfig::unproductive_iterations now ends a batch
-// that has stopped reducing the REAL rows' violation, and solve() treats such a
-// batch as the diversification kick being due.
+// Diversification is gated on perturbation_period (100) non-improving BATCHES
+// of batch_iterations (1000) GLS iterations, and before the first feasible
+// solution no batch improves -- one kick per 100 000 iterations whatever the
+// search does. GFJConfig::unproductive_iterations ends a batch that has
+// stopped reducing the REAL rows' violation, and solve() treats such a batch
+// as the diversification kick being due.
 //
 // On the iteration-bounded path so it is bit-deterministic and runs in seconds;
 // the issue's wall-clock criterion (feasible within 60s at seed 42) is recorded
@@ -1140,23 +1137,20 @@ TEST_CASE("MINLPLib ex4_1_8 solves within a loose gap of its published bound",
 // i.e. the unfixed engine spends the whole budget and never reaches the feasible
 // set at all, rather than reaching it and being scored differently.
 //
-// Budget calibration. Re-picked at #206, whose fix to apply_jump's scan-set
-// sampling moved every trajectory: seeds 2 and 42 were the pair before it, and
-// 42 no longer solves inside 15 000. Over seeds 1-30 the pass rate at 15 000 is
-// 24/30 after the fix against 25/30 before it, so this is restart variance on a
-// 343-point space, not a regression. Both seeds below already solve at an
-// 8 000-iteration budget, so 15 000 carries ~1.9x. Raise the budget or re-pick
-// seeds if the engine's trajectory changes; don't swap it for a wall clock.
-//
-// Re-picked again at #226, when the objective tie-break became the default:
-// over seeds 1-30 at 15 000 the pass rate is 20/30 with the tie-break on and
-// 20/30 with it off, but seed 13 is no longer among them. Seeds 11 and 26 solve
-// at 8 000 with it on (9/30 do), so 15 000 still carries ~1.9x.
-//
-// Re-picked at #344, when propagation began reading this file's n0 rows and one
-// column's box tightened: over seeds 1-30 the pass rate is 22/30 at 15 000 and
-// 19/30 at 8 000. Seed 26 solves at 15 000 but no longer at 8 000; seeds 11 and
-// 12 solve at both, so 15 000 still carries ~1.9x.
+// Budget calibration: the seeds below solve at an 8 000-iteration budget, so
+// 15 000 carries ~1.9x. Raise the budget or re-pick seeds if the engine's
+// trajectory changes; don't swap it for a wall clock. Re-picks, over seeds
+// 1-30 at 15 000:
+// - #206, whose fix to apply_jump's scan-set sampling moved every trajectory:
+//   of the pair 2 and 42, 42 no longer solved inside 15 000; the pass rate
+//   was 24/30 after the fix against 25/30 before it, so restart variance on a
+//   343-point space, not a regression.
+// - #226, when the objective tie-break became the default: 20/30 with the
+//   tie-break on and 20/30 with it off, but seed 13 no longer among them.
+//   Seeds 11 and 26 solved at 8 000 with it on (9/30 did).
+// - #344, when propagation began reading this file's n0 rows and one column's
+//   box tightened: 22/30 at 15 000 and 19/30 at 8 000. Seed 26 solves at
+//   15 000 but no longer at 8 000; seeds 11 and 12 solve at both.
 TEST_CASE("MINLPLib st_e40 reaches feasibility on a small iteration budget", "[minlplib][solve]") {
     skip_unless_libstdcxx_rng();
     // bounds.csv: st_e40,other,4,8,min,30.41421356,30.4142136,0
@@ -1192,14 +1186,13 @@ TEST_CASE("MINLPLib st_e40 reaches feasibility on a small iteration budget", "[m
     }
 }
 
-// --- Curated-note policy (the "now solved" warning was dead code) -----------
+// --- Curated-note policy ----------------------------------------------------
 //
-// The runner's note handling used to sit inside `if (... && !result.feasible)`
-// with an inner `if (verified)`. `verified` is initialised from the feasibility
-// result and only ever assigned false, so inside a !feasible branch it is
-// always false: the "stale analysis note (now solved)" warning could not fire.
-// Both instances that now solve still carry curated notes, so the warning was
-// silently dropping them.
+// A solved, verified instance with a curated note gets the "stale analysis
+// note (now solved)" warning. Pre-fix the runner tested `verified` inside
+// `if (... && !result.feasible)`; initialised from the feasibility result and
+// only ever assigned false, it was always false there, so the warning could
+// not fire: both instances that now solve kept their curated notes silently.
 
 TEST_CASE("curated note is retired when the instance now solves", "[minlplib]") {
     using cbls::minlplib::note_action;

@@ -1,7 +1,6 @@
 #pragma once
 
-// Small models and probes that several test files share (#374). Each was a
-// verbatim copy in every file that used it.
+// Small models and probes that several test files share (#374).
 
 #include <algorithm>
 #include <cbls/dag_ops.h>

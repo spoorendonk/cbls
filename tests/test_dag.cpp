@@ -211,9 +211,8 @@ TEST_CASE("each operator's AD partials match its derivative", "[dag]") {
 }
 
 TEST_CASE("a tied Min/Max splits its slope among the tied children", "[dag][ad]") {
-    // Each tied child used to get local derivative 1.0, so a k-way tie summed to
-    // a slope of k through the chain rule and a Newton step through it overshot
-    // k-fold (#211). min(x, x, x) is x: its derivative is 1, not 3.
+    // Regression for #211: a k-way tie summed to a slope of k, so a Newton
+    // step through it overshot k-fold. min(x, x, x) is x: derivative 1, not 3.
     Model m;
     auto x = m.float_var(0, 10);
     auto y = m.float_var(0, 10);
@@ -236,11 +235,11 @@ TEST_CASE("a tied Min/Max splits its slope among the tied children", "[dag][ad]"
 }
 
 TEST_CASE("a strict comparison over integers needs a gap of one", "[dag][strict]") {
-    // The strict residual used to be a - b + 1e-9 whatever the sides, inside the
-    // search's feasibility tolerance of 1e-6 -- so `x < y` over Ints read 3 < 3
-    // as satisfied (#211). Integral sides now take a margin of 1: 3 < 3 is
-    // violated by 1, 2 < 3 sits exactly on the boundary. A continuous side
-    // keeps the epsilon (and is strict only up to the tolerance; see dag.h).
+    // Regression for #211: a margin of 1e-9, inside the 1e-6 feasibility
+    // tolerance, read 3 < 3 over Ints as satisfied. Integral sides take a
+    // margin of 1: 3 < 3 is violated by 1, 2 < 3 sits exactly on the boundary.
+    // A continuous side keeps the epsilon (and is strict only up to the
+    // tolerance; see dag.h).
     Model m;
     auto x = m.int_var(0, 10);
     auto y = m.int_var(0, 10);
@@ -383,14 +382,13 @@ TEST_CASE("back-references list each parent once, including a repeated child", "
 }
 
 TEST_CASE("flat edge storage keeps child, parent, dependent and topological order", "[dag]") {
-    // #156 moved every node's children and back-references out of per-node
-    // vectors into flat arrays the model owns. That is a representation change
-    // and must be neutral to search trajectories, and those trajectories depend
-    // on ORDER: delta_evaluate's BFS enqueues in parents()/dependents() order,
-    // and the topological sort's order is what full_evaluate and the AD sweep
-    // walk. So the exact sequences are pinned here, on a DAG where a NODE is a
-    // repeated child (`prod(n, n)`) -- the case where the sort now reads
-    // deduplicated parent lists instead of counting both edges.
+    // Children and back-references live in flat model-owned arrays (#156), a
+    // representation that must be neutral to search trajectories, and those
+    // depend on ORDER: delta_evaluate's BFS enqueues in parents()/dependents()
+    // order, and full_evaluate and the AD sweep walk the topological order. So
+    // the exact sequences are pinned, on a DAG where a NODE is a repeated child
+    // (`prod(n, n)`) -- the case where the sort reads deduplicated parent lists
+    // instead of counting both edges.
     Model m;
     auto x = m.float_var(0, 10);
     auto y = m.float_var(0, 10);
@@ -459,9 +457,8 @@ TEST_CASE("flat edge storage keeps child, parent, dependent and topological orde
     g.close();
     REQUIRE(as_vector(g.constraints_of_var(vid(gx))) == std::vector<int32_t>{0, 2});
     REQUIRE(as_vector(g.constraints_of_var(vid(gy))) == std::vector<int32_t>{0, 1});
-    // The CSR bounds: one past the last id is out of range. A variable made
-    // after the build used to sit past G_v's end too; the builders now refuse a
-    // closed model instead (#173).
+    // The CSR bounds: one past the last id is out of range. No variable can
+    // land past G_v's end: the builders refuse a closed model (#173).
     REQUIRE_THROWS_AS(g.constraints_of_var(2), std::out_of_range);
     REQUIRE_THROWS_AS(g.parents(static_cast<int32_t>(g.num_nodes())), std::out_of_range);
     REQUIRE_THROWS_AS(g.dependents(2), std::out_of_range);
@@ -470,12 +467,12 @@ TEST_CASE("flat edge storage keeps child, parent, dependent and topological orde
 }
 
 TEST_CASE("Delta evaluation respects dependency order on a deep chain", "[dag]") {
-    // delta_evaluate recomputes the dirty set in topological order. It used to
-    // get that order by walking the WHOLE topo order and testing a flag, which
-    // is O(all nodes) per call -- ~2M flag tests per move on the largest MIPfeas
-    // instance, for a dirty set of a few dozen. It now sorts the dirty list by
-    // topological position instead, so this pins the property the sort has to
-    // preserve: a node must never be recomputed before the node it reads.
+    // delta_evaluate recomputes the dirty set in topological order by sorting
+    // the dirty list by topological position: walking the WHOLE topo order and
+    // testing a flag is O(all nodes) per call -- ~2M flag tests per move on the
+    // largest MIPfeas instance, for a dirty set of a few dozen. This pins the
+    // property the sort has to preserve: a node must never be recomputed before
+    // the node it reads.
     //
     // A deep chain is what makes a wrong order observable. The BFS that marks
     // the dirty set enqueues parents in discovery order, which for a chain is

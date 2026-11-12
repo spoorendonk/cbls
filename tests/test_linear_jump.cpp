@@ -393,8 +393,7 @@ TEST_CASE("cached row partials are bit-identical to compute_partial where claime
 TEST_CASE("a built row is never reclassified", "[fj][linear_jump]") {
     // A closed model's rows do not change, so a row's slopes are built once and
     // kept. Reclassifying a built row would leave its slopes in the table, so
-    // it is refused instead; an unbuilt
-    // row can still be (re)classified.
+    // it is refused instead; an unbuilt row can still be (re)classified.
     RandomLinearModel r;
     build_random_linear(r, 31, /*integral=*/true);
     Model& m = r.m;

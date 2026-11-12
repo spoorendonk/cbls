@@ -667,12 +667,11 @@ TEST_CASE("a partitioned model searches its way to a feasible cover", "[list][pa
 }
 
 TEST_CASE("granular guidance survives a universe wider than the list", "[list][partition]") {
-    // `pick_second_position` built its element -> position index sized by the
-    // LIST LENGTH, which coincides with the universe on a permutation and on
-    // nothing else. On a variable-length List every element id at or past the
-    // length was dropped from the index, so the neighbour list named a position
-    // the function could not find and it fell back to the uniform draw -- the
-    // granular neighbourhood silently switched off for most of the universe.
+    // Regression: `pick_second_position` sized its element -> position index by
+    // the LIST LENGTH, which matches the universe only on a permutation. On a
+    // variable-length List every element id at or past the length was dropped,
+    // so it fell back to the uniform draw -- the granular neighbourhood
+    // silently switched off for most of the universe.
     //
     // Here every element's only neighbour is 19, which sits at position 9, and
     // 19's is 10 at position 0. So every guided swap must involve position 9.

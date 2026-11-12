@@ -1,14 +1,13 @@
 // Who initialises what, and what the seed does and does not move (#108).
 //
-// `solve()` used to call `initialize_random` (randomising every variable) and
-// then, a dozen lines later, `fj.begin(set_initial_x=true)`, which overwrote
-// every Bool/Int/Float with the domain value closest to zero. The random scalar
-// draws were therefore computed and immediately discarded, and the code read as
-// though the seed varied the starting point when it did not.
+// Pre-#108 `solve()` called `initialize_random` and then
+// `fj.begin(set_initial_x=true)`, which overwrote every Bool/Int/Float with
+// the domain value closest to zero: the random scalar draws were discarded,
+// and the code read as though the seed varied the start when it did not.
 //
-// Resolution: FeasibilityJump owns the scalar start (the published Feasibility
-// Jump initialisation) and `initialize_structured_random` covers only the types
-// FJ cannot initialise. These tests pin both halves of that split, and the
+// FeasibilityJump owns the scalar start (the published Feasibility Jump
+// initialisation) and `initialize_structured_random` covers only the types FJ
+// cannot initialise. These tests pin both halves of that split, and the
 // documented opt-in for callers who do want a randomised scalar start.
 
 #include "test_helpers.h"
@@ -89,10 +88,9 @@ TEST_CASE("solve starts each scalar at the domain value closest to zero", "[sear
 }
 
 TEST_CASE("solve's scalar starting point does not vary with the seed", "[search][init]") {
-    // This is the behaviour #108 settled on, and it is deliberate: the starting
-    // point is the published Feasibility Jump one, not a random draw. Anyone
-    // reading three identical results across three seeds on a scalar model is
-    // seeing three runs that *began* at the same point.
+    // Deliberate (#108): the starting point is the published Feasibility Jump
+    // one, not a random draw. Three identical results across three seeds on a
+    // scalar model are three runs that *began* at the same point.
     Model a = scalar_model();
     Model b = scalar_model();
     Model c = scalar_model();

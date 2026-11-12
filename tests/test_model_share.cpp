@@ -157,10 +157,10 @@ TEST_CASE("each replica keeps its own objective bound", "[share]") {
     a.set_objective_bound(5.0);
     b.set_objective_bound(1.0);
 
-    // The bound was the one piece of per-worker mutable state living in shared
-    // storage: `set_objective_bound` used to write the RHS Const node's
-    // `const_value`. With it still there, these two assertions read each other's
-    // bound -- and the second `full_evaluate` below silently resets both.
+    // The bound is per-worker state kept out of shared storage. When
+    // `set_objective_bound` wrote the RHS Const node's `const_value`, these two
+    // assertions read each other's bound -- and the second `full_evaluate`
+    // below silently reset both.
     REQUIRE(a.objective_bound() == 5.0);
     REQUIRE(b.objective_bound() == 1.0);
     REQUIRE_THAT(a.node_value(obj_row), WithinAbs(2.0 - 5.0, 1e-12));
@@ -195,7 +195,7 @@ TEST_CASE("a replica copies the master's node values rather than re-deriving the
     //
     // That asymmetry is the whole point of the case. Evaluating the master first
     // would make every assertion below hold whether the copy constructor
-    // re-evaluated or not, which is what an earlier revision of this test did.
+    // re-evaluated or not.
     master.var_mut(xid).value = 6.0;
 
     Model replica = master;

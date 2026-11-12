@@ -1,7 +1,7 @@
 // LNS ruin and recreate on a ListPartition (#202).
 //
-// The destroy step used to shuffle a List's order and hand the result to FJ,
-// which cannot move a List, so on a partitioned-List model no repair was ever
+// Pre-#202 the destroy step shuffled a List's order and handed it to FJ, which
+// cannot move a List, so on a partitioned-List model no repair was ever
 // accepted (0 of every attempt on CVRP). These pin what replaced it: the cover
 // and the length bounds survive, the operation is a function of the seed, and
 // it finds improvements.
@@ -243,13 +243,12 @@ TEST_CASE("ruin and recreate is a function of the seed (#202)", "[lns][partition
 }
 
 TEST_CASE("ruin and recreate moves elements between lists (#202)", "[lns][partition]") {
-    // The old destroy shuffled the order WITHIN a route and FJ could not move a
-    // List, so it could never change which route serves whom. Here every route
-    // holds two customers -- capacity 2, ten customers, five routes -- so a
-    // shuffle is at best a reversal, which costs exactly the same on integral
-    // distances: the old LNS accepted nothing on this model, ever. The pairing
-    // is deliberately bad (i with i + 5, across the spiral), so moving
-    // customers between routes is the only way to improve it.
+    // Every route holds two customers -- capacity 2, ten customers, five routes
+    // -- so a shuffle WITHIN a route, all the pre-#202 destroy could do, is at
+    // best a reversal, which costs exactly the same on integral distances: that
+    // LNS accepted nothing on this model, ever. The pairing is deliberately bad
+    // (i with i + 5, across the spiral), so moving customers between routes is
+    // the only way to improve it.
     Routing r(Cover::Exact, /*customers=*/10, /*n_routes=*/5, /*capacity=*/2);
     for (int i = 0; i < 5; ++i) {
         r.m.var_mut(r.route_vars[static_cast<size_t>(i)]).elements = {i, i + 5};
