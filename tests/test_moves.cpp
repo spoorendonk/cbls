@@ -85,7 +85,7 @@ TEST_CASE("List moves", "[moves]") {
     auto& v = m.var_mut(vid(lv));
     v.elements = {0, 1, 2, 3, 4};
     auto moves = generate_standard_moves(m.var(vid(lv)), rng);
-    REQUIRE(moves.size() >= 2);  // swap + 2-opt + relocate + or_opt
+    REQUIRE(moves.size() >= 2);  // swap, 2-opt, relocate; or-opt if i < n-1
     for (const auto& mv : moves) {
         auto new_elems = elements_after(mv.changes[0], v.elements);
         auto sorted = new_elems;

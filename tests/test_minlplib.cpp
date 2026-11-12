@@ -1114,12 +1114,12 @@ TEST_CASE("MINLPLib ex4_1_8 solves within a loose gap of its published bound",
 // feasible ones. Neither trapped value is in any feasible combination (every
 // one of the 52 needs x0 >= 5 and x1 >= 5), so refining could not escape it.
 //
-// Diversification is gated on perturbation_period (100) non-improving BATCHES
-// of batch_iterations (1000) GLS iterations, and before the first feasible
-// solution no batch improves -- one kick per 100 000 iterations whatever the
-// search does. GFJConfig::unproductive_iterations ends a batch that has
-// stopped reducing the REAL rows' violation, and solve() treats such a batch
-// as the diversification kick being due.
+// The cycle lasted because diversification was gated on perturbation_period
+// (100) non-improving BATCHES of batch_iterations (1000) GLS iterations, and
+// before the first feasible solution no batch improves -- one kick per 100 000
+// iterations whatever the search did. GFJConfig::unproductive_iterations now
+// ends a batch that has stopped reducing the REAL rows' violation, and solve()
+// treats such a batch as the diversification kick being due.
 //
 // On the iteration-bounded path so it is bit-deterministic and runs in seconds;
 // the issue's wall-clock criterion (feasible within 60s at seed 42) is recorded
@@ -1129,7 +1129,7 @@ TEST_CASE("MINLPLib ex4_1_8 solves within a loose gap of its published bound",
 // Shown red before the fix, per CLAUDE.md, rather than argued: a `git archive`
 // of the branch with ONLY the four production files (src/feasibility_jump.cpp,
 // src/search.cpp and their two headers) restored from main -- this test file
-// left exactly as it is -- fails at the first seed with
+// left as it was at #102, seeds 2 and 42 -- fails at the first seed with
 //
 //   REQUIRE( result.feasible ) ... false
 //   seed 2; best_violation := 2.34203865; objective := inf; iterations := 15000

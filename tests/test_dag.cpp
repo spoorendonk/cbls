@@ -467,12 +467,12 @@ TEST_CASE("flat edge storage keeps child, parent, dependent and topological orde
 }
 
 TEST_CASE("Delta evaluation respects dependency order on a deep chain", "[dag]") {
-    // delta_evaluate recomputes the dirty set in topological order by sorting
-    // the dirty list by topological position: walking the WHOLE topo order and
-    // testing a flag is O(all nodes) per call -- ~2M flag tests per move on the
-    // largest MIPfeas instance, for a dirty set of a few dozen. This pins the
-    // property the sort has to preserve: a node must never be recomputed before
-    // the node it reads.
+    // delta_evaluate recomputes the dirty set in topological order: it sorts
+    // the dirty list by topological position while d*log2(d) < |nodes|, else
+    // scans the whole topo order (dag_ops.cpp). The scan alone is O(all nodes)
+    // per call -- ~2M flag tests per move on the largest MIPfeas instance, for
+    // a dirty set of a few dozen. This pins what both routes must preserve: a
+    // node must never be recomputed before the node it reads.
     //
     // A deep chain is what makes a wrong order observable. The BFS that marks
     // the dirty set enqueues parents in discovery order, which for a chain is

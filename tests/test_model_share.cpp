@@ -157,10 +157,10 @@ TEST_CASE("each replica keeps its own objective bound", "[share]") {
     a.set_objective_bound(5.0);
     b.set_objective_bound(1.0);
 
-    // The bound is per-worker state kept out of shared storage. When
-    // `set_objective_bound` wrote the RHS Const node's `const_value`, these two
-    // assertions read each other's bound -- and the second `full_evaluate`
-    // below silently reset both.
+    // The bound is per-worker state, outside the shared structure (#157).
+    // Were it the RHS Const node's `const_value`, these two assertions would
+    // read each other's bound -- and the second `full_evaluate` below would
+    // silently reset both.
     REQUIRE(a.objective_bound() == 5.0);
     REQUIRE(b.objective_bound() == 1.0);
     REQUIRE_THAT(a.node_value(obj_row), WithinAbs(2.0 - 5.0, 1e-12));
