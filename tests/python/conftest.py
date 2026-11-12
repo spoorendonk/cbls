@@ -15,11 +15,11 @@ if os.path.exists(build_dir):
 # Add the repo root so tests can import benchmark modules (benchmarks.<name>.<module>).
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-# Without compiled bindings, skip the tests that import them (found from the
-# source, so a new one is covered and pure-Python tests still run) instead of
-# failing collection with ImportError. A silent skip reads as a green run, so the
-# terminal summary names what was dropped, and CBLS_REQUIRE_BINDINGS=1 (set by
-# the ```test fence in CLAUDE.md) makes it a hard error.
+# Without compiled bindings (CBLS_BUILD_PYTHON defaults to OFF), skip the tests that
+# import them (found from the source, so a new one is covered and pure-Python tests
+# still run) instead of failing collection with ImportError. A silent skip reads as a
+# green run, so the terminal summary names what was dropped, and
+# CBLS_REQUIRE_BINDINGS=1 (set by the ```test fence in CLAUDE.md) makes it a hard error.
 _ignored_binding_tests: list[str] = []
 
 #: The compiled module a binding test needs.
@@ -32,8 +32,9 @@ def _no_inherited_git_environment(monkeypatch: pytest.MonkeyPatch) -> None:
 
     A git hook exports GIT_DIR and GIT_INDEX_FILE, and any git a test runs
     inherits them whatever its `cwd`, so a tmp-dir `git init` re-initialises the
-    repository being committed to (#160). A test that needs a GIT_* variable sets
-    its own with `monkeypatch.setenv`.
+    repository being committed to and its `git add` stages into the commit's
+    index (#160). A test that needs a GIT_* variable sets its own with
+    `monkeypatch.setenv`.
     """
     for name in [name for name in os.environ if name.startswith("GIT_")]:
         monkeypatch.delenv(name)
@@ -42,9 +43,9 @@ def _no_inherited_git_environment(monkeypatch: pytest.MonkeyPatch) -> None:
 def imports_module(text: str, module: str) -> bool:
     """Whether this source really imports `module` -- by AST, not by substring.
 
-    A substring match ignores a pure-Python test whose docstring names the
-    module, or misses `from _cbls_core import X` /
-    `importlib.import_module("_cbls_core")`, and a missed binding test raises
+    A whole-file substring match ignores a pure-Python test whose docstring names
+    the module; the narrower `import _cbls_core` misses `from _cbls_core import X`
+    and `importlib.import_module("_cbls_core")`, and a missed binding test raises
     ImportError at collection, aborting the whole session. Docstrings and
     comments are not in the AST; all three import spellings are recognised.
     """
@@ -102,10 +103,10 @@ except ImportError:
         ) from None
 
 
-# `ortools`, `pyscipopt` and `pyvrp` live in the `benchmarks` extra, not `dev`,
-# and the tests needing them `pytest.importorskip` them, so the same rule holds:
-# the skip is named in the summary and CBLS_REQUIRE_BENCHMARKS=1 (the ```test
-# fence) makes it a hard error. Files are found from the source; a guard on a
+# `ortools`, `pyscipopt` and `pyvrp` live in the `benchmarks` extra, not `dev`, so a
+# `--extra dev` venv lacks them and the tests that `pytest.importorskip` them vanish.
+# The same rule holds: the skip is named in the summary and CBLS_REQUIRE_BENCHMARKS=1
+# (the ```test fence) makes it a hard error. Files are found from the source; a guard on a
 # new package needs this tuple extended, which
 # `test_every_importorskipped_dependency_is_one_this_gate_watches` enforces.
 BENCHMARK_IMPORTS = ("ortools", "pyscipopt", "pyvrp")

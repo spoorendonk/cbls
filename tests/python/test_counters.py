@@ -5,7 +5,8 @@ this pins what only a binding gets wrong: a field missing or misnamed, and the
 per-generator rows (a bound `std::vector` of a bound struct) as an opaque handle.
 
 Every run is iteration-budgeted with `time_limit = 0.0`, where
-`inner_solver_seconds` is deliberately 0.0 so no clock costs determinism.
+`inner_solver_seconds` is deliberately 0.0; asserted below, so a clock read there
+fails a test instead of costing determinism.
 """
 
 import _cbls_core as cbls

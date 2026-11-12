@@ -129,8 +129,7 @@ agree:
 2. the comment above `catch_discover_tests` in `tests/CMakeLists.txt`,
 3. the build section of `README.md`,
 4. the `.venv/bin/pytest` line in `README.md` for the Python side (1646 tests, 255
-   of them binding tests, echoed in prose by `pyproject.toml` and
-   `tests/python/conftest.py`),
+   of them binding tests, echoed in prose by `pyproject.toml`),
 5. the `-LE slow` guidance and the ~25s/~490s figures in `docs/profiling.md`.
    Note its "302/302 green" sanitizer line is a **dated record of one run at a
    named commit**, not a current count — it says so inline. Leave it alone

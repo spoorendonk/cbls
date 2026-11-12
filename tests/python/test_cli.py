@@ -411,8 +411,8 @@ def test_uc_chped_records_the_arm_on_every_measured_row(tmp_path: Path) -> None:
 
 
 # The anytime trace (#147). tests/test_uc_chped_trace.cpp pins the recorder;
-# only the shell shows the runner hands it to solve(). Pre-#147 it passed
-# `nullptr` as the SolveCallback, and the file got a header and no rows.
+# only the shell shows the runner hands it to solve(): with `nullptr` as the
+# SolveCallback (the pre-#147 call), the file gets a header and no rows.
 UC_CHPED_TRACE_HEADER = (
     "instance,periods,time_limit_s,time_seconds,batches,objective,new_best,commit_sha"
 )
@@ -455,7 +455,7 @@ def test_uc_chped_records_an_anytime_trace(tmp_path: Path) -> None:
     lines = trace.read_text().splitlines()
     assert lines[0] == UC_CHPED_TRACE_HEADER
     rows = [ln.split(",") for ln in lines[1:] if ln]
-    # Rows, not just a header: header-only is what the pre-#147 runner wrote.
+    # Rows, not just a header: header-only is what a runner passing `nullptr` writes.
     assert rows, "the trace has no rows, so no callback reached solve()"
 
     horizons = set()

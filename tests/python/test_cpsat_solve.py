@@ -168,8 +168,8 @@ def test_parse_subsolvers_strips_the_multiplicity_a_second_worker_adds() -> None
 
 
 def test_a_release_that_lost_the_worker_restriction_fails_and_says_so() -> None:
-    # `filter_subsolvers` renamed: CP-SAT runs its default portfolio instead, which
-    # is a different (and rejected) baseline — epic #87.
+    # `filter_subsolvers` renamed: CP-SAT runs its default portfolio instead, not
+    # the fj-ls baseline this mode asked for (defaults mode is separate, #87).
     log = GOOD_PREFLIGHT_LOG.replace(
         "1 first solution subsolver: [fj]",
         "4 first solution subsolvers: [fj, default_lp, no_lp, quick_restart]",
@@ -201,8 +201,8 @@ def test_a_release_that_reformatted_the_solution_line_fails_as_a_log_format_brea
 
 def test_the_full_portfolio_running_alongside_fj_and_ls_is_a_restriction_failure() -> None:
     # An unrestricted run announces `full problem subsolvers`, not `full`; a
-    # whitelist spelling it short never matches, and passes the default portfolio
-    # epic #87 rejects.
+    # whitelist spelling it short never matches, so an fj-ls run that is really the
+    # default portfolio would pass the preflight.
     log = (
         RESTRICTED_HEADER.replace(
             "3 helper subsolvers",

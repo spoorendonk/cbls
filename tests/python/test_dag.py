@@ -12,7 +12,7 @@ from support import vid
 
 
 def test_delta_evaluate_takes_a_set_of_var_ids_and_returns_the_objective() -> None:
-    # The set crosses a caster to C++'s pointer and count. An empty arrival
+    # The set crosses nanobind's `std::set<int32_t>` caster. An empty arrival
     # returns the objective unchanged, so the value is checked after a change
     # that must move it.
     m = cbls.Model()
