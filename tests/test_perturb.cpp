@@ -1,9 +1,8 @@
 // Regression tests for #109: a diversification kick must always move
-// something. perturb() used to randomise each variable independently, so at the
-// default perturbation_probability = 0.1 a kick changed nothing at all with
-// probability (1-p)^n — 90% on a one-variable model, 81% on two. The tests
-// below run many seeds rather than one lucky draw, so a reintroduced
-// no-op would fail deterministically rather than flake.
+// something. Independent per-variable draws make a kick a no-op with
+// probability (1-p)^n at the default perturbation_probability = 0.1: 90% on a
+// one-variable model, 81% on two. Many seeds rather than one lucky draw, so a
+// reintroduced no-op fails deterministically rather than flakes.
 #include <algorithm>
 #include <catch2/catch_test_macros.hpp>
 #include <cbls/cbls.h>
@@ -86,10 +85,10 @@ int min_vars_moved_per_kick(MakeVars&& make_vars, double probability, int kicks 
 }  // namespace
 
 TEST_CASE("perturb always moves a one-variable model", "[fj][perturb]") {
-    // The headline case: at p = 0.1 the old code left a one-variable model
-    // untouched 9 kicks in 10. Bool is the sharpest check — resampling a Bool
-    // uniformly redraws its current value half the time, so "force one variable"
-    // is only enough if the forced value is drawn to DIFFER.
+    // The headline case: at p = 0.1 independent draws leave a one-variable
+    // model untouched 9 kicks in 10. Bool is the sharpest check — resampling a
+    // Bool uniformly redraws its current value half the time, so "force one
+    // variable" is only enough if the forced value is drawn to DIFFER.
     REQUIRE(min_vars_moved_per_kick([](Model& m) { return std::vector<int32_t>{m.bool_var()}; },
                                     kDefaultP) == 1);
     REQUIRE(min_vars_moved_per_kick([](Model& m) { return std::vector<int32_t>{m.int_var(0, 5)}; },
@@ -269,13 +268,11 @@ TEST_CASE("perturb's forced integer move covers the domain minus the current val
 }
 
 // --- #111: the structural half of the kick ---------------------------------
-// #109's guarantee reached only the variables Feasibility Jump can jump, and
-// jumpability is scalar-only. On a model whose decisions live in List/Set
-// variables — setcover's `Set` encoding is the case in the current roster;
-// pharma-glsp's campaign scheduling was the case when this landed, gone in
-// #28 — a kick randomised nothing at all, burned the stagnation counter and let the
-// search resume exactly where it was. The tests below run many seeds rather than
-// one lucky draw, for the same reason the scalar ones above do.
+// #109's guarantee covers only what Feasibility Jump can jump, which is
+// scalar-only, so a kick on a model whose decisions live in List/Set variables
+// (setcover's `Set` encoding) must move the structures itself, or it burns the
+// stagnation counter and resumes where it was. Many seeds, as for the scalar
+// tests above.
 
 namespace {
 
@@ -362,7 +359,7 @@ TEST_CASE("perturb always moves a List-only model", "[fj][perturb][structural]")
             const std::vector<std::vector<int32_t>> before = all_elements(m);
             fj.perturb(kDefaultP);
             const std::vector<std::vector<int32_t>> after = all_elements(m);
-            REQUIRE(after != before);  // the kick a List-only model used to not get
+            REQUIRE(after != before);  // a List-only kick moves (#111)
             for (size_t v = 0; v < after.size(); ++v) {
                 REQUIRE(is_permutation_of(after[v], original[v]));
             }
@@ -559,12 +556,10 @@ TEST_CASE("an immovable structure costs a scalar model no randomness",
 // ---------------------------------------------------------------------------
 // #115: the structural kick's deadline bound.
 //
-// The pass used to check the wall clock only BETWEEN structural variables, so a
-// model whose structure lives in one large List or Set had no effective bound:
-// one variable costs k = round(p * |elements|) move-set generations, quadratic
-// in that variable's size, and the check ran only on the way to a variable that
-// did not exist. It now checks between MOVES, on a stride counted in moves and
-// capped at FeasibilityJump::kMaxDeadlineStride.
+// The pass checks the wall clock between MOVES, on a stride counted in moves
+// and capped at FeasibilityJump::kMaxDeadlineStride. A check only between
+// structural variables leaves one large List or Set unbounded: one variable
+// costs k = round(p * |elements|) move-set generations, quadratic in its size.
 //
 // The bound is observed directly — as the moves the pass applied, which is the
 // quantity the guarantee is about — rather than as elapsed time. The deadline is
@@ -610,10 +605,9 @@ TEST_CASE("a kick on one large List is bounded by the deadline, not by the List"
     // loose bound instead would accept 65 and let the re-arm be deleted in
     // silence — a kick would then inherit a grown stride and run 64 moves inside
     // the first large variable (~35 ms rather than ~0.55 ms on the 41k Set of
-    // #115). That exact stride-persistence bug already shipped once in
-    // the structural sweep, where it went inert on 160 of 170 pharma-glsp instances
-    // (the benchmark is gone in #28; the bug it exposed is not).
-    // Unbounded, this is 10000 — what the pass ran before, whatever the budget.
+    // #115). The same stride-persistence bug once left the structural sweep
+    // inert on 160 of 170 pharma-glsp instances (benchmark gone in #28).
+    // Unbounded, this is 10000, whatever the budget.
     REQUIRE(fj.structural_kick_moves() == 1);
     // Not inert: the kick still happened, and still moved the List. Compared
     // through a bool so a failure reports the verdict rather than dumping 20000
@@ -705,27 +699,17 @@ TEST_CASE("a deadline that expires mid-kick stops it within a stride",
     RNG rng(42);
     GFJConfig cfg;
     cfg.two_phase = false;
-    // Two margins, both wide. RE-MEASURED AT #164, WHICH IS WHY THE LIST IS TEN
-    // TIMES LONGER THAN IT WAS. A candidate move used to carry the whole element
-    // vector, so generating five of them cost five O(n) copies. Positional edits
-    // made the kick on a 20 000-element List 0.022 s, and the old size then no
-    // longer outran a 0.2 s budget at all, so this test failed on its own
-    // premise rather than on the mechanism it is about.
-    //
-    // STATE THE BOUND THE EVIDENCE CARRIES. What is measured is: the old kick at
-    // n = 20 000 did NOT finish inside 0.2 s (this test's old form asserted the
-    // deadline cut it short), and the new one takes 0.022 s. That is a speedup
-    // of AT LEAST ~9x. An earlier draft said "~2.3 s, about a hundredfold": the
-    // 2.3 s was never measured on this path, it was #115's 1021 ms for 3000
-    // moves on a 30 000-element List scaled to ~230 us/move x 10 000 moves. An
-    // extrapolation from a different instance size is not a measurement, and a
-    // ratio built on one is not a result. Measured here with the wall clock removed, one
+    // Two margins, both wide; the List must outrun a 0.2 s budget, so it was
+    // re-sized at #164, whose positional edits cut a 20 000-element kick to
+    // 0.022 s. Before #164 that kick did NOT finish inside 0.2 s, so the
+    // measured speedup is AT LEAST ~9x (no ~2.3 s figure was measured on this
+    // path: that was #115's 1021 ms for 3000 moves on a 30 000-element List,
+    // extrapolated). Measured after #164 with the wall clock removed, one
     // thread, Release: n = 20 000 / 10 000 moves / 0.022 s; 50 000 / 25 000 /
-    // 0.126 s; 100 000 / 50 000 / 0.489 s; 200 000 / 100 000 / 1.95 s. The last
-    // is ~10x this 0.2 s budget, which restores the headroom the 20 000-element
-    // List used to have. In the other direction the budget affords ~10 000
-    // moves, so the machine would have to stall for the entire 0.2 s before the
-    // second move to defeat the "got going" half.
+    // 0.126 s; 100 000 / 50 000 / 0.489 s; 200 000 / 100 000 / 1.95 s. The
+    // last is ~10x this 0.2 s budget. In the other direction the budget affords
+    // ~10 000 moves, so the machine would have to stall for the entire 0.2 s
+    // before the second move to defeat the "got going" half.
     cfg.time_limit = 0.2;
     FeasibilityJump fj(m, vm, rng, cfg);
     fj.begin(/*set_initial_x=*/true);
@@ -741,13 +725,12 @@ TEST_CASE("a deadline that expires mid-kick stops it within a stride",
     // moves between two consecutive clock reads never exceed the cap, so neither
     // can the work done past the deadline.
     //
-    // Note what this does NOT catch, so nobody mistakes it for the whole story.
-    // Reloading the countdown with a MULTIPLE of the stride is invisible in this
-    // regime, because the tuner measures the interval it actually got: over
-    // 4 * stride moves it sees 4x the elapsed time and shrinks the stride 4x to
-    // match, landing on the same moves-per-check. The mutation only shows where
-    // the 64-move cap binds instead of the time target -- see the small-structure
-    // test below, which is the one that fails on it.
+    // What this does NOT catch: reloading the countdown with a MULTIPLE of the
+    // stride is invisible in this regime, because the tuner measures the
+    // interval it actually got: over 4 * stride moves it sees 4x the elapsed
+    // time and shrinks the stride 4x to match, landing on the same
+    // moves-per-check. The mutation only shows where the 64-move cap binds
+    // instead of the time target -- the small-structure test below fails on it.
     REQUIRE(fj.structural_kick_moves() <=
             (FJ::kMaxDeadlineStride * fj.structural_kick_checks()) + 1);
 }

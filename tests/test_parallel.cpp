@@ -112,25 +112,18 @@ TEST_CASE("a stalled search adopts a peer's solution from the pool", "[parallel]
     // means moving mass between columns one jump at a time. A run that starts
     // by piling the target onto a few columns spends a long way climbing down.
     //
-    // The control arm below is not decoration. Without it this test passes
-    // whether or not adoption works the moment the search gets fast enough to
-    // reach the gift on its own -- exactly how it went vacuous the first time
-    // it was written.
+    // The control arm below is not decoration: without it this test passes
+    // whether or not adoption works once the search reaches the gift alone.
     //
-    // It caught that a second time, and the size below is the repair. At 20
-    // columns the control arm returned exactly the gift's 180 once a
-    // diversification kick started from the incumbent rather than from wherever
-    // the previous kick left the search (#158): the single-threaded run simply
-    // finds this model's optimum now, so there was no gift left to be out of
-    // reach. 80 columns put it back out of reach -- the control converged to
-    // 734 against the balanced optimum's 720 -- at the same budget. It went
-    // vacuous a third time when apply_jump stopped declaring false local minima
-    // (#206): the control then reached 720 itself. 96 columns restores it --
-    // control 876 against the optimum's 864. Raise the column count, not the
-    // budget, if it ever goes vacuous again: the control's value is where the
-    // search CONVERGES here, not where the budget stops it, so a longer run does
-    // not widen the margin. (Scanned at #206: 112-176 columns also keep the
-    // control out of reach, but flip the parity-dependent latch asserted below.)
+    // The size keeps the gift out of reach. At 20 columns the control reached
+    // the gift's 180 after kicks started from the incumbent (#158); at 80 it
+    // converged to 734 against the optimum's 720 until apply_jump stopped
+    // declaring false local minima (#206). At 96 the control gets 876 against
+    // the optimum's 864. If it goes vacuous again, raise the column count, not
+    // the budget: the control's value is where the search CONVERGES here, not
+    // where the budget stops it, so a longer run does not widen the margin.
+    // (Scanned at #206: 112-176 columns also keep the control out of reach,
+    // but flip the parity-dependent latch asserted below.)
     constexpr int kVars = 96;
     constexpr double kTarget = 3.0 * kVars;
     auto build = []() {
@@ -226,16 +219,14 @@ TEST_CASE("a stalled search adopts a peer's solution from the pool", "[parallel]
     // at exit distinguishes "the last full-period kick was a stood-down
     // self-draw" from "it was an adoption".
     //
-    // Since #158 the worker is NOT reliably sitting on the gift when that test
-    // runs: diversify() restores kick_origin() -- here the gift, which IS
-    // best_state_ because it improved on the control's value -- and then perturb()
-    // is guaranteed to move at least one variable (#109/#111). So whether the
-    // draw is a self-draw now depends on FJ having come back to the gift, which
-    // is the same parity dependence the paragraph below already describes rather
-    // than a new one. Re-measured at kVars = 80 then, and at kVars = 96 for
-    // #206: both assertions hold. The pre-#158 note said "armed with the guard, unarmed without
-    // it", measured at kVars = 20 on a trajectory this change replaced; it is restated here rather
-    // than carried over.
+    // The worker is NOT reliably sitting on the gift when that test runs
+    // (#158): diversify() restores kick_origin() -- the gift, which IS
+    // best_state_ because it improved on the control's value -- and perturb()
+    // moves at least one variable (#109/#111). So a self-draw depends on FJ
+    // having come back to the gift: the parity dependence described below.
+    // Re-measured at kVars = 80 after #158 and at kVars = 96 for #206: both
+    // assertions hold. (The pre-#158 "armed with the guard, unarmed without
+    // it" was measured at kVars = 20 on a replaced trajectory.)
     //
     // The control is asserted too, and that is the point of asserting it: this
     // proxy is parity-dependent -- it really says "the LAST full-period kick of
@@ -325,11 +316,10 @@ TEST_CASE("a raised stop flag ends a search that still has budget", "[parallel][
 // ---------------------------------------------------------------------------
 TEST_CASE("a portfolio result describes the state it returns", "[parallel]") {
     // Everything on a SearchResult that is a statement ABOUT the returned point
-    // has to be assembled with it. `best_violation` was not: the portfolio built
-    // its result from the pool -- which carried the state, the objective and the
-    // feasibility flag and nothing else -- and left the residual at its +inf
-    // default. Any caller that gates publication on the residual then rejects
-    // every parallel row it is handed, which is what benchmarks/mipfeas did.
+    // has to be assembled with it. Pins `best_violation`: built from the pool
+    // (state, objective, feasibility flag only), it stayed at its +inf default,
+    // so a caller gating publication on the residual (benchmarks/mipfeas)
+    // rejected every parallel row.
     ParallelSearch ps(4);
     const SearchResult r = ps.solve(quadratic_model, /*time_limit=*/0.5, /*seed=*/42);
 
@@ -365,11 +355,10 @@ TEST_CASE("a portfolio result counts the work its workers did", "[parallel]") {
 TEST_CASE("the portfolio stops every worker once one solves the model", "[parallel]") {
     // The factory hands the FIRST worker to call it a satisfiable model and
     // every other worker an unsatisfiable one of the same shape. (First to
-    // call, not index 0: the factory runs on the worker threads.) That asymmetry is what makes the
-    // test discriminate: give every worker the same easy model and they all
-    // finish in milliseconds on their own, so the call returns fast whether or
-    // not the stop flag exists -- which is exactly how the first version of
-    // this test passed with the mechanism removed.
+    // call, not index 0: the factory runs on the worker threads.) That
+    // asymmetry is what makes the test discriminate: give every worker the same
+    // easy model and they all finish in milliseconds on their own, so the call
+    // returns fast whether or not the stop flag exists.
     //
     // Here, one worker finds its feasible point at once and the question is
     // settled. The others are grinding a model with no feasible point at all
@@ -632,8 +621,8 @@ TEST_CASE("a one-worker portfolio is still a correct portfolio", "[parallel]") {
 TEST_CASE("SolutionPool clamps a degenerate capacity", "[pool]") {
     // A direct caller reaches this constructor unvalidated, so the clamp is the
     // guard. A capacity of 0 with no clamp makes submit() resize to 0 and best()
-    // return nullopt on a pool that was just handed a solution. (A portfolio no
-    // longer gets here with 0 -- effective_pool_capacity intercepts it first --
+    // return nullopt on a pool that was just handed a solution. (A portfolio
+    // never gets here with 0 -- effective_pool_capacity intercepts it first --
     // but SolutionPool is public API and this is its own contract.)
     SolutionPool pool(0);
     for (int i = 0; i < 3; ++i) {
@@ -658,7 +647,7 @@ TEST_CASE("an iteration-only portfolio returns instead of restarting forever", "
     // max_iterations as the only budget -- a supported call shape, and the one
     // the removed epoch-sync mode used. The restart loop must NOT restart there:
     // there is no "time the predecessor left" to run on, so every restart would
-    // hand the worker its whole iteration budget again. It hung.
+    // hand the worker its whole iteration budget again, and the run hangs.
     //
     // The TIMEOUT on this test in tests/CMakeLists.txt is what makes the
     // regression report itself; without it a failure is an inconclusive
@@ -686,11 +675,10 @@ TEST_CASE("an iteration-only portfolio returns instead of restarting forever", "
 // ---------------------------------------------------------------------------
 
 TEST_CASE("adjacent base seeds do not share worker streams", "[parallel][seed]") {
-    // The property the old `base + worker + restart * n_threads` scheme did NOT
-    // have. It was a correct bijection within one run -- which is all it
-    // claimed -- but at 12 workers `--seed 42` and `--seed 43` shared 11 of
-    // their 12 base streams, so bumping the seed to draw an independent sample
-    // barely changed the portfolio. Now the default worker count.
+    // A `base + worker + restart * n_threads` scheme is a bijection within one
+    // run, but at 12 workers (the default count) `--seed 42` and `--seed 43`
+    // would share 11 of their 12 base streams, so bumping the seed would barely
+    // change the portfolio.
     constexpr int kWorkers = 12;
     std::set<uint64_t> a;
     std::set<uint64_t> b;
@@ -751,12 +739,11 @@ struct FlakyHook : InnerSolverHook {
 }  // namespace
 
 TEST_CASE("a worker whose search throws is restarted, not abandoned", "[parallel]") {
-    // Before this, one try/catch wrapped the whole worker: any throw parked the
-    // exception and the thread exited, leaving its core idle for the rest of the
-    // run while its peers continued -- and the exception was discarded unless
-    // EVERY worker had failed. Remove the retry (break instead of continue in
-    // run_worker's catch) and this goes red: no hook ever gets past its
-    // failures, so `successes` stays 0 and the run is not feasible.
+    // A throw restarts the worker rather than exiting its thread, which would
+    // leave its core idle for the rest of the run. Remove the retry (break
+    // instead of continue in run_worker's catch) and this goes red: no hook
+    // ever gets past its failures, so `successes` stays 0 and the run is not
+    // feasible.
     std::atomic<int> total_successes{0};
     auto hook_factory = [&total_successes](Model&) -> std::shared_ptr<InnerSolverHook> {
         // One failure per worker, then fine.
@@ -924,20 +911,16 @@ TEST_CASE("drawing an infeasible pool entry is safe", "[parallel][coord]") {
     // The model has NO feasible point (x, y in [0, 1] cannot sum to 5), which is
     // what makes the plant reachable at all: `share()` is only called from
     // `record_best`, so a run that never becomes feasible never submits, and the
-    // plant is never outranked. That matters -- an earlier version of this test
-    // used a solvable model and a capacity-1 pool, and the worker's first
-    // feasible submit evicted the plant before any draw, so the test exercised
-    // nothing. `submit` sorts feasible-first, so an infeasible entry sorts LAST
-    // and the better-half draw can only ever reach it when the pool is entirely
-    // infeasible.
+    // plant is never outranked (on a solvable model the worker's first feasible
+    // submit would evict it before any draw). `submit` sorts feasible-first, so
+    // an infeasible entry sorts LAST and the better-half draw can only ever
+    // reach it when the pool is entirely infeasible.
     //
     // What this does NOT claim: that the `feasible_here` guard on the bound
     // derivation changes an outcome. It does not have a distinct behavioural
     // observable -- `max_real_violation` excludes the artificial objective row,
     // so even an unmeetable bound leaves feasibility reporting unchanged. The
-    // guard is argued from record_best's invariant, not measured, and the
-    // sentinel arm that used to sit beside it was deleted for exactly that
-    // reason.
+    // guard is argued from record_best's invariant, not measured.
     auto build = []() {
         Model m;
         auto x = m.float_var(0, 1);
@@ -1040,9 +1023,8 @@ TEST_CASE("every TerminationReason has a distinct stable token", "[parallel][sea
 // ---------------------------------------------------------------------------
 
 TEST_CASE("pool_capacity reaches the pool the workers share", "[parallel]") {
-    // The field was plumbed from Python through ParallelConfig to the
-    // SolutionPool constructor and exercised by nothing: deleting the parameter
-    // from solve_portfolio left the whole suite green.
+    // Pins that the field reaches the SolutionPool constructor: without this,
+    // deleting the parameter from solve_portfolio leaves the whole suite green.
     //
     // One worker and an iteration-only budget make the run fully deterministic
     // (no wall clock, and the no-deadline break means exactly one solve), so the
@@ -1073,18 +1055,17 @@ TEST_CASE("pool_capacity reaches the pool the workers share", "[parallel]") {
     // The assertion is on ITERATIONS, not on the objective or the state: both
     // arms converge to this model's optimum, so those agree while the
     // trajectories differ. The iteration count is where the difference shows --
-    // measured 20 029 against 20 038 -- and it is exact, because an
-    // iteration-only budget makes a one-worker portfolio fully deterministic
-    // (no wall clock, and the no-deadline break means exactly one solve).
+    // measured 20 029 against 20 038 -- and it is exact, because the run is
+    // fully deterministic (see the top of this test).
     INFO("capacity 1 -> " << tight.iterations << " iterations, capacity 10 -> "
                           << loose.iterations);
     REQUIRE(tight.iterations != loose.iterations);
 }
 
 TEST_CASE("the portfolio returns a verifiable assignment", "[parallel]") {
-    // The returned state can now come from a DIFFERENT worker's model than the
-    // one that recorded it last, so "is this a valid assignment of the model"
-    // is no longer implied by the single-solve tests. Check it independently.
+    // The returned state can come from a DIFFERENT worker's model than the one
+    // that recorded it last, so "is this a valid assignment of the model" is
+    // not implied by the single-solve tests. Check it independently.
     ParallelSearch ps(4);
     const SearchResult r = ps.solve([]() { return quadratic_model(); }, 1.0, 42);
     REQUIRE(r.feasible);
@@ -1297,8 +1278,8 @@ struct DiesOnRestartTracer : Tracer {
 
 TEST_CASE("a portfolio whose worker cannot allocate reports it", "[parallel][workers]") {
     // Worker 1 throws bad_alloc on its first batch of every attempt, exhausts its
-    // retries and contributes nothing. Before #170 the result was
-    // indistinguishable from a healthy 3-worker run.
+    // retries and contributes nothing. Without the accounting (#170) the
+    // result is indistinguishable from a healthy 3-worker run.
     constexpr int kThreads = 3;
     ParallelConfig pc;
     pc.n_threads = kThreads;
@@ -1376,7 +1357,7 @@ TEST_CASE("workers a solved feasibility model never needed still completed",
           "[parallel][workers]") {
     // No objective, so the first worker to reach a feasible point ends the run
     // and its peers typically stop before their first attempt. Nothing failed:
-    // counting them as lost flagged every easy run (the CLI warned "1 of 8
+    // counting them as lost flags every easy run (the CLI warned "1 of 8
     // completed" on examples/nqueens.cbls). Red-checked: under a definition that
     // required a returned attempt this reported 1 or 2 of 8.
     auto feasibility_model = [] {
@@ -2195,13 +2176,13 @@ TEST_CASE("an own best that ties the shared bound still counts as an improvement
     // behaviour; change it deliberately, with a re-measurement, or not at all.
     //
     // The peer's 65 is an objective this worker records exactly, at seed 5, in
-    // a batch that starts with the bound already at the cap 65 earns. (It was
-    // 68 until #206 moved the trajectory, then 69; #211 -- the integral
-    // objective's bound step of 1, and FJ's sample of 5 -- moved it again, and a
-    // scan of 40-140 at seed 5 now finds 65 alone.) Compound moves are off, as they were when #179
-    // was measured and the tie was found; the engine default turned them on afterwards.
-    // The objective tie-break is off for the same reason: it became the default
-    // at #226, after #179, and moves which objective values this worker records.
+    // a batch that starts with the bound already at the cap 65 earns. (68
+    // before #206, then 69; after #211 -- the integral objective's bound step
+    // of 1, and FJ's sample of 5 -- a scan of 40-140 at seed 5 finds 65 alone.)
+    // Compound moves are off, as when #179 was measured and the tie was found;
+    // they became the engine default afterwards. The objective tie-break is off
+    // for the same reason: it became the default at #226, after #179, and moves
+    // which objective values this worker records.
     constexpr double kTiePeer = 65.0;
     SolutionPool pool(1);
     SearchCoordination coord;
@@ -2276,10 +2257,10 @@ TEST_CASE("a pure-feasibility model ignores a shared objective",
 }
 
 TEST_CASE("two infeasible answers are ranked by violation, not by objective", "[parallel]") {
-    // An infeasible run reports objective +inf, so ranking two of them by
-    // objective compared inf with inf and kept whichever arrived first -- the
-    // pool, and a worker's across-restarts accumulator, could both return the
-    // farther approach (#211). The lower violation must win, wherever it lands.
+    // An infeasible run reports objective +inf, so ranking two by objective
+    // compares inf with inf and keeps whichever arrived first: the pool and a
+    // worker's across-restarts accumulator could both return the farther
+    // approach (#211). The lower violation must win, wherever it lands.
     constexpr double kInf = std::numeric_limits<double>::infinity();
     REQUIRE(cbls::ranks_before(false, kInf, 1.0, false, kInf, 5.0));
     REQUIRE_FALSE(cbls::ranks_before(false, kInf, 5.0, false, kInf, 1.0));
@@ -2303,9 +2284,9 @@ TEST_CASE("two infeasible answers are ranked by violation, not by objective", "[
 }
 
 TEST_CASE("a non-positive batch_iterations is refused rather than run unbounded", "[parallel]") {
-    // `batch_iterations <= 0` used to mean "unlimited", so on an infeasible model
-    // under an iteration-only budget a batch never returned to the loop that
-    // counts max_iterations (#211). Refused at both entry points now. A hang is
+    // `batch_iterations <= 0` is refused at both entry points (#211): read as
+    // "unlimited", a batch on an infeasible model under an iteration-only
+    // budget never returns to the loop that counts max_iterations. A hang is
     // what the unfixed engine does here, so tests/CMakeLists.txt registers this
     // with a TIMEOUT as well.
     auto infeasible = []() {

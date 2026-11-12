@@ -225,8 +225,8 @@ TEST_CASE("a .cbls round-trip preserves the closing rule and the endpoint terms"
 
 TEST_CASE("a .cbls round-trip of a Set child covers the whole universe", "[io][pair_lambda]") {
     // A Set's max_size is its cardinality bound, its universe_size the element
-    // range. Tabulating by max_size wrote a matrix too narrow to index, and the
-    // reload then threw on any element past it.
+    // range. Pins tabulation by universe_size: a max_size-wide matrix made the
+    // reload throw on any element past it.
     Model m;
     auto sv = m.set_var(6, 2, 3, "chosen");
     int32_t node = m.pair_lambda_sum(sv, d, head_cost, tail_cost, PairMode::Cyclic);

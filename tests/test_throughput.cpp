@@ -1,52 +1,38 @@
 // Throughput floors, one per benchmarked problem class (issue #125).
 //
-// WHAT THESE ASSERT, AND WHAT THEY DO NOT. Every published result in this repo
-// is a time-limited solve, so the engine's value is the work it completes inside
-// a fixed wall clock. Nothing else in the suite would notice that halving: the
-// correctness tests bound the search by GLS *iterations* (solve_deterministic,
-// time_limit = 0) precisely so their outcome does not depend on machine speed,
-// which makes every one of them blind to the rate at which those iterations
-// arrive. These three tests are the inverse: a fixed wall-clock budget, and an
-// assertion on the iterations completed within it.
+// The engine's value is the work it completes inside a fixed wall clock, and
+// the correctness tests bound search by GLS iterations (solve_deterministic,
+// time_limit = 0), so they are blind to the iteration rate. These tests fix a
+// wall-clock budget and assert on the iterations completed within it.
 //
-// They are FLOORS ON WORK, not ceilings on time. `timing_structural_batch_deadline`
-// in test_search.cpp and `timing_inner_solver_hook_deadline` (#191) are the
-// suite's hand-registered assertions on wall-clock *duration*;
-// these assert on a count, with the clock as the budget rather than the subject.
+// They are FLOORS ON WORK, not ceilings on time: the duration assertions are
+// `timing_structural_batch_deadline` (test_search.cpp) and
+// `timing_inner_solver_hook_deadline` (#191).
 //
 // The floors sit 5-10x below the measured rate on purpose. The target is an
-// order-of-magnitude collapse — an accidental algorithmic regression, an O(n)
-// scan that became O(n^2), a cache that stopped caching. A floor set close to the
-// observed rate catches machine variance instead and gets disabled within a
-// month, which is worse than no test at all. If one of these fires, the rate did
-// not drift; something structural broke. docs/profiling.md is the tool for
-// attributing where the time went.
+// order-of-magnitude collapse (an O(n) scan become O(n^2), a cache that stopped
+// caching); a floor close to the observed rate catches machine variance and
+// gets disabled. If one fires, something structural broke; docs/profiling.md
+// attributes where the time went.
 //
-// WHAT THEY DO NOT COVER: the FJ inner loop is what they measure, as the trap
-// note below makes concrete. A 10x regression confined to batch-level code —
-// LNS, diversification, resync, the inner-solver hook — costs too little of a
-// 1s budget to move these numbers, and would pass green. Covering that wants a
-// different instrument, not a tighter floor here.
+// NOT COVERED: they measure the FJ inner loop. A 10x regression confined to
+// batch-level code (LNS, diversification, resync, the inner-solver hook) costs
+// too little of a 1s budget to move them; that wants a different instrument.
 //
-// Each run also asserts `termination == TimeLimit`, which pins the iteration
-// count to meaning "work per second" rather than "work until it stopped".
+// `termination == TimeLimit` pins the count to "work per second". Today it is a
+// tautology guarding a future early-exit path: IterationLimit needs
+// max_iterations > 0 (default 0), NoBudget needs no deadline, Feasible needs no
+// objective, and all three models carry one; a loop ignoring the deadline hangs
+// into the ctest TIMEOUT. Asserting `time_seconds` near kBudgetSeconds is left
+// out because the TIMEOUT already bounds that direction.
 //
-// Be honest about what that buys TODAY: nothing. The other reasons are all
-// unreachable here — IterationLimit needs max_iterations > 0 (the config default
-// is 0), NoBudget needs no deadline, Feasible needs a model with no objective,
-// and all three of these carry one. A loop that ignored the deadline would hang
-// into the ctest TIMEOUT rather than report a different reason. So it is a
-// tautology that guards a future early-exit path, not a live check. Asserting
-// that `time_seconds` lands near kBudgetSeconds would buy the wall-clock half
-// for real; it is left out because the TIMEOUT already bounds that direction.
+// The models are the three benchmarked classes of CLAUDE.md's benchmark table,
+// each the instance an end-to-end solve test already uses (for MINLP, a
+// mid-size sibling; see below), so a failure isolates throughput from a model
+// or reader change.
 //
-// The three models are the three benchmarked classes of CLAUDE.md's benchmark
-// table, and each is the instance an existing end-to-end solve test already uses
-// (or, for MINLP, a mid-size sibling of it — see below), so a failure here is
-// isolated to throughput rather than confounded with a model or reader change.
-//
-// SHOWN TO FAIL (CLAUDE.md, "Measuring and testing engine changes"). Verified at
-// 1bc4bb8 on the machine tabulated below: `git archive HEAD | tar -x` into a
+// SHOWN TO FAIL (CLAUDE.md, "Measuring and testing engine changes"). Verified
+// at 1bc4bb8 on the machine tabulated below: `git archive HEAD | tar -x` into a
 // scratch tree, then a 5ms `sleep_for` at the `++iterations_` site in
 // src/feasibility_jump.cpp. All three floors went red together --
 //
@@ -54,20 +40,17 @@
 //     minlp/chain50   6001 it/s -> 190    (floor 300)
 //     uc/ucp13-1p    39840 it/s -> 193    (floor 2500)
 //
-// -- while timing_structural_batch_deadline still passed, which is correct: it
-// asserts on duration, not on work done.
+// -- while timing_structural_batch_deadline still passed, correctly: it asserts
+// on duration, not work done.
 //
-// THE TRAP, if you re-verify this: stalling the `while (!past_deadline())` loop
-// in src/search.cpp instead changes these rates by NOTHING. That loop iterates
-// over *batches*; a batch runs many GLS iterations, and `SearchResult::iterations`
-// counts the inner ones. A 200us stall there was invisible at all three classes
-// (8498/6001/39840 it/s, i.e. the healthy rate). Cripple the inner site or you
-// will conclude these tests cannot fail when they can.
+// To re-verify, stall the inner site: the `while (!past_deadline())` loop in
+// src/search.cpp iterates over batches while `SearchResult::iterations` counts
+// GLS iterations, so a 200us stall there left all three rates healthy
+// (8498/6001/39840 it/s).
 //
-// Registration: hand-registered in tests/CMakeLists.txt with LABELS "timing;slow"
-// and an explicit TIMEOUT. The `timing` label makes them greppable as a class
-// (`ctest -L timing`); the `slow` label keeps their three wall-clock seconds out
-// of the `ctest -LE slow` fast loop. pre-push runs everything.
+// Hand-registered in tests/CMakeLists.txt with LABELS "timing;slow" and an
+// explicit TIMEOUT: `timing` makes them a class (`ctest -L timing`), `slow`
+// keeps their three wall-clock seconds out of `ctest -LE slow`.
 
 #include "benchmarks/uc-chped/data.h"
 #include "benchmarks/uc-chped/uc_model.h"
@@ -104,64 +87,50 @@ namespace {
 //   minlp/chain50  5950 -  6250          2111             913         300
 //   uc/ucp13-1p   37800 - 41100         14412            3718        2500
 //
-// The solo ranges are deliberately wider than any single sitting produces: three
-// independent measurement passes on this same box disagreed by more than one
-// pass's own spread (an early pass read milp 8584-8754 and uc 40969-41353, both
-// of which later passes missed low every time). A range a re-measurement cannot
-// land in is worse than useless for telling a real regression from different
-// hardware, so these span every observation taken. Re-measure with
+// The solo ranges span every observation of three measurement passes on this
+// box, which disagreed by more than one pass's own spread (an early pass read
+// milp 8584-8754 and uc 40969-41353; later passes all landed lower), so a
+// re-measurement can land in them. Re-measure with
 // `build/tests/cbls_tests "[throughput]"`, which prints all three rates.
 //
-// Every floor is set from the WORST -j12 observation, divided by 5-10 as the
-// issue requires: 7.2x for pk1, 7.0x for chain50, 5.8x for ucp13. Contention on
-// this box costs 1.6-2.9x, so a floor derived from the solo column would be
-// flaky by construction; measure both ways before changing one. ucp13 has the
-// least headroom of the three and is the first that will fire.
+// Every floor is the WORST -j12 observation divided by 5-10 as the issue
+// requires: 7.2x for pk1, 7.0x for chain50, 5.8x for ucp13. Contention costs
+// 1.6-2.9x here, so a floor from the solo column would be flaky; measure both
+// ways before changing one. ucp13 has the least headroom and fires first.
 //
-// If you re-derive these on other hardware, replace the whole table rather than
-// scaling it — the three classes do not degrade at the same rate under load
-// (chain50 lost 2.9x where pk1 lost 2.0x), so a single fudge factor is wrong.
+// On other hardware, replace the whole table rather than scaling it: the
+// classes degrade at different rates under load (chain50 lost 2.9x where pk1
+// lost 2.0x).
 // ---------------------------------------------------------------------------
 
-// One second is long enough that model build, the initial full_evaluate and the
-// first batch's warm-up are a small share of it, and short enough that three of
-// these cost the full suite three seconds. Shorter budgets were rejected: under
+// One second makes model build, the initial full_evaluate and the first
+// batch's warm-up a small share, and costs the suite three seconds. Under
 // `-j12` a 0.1s budget has enough scheduling variance to swamp the signal.
 constexpr double kBudgetSeconds = 1.0;
 
-// THE FLOORS ARE RELEASE-ONLY. Every number in the table above was measured at
-// -O3, and an unoptimized build runs this engine 5-8x slower — a Debug `ctest
-// -j12` puts the UC class at ~2000 it/s against a floor of 2500, i.e. red, with
-// nothing at the failure site to say why. Debug is a documented supported
-// override (README's build section), so these skip rather than fail there:
-// ctest reports "Skipped" via the SKIP_RETURN_CODE 4 already set on all three in
-// tests/CMakeLists.txt. The gate is unaffected either way: pre-push builds
-// Release.
-//
-// A regression that only shows up unoptimized is not something these can catch,
-// and that is deliberate: the published configuration is the one worth a floor.
+// THE FLOORS ARE RELEASE-ONLY. The table was measured at -O3; an unoptimized
+// build runs 5-8x slower (a Debug `ctest -j12` puts UC at ~2000 it/s against a
+// floor of 2500). Debug is a supported override (README's build section), so
+// these skip there, reported via the SKIP_RETURN_CODE 4 set on all three in
+// tests/CMakeLists.txt; pre-push builds Release. A regression only seen
+// unoptimized is deliberately out of scope: the published configuration is the
+// one worth a floor.
 #ifdef NDEBUG
 constexpr bool kOptimizedBuild = true;
 #else
 constexpr bool kOptimizedBuild = false;
 #endif
 
-// Run `model` for exactly `kBudgetSeconds` of wall clock in the configuration
-// the benchmark runners use — FJ on, FloatIntensifyHook, LNS(0.3) — and report
-// what came back. Everything about this differs from `solve_deterministic` by
-// design: the clock binds and the iteration count is the measurement.
+// Run `model` for exactly `kBudgetSeconds` of wall clock in the benchmark
+// runners' configuration (FJ on, FloatIntensifyHook, LNS(0.3)): the clock binds
+// and the iteration count is the measurement. The hook and LNS stay in because
+// the published configuration's rate is what matters; both are cheap here (LNS
+// cannot fire at this budget: diversify() needs 100 stagnant batches).
 //
-// The hook and LNS are included rather than stripped out because the rate that
-// matters is the rate of the published configuration; a floor measured without
-// them would not notice a regression inside them. Both are cheap here (LNS
-// cannot even fire at this budget — diversify() needs 100 stagnant batches).
-//
-// This matches benchmarks/mipfeas/mipfeas.cpp and benchmarks/minlplib/minlplib.cpp
-// exactly. It does NOT match the UC runner: benchmarks/uc-chped/uc_chped.cpp
-// warm-starts with greedy_uc_initialize + fj_nl_initialize and sets
-// cfg.skip_init, so the UC floor below measures a COLD start where its runner
-// measures a warm one. That is fine for a throughput floor — the inner loop is
-// the same either way — but the UC number is not comparable to that runner's.
+// Matches benchmarks/mipfeas/mipfeas.cpp and benchmarks/minlplib/minlplib.cpp
+// exactly. benchmarks/uc-chped/uc_chped.cpp warm-starts (greedy_uc_initialize +
+// fj_nl_initialize, cfg.skip_init), so the UC floor measures a COLD start; the
+// inner loop is the same, but the UC number is not comparable to that runner's.
 cbls::SearchResult run_for_budget(cbls::Model& model, uint64_t seed) {
     cbls::FloatIntensifyHook hook;
     cbls::LNS lns(0.3);
@@ -202,7 +171,7 @@ TEST_CASE("MILP feasibility throughput floor", "[throughput][timing][milp]") {
 
     // The clock is what stopped it, so `iterations` is a rate and not a total.
     REQUIRE(result.termination == cbls::TerminationReason::TimeLimit);
-    // 8584-8754 it/s solo, 4337 worst under -j12; floor is 8.7x below that.
+    // 8500-8700 it/s solo, 3617 worst under -j12; floor is 7.2x below that.
     // See the provenance table above for the machine and build type.
     REQUIRE(result.iterations >= 500);
 }
@@ -237,7 +206,7 @@ TEST_CASE("non-convex MINLP throughput floor", "[throughput][timing][minlp]") {
     report("minlp/chain50", result);
 
     REQUIRE(result.termination == cbls::TerminationReason::TimeLimit);
-    // 6185-6252 it/s solo, 2111 worst under -j12; floor is 7.0x below that.
+    // 5950-6250 it/s solo, 2111 worst under -j12; floor is 7.0x below that.
     // This class degrades hardest under contention (2.9x), which is why the
     // floor is not simply a fixed fraction of the solo rate.
     REQUIRE(result.iterations >= 300);
@@ -267,6 +236,6 @@ TEST_CASE("unit-commitment throughput floor", "[throughput][timing][uc]") {
     report("uc/ucp13-1p", result);
 
     REQUIRE(result.termination == cbls::TerminationReason::TimeLimit);
-    // 40969-41353 it/s solo, 14412 worst under -j12; floor is 5.8x below that.
+    // 37800-41100 it/s solo, 14412 worst under -j12; floor is 5.8x below that.
     REQUIRE(result.iterations >= 2500);
 }
