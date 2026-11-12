@@ -215,8 +215,9 @@ TEST_CASE("a stop raised from another thread reaches a running portfolio", "[sto
     // "In flight" is the hard part: a gate opened before `ps.solve` would let the
     // canceller fire before any worker existed, and the result would come from
     // the no-result fallback the pre-raised cases above already cover. The gate
-    // is a PROGRESS ROW, which only a running worker can produce, and `iterations > 0` is the
-    // assertion that says the cancel landed on a search that had started.
+    // is a PROGRESS ROW, which only a running worker can produce, and
+    // `iterations > 0` is the assertion that says the cancel landed on a search
+    // that had started.
     //
     // The wait is bounded so a regression cannot hang the suite: if no row ever
     // arrives the canceller fires anyway, inside the 30-second budget, so the run

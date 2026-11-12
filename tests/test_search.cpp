@@ -259,8 +259,9 @@ TEST_CASE("solve with hook and LNS", "[search][lns]") {
 // What remains machine-dependent is the ratio between the two budgets: the
 // machine must not be able to spend 30k GLS iterations in 20ms. Measured for
 // *this* test: 192 iterations, so ~156x of margin, and a regression takes ~4.9s
-// to go red. (The batch test above is a different model and has its own
-// numbers — 128 iterations, ~312x, ~10s red. Don't copy one set to the other.)
+// to go red. (The FJ-batch deadline test below, `solve stops a Feasibility Jump
+// batch at the deadline`, is a different model and has its own numbers — 128
+// iterations, ~312x, ~10s red. Don't copy one set to the other.)
 // A slower or loaded machine does fewer iterations and passes more comfortably.
 TEST_CASE("fj_nl_initialize respects time_limit", "[search][fj]") {
     Model m;
@@ -519,9 +520,9 @@ TEST_CASE("ParallelSearch with hook and LNS factories", "[pool]") {
     // defaults: `lns_calls` below needs an LNS-due kick, which at the default
     // lns_interval of 3 and perturbation_period of 100 is ~300 batches away and
     // so depends on how many batches 2 seconds buys: machine-dependent, and too
-    // few under a sanitizer, where everything is an order of magnitude slower. Small
-    // batches, a short stall window, and every kick LNS-due make the assertion
-    // about the mechanism instead of about the clock.
+    // few under a sanitizer, where everything is an order of magnitude slower.
+    // Small batches, a short stall window, and every kick LNS-due make the
+    // assertion about the mechanism instead of about the clock.
     SearchConfig cfg;
     cfg.batch_iterations = 100;
     cfg.perturbation_period = 2;
@@ -543,10 +544,11 @@ TEST_CASE("ParallelSearch with hook and LNS factories", "[pool]") {
     // constructed, not that the search ever dispatched through it.
     //
     // This is a WIRING check, not the pin on the adoption stand-down: it goes
-    // red without `lns_kick_due() ||` in maybe_diversify only because this
-    // configuration reaches no kick that falls through to diversify() by another
-    // route (a self-draw, an empty pool, or #102's pre-feasible route). The
-    // structural pin is "an LNS-due kick stands adoption down entirely" in
+    // red without `lns_kick_due() ||` in maybe_diversify (measured) only
+    // because this configuration reaches no kick that falls through to
+    // diversify() by another route (a self-draw, an empty pool, or #102's
+    // pre-feasible route).
+    // The structural pin is "an LNS-due kick stands adoption down entirely" in
     // tests/test_parallel.cpp, which asserts bit-identity rather than a count.
     REQUIRE(lns_calls.load() > 0);
 }
@@ -645,10 +647,10 @@ TEST_CASE("max_iterations wins over a live wall clock", "[search]") {
     //
     // Read that as scoped to *this* configuration rather than as a general
     // guarantee (#117): the escape probe also arms once a quarter of the budget
-    // passes with no new best, so a timed and an
-    // untimed run of the same model diverge once the budget is short relative to
-    // the run. Here the budget is 30s against a sub-millisecond run, so the
-    // wall-clock arming condition is never reached and the two stay identical.
+    // passes with no new best, so a timed and an untimed run of the same model
+    // diverge once the budget is short relative to the run. Here the budget is
+    // 30s against a sub-millisecond run, so the wall-clock arming condition is
+    // never reached and the two stay identical.
     Model untimed;
     build(untimed);
     auto reference = solve(untimed, /*time_limit=*/0.0, /*seed=*/42, /*use_fj=*/true, nullptr,
@@ -716,10 +718,10 @@ TEST_CASE("termination reason covers the non-budget exits", "[search]") {
 //
 // NONE OF THE TESTS BELOW ASSERTS ON ELAPSED TIME. The suite is deterministic --
 // iteration-bounded, time_limit = 0 -- and a duration assertion reintroduces
-// machine-speed coupling. The STRUCTURAL test is
-// the grandfathered exception here, quarantined behind [timing] (#191's
-// timing_inner_solver_hook_deadline in test_inner_solver.cpp is the other
-// hand-registered one). Each test here instead observes its bound directly:
+// machine-speed coupling. The STRUCTURAL test is the grandfathered exception
+// here, quarantined behind [timing] (#191's timing_inner_solver_hook_deadline
+// in test_inner_solver.cpp is the other hand-registered one). Each test here
+// instead observes its bound directly:
 //
 //   1. work done: one batch cannot have run to completion;
 //   2. the call count of a test InnerSolverHook: was it started at all?
@@ -973,12 +975,13 @@ TEST_CASE("solve hands the LNS repair no wall clock when it has none", "[search]
 
 // Issue #117: `perturbation_period` counts BATCHES, and a batch is
 // `batch_iterations` GLS iterations -- microseconds on a small model, seconds on
-// an expensive one (MINLPLib elec25 at 60s: ~1.2s a batch, 52 batches against
-// the default threshold of 100). A batch count alone would never arm the Float
-// escape probe (#107) exactly on the models that need it. The cases below pin
-// the two arming conditions, the guard that keeps the clock out of an
-// iteration-budgeted run, the disarm on a new best, and that diversification
-// survives a run with a wall clock armed.
+// an expensive one (measured on MINLPLib elec25 at 60s: ~1.2s a batch, 52
+// batches against the default threshold of 100). So the stagnation gate that
+// keeps the Float escape probe a last resort (#107) would never arm it exactly
+// on the models that need it. The cases below pin the two arming conditions,
+// the guard that keeps the clock out of an iteration-budgeted run, the disarm
+// on a new best, and that diversification survives a run with a wall clock
+// armed.
 //
 // They observe `SearchResult::escape_probe_armed` -- the engine's own armed
 // state at exit -- rather than timing the call or inferring arming from the
@@ -1202,15 +1205,16 @@ TEST_CASE("structural batch respects the wall-clock deadline", "[search][structu
     // the threshold is sized for.
     //
     // It is NOT the regression test for #105's bound: since #165 this model's
-    // unbounded sweep is short enough (the baseline snapshot still walks the
-    // filler rows once per pass and once per commit, see
-    // include/cbls/structural_batch.h) that it passes with the deadline check
+    // unbounded sweep re-measured at 0.024s (the baseline snapshot still walks
+    // the filler rows once per pass and once per commit, see
+    // include/cbls/structural_batch.h), so it passes with the deadline check
     // deleted. The discriminating test is
     // `a deadline that passes mid-sweep stops the sweep between generators`
     // in tests/test_structural_batch.cpp, which asserts a COUNT of generators
     // visited and fails deterministically when the check is removed.
     //
-    // Measured: 0.105s bounded, 0.125s unbounded, against a 0.10s budget.
+    // Measured after #165: 0.105s bounded, 0.125s unbounded, against a 0.10s
+    // budget.
     REQUIRE(elapsed < kBudget + 0.5);
 }
 
@@ -1272,7 +1276,7 @@ TEST_CASE("the unproductive-batch exit waits for the outer loop's stagnation cou
     // So the exit arms only once solve()'s own stagnation count reaches
     // perturbation_period / 20 batches. This asserts that rule where it is
     // sharpest and without timing anything: `perturbation_period` is set so the
-    // threshold is 100 batches while the iteration budget spends around 40, so a
+    // threshold is 100 batches while the iteration budget spends around 8, so a
     // correctly gated run can never arm the mechanism -- and must therefore be
     // IDENTICAL to a run with the mechanism switched off. An ungated one fires
     // it, diverges, and the equalities below fail.
@@ -1393,7 +1397,8 @@ TEST_CASE("the unproductive-batch exit draws no LNS after the first feasible sol
     REQUIRE(on.perturbations > off.perturbations);
     // ...but it must draw only the cheap half. An LNS destroy-repair is bounded
     // in SECONDS, and on a converged model its result is rejected outright, so
-    // launching one on a measure that has gone blind is pure budget burn (#102).
+    // launching one on a measure that has gone blind is pure budget burn: on
+    // ex8_6_1 three took 4.7s of a 10s run and cost ~20 gap points (#102).
     //
     // Asserted as an absolute zero, not as equality with the off arm. The off arm
     // takes no kick at all here (40 batches against perturbation_period = 100),
@@ -2123,10 +2128,11 @@ private:
 }  // namespace
 
 TEST_CASE("the objective bound steps by one on an integral objective", "[search][objective]") {
-    // An integral objective's bound steps to obj - 1, as CP-SAT does: a relative
-    // obj - 1e-3 (|obj| + 1) would keep the objective row violated on every
-    // improvement under 0.1% (#211). A continuous one keeps the relative step, at its starting
-    // 1e-3: three batches cannot reach the stall that shrinks it (#241).
+    // An integral objective's bound steps to obj - 1, as CP-SAT does: a
+    // relative obj - 1e-3 (|obj| + 1) would keep the objective row violated on
+    // every improvement under 0.1% (#211). A continuous one keeps the relative
+    // step, at its starting 1e-3: three batches cannot reach the stall that
+    // shrinks it (#241).
     const bool integral = GENERATE(true, false);
     Model m;
     const int32_t x = integral ? m.int_var(0, 20000) : m.float_var(0.0, 20000.0);
@@ -2178,12 +2184,13 @@ private:
 }  // namespace
 
 TEST_CASE("a stall shrinks a continuous objective's bound step to 1e-6", "[search][objective]") {
-    // A fixed step of 1e-3 (|obj| + 1) would pull a continuous objective only to
-    // 0.1% (#241), so the step shrinks tenfold at each full perturbation_period
-    // stall, re-grounding the bound on the incumbent, down to 1e-6. This model sits at its optimum
-    // within a few batches and then stalls for the rest of the budget, so the
-    // bound's gap below the incumbent must walk 1e-3 -> 1e-6 and stay strictly
-    // positive. An integral objective's step is not relative and stays at 1.
+    // A fixed step of 1e-3 (|obj| + 1) would pull a continuous objective only
+    // to 0.1% (#241), so the step shrinks tenfold at each full
+    // perturbation_period stall, re-grounding the bound on the incumbent, down
+    // to 1e-6. This model sits at its optimum within a few batches and then
+    // stalls for the rest of the budget, so the bound's gap below the incumbent
+    // must walk 1e-3 -> 1e-6 and stay strictly positive. An integral
+    // objective's step is not relative and stays at 1.
     const bool integral = GENERATE(true, false);
     Model m;
     const int32_t x = integral ? m.int_var(0, 20000) : m.float_var(0.0, 20000.0);

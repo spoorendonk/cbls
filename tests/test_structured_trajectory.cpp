@@ -14,9 +14,12 @@
 //
 // The List and Set witnesses were re-recorded for #201 (every batch structural
 // on a model with no movable Bool/Int/Float variable; `iters` reports
-// max(GLS iterations, batches)), derived on 1304c43 with those two changes
-// emulated in the test. Both seeds reach the same assignment on each model
-// (for the Set, the optimum: weight 12 is the row's bound).
+// max(GLS iterations, batches)), derived on the unfixed engine (1304c43) with
+// those two changes emulated in the test -- structural probability 1.0,
+// `iters` taken as max(iterations, counters.batches) -- and the fixed engine
+// reproduced them exactly. The mixed witness has movable scalars and did not
+// move. Both seeds reach the same assignment on each model (for the Set, the
+// optimum: weight 12 is the row's bound).
 //
 // Reproducibility rests on `solve_deterministic`: `time_limit = 0` removes the
 // wall clock entirely, so an iteration budget alone bounds the run and no clock
@@ -96,9 +99,11 @@ TEST_CASE("structured trajectory witness: Set with lambda_sum", "[trajectory][st
 
 // The Bool and Int here go through FJ, so FJ changes move this witness (and
 // the List's trajectory with it), while the pure List and Set witnesses above
-// run no scalar batch. Re-recorded for #206 (scan-set sampling) and for
-// compound moves (Novelty Jump) as the engine default, recorded at b8f52f4
-// with only `SearchConfig::use_compound_moves` flipped.
+// run no scalar batch and reproduced unchanged on each re-record. Re-recorded
+// for #206 (FJ's scan-set sampling no longer gives up on a Q that still holds
+// an improving variable) and for compound moves (Novelty Jump) as the engine
+// default, the latter recorded on main at b8f52f4 with only
+// `SearchConfig::use_compound_moves` flipped.
 TEST_CASE("structured trajectory witness: List mixed with scalars", "[trajectory][structured]") {
     skip_unless_libstdcxx_rng();
     Model m;
