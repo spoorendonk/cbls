@@ -1,14 +1,16 @@
 // A model with no Feasibility-Jump-jumpable variable (#201).
 //
-// FJ jumps Bool/Int/Float variables only, so on a model whose decisions are all
-// List/Set variables (CVRP in the List encoding) every batch goes to the
-// structural sweep, and SearchResult::iterations reports the unit
-// max_iterations was actually charged in (the batch count, on such a run)
-// rather than 0. Left at the automatic 0.33 structural probability, two thirds
-// of the batches were empty FJ batches that spun GLS to the iteration limit,
-// reported stuck and triggered #102's unproductive kick, which re-randomises
-// every List: the default arm returned no feasible solution where
-// `structural_batch_probability = 1.0` was feasible at once.
+// FJ jumps Bool/Int/Float variables only. On a model whose decisions are all
+// List/Set variables -- CVRP in the List encoding is the case that found this
+// -- an FJ batch has nothing to jump, so at the automatic structural
+// probability every batch goes to the structural sweep (an explicit one keeps
+// its mix), and SearchResult::iterations reports the unit max_iterations was
+// actually charged in (the batch count, on such a run) rather than 0. Before
+// #201, at the automatic 0.33, two thirds of the batches were empty FJ batches
+// that spun GLS to the iteration limit, reported stuck and triggered #102's
+// unproductive kick, which re-randomises every List, so the structural batches
+// never kept their progress: the default arm returned no feasible solution
+// where `structural_batch_probability = 1.0` was feasible at once.
 //
 // Every model here CONSUMES its Lists: capacity reads each route through a
 // `lambda_sum`, distance through a `pair_lambda_sum`, so a List that the search

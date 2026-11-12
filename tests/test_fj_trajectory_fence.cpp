@@ -17,21 +17,26 @@
 // purpose since, so neither reproduces against c19c982 any more:
 // - #175, batch-API only (run() reproduced): lazy GLS decay (LazyWeightDecay)
 //   agrees with the eager decay to rounding, not to the bit. Then both, in its
-//   review round, when the ascending sort went: with bit-identity given up it
-//   only made each bump O(|V| log |V|).
+//   review round, when the ascending sort went (with bit-identity given up it
+//   only made each bump O(|V| log |V|)): V's list order changes the order vars
+//   enter Q and Q', and with it apply_jump's and select_novelty_var's draws.
 // - #206, both: apply_jump samples until it holds sample_size positive-score
-//   variables or Q has none, drawing from Q's unsampled suffix, so the same RNG
-//   value indexes a different variable and a call that returned false (bump) on
-//   a Q still holding an improving variable now applies it. The two-phase hash
-//   moved for that alone (run() never calls Novelty); the batch-API hash also
-//   because select_novelty_var counts only filter-passing variables toward its
-//   3, draws from the unsampled suffix of Q' and has no 32-draw cap. Its review
+//   variables or Q has none, keeping the sample distinct by drawing from Q's
+//   unsampled suffix and swapping each positive into the prefix, so the same
+//   RNG value indexes a different variable, Q's order changes after every
+//   call, and a call that returned false (bump) on a Q still holding an
+//   improving variable now applies it. The two-phase hash moved for that
+//   alone (run() never calls Novelty); the batch-API hash also because
+//   select_novelty_var counts only filter-passing variables toward its 3,
+//   draws from the unsampled suffix of Q' and has no 32-draw cap. Its review
 //   round moved the batch-API hash only, twice: Novelty swap-removes a var
 //   that fails F or is on the stack from Q' for good (as OR-Tools'
 //   ScanRelevantVariables does) and re-queues a moved or undone var's
-//   row-neighbours; then the sibling loop re-checks the discrepancy budget and
-//   work cap before every sibling, not on entry only (the fence model reaches
-//   levels whose budget is spent).
+//   row-neighbours, so Q' holds different vars, in a different order, at
+//   every draw; then the sibling loop re-checks the discrepancy budget and
+//   work cap before every sibling, not on entry only, since the re-queue
+//   means Q' no longer runs dry on its own (the fence model reaches levels
+//   whose budget is spent).
 // - #209, batch-API only: the fence drives a Novelty BATCH (novelty_batch, GLS
 //   over ApplyNoveltyJump, which bumps weights at a Novelty local minimum and
 //   needs no resync) where it drove one apply_novelty_jump() and a resync,

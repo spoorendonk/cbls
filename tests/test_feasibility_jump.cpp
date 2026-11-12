@@ -468,9 +468,9 @@ TEST_CASE("the deadline-check stride is sized from the last measurement", "[fj][
     SECTION("a stride over the target shrinks, and the shrink is not capped") {
         // 10x over target shrinks 10x in ONE step, so an iteration that got more
         // expensive is caught on the very next check. Note this is NOT by
-        // itself what stops the tuner ratcheting up and going silent:
-        // kMaxDeadlineStride bounds that; see "a grown stride cannot outrun its
-        // cap" below.
+        // itself what stops the tuner ratcheting up and going silent: a shrink
+        // is only applied AT a check, a whole stride later. kMaxDeadlineStride
+        // bounds that; see "a grown stride cannot outrun its cap" below.
         REQUIRE(FJ::next_deadline_stride(64, 0.010, kTarget) == 6);  // 10x over -> 10x down
         REQUIRE(FJ::next_deadline_stride(64, 1.0, kTarget) == 1);    // 1000x over -> the floor
         // A stride above the cap is clamped to it, not honoured.
@@ -821,10 +821,11 @@ double recompute_real_violation(const Model& m, const ViolationManager& vm) {
         if (static_cast<int32_t>(c) == obj_ci || vm.weights[c] <= 0.0) {
             continue;
         }
-        // A threshold inside is_violated's (GFJConfig::tolerance), not a bare
-        // `> 0.0`: a residual in (0, 1e-9] is a SATISFIED row, and counting it
-        // here would re-introduce exactly the disagreement #102's ex8_6_1
-        // finding was about.
+        // Not a bare `> 0.0`: a residual in (0, 1e-9] is a SATISFIED row, and
+        // counting it here would re-introduce exactly the disagreement #102's
+        // ex8_6_1 finding was about. 1e-9 is below GFJConfig::tolerance (1e-6),
+        // which progress_residual uses; the two agree on the integral models
+        // this helper reads.
         const double r = m.node_value(cids[c]);
         if (r > 1e-9 && r < std::numeric_limits<double>::infinity()) {
             total += r;
