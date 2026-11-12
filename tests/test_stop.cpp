@@ -58,7 +58,7 @@ TEST_CASE("a host stop cancels a search that still has budget", "[stop]") {
 
     Model m = quadratic_model();
     const SearchResult r =
-        solve(m, /*time_limit=*/0.0, /*seed=*/9, true, nullptr, nullptr, 3, nullptr, config);
+        solve(m, /*time_limit=*/0.0, /*seed=*/9, nullptr, nullptr, 3, nullptr, config);
 
     // Not TimeLimit: this run had no wall clock at all. Not Stopped either --
     // no peer worker exists, and a host that cancelled needs to read back that
@@ -82,7 +82,7 @@ TEST_CASE("a host stop raised mid-search ends the run where it stands", "[stop]"
 
     Model m = quadratic_model();
     const SearchResult r =
-        solve(m, /*time_limit=*/0.0, /*seed=*/5, true, nullptr, nullptr, 3, &cb, config);
+        solve(m, /*time_limit=*/0.0, /*seed=*/5, nullptr, nullptr, 3, &cb, config);
 
     REQUIRE(r.termination == TerminationReason::Cancelled);
     // Cancelled MID-FLIGHT, not before it started. Without this the test passes
@@ -103,7 +103,7 @@ TEST_CASE("an unattached stop leaves the run to its own budgets", "[stop]") {
 
     Model m = quadratic_model();
     const SearchResult r =
-        solve(m, /*time_limit=*/0.0, /*seed=*/5, true, nullptr, nullptr, 3, nullptr, config);
+        solve(m, /*time_limit=*/0.0, /*seed=*/5, nullptr, nullptr, 3, nullptr, config);
 
     REQUIRE(r.termination == TerminationReason::IterationLimit);
     REQUIRE(r.iterations >= config.max_iterations);
@@ -124,7 +124,7 @@ TEST_CASE("an attached but unraised stop leaves the run to its own budgets", "[s
 
     Model m = quadratic_model();
     const SearchResult r =
-        solve(m, /*time_limit=*/0.0, /*seed=*/5, true, nullptr, nullptr, 3, nullptr, config);
+        solve(m, /*time_limit=*/0.0, /*seed=*/5, nullptr, nullptr, 3, nullptr, config);
 
     REQUIRE(r.termination == TerminationReason::IterationLimit);
     REQUIRE(r.iterations >= config.max_iterations);
@@ -144,7 +144,7 @@ TEST_CASE("an attached stop is not a budget", "[stop]") {
 
     Model m = quadratic_model();
     const SearchResult r =
-        solve(m, /*time_limit=*/0.0, /*seed=*/5, true, nullptr, nullptr, 3, nullptr, config);
+        solve(m, /*time_limit=*/0.0, /*seed=*/5, nullptr, nullptr, 3, nullptr, config);
 
     REQUIRE(r.termination == TerminationReason::NoBudget);
     REQUIRE(r.iterations == 0);

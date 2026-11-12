@@ -61,7 +61,7 @@ class TestStructuralSelection:
         cfg.structural_batch_probability = 1.0
         cfg.structural_selection = selection
         cfg.structural_sample_size = 4
-        result = cbls.solve(m, 0.0, 42, True, None, None, 3, None, cfg)
+        result = cbls.solve(m, 0.0, 42, None, None, 3, None, cfg)
         assert result.feasible
 
     @pytest.mark.skipif(
@@ -87,7 +87,7 @@ class TestStructuralSelection:
             cfg.structural_batch_probability = 1.0
             cfg.structural_selection = selection
             cfg.structural_sample_size = 6
-            cbls.solve(m, 0.0, 7, True, None, None, 3, None, cfg)
+            cbls.solve(m, 0.0, 7, None, None, 3, None, cfg)
             results[selection] = sorted(m.var(chosen).elements)
         assert len({tuple(v) for v in results.values()}) > 1
 
@@ -148,7 +148,7 @@ class TestNeighbourList:
             cfg.max_iterations = 400
             cfg.structural_batch_probability = 1.0
             cfg.structural_neighbours = neighbours
-            result = cbls.solve(m, 0.0, 42, True, None, None, 3, None, cfg)
+            result = cbls.solve(m, 0.0, 42, None, None, 3, None, cfg)
             assert result.feasible
             results.append(tuple(sorted(m.var(chosen).elements)))
         assert results[0] != results[1]

@@ -29,8 +29,7 @@ namespace {
 SearchResult solve_no_budget(Model& model, uint64_t seed, const SearchConfig& base = {}) {
     SearchConfig cfg = base;
     cfg.max_iterations = 0;
-    SearchResult r =
-        solve(model, /*time_limit=*/0.0, seed, /*use_fj=*/true, nullptr, nullptr, 3, nullptr, cfg);
+    SearchResult r = solve(model, /*time_limit=*/0.0, seed, nullptr, nullptr, 3, nullptr, cfg);
     // These tests are only meaningful if the outer loop really did no work — they
     // read the model expecting the *starting* assignment. That rests on solve()'s
     // "neither budget set, so nothing would ever stop the loop" guard breaking

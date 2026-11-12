@@ -284,7 +284,7 @@ Run solve_one(const cbls::setcover::SetCoverInstance& inst, cbls::setcover::Enco
         config.structural_sample_size = opt.sample_size;
     }
     cbls::SearchResult result =
-        cbls::solve(scm.model, opt.time_limit, seed, /*use_fj=*/true, /*hook=*/nullptr,
+        cbls::solve(scm.model, opt.time_limit, seed, /*hook=*/nullptr,
                     /*lns=*/nullptr, /*lns_interval=*/0, /*callback=*/nullptr, config);
 
     const cbls::VerifyResult verified = cbls::setcover::verify_setcover(scm, inst);

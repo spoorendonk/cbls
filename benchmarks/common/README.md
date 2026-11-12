@@ -36,8 +36,8 @@ table, its parse, its validation, its application onto `cbls::SearchConfig` and
 `--no-lns`, `--lns-interval`, `--novelty-prob`, `--unproductive-iters`,
 `--perturbation-period`), parsed and validated here but recorded under its own
 JSON keys. Two rules it exists to enforce: **a flag
-whose field the engine ignores must not ship** (the header names the two
-rejected — the GLS ρ and `use_fj`, whose argument `solve()` opens by discarding),
+whose field the engine ignores must not ship** (the header names the one
+rejected: the GLS ρ, which `solve()` resamples),
 and **a non-default arm may never write a published comparison table**, which is
 why `first_non_default_search_flag` feeds `minlplib`'s and `uc-chped`'s
 `resolve_out_csv`. Every

@@ -25,8 +25,7 @@ namespace cbls::bench {
 //
 // A flag must be read by the engine, else its arm measures nothing while
 // looking rigorous. Hence no flag for GLS rho (`solve()` resamples it; no
-// `SearchConfig` field, #136) nor for `use_fj` (`solve()` ignores it,
-// src/search.cpp; `ParallelSearch` only forwards it, src/pool.cpp). A new flag
+// `SearchConfig` field, #136). A new flag
 // needs src/search.cpp or src/feasibility_jump.cpp to read its field and a
 // test showing two values give two runs (tests/test_bench_flags.cpp).
 //

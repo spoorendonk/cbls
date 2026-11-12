@@ -314,8 +314,8 @@ TEST_CASE("mps adapter propagation lets the search reach a far optimum") {
 
     SearchConfig cfg;
     cfg.max_iterations = 200000;
-    SearchResult r = solve(result.model, /*time_limit=*/-1.0, /*seed=*/7, /*use_fj=*/true, nullptr,
-                           nullptr, 3, nullptr, cfg);
+    SearchResult r =
+        solve(result.model, /*time_limit=*/-1.0, /*seed=*/7, nullptr, nullptr, 3, nullptr, cfg);
 
     REQUIRE(r.feasible);
     CHECK_THAT(r.best_state.values[0], WithinAbs(5.0e9, 1e-3));

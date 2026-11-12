@@ -47,16 +47,16 @@ TEST_CASE("a null SearchCoordination leaves the search bit-identical", "[paralle
     config.max_iterations = 20000;
 
     Model a = quadratic_model();
-    const SearchResult ra = solve(a, /*time_limit=*/0.0, /*seed=*/7, true, nullptr, nullptr, 3,
-                                  nullptr, config, /*coord=*/nullptr);
+    const SearchResult ra = solve(a, /*time_limit=*/0.0, /*seed=*/7, nullptr, nullptr, 3, nullptr,
+                                  config, /*coord=*/nullptr);
 
     // A coordination object that is present but carries neither channel: the
     // guards inside the search must key on the CHANNELS, not on the pointer, or
     // ParallelSearch's own null-pool paths would diverge from this.
     SearchCoordination empty;
     Model b = quadratic_model();
-    const SearchResult rb = solve(b, /*time_limit=*/0.0, /*seed=*/7, true, nullptr, nullptr, 3,
-                                  nullptr, config, &empty);
+    const SearchResult rb =
+        solve(b, /*time_limit=*/0.0, /*seed=*/7, nullptr, nullptr, 3, nullptr, config, &empty);
 
     REQUIRE(ra.iterations == rb.iterations);
     REQUIRE(ra.feasible == rb.feasible);
@@ -83,8 +83,8 @@ TEST_CASE("a solve submits every incumbent as it finds it", "[parallel][coord]")
     config.max_iterations = 50000;
 
     Model m = quadratic_model();
-    const SearchResult r = solve(m, /*time_limit=*/0.0, /*seed=*/11, true, nullptr, nullptr, 3,
-                                 nullptr, config, &coord);
+    const SearchResult r =
+        solve(m, /*time_limit=*/0.0, /*seed=*/11, nullptr, nullptr, 3, nullptr, config, &coord);
 
     REQUIRE(r.feasible);
     REQUIRE(pool.size() > 1);
@@ -172,8 +172,8 @@ TEST_CASE("a stalled search adopts a peer's solution from the pool", "[parallel]
 
     // Control arm: same model, same seed, same budget, NO pool.
     Model control = build();
-    const SearchResult rc = solve(control, /*time_limit=*/0.0, /*seed=*/3, true, nullptr, nullptr,
-                                  3, nullptr, config, /*coord=*/nullptr);
+    const SearchResult rc = solve(control, /*time_limit=*/0.0, /*seed=*/3, nullptr, nullptr, 3,
+                                  nullptr, config, /*coord=*/nullptr);
     REQUIRE(rc.feasible);
     // If this ever stops holding the test below has gone vacuous, and this is
     // the assertion that says so instead of quietly passing.
@@ -203,8 +203,8 @@ TEST_CASE("a stalled search adopts a peer's solution from the pool", "[parallel]
     coord.share_objective_bound = false;
 
     Model m = build();
-    const SearchResult r = solve(m, /*time_limit=*/0.0, /*seed=*/3, true, nullptr, nullptr, 3,
-                                 nullptr, config, &coord);
+    const SearchResult r =
+        solve(m, /*time_limit=*/0.0, /*seed=*/3, nullptr, nullptr, 3, nullptr, config, &coord);
 
     REQUIRE(r.feasible);
     // Having been handed the gift, the run must not come back worse than it.
@@ -277,8 +277,8 @@ TEST_CASE("a pool solution that does not fit the model is refused", "[parallel][
 
     Model m = quadratic_model();
     SearchResult r;
-    REQUIRE_NOTHROW(r = solve(m, /*time_limit=*/0.0, /*seed=*/5, true, nullptr, nullptr, 3, nullptr,
-                              config, &coord));
+    REQUIRE_NOTHROW(
+        r = solve(m, /*time_limit=*/0.0, /*seed=*/5, nullptr, nullptr, 3, nullptr, config, &coord));
     REQUIRE(r.feasible);
     REQUIRE(r.best_state.values.size() == 2);
     // The bogus objective never became the run's answer.
@@ -302,8 +302,8 @@ TEST_CASE("a raised stop flag ends a search that still has budget", "[parallel][
 
     Model m = quadratic_model();
     const auto t0 = std::chrono::steady_clock::now();
-    const SearchResult r = solve(m, /*time_limit=*/0.0, /*seed=*/9, true, nullptr, nullptr, 3,
-                                 nullptr, config, &coord);
+    const SearchResult r =
+        solve(m, /*time_limit=*/0.0, /*seed=*/9, nullptr, nullptr, 3, nullptr, config, &coord);
     const double elapsed =
         std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
 
@@ -447,7 +447,7 @@ TEST_CASE("an LNS-due kick stands adoption down entirely", "[parallel][coord]") 
     LNS lns_a(0.3);
     Model a = quadratic_model();
     const SearchResult ra =
-        solve(a, /*time_limit=*/0.0, /*seed=*/13, true, nullptr, &lns_a, 1, nullptr, config,
+        solve(a, /*time_limit=*/0.0, /*seed=*/13, nullptr, &lns_a, 1, nullptr, config,
               /*coord=*/nullptr);
 
     // A distinct, feasible, better-than-reachable point, so adoption WOULD
@@ -472,8 +472,8 @@ TEST_CASE("an LNS-due kick stands adoption down entirely", "[parallel][coord]") 
 
     LNS lns_b(0.3);
     Model b = quadratic_model();
-    const SearchResult rb = solve(b, /*time_limit=*/0.0, /*seed=*/13, true, nullptr, &lns_b, 1,
-                                  nullptr, config, &coord);
+    const SearchResult rb =
+        solve(b, /*time_limit=*/0.0, /*seed=*/13, nullptr, &lns_b, 1, nullptr, config, &coord);
 
     // The cadence was actually reached, or the rest of this proves nothing.
     REQUIRE(ra.lns_repairs > 0);
@@ -519,8 +519,8 @@ TEST_CASE("adoption judges feasibility against its own model", "[parallel][coord
     config.perturbation_period = 2;
 
     Model m = quadratic_model();
-    const SearchResult r = solve(m, /*time_limit=*/0.0, /*seed=*/21, true, nullptr, nullptr, 3,
-                                 nullptr, config, &coord);
+    const SearchResult r =
+        solve(m, /*time_limit=*/0.0, /*seed=*/21, nullptr, nullptr, 3, nullptr, config, &coord);
 
     REQUIRE(r.feasible);
     // The lie never became the answer.
@@ -592,7 +592,7 @@ TEST_CASE("a stop flag raised mid-search ends the run where it stands", "[parall
 
     Model m = quadratic_model();
     const SearchResult r =
-        solve(m, /*time_limit=*/0.0, /*seed=*/5, true, nullptr, nullptr, 3, &cb, config, &coord);
+        solve(m, /*time_limit=*/0.0, /*seed=*/5, nullptr, nullptr, 3, &cb, config, &coord);
 
     REQUIRE(r.termination == TerminationReason::Stopped);
     // The distinguishing assertion: the run was cancelled MID-FLIGHT, not before
@@ -880,8 +880,8 @@ TEST_CASE("adopting a worse point does not relax objective pressure", "[parallel
 
     BoundWatcher watcher;
     Model m = integer_model();
-    const SearchResult r = solve(m, /*time_limit=*/0.0, /*seed=*/17, true, &watcher, nullptr, 3,
-                                 nullptr, config, &coord);
+    const SearchResult r =
+        solve(m, /*time_limit=*/0.0, /*seed=*/17, &watcher, nullptr, 3, nullptr, config, &coord);
 
     REQUIRE(r.feasible);
     // The run reached the code path at all: many feasible points polished, and a
@@ -954,8 +954,8 @@ TEST_CASE("drawing an infeasible pool entry is safe", "[parallel][coord]") {
 
     Model m = build();
     SearchResult r;
-    REQUIRE_NOTHROW(r = solve(m, /*time_limit=*/0.0, /*seed=*/23, true, nullptr, nullptr, 3,
-                              nullptr, config, &coord));
+    REQUIRE_NOTHROW(r = solve(m, /*time_limit=*/0.0, /*seed=*/23, nullptr, nullptr, 3, nullptr,
+                              config, &coord));
 
     REQUIRE_FALSE(r.feasible);
     // The diagnosable part: a NaN anywhere in the bound or the re-grounding
@@ -1575,8 +1575,8 @@ SharedBoundRun run_with_peer(bool share) {
     config.batch_iterations = 100;
     config.tracer = &peer;
     SharedBoundRun run;
-    run.result = solve(m, /*time_limit=*/0.0, /*seed=*/5, true, nullptr, nullptr, 3, nullptr,
-                       config, &coord);
+    run.result =
+        solve(m, /*time_limit=*/0.0, /*seed=*/5, nullptr, nullptr, 3, nullptr, config, &coord);
     run.bounds = peer.bounds;
     return run;
 }
@@ -1702,7 +1702,7 @@ TEST_CASE("a shared bound is never loosened by the worker's own worse incumbent"
     config.batch_iterations = 100;
     config.tracer = &sampler;
     const SearchResult r =
-        solve(m, /*time_limit=*/0.0, /*seed=*/5, true, &hook, nullptr, 3, nullptr, config, &coord);
+        solve(m, /*time_limit=*/0.0, /*seed=*/5, &hook, nullptr, 3, nullptr, config, &coord);
     REQUIRE(r.feasible);
     // The event happened -- otherwise this proves nothing.
     REQUIRE(r.counters.own_best_behind_global > 0);
@@ -1746,7 +1746,7 @@ TEST_CASE("a lone worker's own incumbents leave its trajectory unchanged",
         config.batch_iterations = 100;
         config.perturbation_period = 2;  // adoption is exercised too
         Model m = cover_model();
-        return solve(m, /*time_limit=*/0.0, /*seed=*/17, true, nullptr, nullptr, 3, nullptr, config,
+        return solve(m, /*time_limit=*/0.0, /*seed=*/17, nullptr, nullptr, 3, nullptr, config,
                      &coord);
     };
     const SearchResult on = run(true);
@@ -1808,8 +1808,8 @@ TEST_CASE("a lone worker's own incumbents leave a continuous objective's traject
         config.batch_iterations = 100;
         config.perturbation_period = 2;
         config.tracer = &watch;
-        SearchResult r = solve(m, /*time_limit=*/0.0, /*seed=*/17, true, nullptr, nullptr, 3,
-                               nullptr, config, &coord);
+        SearchResult r =
+            solve(m, /*time_limit=*/0.0, /*seed=*/17, nullptr, nullptr, 3, nullptr, config, &coord);
         return std::make_pair(r, watch.seen);
     };
     const auto [on, on_seen] = run(true);
@@ -1845,7 +1845,7 @@ TEST_CASE("one peer improvement is one shared tightening on a continuous objecti
         config.batch_iterations = 100;
         config.perturbation_period = 2;
         config.tracer = tracer;
-        return solve(m, /*time_limit=*/0.0, /*seed=*/17, true, nullptr, nullptr, 3, nullptr, config,
+        return solve(m, /*time_limit=*/0.0, /*seed=*/17, nullptr, nullptr, 3, nullptr, config,
                      &coord);
     };
     SolutionPool lone_pool(10);
@@ -1921,7 +1921,7 @@ TEST_CASE("a new best doubles a shrunk continuous step up to 1e-3", "[search][ob
     config.perturbation_period = 2;
     config.tracer = &watch;
     const SearchResult r =
-        solve(m, /*time_limit=*/0.0, /*seed=*/17, true, nullptr, nullptr, 3, nullptr, config);
+        solve(m, /*time_limit=*/0.0, /*seed=*/17, nullptr, nullptr, 3, nullptr, config);
     REQUIRE(r.feasible);
     REQUIRE(watch.steps.size() > 1);
     bool doubled = false;
@@ -2059,7 +2059,7 @@ TEST_CASE("an own best behind the shared bound is not an improvement",
     // after batch 1, so the case never happens (seeds 1, 7, 8 and 9 of 1-12
     // produce it).
     const SearchResult r =
-        solve(m, /*time_limit=*/0.0, /*seed=*/1, true, &hook, nullptr, 3, nullptr, config, &coord);
+        solve(m, /*time_limit=*/0.0, /*seed=*/1, &hook, nullptr, 3, nullptr, config, &coord);
     REQUIRE(r.feasible);
     int behind_batches = 0;
     // From batch 2 on the bound is at the cap before the batch starts, so a
@@ -2108,8 +2108,8 @@ TEST_CASE("an adoption does not loosen a shared bound", "[parallel][coord][share
     config.perturbation_period = 2;
     config.lns_interval = 0;
     config.tracer = &watcher;
-    const SearchResult r = solve(m, /*time_limit=*/0.0, /*seed=*/5, true, nullptr, nullptr, 0,
-                                 nullptr, config, &coord);
+    const SearchResult r =
+        solve(m, /*time_limit=*/0.0, /*seed=*/5, nullptr, nullptr, 0, nullptr, config, &coord);
     REQUIRE(r.feasible);
     REQUIRE_FALSE(watcher.bounds.empty());  // adoptions happened
     for (double b : watcher.bounds) {
@@ -2156,8 +2156,8 @@ TEST_CASE("a shared bound reaches a worker before its first feasible point",
         config.max_iterations = 2000;
         config.batch_iterations = 100;
         Model m = build();
-        const SearchResult r = solve(m, /*time_limit=*/0.0, /*seed=*/5, true, nullptr, nullptr, 3,
-                                     nullptr, config, &coord);
+        const SearchResult r =
+            solve(m, /*time_limit=*/0.0, /*seed=*/5, nullptr, nullptr, 3, nullptr, config, &coord);
         REQUIRE(r.feasible);
         return r.first_feasible_objective;
     };
@@ -2196,8 +2196,8 @@ TEST_CASE("an own best that ties the shared bound still counts as an improvement
     config.tracer = &ledger;
     config.use_compound_moves = false;
     config.fj_objective_tie_break = false;
-    const SearchResult r = solve(m, /*time_limit=*/0.0, /*seed=*/5, true, nullptr, nullptr, 3,
-                                 nullptr, config, &coord);
+    const SearchResult r =
+        solve(m, /*time_limit=*/0.0, /*seed=*/5, nullptr, nullptr, 3, nullptr, config, &coord);
     REQUIRE(r.feasible);
     int ties = 0;
     for (size_t i = 1; i < ledger.recorded.size(); ++i) {
@@ -2226,8 +2226,8 @@ TEST_CASE("the control arm times the batches it runs behind the global bound",
     Model m = cover_model();
     SearchConfig config;
     config.batch_iterations = 100;
-    const SearchResult r = solve(m, /*time_limit=*/0.3, /*seed=*/5, true, nullptr, nullptr, 3,
-                                 nullptr, config, &coord);
+    const SearchResult r =
+        solve(m, /*time_limit=*/0.3, /*seed=*/5, nullptr, nullptr, 3, nullptr, config, &coord);
     REQUIRE(r.counters.bound_behind_global_batches > 0);
     REQUIRE(r.counters.bound_behind_global_seconds > 0.0);
 }
@@ -2250,8 +2250,8 @@ TEST_CASE("a pure-feasibility model ignores a shared objective",
     coord.pool = &pool;
     SearchConfig config;
     config.max_iterations = 2000;
-    const SearchResult r = solve(m, /*time_limit=*/0.0, /*seed=*/5, true, nullptr, nullptr, 3,
-                                 nullptr, config, &coord);
+    const SearchResult r =
+        solve(m, /*time_limit=*/0.0, /*seed=*/5, nullptr, nullptr, 3, nullptr, config, &coord);
     REQUIRE(r.feasible);
     REQUIRE(r.termination == TerminationReason::Feasible);
     REQUIRE(r.counters.shared_bound_tightenings == 0);
@@ -2302,9 +2302,8 @@ TEST_CASE("a non-positive batch_iterations is refused rather than run unbounded"
         config.max_iterations = 200;
         config.batch_iterations = bad;
         Model m = infeasible();
-        REQUIRE_THROWS_AS(
-            solve(m, /*time_limit=*/0.0, 42, true, nullptr, nullptr, 0, nullptr, config),
-            std::invalid_argument);
+        REQUIRE_THROWS_AS(solve(m, /*time_limit=*/0.0, 42, nullptr, nullptr, 0, nullptr, config),
+                          std::invalid_argument);
         ParallelConfig pc;
         pc.n_threads = 2;
         ParallelSearch ps(2);

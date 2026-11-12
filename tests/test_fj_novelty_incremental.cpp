@@ -189,7 +189,7 @@ TEST_CASE("the search redraws FJ-or-Novelty every batch", "[search][novelty]") {
         cfg.max_iterations = 6000;
         KindRecorder rec;
         cfg.tracer = &rec;
-        solve(m, /*time_limit=*/0.0, seed, true, nullptr, nullptr, 3, nullptr, cfg);
+        solve(m, /*time_limit=*/0.0, seed, nullptr, nullptr, 3, nullptr, cfg);
         bool have_prev = false;
         BatchKind prev = BatchKind::FeasibilityJump;
         bool prompted = true;

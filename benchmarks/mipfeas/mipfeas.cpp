@@ -669,7 +669,7 @@ int run_benchmark(int argc, char** argv) {
         } else {
             cbls::FloatIntensifyHook hook;
             cbls::LNS lns(kLnsFraction);
-            result = cbls::solve(built.model, args.budget, args.seed, /*use_fj=*/true, &hook,
+            result = cbls::solve(built.model, args.budget, args.seed, &hook,
                                  cbls::bench::lns_argument(args.search, lns), cfg.lns_interval,
                                  &recorder, cfg);
         }

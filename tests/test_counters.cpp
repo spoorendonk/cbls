@@ -77,7 +77,7 @@ struct CountingTracer : Tracer {
 
 SearchResult run(Model& model, const SearchConfig& config, uint64_t seed,
                  InnerSolverHook* hook = nullptr) {
-    return solve(model, /*time_limit=*/0.0, seed, true, hook, nullptr, 3, nullptr, config);
+    return solve(model, /*time_limit=*/0.0, seed, hook, nullptr, 3, nullptr, config);
 }
 
 }  // namespace
@@ -210,7 +210,7 @@ TEST_CASE("the inner solver is timed when the run has a clock", "[counters]") {
 
     Model m = quadratic_model();
     const SearchResult r =
-        solve(m, /*time_limit=*/0.3, /*seed=*/8, true, &hook, nullptr, 3, nullptr, config);
+        solve(m, /*time_limit=*/0.3, /*seed=*/8, &hook, nullptr, 3, nullptr, config);
 
     REQUIRE(r.counters.inner_solver_calls > 0);
     REQUIRE(r.counters.inner_solver_seconds > 0.0);

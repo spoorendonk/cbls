@@ -56,9 +56,8 @@ TEST_CASE("SolveProgress objective is infinite until an incumbent exists", "[mip
     ProgressCollector collector;
     cbls::SearchConfig cfg;
     cfg.max_iterations = 2000;
-    cbls::SearchResult result =
-        cbls::solve(model, /*time_limit=*/0.0, /*seed=*/7, /*use_fj=*/true, /*hook=*/nullptr,
-                    /*lns=*/nullptr, /*lns_interval=*/3, &collector, cfg);
+    cbls::SearchResult result = cbls::solve(model, /*time_limit=*/0.0, /*seed=*/7, /*hook=*/nullptr,
+                                            /*lns=*/nullptr, /*lns_interval=*/3, &collector, cfg);
 
     REQUIRE(result.feasible);
     REQUIRE_FALSE(collector.events.empty());
@@ -84,7 +83,7 @@ TEST_CASE("a trace filtered on a finite objective is monotone and ends at the re
     cbls::SearchConfig cfg;
     cfg.max_iterations = 2000;
     cbls::SearchResult result =
-        cbls::solve(model, /*time_limit=*/0.0, /*seed=*/11, /*use_fj=*/true, /*hook=*/nullptr,
+        cbls::solve(model, /*time_limit=*/0.0, /*seed=*/11, /*hook=*/nullptr,
                     /*lns=*/nullptr, /*lns_interval=*/3, &collector, cfg);
     REQUIRE(result.feasible);
 
@@ -180,9 +179,8 @@ TEST_CASE("an incumbent can be reported while the current point is infeasible",
     ProgressCollector collector;
     cbls::SearchConfig cfg;
     cfg.max_iterations = 2000;
-    cbls::SearchResult result =
-        cbls::solve(model, /*time_limit=*/0.0, /*seed=*/3, /*use_fj=*/true, /*hook=*/nullptr,
-                    /*lns=*/nullptr, /*lns_interval=*/3, &collector, cfg);
+    cbls::SearchResult result = cbls::solve(model, /*time_limit=*/0.0, /*seed=*/3, /*hook=*/nullptr,
+                                            /*lns=*/nullptr, /*lns_interval=*/3, &collector, cfg);
     REQUIRE(result.feasible);
 
     // Every event that reports the current point feasible must also carry an

@@ -243,8 +243,8 @@ TEST_CASE("cvrp tiny instance is solved to its proven optimum", "[cvrp]") {
     cfg.max_iterations = 3000;
     cbls::LNS lns;
     // time_limit 0 switches the wall clock off (see the file header).
-    const cbls::SearchResult result = cbls::solve(cm.model, /*time_limit=*/0.0, /*seed=*/7,
-                                                  /*use_fj=*/true, nullptr, &lns, 3, nullptr, cfg);
+    const cbls::SearchResult result =
+        cbls::solve(cm.model, /*time_limit=*/0.0, /*seed=*/7, nullptr, &lns, 3, nullptr, cfg);
     REQUIRE(result.feasible);
     cm.model.restore_state(result.best_state);
     cbls::full_evaluate(cm.model);

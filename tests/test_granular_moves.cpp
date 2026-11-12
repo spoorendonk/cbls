@@ -256,7 +256,7 @@ TEST_CASE("solve() under GranularBest keeps the cover and reaches the engine (#2
         cfg.structural_selection = sel;
         cfg.structural_neighbours = r.neighbours(8);
         const SearchResult res =
-            solve(r.m, /*time_limit=*/0.0, /*seed=*/1, true, nullptr, nullptr, 0, nullptr, cfg);
+            solve(r.m, /*time_limit=*/0.0, /*seed=*/1, nullptr, nullptr, 0, nullptr, cfg);
         REQUIRE(res.feasible);
         for (const int seen : r.coverage()) {
             REQUIRE(seen == 1);
@@ -290,7 +290,7 @@ TEST_CASE(
             cfg.structural_neighbours = r.neighbours(8);
         }
         const SearchResult res =
-            solve(r.m, /*time_limit=*/0.0, /*seed=*/3, true, nullptr, nullptr, 0, nullptr, cfg);
+            solve(r.m, /*time_limit=*/0.0, /*seed=*/3, nullptr, nullptr, 0, nullptr, cfg);
         Run out;
         out.objective = res.objective;
         out.tried = res.counters.structural_moves_tried;
@@ -340,7 +340,7 @@ TEST_CASE("GranularBest leaves a scalar model's trajectory alone (#203)", "[stru
         cfg.max_iterations = 200;
         cfg.structural_selection = sel;
         const SearchResult res =
-            solve(m, /*time_limit=*/0.0, /*seed=*/4, true, nullptr, nullptr, 0, nullptr, cfg);
+            solve(m, /*time_limit=*/0.0, /*seed=*/4, nullptr, nullptr, 0, nullptr, cfg);
         objective.at(static_cast<size_t>(i)) = res.objective;
         for (int32_t v = 0; v < static_cast<int32_t>(m.num_vars()); ++v) {
             values.at(static_cast<size_t>(i)).push_back(m.var(v).value);

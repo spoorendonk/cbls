@@ -94,7 +94,7 @@ TEST_CASE("a recording tracer sees ordered batch events", "[tracer]") {
 
     Model m = quadratic_model();
     const SearchResult r =
-        solve(m, /*time_limit=*/0.0, /*seed=*/12, true, nullptr, nullptr, 3, nullptr, config);
+        solve(m, /*time_limit=*/0.0, /*seed=*/12, nullptr, nullptr, 3, nullptr, config);
 
     REQUIRE_FALSE(tracer.events().empty());
     // One batch_end per batch, and the run's own counter agrees. This is the
@@ -136,7 +136,7 @@ TEST_CASE("a batch that improves is reported as improving", "[tracer]") {
     config.tracer = &tracer;
 
     Model m = quadratic_model();
-    solve(m, /*time_limit=*/0.0, /*seed=*/12, true, nullptr, nullptr, 3, nullptr, config);
+    solve(m, /*time_limit=*/0.0, /*seed=*/12, nullptr, nullptr, 3, nullptr, config);
 
     bool pending_best = false;
     int64_t checked = 0;
@@ -170,7 +170,7 @@ TEST_CASE("a perturb kick is reported once per kick", "[tracer]") {
 
     Model m = integer_model();
     const SearchResult r =
-        solve(m, /*time_limit=*/0.0, /*seed=*/14, true, nullptr, nullptr, 3, nullptr, config);
+        solve(m, /*time_limit=*/0.0, /*seed=*/14, nullptr, nullptr, 3, nullptr, config);
 
     REQUIRE(r.perturbations > 0);
     REQUIRE(tracer.count(Kind::Kick) == r.perturbations);
@@ -194,7 +194,7 @@ TEST_CASE("an LNS kick reports its kind and its outcome", "[tracer]") {
     LNS lns(0.3);
 
     Model m = integer_model();
-    const SearchResult r = solve(m, /*time_limit=*/0.0, /*seed=*/14, true, nullptr, &lns,
+    const SearchResult r = solve(m, /*time_limit=*/0.0, /*seed=*/14, nullptr, &lns,
                                  config.lns_interval, nullptr, config);
 
     REQUIRE(r.lns_repairs > 0);
@@ -236,7 +236,7 @@ TEST_CASE("an inner-solver call is reported with its duration", "[tracer]") {
 
     Model m = quadratic_model();
     const SearchResult r =
-        solve(m, /*time_limit=*/0.0, /*seed=*/16, true, &hook, nullptr, 3, nullptr, config);
+        solve(m, /*time_limit=*/0.0, /*seed=*/16, &hook, nullptr, 3, nullptr, config);
 
     REQUIRE(tracer.count(Kind::Hook) == r.counters.inner_solver_calls);
     REQUIRE(tracer.count(Kind::Hook) > 0);
@@ -272,7 +272,7 @@ TEST_CASE("structural batches are reported as structural", "[tracer][structural]
     m.close();
 
     const SearchResult r =
-        solve(m, /*time_limit=*/0.0, /*seed=*/18, true, nullptr, nullptr, 3, nullptr, config);
+        solve(m, /*time_limit=*/0.0, /*seed=*/18, nullptr, nullptr, 3, nullptr, config);
 
     REQUIRE(tracer.count(Kind::BatchEnd) == r.counters.batches);
     REQUIRE(r.counters.structural_batches == r.counters.batches);
@@ -339,8 +339,8 @@ TEST_CASE("an adoption is reported as an Adopt kick", "[tracer][parallel]") {
     config.tracer = &tracer;
 
     Model m = build();
-    const SearchResult r = solve(m, /*time_limit=*/0.0, /*seed=*/3, true, nullptr, nullptr, 3,
-                                 nullptr, config, &coord);
+    const SearchResult r =
+        solve(m, /*time_limit=*/0.0, /*seed=*/3, nullptr, nullptr, 3, nullptr, config, &coord);
 
     REQUIRE(r.feasible);
     int64_t adoptions = 0;
@@ -376,7 +376,7 @@ TEST_CASE("a null tracer changes nothing", "[tracer]") {
         FloatIntensifyHook hook;
         LNS lns(0.3);
         const SearchResult r =
-            solve(m, /*time_limit=*/0.0, /*seed=*/20, true, &hook, &lns, 2, nullptr, config);
+            solve(m, /*time_limit=*/0.0, /*seed=*/20, &hook, &lns, 2, nullptr, config);
         return std::pair<SearchResult, Model::State>{r, m.copy_state()};
     };
 
@@ -464,7 +464,7 @@ TEST_CASE("a throwing tracer propagates, and a portfolio absorbs it", "[tracer][
         config.tracer = &tracer;
         Model m = quadratic_model();
         REQUIRE_THROWS_AS(
-            solve(m, /*time_limit=*/0.0, /*seed=*/24, true, nullptr, nullptr, 3, nullptr, config),
+            solve(m, /*time_limit=*/0.0, /*seed=*/24, nullptr, nullptr, 3, nullptr, config),
             std::runtime_error);
         // The first batch_end threw and nothing ran after it.
         REQUIRE(throws.load(std::memory_order_relaxed) == 1);

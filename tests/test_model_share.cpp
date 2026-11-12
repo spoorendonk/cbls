@@ -307,7 +307,7 @@ TEST_CASE("a frozen model solves, and solving it changes nothing structural", "[
     LNS lns(0.3);
     SearchConfig cfg;
     cfg.max_iterations = 400;
-    const SearchResult r = solve(m, /*time_limit=*/0.0, /*seed=*/7, /*use_fj=*/true, &hook, &lns,
+    const SearchResult r = solve(m, /*time_limit=*/0.0, /*seed=*/7, &hook, &lns,
                                  /*lns_interval=*/2, nullptr, cfg);
     REQUIRE(r.feasible);
     REQUIRE(m.num_nodes() == nodes);

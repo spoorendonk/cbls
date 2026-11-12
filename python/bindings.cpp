@@ -1397,7 +1397,6 @@ NB_MODULE(_cbls_core, m) {
         .def(nb::init<>())
         .def_rw("skip_init", &SearchConfig::skip_init)
         .def_rw("max_iterations", &SearchConfig::max_iterations)
-        .def_rw("use_fj", &SearchConfig::use_fj)
         .def_rw("lns_interval", &SearchConfig::lns_interval)
         .def_rw("structural_batch_probability", &SearchConfig::structural_batch_probability)
         // Novelty Jump batches (#209): plain scalars, read once per batch-kind
@@ -1555,8 +1554,8 @@ NB_MODULE(_cbls_core, m) {
     // cross-worker channel.
     m.def(
         "solve",
-        [](Model& model, double time_limit, uint64_t seed, bool use_fj, InnerSolverHook* hook,
-           LNS* lns, int lns_interval, SolveCallback* callback, const SearchConfig& config) {
+        [](Model& model, double time_limit, uint64_t seed, InnerSolverHook* hook, LNS* lns,
+           int lns_interval, SolveCallback* callback, const SearchConfig& config) {
             // Must register WHILE THE GIL IS HELD, then release (not a
             // call_guard), else a builder on another thread can pass the check
             // before registration. A solve is a structural writer (objective
@@ -1564,13 +1563,11 @@ NB_MODULE(_cbls_core, m) {
             refuse_if_solving(model, "cbls.solve");
             const SolvingScope solving(model);  // refuses structural writes until this returns
             const nb::gil_scoped_release release;
-            return cbls::solve(model, time_limit, seed, use_fj, hook, lns, lns_interval, callback,
-                               config);
+            return cbls::solve(model, time_limit, seed, hook, lns, lns_interval, callback, config);
         },
         nb::arg("model"), nb::arg("time_limit") = 10.0, nb::arg("seed") = 42,
-        nb::arg("use_fj") = true, nb::arg("hook") = nullptr, nb::arg("lns") = nullptr,
-        nb::arg("lns_interval") = 3, nb::arg("callback") = nullptr,
-        nb::arg("config") = SearchConfig{},
+        nb::arg("hook") = nullptr, nb::arg("lns") = nullptr, nb::arg("lns_interval") = 3,
+        nb::arg("callback") = nullptr, nb::arg("config") = SearchConfig{},
         // THE GIL IS RELEASED FOR THE WHOLE SEARCH (#128, #169), in the body after
         // registration; else no thread could call StopToken.request() mid-solve.
         // Every path back into Python re-acquires it (SolveCallback trampoline,

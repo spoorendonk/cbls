@@ -988,7 +988,7 @@ cbls::SearchResult search_instance(const Args& args, cbls::Model& model,
     if (args.threads == 1) {
         cbls::FloatIntensifyHook hook;
         cbls::LNS lns(0.3);
-        return cbls::solve(model, time_limit, args.seed, /*use_fj=*/true,
+        return cbls::solve(model, time_limit, args.seed,
                            cbls::bench::hook_argument(args.search, hook),
                            cbls::bench::lns_argument(args.search, lns),
                            cbls::bench::lns_interval_argument(args.search), callback, cfg);

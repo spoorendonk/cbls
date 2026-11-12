@@ -40,7 +40,6 @@ struct SearchConfig {
     // no GLS iteration: the run stops when either count reaches it and
     // SearchResult::iterations reports the larger (#201).
     int64_t max_iterations = 0;
-    bool use_fj = true;
     int lns_interval = 3;
 
     // ViolationLS batch outer loop (Algorithm 6).
@@ -324,7 +323,7 @@ void validate_search_config(const SearchConfig& config);
 /// cone-cache build is O(config.cone_cache_bytes). Copies of the frozen model
 /// share its `lambda_sum`/`pair_lambda_sum` callables, so a callable with
 /// mutable state races under parallel copies.
-SearchResult solve(Model& model, double time_limit = 10.0, uint64_t seed = 42, bool use_fj = true,
+SearchResult solve(Model& model, double time_limit = 10.0, uint64_t seed = 42,
                    InnerSolverHook* hook = nullptr, LNS* lns = nullptr, int lns_interval = 3,
                    SolveCallback* callback = nullptr, const SearchConfig& config = {},
                    SearchCoordination* coord = nullptr);

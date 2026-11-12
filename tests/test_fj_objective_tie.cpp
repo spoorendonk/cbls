@@ -272,8 +272,8 @@ TEST_CASE("the objective tie-break reaches solve() (#218)", "[fj][objective_tie]
             config.max_iterations = 2'000;
             config.use_compound_moves = false;
             config.fj_objective_tie_break = on;
-            const SearchResult r = solve(f.m, /*time_limit=*/0.0, /*seed=*/1, true, nullptr,
-                                         nullptr, 3, nullptr, config);
+            const SearchResult r =
+                solve(f.m, /*time_limit=*/0.0, /*seed=*/1, nullptr, nullptr, 3, nullptr, config);
             REQUIRE_FALSE(r.feasible);
             CAPTURE(on, f.m.var(vid(f.z)).value);
             REQUIRE((f.m.var(vid(f.z)).value == 10.0) == on);

@@ -334,8 +334,7 @@ TEST_CASE("a +inf-objective feasible point does not block a later improvement",
     // letting FJ's begin() reset both Floats to the domain value closest to zero.
     cfg.skip_init = true;
     cfg.max_iterations = 200000;
-    SearchResult r = solve(m, /*time_limit=*/0.0, /*seed=*/42, /*use_fj=*/true, nullptr, nullptr, 3,
-                           nullptr, cfg);
+    SearchResult r = solve(m, /*time_limit=*/0.0, /*seed=*/42, nullptr, nullptr, 3, nullptr, cfg);
 
     REQUIRE(r.feasible);
     // The witness was displaced: a real objective value is reported, not +inf.
@@ -416,7 +415,7 @@ TEST_CASE("a feasible point with a non-finite objective gets a finite bound",
     SearchConfig cfg;
     cfg.skip_init = true;  // keep the diagonal start
     cfg.max_iterations = 20000;
-    solve(m, /*time_limit=*/0.0, /*seed=*/42, /*use_fj=*/true, nullptr, nullptr, 3, &probe, cfg);
+    solve(m, /*time_limit=*/0.0, /*seed=*/42, nullptr, nullptr, 3, &probe, cfg);
 
     REQUIRE(probe.captured);
     // Precondition: this really is the state under test — feasible, objective
@@ -450,8 +449,8 @@ TEST_CASE("the first-feasible pair reports the witness point's non-finite object
     cfg.max_iterations = 20000;
     cfg.perturbation_period = 1 << 30;  // no diversification within the budget
 
-    const SearchResult r = solve(m, /*time_limit=*/0.0, /*seed=*/42, /*use_fj=*/true, nullptr,
-                                 nullptr, 3, nullptr, cfg);
+    const SearchResult r =
+        solve(m, /*time_limit=*/0.0, /*seed=*/42, nullptr, nullptr, 3, nullptr, cfg);
 
     CAPTURE(r.objective, r.first_feasible_objective, r.time_to_first_feasible);
     REQUIRE(r.feasible);
@@ -480,8 +479,7 @@ TEST_CASE("a search starting feasible with a +inf objective still finds a finite
     cfg.max_iterations = 20000;
     cfg.perturbation_period = 1 << 30;  // no diversification within the budget
 
-    SearchResult r = solve(m, /*time_limit=*/0.0, /*seed=*/42, /*use_fj=*/true, nullptr, nullptr, 3,
-                           nullptr, cfg);
+    SearchResult r = solve(m, /*time_limit=*/0.0, /*seed=*/42, nullptr, nullptr, 3, nullptr, cfg);
 
     REQUIRE(r.feasible);
     REQUIRE(std::isfinite(r.objective));
@@ -592,8 +590,7 @@ TEST_CASE("a structural repair is accepted while the sentinel bound is installed
     cfg.perturbation_period = kPeriod;
 
     FeasibleVisitCounter hook;
-    SearchResult r =
-        solve(m, /*time_limit=*/0.0, /*seed=*/42, /*use_fj=*/true, &hook, nullptr, 3, nullptr, cfg);
+    SearchResult r = solve(m, /*time_limit=*/0.0, /*seed=*/42, &hook, nullptr, 3, nullptr, cfg);
 
     // The run is feasible on the witness alone and reports no objective, before
     // and after the fix: the point of the test is what happened in between.

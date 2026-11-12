@@ -117,7 +117,7 @@ SearchResult run_arm(Model& model, const SearchFlags& flags, int64_t batch_itera
     cfg.batch_iterations = batch_iterations;
     cbls::bench::apply_search_flags(flags, cfg);
     return cbls::solve(model, cbls::bench::time_limit_argument(flags, 0.0), /*seed=*/42,
-                       /*use_fj=*/true, cbls::bench::hook_argument(flags, hook),
+                       cbls::bench::hook_argument(flags, hook),
                        cbls::bench::lns_argument(flags, lns),
                        cbls::bench::lns_interval_argument(flags), nullptr, cfg);
 }
@@ -194,8 +194,7 @@ SearchResult structural_probe(const std::vector<std::string>& args) {
     cfg.structural_neighbours = cbls::bench::neighbours_argument(
         parsed.flags, RoutingFixture::kCustomers, [&fx](int a, int b) { return fx.cost(a, b); });
     return cbls::solve(m, cbls::bench::time_limit_argument(parsed.flags, 0.0), /*seed=*/42,
-                       /*use_fj=*/true, /*hook=*/nullptr,
-                       cbls::bench::lns_argument(parsed.flags, lns),
+                       /*hook=*/nullptr, cbls::bench::lns_argument(parsed.flags, lns),
                        cbls::bench::lns_interval_argument(parsed.flags), nullptr, cfg);
 }
 
@@ -326,7 +325,7 @@ TEST_CASE("one run cannot be recorded under two different cells", "[bench][flags
     // switch before the probability. So `--no-lns --lns-interval 5` IS
     // `--no-lns`, and would otherwise be stamped as a different arm. Refusing
     // the pair keeps the claim true -- and is the same no-effect rule the rho
-    // and use_fj rejections rest on.
+    // rejection rests on.
     std::string error;
     REQUIRE_FALSE(cbls::bench::validate_search_flags(
         parse({"--no-lns", "--lns-interval", "5"}).flags, kScalar, false, error));

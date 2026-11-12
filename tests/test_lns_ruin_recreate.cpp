@@ -281,7 +281,7 @@ TEST_CASE("solve() accepts LNS repairs on a partitioned List model (#202)", "[ln
     cfg.batch_iterations = 20;
     cfg.perturbation_period = 2;  // kick often, so the LNS slot comes round
     cfg.structural_neighbours = neighbours_of(r);
-    const SearchResult res = solve(r.m, /*time_limit=*/0.0, /*seed=*/1, true, nullptr, &lns,
+    const SearchResult res = solve(r.m, /*time_limit=*/0.0, /*seed=*/1, nullptr, &lns,
                                    /*lns_interval=*/1, nullptr, cfg);
     CAPTURE(res.lns_repairs, res.lns_repairs_accepted, res.objective);
     REQUIRE(res.lns_repairs > 0);

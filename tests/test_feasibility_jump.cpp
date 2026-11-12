@@ -1537,7 +1537,7 @@ TEST_CASE("the jump's candidate grid solves #208's wide-domain Int repro", "[fj]
             SearchConfig config;
             config.max_iterations = 10'000;
             const SearchResult r =
-                solve(m, /*time_limit=*/0.0, seed, true, nullptr, nullptr, 3, nullptr, config);
+                solve(m, /*time_limit=*/0.0, seed, nullptr, nullptr, 3, nullptr, config);
             CAPTURE(seed, r.iterations);
             REQUIRE(r.feasible);
             REQUIRE(r.termination == TerminationReason::Feasible);
@@ -1552,7 +1552,7 @@ TEST_CASE("the jump's candidate grid solves #208's wide-domain Int repro", "[fj]
         config.use_compound_moves = true;
         config.novelty_jump_probability = 1.0;
         const SearchResult r =
-            solve(m, /*time_limit=*/0.0, /*seed=*/1, true, nullptr, nullptr, 3, nullptr, config);
+            solve(m, /*time_limit=*/0.0, /*seed=*/1, nullptr, nullptr, 3, nullptr, config);
         CAPTURE(r.iterations);
         REQUIRE(r.counters.novelty_batches == r.counters.batches);
         REQUIRE(r.feasible);

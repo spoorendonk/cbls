@@ -109,8 +109,8 @@ TEST_CASE("the solve's feasibility tolerance decides a domain row, not the defau
         m.minimize(m.sqrt_expr(x));
         m.close();
         m.var_mut(vid(x)).value = 0.0;
-        const SearchResult r = solve(m, /*time_limit=*/0.0, /*seed=*/1, /*use_fj=*/true, nullptr,
-                                     nullptr, 3, nullptr, cfg);
+        const SearchResult r =
+            solve(m, /*time_limit=*/0.0, /*seed=*/1, nullptr, nullptr, 3, nullptr, cfg);
         REQUIRE(r.feasible);
         REQUIRE(r.objective == 0.0);
     }
@@ -121,8 +121,7 @@ TEST_CASE("the solve's feasibility tolerance decides a domain row, not the defau
         m.add_constraint(m.leq(m.log_expr(x), m.constant(1.0)));
         m.close();
         m.var_mut(vid(x)).value = 1.0;
-        (void)solve(m, /*time_limit=*/0.0, /*seed=*/1, /*use_fj=*/true, nullptr, nullptr, 3,
-                    nullptr, cfg);
+        (void)solve(m, /*time_limit=*/0.0, /*seed=*/1, nullptr, nullptr, 3, nullptr, cfg);
         const int32_t row = m.constraint_ids()[1];
         for (const double v : {0.0, -tol / 2.0, -tol}) {
             CAPTURE(v);
@@ -231,8 +230,8 @@ TEST_CASE("a Newton step out of a domain row lands at the floor, not past the ma
     m.minimize(m.sqrt_expr(x));
     m.close();
     m.var_mut(vid(x)).value = -1.0;
-    const SearchResult r = solve(m, /*time_limit=*/0.0, /*seed=*/1, /*use_fj=*/true, nullptr,
-                                 nullptr, 3, nullptr, cfg);
+    const SearchResult r =
+        solve(m, /*time_limit=*/0.0, /*seed=*/1, nullptr, nullptr, 3, nullptr, cfg);
     REQUIRE(r.feasible);
     REQUIRE(r.objective == 0.0);
 }
@@ -369,8 +368,8 @@ TEST_CASE("a feasible start outside a log's domain reaches a finite objective",
     cfg.max_iterations = 20000;
     cfg.perturbation_period = 1 << 30;
 
-    const SearchResult r = solve(m, /*time_limit=*/0.0, /*seed=*/42, /*use_fj=*/true, nullptr,
-                                 nullptr, 3, nullptr, cfg);
+    const SearchResult r =
+        solve(m, /*time_limit=*/0.0, /*seed=*/42, nullptr, nullptr, 3, nullptr, cfg);
 
     CAPTURE(r.objective);
     REQUIRE(r.feasible);

@@ -64,8 +64,8 @@ inline cbls::SearchResult solve_deterministic(cbls::Model& model, int64_t max_it
         cfg.max_iterations = 0;
     }
 
-    cbls::SearchResult r = cbls::solve(model, time_limit, seed, /*use_fj=*/true, hook, lns,
-                                       lns_interval, callback, cfg);
+    cbls::SearchResult r =
+        cbls::solve(model, time_limit, seed, hook, lns, lns_interval, callback, cfg);
     if (calib != nullptr) {
         std::fprintf(stderr, "CALIB\t%s\t%lld\t%.2f\n",
                      Catch::getResultCapture().getCurrentTestName().c_str(),

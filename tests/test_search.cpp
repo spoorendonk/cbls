@@ -601,8 +601,7 @@ TEST_CASE("max_iterations stops SA by iteration count", "[search]") {
     config.max_iterations = 1000;
     // time_limit 0 = no wall clock at all: the iteration budget is the only
     // thing that can stop this, which is exactly what the test asserts.
-    auto result = solve(m, /*time_limit=*/0.0, /*seed=*/42, /*use_fj=*/true, nullptr, nullptr, 3,
-                        nullptr, config);
+    auto result = solve(m, /*time_limit=*/0.0, /*seed=*/42, nullptr, nullptr, 3, nullptr, config);
     // The budget is checked at batch boundaries, so the count lands in
     // [max_iterations, max_iterations + batch_iterations). Both ends matter: the
     // lower proves the budget was actually spent rather than an early break, the
@@ -632,8 +631,8 @@ TEST_CASE("max_iterations wins over a live wall clock", "[search]") {
     // millisecond, so the clock is armed but can never be the thing that fires.
     Model timed;
     build(timed);
-    auto result = solve(timed, /*time_limit=*/30.0, /*seed=*/42, /*use_fj=*/true, nullptr, nullptr,
-                        3, nullptr, config);
+    auto result =
+        solve(timed, /*time_limit=*/30.0, /*seed=*/42, nullptr, nullptr, 3, nullptr, config);
 
     REQUIRE(result.termination == TerminationReason::IterationLimit);
     // Same bounds as the no-clock case: the lower proves the budget was actually
@@ -653,8 +652,8 @@ TEST_CASE("max_iterations wins over a live wall clock", "[search]") {
     // never reached and the two stay identical.
     Model untimed;
     build(untimed);
-    auto reference = solve(untimed, /*time_limit=*/0.0, /*seed=*/42, /*use_fj=*/true, nullptr,
-                           nullptr, 3, nullptr, config);
+    auto reference =
+        solve(untimed, /*time_limit=*/0.0, /*seed=*/42, nullptr, nullptr, 3, nullptr, config);
     REQUIRE(result.iterations == reference.iterations);
     REQUIRE(result.objective == reference.objective);
 }
@@ -673,8 +672,8 @@ TEST_CASE("termination reason covers the non-budget exits", "[search]") {
 
         SearchConfig config;
         config.max_iterations = 100000;
-        auto result = solve(m, /*time_limit=*/0.0, /*seed=*/42, /*use_fj=*/true, nullptr, nullptr,
-                            3, nullptr, config);
+        auto result =
+            solve(m, /*time_limit=*/0.0, /*seed=*/42, nullptr, nullptr, 3, nullptr, config);
 
         REQUIRE(result.feasible);
         REQUIRE(result.termination == TerminationReason::Feasible);
@@ -691,8 +690,8 @@ TEST_CASE("termination reason covers the non-budget exits", "[search]") {
         m.minimize(m.sum({m.pow_expr(x, two)}));
         m.close();
 
-        auto result = solve(m, /*time_limit=*/0.0, /*seed=*/42, /*use_fj=*/true, nullptr, nullptr,
-                            3, nullptr, SearchConfig{});
+        auto result =
+            solve(m, /*time_limit=*/0.0, /*seed=*/42, nullptr, nullptr, 3, nullptr, SearchConfig{});
 
         REQUIRE(result.termination == TerminationReason::NoBudget);
         REQUIRE(result.iterations == 0);
@@ -801,8 +800,7 @@ TEST_CASE("solve stops a Feasibility Jump batch at the deadline", "[search][dead
     config.batch_iterations = 40000;
     config.max_iterations = 0;  // no iteration budget: the clock is the only bound
 
-    auto result = solve(m, /*time_limit=*/0.02, /*seed=*/42, /*use_fj=*/true, nullptr, nullptr, 3,
-                        nullptr, config);
+    auto result = solve(m, /*time_limit=*/0.02, /*seed=*/42, nullptr, nullptr, 3, nullptr, config);
 
     REQUIRE(result.termination == TerminationReason::TimeLimit);
     REQUIRE(result.iterations > 0);  // not inert: the batch really did run
@@ -852,8 +850,7 @@ TEST_CASE("solve stops a Feasibility Jump batch inside a fraction of the budget"
     config.batch_iterations = 1000;
     config.max_iterations = 0;  // no iteration budget: the clock is the only bound
 
-    auto result = solve(m, /*time_limit=*/0.02, /*seed=*/42, /*use_fj=*/true, nullptr, nullptr, 3,
-                        nullptr, config);
+    auto result = solve(m, /*time_limit=*/0.02, /*seed=*/42, nullptr, nullptr, 3, nullptr, config);
 
     REQUIRE(result.termination == TerminationReason::TimeLimit);
     REQUIRE(result.iterations > 0);  // not inert: the batch really did run
@@ -904,8 +901,7 @@ TEST_CASE("solve does not start the inner-solver hook past the deadline", "[sear
     config.unproductive_iterations = 0;
 
     CountingHook hook;
-    auto result = solve(m, /*time_limit=*/0.02, /*seed=*/42, /*use_fj=*/true, &hook, nullptr, 3,
-                        nullptr, config);
+    auto result = solve(m, /*time_limit=*/0.02, /*seed=*/42, &hook, nullptr, 3, nullptr, config);
 
     REQUIRE(result.termination == TerminationReason::TimeLimit);
     REQUIRE(hook.calls == 1);
@@ -928,7 +924,7 @@ TEST_CASE("solve bounds the LNS repair by its own remaining budget", "[search][d
 
     BudgetRecordingLNS lns;
     constexpr double kBudget = 0.05;
-    auto result = solve(m, kBudget, /*seed=*/42, /*use_fj=*/true, nullptr, &lns,
+    auto result = solve(m, kBudget, /*seed=*/42, nullptr, &lns,
                         /*lns_interval=*/1, nullptr, config);
 
     REQUIRE(result.termination == TerminationReason::TimeLimit);
@@ -963,7 +959,7 @@ TEST_CASE("solve hands the LNS repair no wall clock when it has none", "[search]
     config.perturbation_period = 1;  // kick on the first stagnant batch, as above
 
     BudgetRecordingLNS lns;
-    auto result = solve(m, /*time_limit=*/0.0, /*seed=*/42, /*use_fj=*/true, nullptr, &lns,
+    auto result = solve(m, /*time_limit=*/0.0, /*seed=*/42, nullptr, &lns,
                         /*lns_interval=*/1, nullptr, config);
 
     REQUIRE(result.termination == TerminationReason::IterationLimit);
@@ -1016,8 +1012,7 @@ TEST_CASE("solve arms the escape probe on wall-clock stagnation", "[search][dead
     // unreachable outright. Same effect on the arming path, different cause.
     config.perturbation_period = std::numeric_limits<int>::max();
 
-    auto result = solve(m, /*time_limit=*/0.3, /*seed=*/42, /*use_fj=*/true, nullptr, nullptr, 3,
-                        nullptr, config);
+    auto result = solve(m, /*time_limit=*/0.3, /*seed=*/42, nullptr, nullptr, 3, nullptr, config);
 
     REQUIRE(result.termination == TerminationReason::TimeLimit);
     REQUIRE_FALSE(result.feasible);  // premise: nothing improves, so nothing disarms
@@ -1044,8 +1039,7 @@ TEST_CASE("solve does not arm the escape probe off the clock without a deadline"
     config.max_iterations = 500;
     config.perturbation_period = std::numeric_limits<int>::max();  // no batch arming either
 
-    auto result = solve(m, /*time_limit=*/0.0, /*seed=*/42, /*use_fj=*/true, nullptr, nullptr, 3,
-                        nullptr, config);
+    auto result = solve(m, /*time_limit=*/0.0, /*seed=*/42, nullptr, nullptr, 3, nullptr, config);
 
     REQUIRE(result.termination == TerminationReason::IterationLimit);
     REQUIRE_FALSE(result.feasible);  // premise: nothing improves, so nothing disarms
@@ -1064,8 +1058,7 @@ TEST_CASE("solve still arms the escape probe on the batch count", "[search][esca
     config.max_iterations = 500;
     config.perturbation_period = 1;  // arm on the first stagnant batch
 
-    auto result = solve(m, /*time_limit=*/0.0, /*seed=*/42, /*use_fj=*/true, nullptr, nullptr, 3,
-                        nullptr, config);
+    auto result = solve(m, /*time_limit=*/0.0, /*seed=*/42, nullptr, nullptr, 3, nullptr, config);
 
     REQUIRE(result.termination == TerminationReason::IterationLimit);
     REQUIRE_FALSE(result.feasible);  // premise: nothing improves, so nothing disarms
@@ -1096,7 +1089,7 @@ TEST_CASE("solve keeps diversifying when a wall clock is armed",
     config.perturbation_period = 5;  // reachable within the budget, unlike the case above
 
     BudgetRecordingLNS lns;
-    auto result = solve(m, /*time_limit=*/0.3, /*seed=*/42, /*use_fj=*/true, nullptr, &lns,
+    auto result = solve(m, /*time_limit=*/0.3, /*seed=*/42, nullptr, &lns,
                         /*lns_interval=*/1, nullptr, config);
 
     REQUIRE(result.termination == TerminationReason::TimeLimit);
@@ -1132,8 +1125,7 @@ TEST_CASE("solve disarms the escape probe on a new best", "[search][escape]") {
     config.max_iterations = 20000;      // ample: the model needs ~25 improving jumps
     config.use_compound_moves = false;  // FJ batches only: see the non-vacuity note below
 
-    auto result = solve(m, /*time_limit=*/0.0, /*seed=*/42, /*use_fj=*/true, nullptr, nullptr, 3,
-                        nullptr, config);
+    auto result = solve(m, /*time_limit=*/0.0, /*seed=*/42, nullptr, nullptr, 3, nullptr, config);
 
     REQUIRE(result.termination == TerminationReason::Feasible);
     REQUIRE(result.feasible);
@@ -1197,7 +1189,7 @@ TEST_CASE("structural batch respects the wall-clock deadline", "[search][structu
 
     constexpr double kBudget = 0.10;
     auto before = std::chrono::steady_clock::now();
-    solve(m, kBudget, /*seed=*/42, /*use_fj=*/true, nullptr, nullptr, 3, nullptr, config);
+    solve(m, kBudget, /*seed=*/42, nullptr, nullptr, 3, nullptr, config);
     auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - before).count();
 
     // The end-to-end contract check: `solve(model, time_limit)` returns near its
@@ -1302,7 +1294,7 @@ TEST_CASE("the unproductive-batch exit waits for the outer loop's stagnation cou
         config.perturbation_period = 2000;
         config.unproductive_iterations = unproductive;
         LNS lns(0.3);
-        return solve(m, /*time_limit=*/0.0, /*seed=*/42, /*use_fj=*/true, nullptr, &lns,
+        return solve(m, /*time_limit=*/0.0, /*seed=*/42, nullptr, &lns,
                      /*lns_interval=*/3, nullptr, config);
     };
 
@@ -1375,7 +1367,7 @@ TEST_CASE("the unproductive-batch exit draws no LNS after the first feasible sol
         config.perturbation_period = 100;
         config.unproductive_iterations = unproductive;
         LNS lns(0.3);
-        return solve(m, /*time_limit=*/0.0, /*seed=*/42, /*use_fj=*/true, nullptr, &lns,
+        return solve(m, /*time_limit=*/0.0, /*seed=*/42, nullptr, &lns,
                      /*lns_interval=*/3, nullptr, config);
     };
 
@@ -1503,7 +1495,7 @@ TEST_CASE("solve separates LNS repairs attempted from repairs accepted", "[searc
         build_repair_proof_model(m);
         SearchConfig cfg = repair_proof_config();
         LNS lns(0.3);
-        const SearchResult r = solve(m, /*time_limit=*/0.0, seed, /*use_fj=*/true, nullptr, &lns,
+        const SearchResult r = solve(m, /*time_limit=*/0.0, seed, nullptr, &lns,
                                      /*lns_interval=*/1, nullptr, cfg);
 
         CAPTURE(r.iterations, r.perturbations, r.lns_repairs, r.lns_repairs_accepted,
@@ -1538,10 +1530,10 @@ TEST_CASE("the accepted counter follows destroy_repair's verdict, not the kick c
     VerdictOverridingLNS rejecting(false);
     VerdictOverridingLNS accepting(true);
     const SearchResult reject =
-        solve(rejecting_model, /*time_limit=*/0.0, /*seed=*/7, /*use_fj=*/true, nullptr, &rejecting,
+        solve(rejecting_model, /*time_limit=*/0.0, /*seed=*/7, nullptr, &rejecting,
               /*lns_interval=*/1, nullptr, cfg);
     const SearchResult accept =
-        solve(accepting_model, /*time_limit=*/0.0, /*seed=*/7, /*use_fj=*/true, nullptr, &accepting,
+        solve(accepting_model, /*time_limit=*/0.0, /*seed=*/7, nullptr, &accepting,
               /*lns_interval=*/1, nullptr, cfg);
 
     CAPTURE(reject.lns_repairs, reject.lns_repairs_accepted, accept.lns_repairs,
@@ -1610,7 +1602,7 @@ TEST_CASE("the real LNS records repairs it kept, on a model where some are kept"
         cfg.perturbation_period = 1;  // ...and a kick at every one of them
         cfg.max_iterations = 30;
         LNS lns(0.3);
-        const SearchResult r = solve(m, /*time_limit=*/0.0, seed, /*use_fj=*/true, nullptr, &lns,
+        const SearchResult r = solve(m, /*time_limit=*/0.0, seed, nullptr, &lns,
                                      /*lns_interval=*/2, nullptr, cfg);
 
         CAPTURE(r.iterations, r.perturbations, r.lns_repairs, r.lns_repairs_accepted);
@@ -1689,7 +1681,7 @@ TEST_CASE("solve records the FIRST feasible objective, not the incumbent",
         SearchConfig cfg;
         cfg.max_iterations = 4000;
         FirstFeasibleProgress probe;
-        const SearchResult r = solve(m, /*time_limit=*/0.0, seed, /*use_fj=*/true, nullptr, nullptr,
+        const SearchResult r = solve(m, /*time_limit=*/0.0, seed, nullptr, nullptr,
                                      /*lns_interval=*/3, &probe, cfg);
 
         CAPTURE(r.objective, r.first_feasible_objective, r.time_to_first_feasible, probe.objective,
@@ -1740,8 +1732,8 @@ TEST_CASE("a run that never reaches feasibility reports no first-feasible pair",
 
     SearchConfig cfg;
     cfg.max_iterations = 500;
-    const SearchResult r = solve(m, /*time_limit=*/0.0, /*seed=*/1, /*use_fj=*/true, nullptr,
-                                 nullptr, /*lns_interval=*/3, nullptr, cfg);
+    const SearchResult r = solve(m, /*time_limit=*/0.0, /*seed=*/1, nullptr, nullptr,
+                                 /*lns_interval=*/3, nullptr, cfg);
 
     CAPTURE(r.objective, r.best_violation, r.first_feasible_objective, r.time_to_first_feasible);
     REQUIRE_FALSE(r.feasible);
@@ -1926,8 +1918,8 @@ TEST_CASE("a kick after the first feasible solution starts from the incumbent",
     config.max_iterations = 20000;
 
     EntryViolationLNS lns;
-    const SearchResult result = solve(m, /*time_limit=*/0.0, /*seed=*/42, /*use_fj=*/true, nullptr,
-                                      &lns, /*lns_interval=*/1, nullptr, config);
+    const SearchResult result = solve(m, /*time_limit=*/0.0, /*seed=*/42, nullptr, &lns,
+                                      /*lns_interval=*/1, nullptr, config);
 
     REQUIRE(result.feasible);
     // Not vacuous: kicks after the first feasible point really happened, and
@@ -2042,8 +2034,8 @@ TEST_CASE("a kick after adoption departs from the adopted point, not our incumbe
     // observation point, taken while the search is standing on the adopted
     // point.
     EntryStateLNS lns;
-    const SearchResult result = solve(m, /*time_limit=*/0.0, /*seed=*/42, /*use_fj=*/true, nullptr,
-                                      &lns, /*lns_interval=*/2, nullptr, config, &coord);
+    const SearchResult result = solve(m, /*time_limit=*/0.0, /*seed=*/42, nullptr, &lns,
+                                      /*lns_interval=*/2, nullptr, config, &coord);
 
     REQUIRE(result.feasible);
     // Not vacuous: adoption happened and a later kick drew the repair.
@@ -2081,7 +2073,7 @@ TEST_CASE("a strict comparison over Ints is not satisfied at equality", "[search
         SearchConfig config;
         config.max_iterations = 200;
         const SearchResult r =
-            solve(m, /*time_limit=*/0.0, 42, true, nullptr, nullptr, 0, nullptr, config);
+            solve(m, /*time_limit=*/0.0, 42, nullptr, nullptr, 0, nullptr, config);
         REQUIRE_FALSE(r.feasible);
     }
     SECTION("room below: the answer keeps the gap") {
@@ -2093,7 +2085,7 @@ TEST_CASE("a strict comparison over Ints is not satisfied at equality", "[search
         SearchConfig config;
         config.max_iterations = 2000;
         const SearchResult r =
-            solve(m, /*time_limit=*/0.0, 42, true, nullptr, nullptr, 0, nullptr, config);
+            solve(m, /*time_limit=*/0.0, 42, nullptr, nullptr, 0, nullptr, config);
         REQUIRE(r.feasible);
         REQUIRE(r.best_state.values[static_cast<size_t>(vid(x))] >= 4.0);
     }
@@ -2143,8 +2135,7 @@ TEST_CASE("the objective bound steps by one on an integral objective", "[search]
     SearchConfig config;
     config.max_iterations = 3000;
     config.tracer = &ledger;
-    const SearchResult r =
-        solve(m, /*time_limit=*/0.0, 42, true, nullptr, nullptr, 0, nullptr, config);
+    const SearchResult r = solve(m, /*time_limit=*/0.0, 42, nullptr, nullptr, 0, nullptr, config);
     REQUIRE(r.feasible);
     REQUIRE_FALSE(ledger.pairs.empty());
     for (const auto& [obj, bound] : ledger.pairs) {
@@ -2201,8 +2192,7 @@ TEST_CASE("a stall shrinks a continuous objective's bound step to 1e-6", "[searc
     SearchConfig config;
     config.max_iterations = 450000;  // 450 batches: three full stalls and spare
     config.tracer = &ledger;
-    const SearchResult r =
-        solve(m, /*time_limit=*/0.0, 42, true, nullptr, nullptr, 0, nullptr, config);
+    const SearchResult r = solve(m, /*time_limit=*/0.0, 42, nullptr, nullptr, 0, nullptr, config);
     REQUIRE(r.feasible);
     REQUIRE(ledger.gaps.size() > 3U * static_cast<size_t>(config.perturbation_period));
     const double first = integral ? 1.0 : 1e-3;

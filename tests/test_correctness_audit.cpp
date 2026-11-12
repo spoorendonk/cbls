@@ -720,7 +720,7 @@ Outcome audit_run(Instance& inst, const Arm& arm, uint64_t seed, int64_t iterati
     cfg.tracer = &a;
     LNS lns;
     FloatIntensifyHook hook;
-    const SearchResult r = solve(inst.m, /*time_limit=*/0.0, seed, /*use_fj=*/true, &hook, &lns,
+    const SearchResult r = solve(inst.m, /*time_limit=*/0.0, seed, &hook, &lns,
                                  /*lns_interval=*/2, &a, cfg);
 
     const std::string ctx = inst.family + " seed " + std::to_string(seed) + " arm " + arm.name;

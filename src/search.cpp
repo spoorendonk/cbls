@@ -1365,10 +1365,9 @@ void validate_search_config(const SearchConfig& config) {
     }
 }
 
-SearchResult solve(Model& model, double time_limit, uint64_t seed, bool use_fj,
-                   InnerSolverHook* hook, LNS* lns, int lns_interval, SolveCallback* callback,
-                   const SearchConfig& config, SearchCoordination* coord) {
-    (void)use_fj;  // GFJ is always the engine now; the flag is vestigial.
+SearchResult solve(Model& model, double time_limit, uint64_t seed, InnerSolverHook* hook, LNS* lns,
+                   int lns_interval, SolveCallback* callback, const SearchConfig& config,
+                   SearchCoordination* coord) {
     validate_search_config(config);
     RNG rng(seed);
 

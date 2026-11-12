@@ -326,7 +326,7 @@ TEST_CASE("solve solves a model only a kick can escape", "[unbounded][search]") 
     // small enough to keep the test quick; everything else is default.
     cfg.perturbation_period = 4;
     cfg.max_iterations = 200000;
-    SearchResult r = solve(m, /*time_limit=*/0.0, /*seed=*/42, /*use_fj=*/true, nullptr, nullptr,
+    SearchResult r = solve(m, /*time_limit=*/0.0, /*seed=*/42, nullptr, nullptr,
                            /*lns_interval=*/3, nullptr, cfg);
 
     REQUIRE(r.feasible);
@@ -642,8 +642,8 @@ TEST_CASE("solve moves a free Int that must move for feasibility", "[unbounded][
 
             SearchConfig cfg;
             cfg.max_iterations = 200000;
-            SearchResult r = solve(m, /*time_limit=*/0.0, /*seed=*/42, /*use_fj=*/true, nullptr,
-                                   nullptr, /*lns_interval=*/3, nullptr, cfg);
+            SearchResult r = solve(m, /*time_limit=*/0.0, /*seed=*/42, nullptr, nullptr,
+                                   /*lns_interval=*/3, nullptr, cfg);
 
             REQUIRE(r.feasible);
             REQUIRE(r.best_violation <= cfg.feasibility_tolerance);

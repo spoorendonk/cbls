@@ -136,7 +136,7 @@ cbls::SearchResult run_for_budget(cbls::Model& model, uint64_t seed) {
     cbls::FloatIntensifyHook hook;
     cbls::LNS lns(0.3);
     cbls::SearchConfig cfg;  // max_iterations = 0: the wall clock is the only budget
-    return cbls::solve(model, kBudgetSeconds, seed, /*use_fj=*/true, &hook, &lns,
+    return cbls::solve(model, kBudgetSeconds, seed, &hook, &lns,
                        /*lns_interval=*/3, /*callback=*/nullptr, cfg);
 }
 

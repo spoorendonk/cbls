@@ -30,7 +30,6 @@ Arguments:
 Options:
   --time-limit SECS     Maximum solve time in seconds (default: 10.0)
   --seed INT            Random seed for reproducibility (default: 42)
-  --no-fj               Disable feasibility jump initialization
   --lns FRACTION        Enable LNS with destroy fraction, e.g. 0.3
   --lns-interval INT    LNS fires every N diversification kicks (default: 3)
   --intensify           Enable float intensification hook
@@ -118,7 +117,6 @@ struct CliOptions {
     std::string model_path;
     double time_limit = 10.0;
     uint64_t seed = 42;
-    bool use_fj = true;
     bool use_intensify = false;
     double lns_fraction = 0.0;
     SearchConfig config;  // also holds lns_interval, which --lns-interval writes
@@ -137,11 +135,6 @@ enum class FlagStatus : std::uint8_t { kNotMine, kOk, kError };
 
 // The valueless switches. Returns true if `arg` was one of them.
 bool take_toggle_option(const std::string& arg, CliOptions& opt) {
-    if (arg == "--no-fj") {
-        opt.use_fj = false;
-        opt.config.use_fj = false;
-        return true;
-    }
     if (arg == "--intensify") {
         opt.use_intensify = true;
         return true;
@@ -286,8 +279,8 @@ SearchResult solve_single(const CliOptions& opt, Model& model, SolveCallback* ca
     LNS lns_obj(opt.lns_fraction);
     LNS* lns_ptr = opt.lns_fraction > 0.0 ? &lns_obj : nullptr;
 
-    return solve(model, opt.time_limit, opt.seed, opt.use_fj, hook, lns_ptr,
-                 opt.config.lns_interval, callback, opt.config);
+    return solve(model, opt.time_limit, opt.seed, hook, lns_ptr, opt.config.lns_interval, callback,
+                 opt.config);
 }
 
 int run_cli(int argc, char** argv) {

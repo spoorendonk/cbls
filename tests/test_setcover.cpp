@@ -307,8 +307,8 @@ TEST_CASE("the structural selection policy changes the Set search", "[setcover][
         config.structural_batch_probability = 1.0;
         config.structural_selection = selection;
         config.structural_sample_size = 4;
-        SearchResult result = solve(scm.model, /*time_limit=*/0.0, /*seed=*/42, /*use_fj=*/true,
-                                    nullptr, nullptr, 3, nullptr, config);
+        SearchResult result =
+            solve(scm.model, /*time_limit=*/0.0, /*seed=*/42, nullptr, nullptr, 3, nullptr, config);
         INFO("selection " << structural_selection_name(selection));
         REQUIRE(result.feasible);
         REQUIRE(check_cover(inst, scm.selected_columns()).covered);

@@ -137,7 +137,7 @@ def test_an_exact_partition_is_solved_without_breaking_its_cover() -> None:
     cfg.max_iterations = 2000
     # solve() leaves the model holding the state it returns, so the lists can be
     # read straight off it.
-    cbls.solve(m, 0.0, 7, True, None, None, 3, None, cfg)
+    cbls.solve(m, 0.0, 7, None, None, 3, None, cfg)
     seen: list[int] = []
     for r in routes:
         seen.extend(m.var(vid(r)).elements)
@@ -194,7 +194,7 @@ def _scenario_broken_invariant() -> None:
 
     cfg = cbls.SearchConfig()
     cfg.max_iterations = 2000
-    cbls.solve(m, 0.0, 3, True, None, None, 3, None, cfg)
+    cbls.solve(m, 0.0, 3, None, None, 3, None, cfg)
     print("OK")
 
 
@@ -212,7 +212,7 @@ def _scenario_out_of_universe() -> None:
     m.var_mut(vid(routes[0])).elements = [0, 1, 1_000_000, -5]
     m.var_mut(vid(routes[1])).elements = [2, 2_000_000_000]
     cbls.full_evaluate(m)
-    cbls.solve(m, 0.0, 4, True, None, None, 3, None, cfg)
+    cbls.solve(m, 0.0, 4, None, None, 3, None, cfg)
 
     # The same on an unpartitioned variable-length List, whose `list_insert`
     # builds its own membership stamp.
@@ -222,7 +222,7 @@ def _scenario_out_of_universe() -> None:
     m2.close()
     m2.var_mut(vid(seq)).elements = [3, 400_000, -1]
     cbls.full_evaluate(m2)
-    cbls.solve(m2, 0.0, 5, True, None, None, 3, None, cfg)
+    cbls.solve(m2, 0.0, 5, None, None, 3, None, cfg)
 
     # A tabulated read of the same corruption reports it instead of indexing
     # past the table: the #156 guard, on a variable-length List.

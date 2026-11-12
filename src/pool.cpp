@@ -535,8 +535,8 @@ std::optional<SearchResult> run_worker(const PortfolioContext& ctx, int index, W
         SearchResult r;
         const double started_at = ctx.elapsed();
         try {
-            r = cbls::solve(m, budget, run_seed, cfg.use_fj, hook.get(), lns.get(),
-                            cfg.lns_interval, cb, cfg, &ctx.coord);
+            r = cbls::solve(m, budget, run_seed, hook.get(), lns.get(), cfg.lns_interval, cb, cfg,
+                            &ctx.coord);
         } catch (...) {
             // The search threw (bad_alloc, a throwing hook), not a factory:
             // retry, bounded by kMaxWorkerRetries, so the core does not idle.

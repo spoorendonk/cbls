@@ -1452,8 +1452,6 @@ Float remains open.
 genuine advantage of letting FJ own the scalars, but **only for the starting
 point**; the kick and LNS destroy need the window above.
 
-`use_fj` is vestigial — GFJ is always the engine.
-
 ### Main Loop
 
 While time and `max_iterations` remain, each pass:
@@ -2288,7 +2286,7 @@ and slower to a first feasible point.
 ## Control Flow Diagram
 
 ```
-solve(model, time_limit, seed, use_fj, hook, lns, lns_interval, callback, config, coord)
+solve(model, time_limit, seed, hook, lns, lns_interval, callback, config, coord)
 │
 ├── model.freeze(config.cone_cache_bytes)   # close if open, objective row, cone cache
 ├── [if objective] set_objective_bound(+inf)
@@ -2361,7 +2359,6 @@ solve(model, time_limit, seed, use_fj, hook, lns, lns_interval, callback, config
 |-----------|---------|----------|-------------|
 | `time_limit` | 10.0 | `solve()` arg | total search time (seconds); `<= 0` disables the wall clock entirely, leaving `max_iterations` as the only budget (deterministic) |
 | `seed` | 42 | `solve()` arg | RNG seed; drives List/Set init, sampling, kicks, `rho`, LNS — **not** the scalar starting point (#108) |
-| `use_fj` | true | `SearchConfig` | vestigial (GFJ always the engine) |
 | `max_iterations` | 0 | `SearchConfig` | GLS-iteration cap (0 = use time_limit) |
 | `skip_init` | false | `SearchConfig` | keep the current assignment whole — suppresses both List/Set randomisation and FJ's scalar start (portfolio restarts, caller-supplied starts) |
 | `batch_iterations` | 1000 | `SearchConfig` | GLS iterations per FJ batch; also sizes a Novelty batch, charged 3 per move and 1 per bump |
@@ -2421,7 +2418,6 @@ cbls [OPTIONS] MODEL.cbls
 |--------|-------------|
 | `--time-limit SECS` | maximum solve time (default: 10.0) |
 | `--seed INT` | RNG seed (default: 42) |
-| `--no-fj` | set `SearchConfig::use_fj = false` (vestigial; GFJ still runs) |
 | `--lns FRACTION` | enable LNS with given destroy fraction (e.g. 0.3) |
 | `--lns-interval INT` | LNS fires every N diversification kicks (default: 3) |
 | `--intensify` | enable the Float intensification hook |
@@ -2628,7 +2624,7 @@ Two `SolveCallback` implementations, both writing to a configurable
 
 ### Parameter Locations
 
-`solve()` takes `time_limit=10.0`, `seed=42`, `use_fj=true`, `hook=nullptr`,
+`solve()` takes `time_limit=10.0`, `seed=42`, `hook=nullptr`,
 `lns=nullptr`, `lns_interval=3`, `callback=nullptr`, `config={}` and
 `coord=nullptr` (the portfolio's `SearchCoordination*`). Algorithmic tuning
 lives in `SearchConfig` (outer loop) and `GFJConfig` (engine), inner-solver

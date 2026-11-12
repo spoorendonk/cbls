@@ -325,9 +325,9 @@ TEST_CASE("solve freezes the model and reports its cone-cache walks", "[cone_cac
     Model with_cache = build(Shape::IncSum, 12);
     Model without = build(Shape::IncSum, 12);
     config.cone_cache_bytes = Model::kDefaultConeCacheBytes;
-    const SearchResult a = solve(with_cache, 0.0, 3, true, nullptr, nullptr, 0, nullptr, config);
+    const SearchResult a = solve(with_cache, 0.0, 3, nullptr, nullptr, 0, nullptr, config);
     config.cone_cache_bytes = 0;
-    const SearchResult b = solve(without, 0.0, 3, true, nullptr, nullptr, 0, nullptr, config);
+    const SearchResult b = solve(without, 0.0, 3, nullptr, nullptr, 0, nullptr, config);
 
     REQUIRE(with_cache.is_frozen());
     REQUIRE(without.is_frozen());

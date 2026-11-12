@@ -258,7 +258,7 @@ uint64_t run_scenario(const Scenario& sc) {
     SearchConfig config;
     config.max_iterations = sc.max_iterations;
     config.structural_batch_probability = sc.structural_probability;
-    SearchResult r = solve(m, /*time_limit=*/0.0, sc.seed, /*use_fj=*/true, /*hook=*/nullptr,
+    SearchResult r = solve(m, /*time_limit=*/0.0, sc.seed, /*hook=*/nullptr,
                            /*lns=*/nullptr, /*lns_interval=*/3, /*callback=*/nullptr, config);
     return digest_run(r);
 }

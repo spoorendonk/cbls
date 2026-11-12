@@ -568,7 +568,7 @@ cbls::SearchResult solve_instance(const Args& args, const cbls::uc_chped::UCInst
     cbls::bench::apply_search_flags(args.search, cfg);
     const double time_limit = cbls::bench::time_limit_argument(args.search, tlim);
     if (args.threads == 1) {
-        return cbls::solve(ucm.model, time_limit, args.seed, false,
+        return cbls::solve(ucm.model, time_limit, args.seed,
                            cbls::bench::hook_argument(args.search, hook),
                            cbls::bench::lns_argument(args.search, lns),
                            cbls::bench::lns_interval_argument(args.search), callback, cfg);

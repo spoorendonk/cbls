@@ -153,7 +153,7 @@ bool independently_feasible(const Cvrp& c, const Built& b, const SearchResult& r
 SearchResult run(Model& m, uint64_t seed, int64_t max_iterations, const SearchConfig& base = {}) {
     SearchConfig cfg = base;
     cfg.max_iterations = max_iterations;
-    return solve(m, /*time_limit=*/0.0, seed, /*use_fj=*/true, /*hook=*/nullptr, /*lns=*/nullptr,
+    return solve(m, /*time_limit=*/0.0, seed, /*hook=*/nullptr, /*lns=*/nullptr,
                  /*lns_interval=*/0, /*callback=*/nullptr, cfg);
 }
 

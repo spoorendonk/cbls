@@ -203,7 +203,7 @@ cbls::SearchResult run_search(const Args& args, cbls::cvrp::CvrpModel& cm,
     cbls::SearchResult result;
     if (args.threads == 1) {
         cbls::LNS lns;
-        result = cbls::solve(cm.model, time_limit, args.seed, /*use_fj=*/true, /*hook=*/nullptr,
+        result = cbls::solve(cm.model, time_limit, args.seed, /*hook=*/nullptr,
                              cbls::bench::lns_argument(args.search, lns),
                              cbls::bench::lns_interval_argument(args.search), nullptr, cfg);
     } else {

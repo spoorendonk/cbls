@@ -296,7 +296,7 @@ TEST_CASE("solve returns within its budget when an intensification pass would ou
 
     constexpr double kBudget = 0.5;
     const auto started = std::chrono::steady_clock::now();
-    const SearchResult result = solve(m, kBudget, 42, true, &hook);
+    const SearchResult result = solve(m, kBudget, 42, &hook);
     const double wall =
         std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
 
@@ -474,7 +474,7 @@ TEST_CASE("search hands a custom hook a stop raised at its deadline", "[inner_so
     // turns true once the deadline passes, not how promptly the solve returns.
     // 0.2 s, not less: the hook must be reached at all (the first feasible
     // batch) before the deadline, under load and under sanitizers.
-    const SearchResult result = solve(m, 0.2, 42, true, &hook);
+    const SearchResult result = solve(m, 0.2, 42, &hook);
     REQUIRE(hook.calls >= 1);
     REQUIRE(hook.stopped_calls == hook.calls);
     REQUIRE(result.termination == TerminationReason::TimeLimit);
@@ -491,7 +491,7 @@ TEST_CASE("search hands a custom hook a stop raised by a host cancel", "[inner_s
     SearchConfig cfg;
     cfg.max_iterations = 100000;
     cfg.stop = token;
-    const SearchResult result = solve(m, 0.0, 42, true, &hook, nullptr, 3, nullptr, cfg);
+    const SearchResult result = solve(m, 0.0, 42, &hook, nullptr, 3, nullptr, cfg);
     REQUIRE(hook.calls == 1);
     REQUIRE(hook.raised_on_entry == 0);
     REQUIRE(hook.stopped_calls == 1);
