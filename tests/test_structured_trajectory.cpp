@@ -2,8 +2,7 @@
 //
 // Every other seed-pinned test in the suite is a scalar model: test_search's
 // pinned runs, test_initialization, the throughput floors. None of them would
-// notice a change in how a List or Set model searches, so "this change left the
-// existing trajectories alone" had no witness at all for exactly the models a
+// notice a change in how a List or Set model searches -- exactly the models a
 // change to `Lambda`/`PairLambda` evaluation can move.
 //
 // These three pin the whole observable outcome of a seeded run -- iteration
@@ -13,15 +12,11 @@
 // whatever the engine produced, and any change to them is a trajectory change
 // that has to be explained rather than re-recorded.
 //
-// The List and Set witnesses were re-recorded once, by #201, which made every
-// batch structural on a model with no movable Bool/Int/Float variable (both of
-// those models) and made `iters` report max(GLS iterations, batches). The new
-// signatures were derived on the UNFIXED engine (1304c43) with those two changes
-// emulated in the test -- structural probability 1.0, `iters` taken as
-// max(iterations, counters.batches) -- and the fixed engine reproduces them
-// exactly. Both seeds now reach the same assignment on each model (for the Set,
-// the optimum: weight 12 is the row's bound). The mixed witness has movable
-// scalars and did not move.
+// The List and Set witnesses were re-recorded for #201 (every batch structural
+// on a model with no movable Bool/Int/Float variable; `iters` reports
+// max(GLS iterations, batches)), derived on 1304c43 with those two changes
+// emulated in the test. Both seeds reach the same assignment on each model
+// (for the Set, the optimum: weight 12 is the row's bound).
 //
 // Reproducibility rests on `solve_deterministic`: `time_limit = 0` removes the
 // wall clock entirely, so an iteration budget alone bounds the run and no clock
@@ -99,17 +94,11 @@ TEST_CASE("structured trajectory witness: Set with lambda_sum", "[trajectory][st
             "iters=4000 feasible=1 obj=12 elements=3,8,2");
 }
 
-// Both signatures re-recorded for #206: the Bool and Int here go through FJ,
-// whose scan-set sampling no longer gives up on a Q that still holds an
-// improving variable, so the scalar trajectory -- and the List's with it --
-// moved. The pure List and Set witnesses above have no FJ-jumpable variable
-// and reproduced unchanged.
-//
-// Re-recorded again on 2026-10-07, when compound moves (Novelty Jump) became
-// the engine default: this witness runs default settings and has scalars, so
-// some of its scalar batches are now Novelty batches. Recorded on main at
-// b8f52f4 with only `SearchConfig::use_compound_moves` flipped; the pure List
-// and Set witnesses run no scalar batch and reproduced unchanged.
+// The Bool and Int here go through FJ, so FJ changes move this witness (and
+// the List's trajectory with it), while the pure List and Set witnesses above
+// run no scalar batch. Re-recorded for #206 (scan-set sampling) and for
+// compound moves (Novelty Jump) as the engine default, recorded at b8f52f4
+// with only `SearchConfig::use_compound_moves` flipped.
 TEST_CASE("structured trajectory witness: List mixed with scalars", "[trajectory][structured]") {
     skip_unless_libstdcxx_rng();
     Model m;

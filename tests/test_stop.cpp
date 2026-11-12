@@ -212,12 +212,10 @@ TEST_CASE("a stop raised from another thread reaches a running portfolio", "[sto
     // The shape a host actually has: the cancel arrives from a thread that is
     // neither a worker nor the caller, while the solve is genuinely IN FLIGHT.
     //
-    // "In flight" is the hard part, and an earlier version of this test did not
-    // get it: opening the gate before `ps.solve` let the canceller fire before any
-    // worker existed, so every worker broke out of its restart loop without ever
-    // searching and the result came from the no-result fallback -- the same path
-    // the pre-raised cases above already cover. The gate is now a PROGRESS ROW,
-    // which only a running worker can produce, and `iterations > 0` is the
+    // "In flight" is the hard part: a gate opened before `ps.solve` would let the
+    // canceller fire before any worker existed, and the result would come from
+    // the no-result fallback the pre-raised cases above already cover. The gate
+    // is a PROGRESS ROW, which only a running worker can produce, and `iterations > 0` is the
     // assertion that says the cancel landed on a search that had started.
     //
     // The wait is bounded so a regression cannot hang the suite: if no row ever
@@ -270,9 +268,8 @@ TEST_CASE("a cancel seen only after a worker's last solve still reports Cancelle
     // ONE worker, and that is load-bearing. With two, the first worker to finish
     // raises the token while its PEER is still mid-solve, the peer's own
     // `past_deadline()` sees it and returns Cancelled, and the aggregate is then
-    // Cancelled for a completely different reason -- which is exactly how this test
-    // passed with the guard neutered when it was first written. One worker has no
-    // peer to see it.
+    // Cancelled for a completely different reason, and this would pass with the
+    // guard neutered. One worker has no peer to see it.
     //
     // Reverting `with_host_cancel` to `return aggregate;` makes this report
     // IterationLimit.
@@ -320,10 +317,7 @@ TEST_CASE("a wall clock that expires is not relabelled as a cancel", "[stop][par
     // a host cancel arriving in the same instant must not rewrite that. Same order
     // `ViolationLSLoop::run` applies by asking the clock first.
     //
-    // One worker, for the same reason as the test above.
-    // A `Tracer`'s DESTRUCTOR runs on the worker's thread after its last solve and
-    // before the portfolio aggregates, which is the only seam a host has into that
-    // moment: callback, hook, LNS and tracer EVENTS all fire inside `cbls::solve`.
+    // One worker, and the destructor seam, for the same reasons as the test above.
     struct RaiseOnDestruction : Tracer {
         StopToken* token;
         explicit RaiseOnDestruction(StopToken* t) : token(t) {}

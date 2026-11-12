@@ -484,13 +484,11 @@ TEST_CASE("Auto resolves on the neighbour list, every other policy is itself (#2
 TEST_CASE("a deadline that passes mid-sweep stops the sweep between generators",
           "[structural][moves]") {
     // The discriminating test for #105's bound, and the reason it asserts a
-    // COUNT rather than a duration. Its wall-clock predecessor
+    // COUNT rather than a duration. The wall-clock test
     // (`structural batch respects the wall-clock deadline`, tests/test_search.cpp)
-    // stopped discriminating when #165 restricted the candidate scan to G_v: the
-    // 40 000 filler rows that made an unbounded sweep cost 1.134s are no longer
-    // read, and that model's unbounded sweep re-measured at 0.024s against a
-    // 0.10s budget -- it passed with the check deleted. This one does not: with
-    // the check removed every one of the 200 generators runs, every time.
+    // passes with the check deleted since #165 restricted the candidate scan to
+    // G_v. This one does not: with the check removed every one of the 200
+    // generators runs, every time.
     //
     // Robust in the right direction under load. Each generate burns 200us of
     // CPU, so a loaded machine gets through FEWER generators before the 10ms

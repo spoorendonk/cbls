@@ -247,13 +247,11 @@ TEST_CASE("solve with hook and LNS", "[search][lns]") {
     REQUIRE(result.objective < 8.0);
 }
 
-// This test was inert (#104). Its model — 50 vars in [0, 100] summing to 2500 —
-// is satisfiable and converged in ~2ms against a 50ms cap, so FJ returned long
-// before the deadline could matter and the `elapsed < 0.5` assertion held
-// whether or not time_limit was honoured at all. Two changes make it real:
+// #104: a satisfiable model converges before the deadline matters, so the test
+// would hold whether or not time_limit is honoured. Hence:
 //
 //   * the domain is [0, 10], so 50 variables sum to at most 500 and the equality
-//     is unreachable. FJ can now never converge, and only a budget can stop it.
+//     is unreachable. FJ can never converge, and only a budget can stop it.
 //   * the assertion is on the iteration count fj_nl_initialize returns, not on
 //     elapsed time. Stopping far short of the iteration budget is something only
 //     the clock can have done.
@@ -467,10 +465,9 @@ TEST_CASE("ParallelSearch with hook and LNS factories", "[pool]") {
 
     // Counting subclasses rather than the stock types: the factory contract is
     // an OWNERSHIP contract -- one object per worker, every one released before
-    // solve() returns -- and #129 changed the pointer type precisely so Python
-    // could share in it. Nothing asserted the C++ half, so a change that
-    // hoisted the shared_ptr out of the worker, reused one object for every
-    // worker, or leaked them into a static would have stayed green here.
+    // solve() returns (#129). Without the counts, hoisting the shared_ptr out
+    // of the worker, reusing one object for every worker, or leaking them into
+    // a static would stay green here.
     //
     // Build/destroy counts alone are not enough: they stay green on a search
     // that constructs both objects and then wires in neither. The overrides
@@ -521,9 +518,8 @@ TEST_CASE("ParallelSearch with hook and LNS factories", "[pool]") {
     // A diversification cadence the run is guaranteed to reach, rather than the
     // defaults: `lns_calls` below needs an LNS-due kick, which at the default
     // lns_interval of 3 and perturbation_period of 100 is ~300 batches away and
-    // so depends on how many batches 2 seconds buys. That is machine-dependent
-    // and it is the difference between a green suite and a red one under a
-    // sanitizer, where everything is an order of magnitude slower. Small
+    // so depends on how many batches 2 seconds buys: machine-dependent, and too
+    // few under a sanitizer, where everything is an order of magnitude slower. Small
     // batches, a short stall window, and every kick LNS-due make the assertion
     // about the mechanism instead of about the clock.
     SearchConfig cfg;
@@ -546,31 +542,28 @@ TEST_CASE("ParallelSearch with hook and LNS factories", "[pool]") {
     // And the LNS half specifically: `lns_built` above says an object was
     // constructed, not that the search ever dispatched through it.
     //
-    // This is a WIRING check, not the pin on the adoption stand-down. It does
-    // currently go red if `lns_kick_due() ||` is deleted from maybe_diversify
-    // (measured), but only because this configuration happens to reach no kick
-    // that would fall through to diversify() by another route -- a self-draw, an
-    // empty pool, or #102's pre-feasible route would each mask it. The
+    // This is a WIRING check, not the pin on the adoption stand-down: it goes
+    // red without `lns_kick_due() ||` in maybe_diversify only because this
+    // configuration reaches no kick that falls through to diversify() by another
+    // route (a self-draw, an empty pool, or #102's pre-feasible route). The
     // structural pin is "an LNS-due kick stands adoption down entirely" in
     // tests/test_parallel.cpp, which asserts bit-identity rather than a count.
     REQUIRE(lns_calls.load() > 0);
 }
 
 // A portfolio worker cannot let an exception escape its thread function, so
-// solve_portfolio catches everything. Swallowing it outright made a run in which
-// *every* worker failed indistinguishable from one that searched and found
-// nothing: the aggregate was the default SearchResult, i.e. feasible=false with
-// an infinite objective -- a model-loading failure reported as an infeasible
-// model. A total failure now propagates; a partial one still does not.
+// solve_portfolio catches everything. A total failure propagates, so a
+// model-loading failure is not reported as an infeasible model (the default
+// SearchResult); a partial one does not.
 TEST_CASE("ParallelSearch propagates a factory that fails in every worker", "[pool]") {
     auto factory = []() -> Model { throw std::runtime_error("model factory failed"); };
 
     ParallelSearch ps(2);
     // Match the message, not just the type: it is what pins that the WORKER's
     // own exception is the one re-raised, rather than some other runtime_error
-    // manufactured on the way out. (solve_portfolio's empty-pool path no longer
-    // throws at all -- it returns a NoBudget SearchResult -- so deleting the
-    // rethrow loop now fails this as a missing throw instead.)
+    // manufactured on the way out. (solve_portfolio's empty-pool path returns a
+    // NoBudget SearchResult, so deleting the rethrow loop fails this as a
+    // missing throw.)
     REQUIRE_THROWS_MATCHES(ps.solve(factory, 0.5, 42), std::runtime_error,
                            Catch::Matchers::Message("model factory failed"));
 }
@@ -618,12 +611,9 @@ TEST_CASE("max_iterations stops SA by iteration count", "[search]") {
 }
 
 // Issue #104: the sibling of the test above, with the wall clock switched on.
-// The original version of that test passed a generous time_limit alongside
-// max_iterations and so covered the *interaction* — both budgets armed, the
-// iteration budget wins. Converting the suite to time_limit = 0 dropped that,
-// leaving nothing to catch a change that let a live clock cut an
-// iteration-budgeted run short (or that stopped honouring max_iterations once a
-// deadline existed).
+// Pins the interaction -- both budgets armed, the iteration budget wins -- so a
+// live clock must not cut an iteration-budgeted run short, nor a deadline stop
+// max_iterations being honoured.
 TEST_CASE("max_iterations wins over a live wall clock", "[search]") {
     auto build = [](Model& m) {
         auto x = m.float_var(-5, 5);
@@ -654,8 +644,8 @@ TEST_CASE("max_iterations wins over a live wall clock", "[search]") {
     // runs follow the same path and land on the same answer.
     //
     // Read that as scoped to *this* configuration rather than as a general
-    // guarantee, which it stopped being in #117: the escape probe now also arms
-    // once a quarter of the budget passes with no new best, so a timed and an
+    // guarantee (#117): the escape probe also arms once a quarter of the budget
+    // passes with no new best, so a timed and an
     // untimed run of the same model diverge once the budget is short relative to
     // the run. Here the budget is 30s against a sub-millisecond run, so the
     // wall-clock arming condition is never reached and the two stay identical.
@@ -721,13 +711,12 @@ TEST_CASE("termination reason covers the non-budget exits", "[search]") {
 //   3. the LNS repair — handed whatever budget is left, not its own 2s;
 //   4. the STRUCTURAL sweep — checked between variables (#105, tested below).
 //
-// A bug in this class cost a 60s budget 87s and was found only by reading a
-// benchmark's wall_seconds column by hand. Epic #87 publishes per-instance wall
-// times, so a silently overrunning budget corrupts published data.
+// Epic #87 publishes per-instance wall times, so a silently overrunning budget
+// corrupts published data.
 //
-// NONE OF THE TESTS BELOW ASSERTS ON ELAPSED TIME. The suite was deliberately
-// converted to be deterministic — iteration-bounded, time_limit = 0 — and a
-// duration assertion reintroduces machine-speed coupling. The STRUCTURAL test is
+// NONE OF THE TESTS BELOW ASSERTS ON ELAPSED TIME. The suite is deterministic --
+// iteration-bounded, time_limit = 0 -- and a duration assertion reintroduces
+// machine-speed coupling. The STRUCTURAL test is
 // the grandfathered exception here, quarantined behind [timing] (#191's
 // timing_inner_solver_hook_deadline in test_inner_solver.cpp is the other
 // hand-registered one). Each test here instead observes its bound directly:
@@ -737,10 +726,7 @@ TEST_CASE("termination reason covers the non-budget exits", "[search]") {
 //   3. the argument a test LNS was handed: the remaining budget, or 2s?
 //
 // Each also asserts SearchResult::termination, so a test cannot quietly go inert
-// by converging before the clock ever mattered. That is not hypothetical: it is
-// what had happened to "fj_nl_initialize respects time_limit", whose model
-// converged in ~2ms against a 50ms cap, so it passed whether or not the limit
-// was honoured.
+// by converging before the clock ever mattered (#104).
 // ---------------------------------------------------------------------------
 
 namespace {
@@ -821,16 +807,13 @@ TEST_CASE("solve stops a Feasibility Jump batch at the deadline", "[search][dead
     REQUIRE(result.iterations < config.batch_iterations);
 }
 
-// Issue #113: bound 1 above says a batch is "handed the same absolute deadline",
-// but the deadline used to be consulted only every 64 GLS iterations, and one
-// GLS iteration is O(sampled vars x candidate values x constraints touched) —
-// unbounded in the model size. So the bound held in iterations and not at all in
-// time: on 400 Int vars with 20 000 rows of 8, budgets of 0.05s, 1s and 3s all
-// took ~7s, each after exactly 64 iterations. The stride is now sized in time
-// (see test_feasibility_jump.cpp, which tests the sizing rule itself); this is
-// the end-to-end statement of it through solve().
+// Issue #113: one GLS iteration is O(sampled vars x candidate values x
+// constraints touched) -- unbounded in the model size -- so a deadline stride
+// fixed in iterations (64) does not bound time. The stride is sized in time (see
+// test_feasibility_jump.cpp, which tests the sizing rule itself); this is the
+// end-to-end statement of it through solve().
 //
-// The test above cannot catch this one. Its model has 50 cheap variables, so its
+// The test above cannot catch this one. Its model has 50 cheap variables, so a
 // 64-iteration overrun is microseconds and its "fewer than batch_iterations"
 // assertion passes with the stride fixed at 64. What is needed is a model whose
 // single iteration is expensive, which is also the shape of the benchmark
@@ -951,8 +934,7 @@ TEST_CASE("solve bounds the LNS repair by its own remaining budget", "[search][d
     for (double limit : lns.repair_limits) {
         // The whole run only has kBudget to spend, so no single repair may ever be
         // handed more than that. Remove the clamp and every entry is LNS's own 2s
-        // default — 10x this run's entire budget, and the shape of the bug that
-        // made a 60s budget take 87s.
+        // default — 10x this run's entire budget.
         REQUIRE(limit <= kBudget);
         // ...and never exactly 0. Downstream in fj_nl_initialize, 0 means "no wall
         // clock at all", so clamping an exhausted budget to 0 would hand the
@@ -969,7 +951,7 @@ TEST_CASE("solve hands the LNS repair no wall clock when it has none", "[search]
     // The other half of the clamp: with no deadline, the repair must be handed 0
     // — "bounded by your iteration budget alone" — because that is what keeps an
     // iteration-budgeted run deterministic. Passing a positive limit here would
-    // make every such run machine-speed-dependent again.
+    // make every such run machine-speed-dependent.
     Model m;
     build_unsatisfiable(m);
 
@@ -991,13 +973,12 @@ TEST_CASE("solve hands the LNS repair no wall clock when it has none", "[search]
 
 // Issue #117: `perturbation_period` counts BATCHES, and a batch is
 // `batch_iterations` GLS iterations -- microseconds on a small model, seconds on
-// an expensive one. Measured on MINLPLib elec25 at a 60s budget, a batch costs
-// ~1.2s, so the run completes 52 batches against the default threshold of 100
-// and the Float escape probe is never armed at all: the stagnation gate that
-// makes the probe a last resort (#107) is dead code exactly on the models that
-// need it. The cases below pin the two arming conditions, the guard that keeps
-// the clock out of an iteration-budgeted run, the disarm on a new best, and that
-// diversification survives a run with a wall clock armed.
+// an expensive one (MINLPLib elec25 at 60s: ~1.2s a batch, 52 batches against
+// the default threshold of 100). A batch count alone would never arm the Float
+// escape probe (#107) exactly on the models that need it. The cases below pin
+// the two arming conditions, the guard that keeps the clock out of an
+// iteration-budgeted run, the disarm on a new best, and that diversification
+// survives a run with a wall clock armed.
 //
 // They observe `SearchResult::escape_probe_armed` -- the engine's own armed
 // state at exit -- rather than timing the call or inferring arming from the
@@ -1007,7 +988,7 @@ TEST_CASE("solve hands the LNS repair no wall clock when it has none", "[search]
 // changes nothing but Float candidate generation. So these pin the arming
 // DECISION and its plumbing onto SearchResult -- not the probe's effect on a
 // search, which test_feasibility_jump.cpp covers under [stationary]. Only the
-// first case can fail on the unfixed engine; the rest are guards and
+// first case pins the #117 arming itself; the rest are guards and
 // characterization pins, and are labelled as such.
 
 TEST_CASE("solve arms the escape probe on wall-clock stagnation", "[search][deadline][escape]") {
@@ -1042,7 +1023,7 @@ TEST_CASE("solve arms the escape probe on wall-clock stagnation", "[search][dead
 
 TEST_CASE("solve does not arm the escape probe off the clock without a deadline",
           "[search][escape][determinism]") {
-    // The determinism half of the fix. With no wall-clock budget, no clock read
+    // The determinism half of #117. With no wall-clock budget, no clock read
     // may influence control flow, or an iteration-budgeted run stops being
     // bit-reproducible.
     //
@@ -1069,10 +1050,9 @@ TEST_CASE("solve does not arm the escape probe off the clock without a deadline"
 }
 
 TEST_CASE("solve still arms the escape probe on the batch count", "[search][escape]") {
-    // The pre-existing condition, unchanged: on a model where the batch
-    // threshold is reachable the probe arms exactly as before, with no wall
-    // clock involved at all. A characterization pin -- green before #117 and
-    // after -- so it catches a regression in the old route, not this fix.
+    // The batch-count route: on a model where the batch threshold is reachable
+    // the probe arms with no wall clock involved at all. A characterization pin,
+    // so it catches a regression in that route, not in #117's clock route.
     Model m;
     build_unsatisfiable(m);
 
@@ -1123,7 +1103,7 @@ TEST_CASE("solve keeps diversifying when a wall clock is armed",
 TEST_CASE("solve disarms the escape probe on a new best", "[search][escape]") {
     // `SearchResult::escape_probe_armed` is documented as "true only for a run
     // that ended stuck", which rests entirely on the disarm in the improvement
-    // branch. Nothing pinned that. A pure-feasibility model does it without a
+    // branch. A pure-feasibility model does it without a
     // clock: it arms on the first stagnant batch, then breaks out the moment it
     // becomes feasible, so a run ending Feasible must report the probe disarmed.
     Model m;
@@ -1163,10 +1143,9 @@ TEST_CASE("solve disarms the escape probe on a new best", "[search][escape]") {
     REQUIRE_FALSE(result.escape_probe_armed);
 }
 
-// Issue #105: the STRUCTURAL batch used to be the one sub-step with no deadline
-// check, so a batch entered just before the deadline ran its whole sweep and
-// overran the budget by however long that took. Unbounded in the model size --
-// on the model below a 0.5s budget took 1.19-1.25s unbounded.
+// Issue #105: the STRUCTURAL batch checks the deadline, so a batch entered just
+// before the deadline does not run its whole sweep and overrun the budget by an
+// amount unbounded in the model size.
 //
 // structural_batch_probability = 1.0 makes every batch structural, so the very
 // first batch is the one under test and the assertion does not depend on which
@@ -1186,12 +1165,9 @@ TEST_CASE("solve disarms the escape probe on a new best", "[search][escape]") {
 TEST_CASE("structural batch respects the wall-clock deadline", "[search][structural][timing]") {
     constexpr int kLists = 1500;
     constexpr int kStops = 100;
-    // Inert filler rows over a lone Float. Until #165 these were what made a
-    // sweep expensive -- the delta rescanned EVERY constraint once per candidate
-    // move, so 40 000 rows that no List can touch cost 1.134s of unbounded sweep
-    // at almost no model-build price. #165 restricts the scan to the moved
-    // variable's G_v, so they are never read now; they are kept as the control
-    // that says so.
+    // Inert filler rows over a lone Float, which no List can touch. #165
+    // restricts the delta scan to the moved variable's G_v, so they are never
+    // read per candidate; they are kept as the control that says so.
     constexpr int kFiller = 40000;
 
     Model m;
@@ -1221,27 +1197,20 @@ TEST_CASE("structural batch respects the wall-clock deadline", "[search][structu
     solve(m, kBudget, /*seed=*/42, /*use_fj=*/true, nullptr, nullptr, 3, nullptr, config);
     auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - before).count();
 
-    // WHAT THIS ASSERTS, AND WHAT IT NO LONGER ASSERTS.
+    // The end-to-end contract check: `solve(model, time_limit)` returns near its
+    // budget on a model whose structural sweep is the whole search. That is what
+    // the threshold is sized for.
     //
-    // It is the end-to-end contract check: `solve(model, time_limit)` returns
-    // near its budget on a model whose structural sweep is the whole search.
-    // That is worth keeping and it is what the threshold is sized for.
-    //
-    // It is NOT the regression test for #105's bound any more, and pretending
-    // otherwise would be worse than saying so. The old comment claimed "+0.003s
-    // with the bound, +1.134s without", and that 1.134s was the full rescan of
-    // the 40 000 filler rows ONCE PER CANDIDATE. The G_v restriction removed
-    // that term -- not every read of those rows, since the baseline snapshot
-    // still walks them once per pass and once per commit (see
-    // include/cbls/structural_batch.h) -- and this model's unbounded sweep was
-    // re-measured at **0.024s**, i.e. the test passed with the deadline check
+    // It is NOT the regression test for #105's bound: since #165 this model's
+    // unbounded sweep is short enough (the baseline snapshot still walks the
+    // filler rows once per pass and once per commit, see
+    // include/cbls/structural_batch.h) that it passes with the deadline check
     // deleted. The discriminating test is
-    // now `a deadline that passes mid-sweep stops the sweep between generators`
+    // `a deadline that passes mid-sweep stops the sweep between generators`
     // in tests/test_structural_batch.cpp, which asserts a COUNT of generators
     // visited and fails deterministically when the check is removed.
     //
-    // Measured here after the change: 0.105s bounded, 0.125s unbounded, against
-    // a 0.10s budget.
+    // Measured: 0.105s bounded, 0.125s unbounded, against a 0.10s budget.
     REQUIRE(elapsed < kBudget + 0.5);
 }
 
@@ -1296,13 +1265,11 @@ TEST_CASE("the unproductive-batch exit waits for the outer loop's stagnation cou
     // other and the real rows sit at a strictly POSITIVE equilibrium; the
     // measure's reference is a running minimum over the batch, so
     // "no new all-time low in unproductive_iterations" is the normal state of a
-    // search that is working. Unwitnessed, the exit therefore fires on
-    // essentially every batch of the objective-descent phase -- a diversification
-    // schedule (one kick per ~300 GLS iterations, LNS in the rotation) wearing a
-    // stall detector's clothes. On MINLPLib ex8_6_1 that cost 20 gap points at a
-    // 10s budget, on all four paired seeds tried.
+    // search that is working. Ungated, the exit fires on essentially every batch
+    // of the objective-descent phase (on MINLPLib ex8_6_1, 20 gap points at a
+    // 10s budget on all four paired seeds tried).
     //
-    // The fix arms the exit only once solve()'s own stagnation count reaches
+    // So the exit arms only once solve()'s own stagnation count reaches
     // perturbation_period / 20 batches. This asserts that rule where it is
     // sharpest and without timing anything: `perturbation_period` is set so the
     // threshold is 100 batches while the iteration budget spends around 40, so a
@@ -1314,9 +1281,8 @@ TEST_CASE("the unproductive-batch exit waits for the outer loop's stagnation cou
     // Most of ex8_6_1's lost budget went into LNS repairs, which are bounded by
     // `min(2.0, remaining())` and so cost seconds but almost no iterations; on
     // the iteration-budgeted path the same spurious kicks are nearly free. A
-    // deterministic test cannot see that half, which is exactly why it is the
-    // half recorded on #102 with a measured A/B instead (the MINLPLib
-    // README keeps a summary).
+    // deterministic test cannot see that half, so it is recorded on #102 with a
+    // measured A/B instead (the MINLPLib README keeps a summary).
     auto run = [](int64_t unproductive) {
         Model m;
         build_long_descent_with_coupled_objective(m);
@@ -1339,7 +1305,7 @@ TEST_CASE("the unproductive-batch exit waits for the outer loop's stagnation cou
     const SearchResult off = run(0);
     const SearchResult on = run(300);
 
-    // The premise: this really is the productive post-feasible regime the fix is
+    // The premise: this really is the productive post-feasible regime #102 is
     // about, and the run really is far short of the arming threshold.
     REQUIRE(off.termination == TerminationReason::IterationLimit);
     REQUIRE(off.feasible);
@@ -1427,8 +1393,7 @@ TEST_CASE("the unproductive-batch exit draws no LNS after the first feasible sol
     REQUIRE(on.perturbations > off.perturbations);
     // ...but it must draw only the cheap half. An LNS destroy-repair is bounded
     // in SECONDS, and on a converged model its result is rejected outright, so
-    // launching one on a measure that has gone blind is pure budget burn: three
-    // of them took 4.7s of a 10s run on ex8_6_1 and cost ~20 gap points.
+    // launching one on a measure that has gone blind is pure budget burn (#102).
     //
     // Asserted as an absolute zero, not as equality with the off arm. The off arm
     // takes no kick at all here (40 batches against perturbation_period = 100),
@@ -1781,10 +1746,8 @@ TEST_CASE("a run that never reaches feasibility reports no first-feasible pair",
 
 TEST_CASE("ParallelSearch records the first-feasible pair on the portfolio clock",
           "[pool][first-feasible]") {
-    // This used to be NaN by omission -- the aggregation composed its result
-    // from the pool, which carries only the state and the objective, so a
-    // feasible parallel run reported "not recorded" for both cells. It is
-    // recorded now, and the clock is the interesting half: every time on a
+    // The aggregation records the pair, which the pool alone does not carry, and
+    // the clock is the interesting half: every time on a
     // worker's own SearchResult is relative to that worker's solve() start, and
     // a worker restarts, so an unshifted "earliest across workers" would report
     // a restart's own 0.001s for a portfolio that had been running for most of
@@ -1922,7 +1885,7 @@ TEST_CASE("a kick after the first feasible solution starts from the incumbent",
     // just recorded -- the positive equilibrium between the real rows and the
     // artificial objective row that every stalled MIP row in #158 sits in. With
     // unit weights the trade never pays, the search never moves, and the test
-    // is green on the unfixed engine.
+    // would pass without #158's fix.
     auto hundred = m.constant(100.0);
     std::vector<int32_t> scaled;
     scaled.reserve(vars.size());
@@ -1967,8 +1930,8 @@ TEST_CASE("a kick after the first feasible solution starts from the incumbent",
     REQUIRE(lns.entry_violations.size() > 1);
 
     // The assertion. A kick is handed the incumbent, which is real-feasible
-    // here, so every entry reads zero. Before #158 the kick was handed whatever
-    // the search had drifted to since the last one -- and it drifts by
+    // here, so every entry reads zero. A kick handed whatever the search had
+    // drifted to since the last one (#158) reads nonzero: it drifts by
     // construction on this model, because the only way to move toward the
     // objective bound is to break the sum row.
     for (size_t i = 0; i < lns.entry_violations.size(); ++i) {
@@ -2090,8 +2053,7 @@ TEST_CASE("a kick after adoption departs from the adopted point, not our incumbe
     }
     for (size_t i = 0; i < lns.entry_values.size(); ++i) {
         // Report the DISTANCE rather than one column: the drifted point can
-        // agree with the gift on any single column by chance, which made an
-        // earlier form of this message read as though the arms matched.
+        // agree with the gift on any single column by chance.
         size_t differing = 0;
         for (size_t v = 0; v < adopted.size(); ++v) {
             differing += lns.entry_values[i][v] != adopted[v] ? 1 : 0;
@@ -2103,8 +2065,8 @@ TEST_CASE("a kick after adoption departs from the adopted point, not our incumbe
 }
 
 TEST_CASE("a strict comparison over Ints is not satisfied at equality", "[search][strict]") {
-    // x, y pinned to 3 with x < y used to come back feasible at x = y = 3: the
-    // strict residual's 1e-9 sat inside the feasibility tolerance (#211).
+    // Regression for #211: x, y pinned to 3 with x < y came back feasible at
+    // x = y = 3, the strict residual's 1e-9 inside the feasibility tolerance.
     SECTION("pinned at equality: infeasible") {
         Model m;
         auto x = m.int_var(3, 3);
@@ -2161,10 +2123,9 @@ private:
 }  // namespace
 
 TEST_CASE("the objective bound steps by one on an integral objective", "[search][objective]") {
-    // The bound a new incumbent earns used to be obj - 1e-3 (|obj| + 1) for every
-    // objective, so on an integral one every improvement under 0.1% kept the
-    // objective row violated (#211). An integral objective now steps to obj - 1,
-    // as CP-SAT does. A continuous one keeps the relative step, at its starting
+    // An integral objective's bound steps to obj - 1, as CP-SAT does: a relative
+    // obj - 1e-3 (|obj| + 1) would keep the objective row violated on every
+    // improvement under 0.1% (#211). A continuous one keeps the relative step, at its starting
     // 1e-3: three batches cannot reach the stall that shrinks it (#241).
     const bool integral = GENERATE(true, false);
     Model m;
@@ -2217,10 +2178,9 @@ private:
 }  // namespace
 
 TEST_CASE("a stall shrinks a continuous objective's bound step to 1e-6", "[search][objective]") {
-    // A fixed step of 1e-3 (|obj| + 1) never asked for an improvement smaller
-    // than that, so a continuous objective was only pulled to 0.1% (#241). The
-    // step now shrinks tenfold at each full perturbation_period stall, re-grounding
-    // the bound on the incumbent, down to 1e-6. This model sits at its optimum
+    // A fixed step of 1e-3 (|obj| + 1) would pull a continuous objective only to
+    // 0.1% (#241), so the step shrinks tenfold at each full perturbation_period
+    // stall, re-grounding the bound on the incumbent, down to 1e-6. This model sits at its optimum
     // within a few batches and then stalls for the rest of the budget, so the
     // bound's gap below the incumbent must walk 1e-3 -> 1e-6 and stay strictly
     // positive. An integral objective's step is not relative and stays at 1.
@@ -2253,10 +2213,9 @@ TEST_CASE("a stall shrinks a continuous objective's bound step to 1e-6", "[searc
 }
 
 TEST_CASE("LNS acceptance ranks two feasible states by objective, not by noise", "[search][lns]") {
-    // The key summed every row's raw max(0, residual), so two feasible states
-    // whose equality rows sat 1e-12 and 3e-12 off were ranked by that rounding
-    // noise and the objective was never consulted (#211). At or below the
-    // feasibility tolerance a row now adds nothing.
+    // At or below the feasibility tolerance a row adds nothing to the key, so
+    // two feasible states whose equality rows sit 1e-12 and 3e-12 off are ranked
+    // by objective, not by that rounding noise (#211).
     Model m;
     auto x = m.float_var(0.0, 10.0);
     auto y = m.float_var(0.0, 10.0);

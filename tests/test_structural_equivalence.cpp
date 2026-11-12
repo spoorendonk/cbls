@@ -1,11 +1,9 @@
 // Frozen-trajectory guard for the STRUCTURAL batch (#165).
 //
-// #165 replaced `structural_pass`'s hard-coded `generate_standard_moves` sweep
-// with a registered `MoveGenerator` pipeline, a `StructuralSelection` policy and
-// G_v-restricted candidate scoring. The acceptance criterion attached to that
-// refactor is that the DEFAULT configuration -- no generator registered,
-// `StructuralSelection::FirstImprovingSample` -- keeps the trajectory it had
-// before, bit for bit, at one thread on a given seed.
+// The DEFAULT configuration of the `MoveGenerator` pipeline -- no generator
+// registered, `StructuralSelection::FirstImprovingSample` -- keeps the
+// trajectory of the hard-coded `generate_standard_moves` sweep it replaced, bit
+// for bit, at one thread on a given seed.
 //
 // "Bit for bit" is not checkable by eyeballing an objective, because a
 // structural search reaches many assignments of equal cost. So each scenario
@@ -221,38 +219,26 @@ struct Scenario {
 
 // Recorded at a805cb6. See the header comment: do not regenerate.
 //
-// EXCEPT five rows, which #201 changed on purpose and re-derived WITHOUT the
-// current build. #201 changed two things these digests see: on a model with no
-// movable Bool/Int/Float variable every batch is now structural whatever the
-// probability, and SearchResult::iterations reports max(GLS iterations,
-// batches) instead of GLS iterations alone. set_cover and list_tour have no
-// scalar variable at all, so their `auto` rows now run the 1.0 mix; and every
-// `struct1` row ran no FJ batch, so its iteration count moved from 0 to 4000.
-// The new values were produced on the UNFIXED engine (1304c43, which still
-// reproduced every a805cb6 digest) with the test emulating exactly those two
-// changes -- probability forced to 1.0 on a model with no movable scalar, and
-// `iterations = max(iterations, counters.batches)` before digesting -- and the
-// fixed engine then reproduced all six digests bit for bit (one of them,
-// mixed/seed42/auto, was since re-recorded by #206 below). mixed/seed42/auto
-// has movable scalars, ran FJ batches and did not move.
+// EXCEPT deliberate re-records, each derived WITHOUT the current build, on a
+// build changing only that issue's code:
 //
-// One deliberate re-record, mixed/seed42/auto, for #206 (FJ's scan-set
-// sampling stopped declaring false local minima, which moves any trajectory
-// with scalar variables). It was recorded the way the header prescribes, not
-// from the current build: a805cb6 with ONLY #206's apply_jump and
-// select_novelty_var change applied, this file run there. The other five
-// digests reproduced unchanged on that build, and the current build matches
-// all six.
+//   * #201, the five rows other than mixed/seed42/auto: on a model with no
+//     movable Bool/Int/Float variable every batch is structural whatever the
+//     probability (set_cover and list_tour `auto` run the 1.0 mix), and
+//     SearchResult::iterations reports max(GLS iterations, batches) (every
+//     `struct1` row ran no FJ batch, so 0 -> 4000). Produced on 1304c43 with
+//     the test emulating exactly those two changes.
+//   * #206, mixed/seed42/auto: FJ's scan-set sampling moves any trajectory with
+//     scalar variables. a805cb6 with ONLY #206's apply_jump and
+//     select_novelty_var change applied.
+//   * compound moves as the engine default (2026-10-07), mixed/seed42/auto: the
+//     one row that runs scalar batches under default settings, so some become
+//     Novelty batches. b8f52f4 with only `SearchConfig::use_compound_moves`
+//     flipped.
 //
-// A second re-record of mixed/seed42/auto on 2026-10-07, when compound moves
-// became the engine default: it is the one row that runs scalar batches under
-// default settings, so some of them are now Novelty batches. Recorded on main
-// at b8f52f4 with only `SearchConfig::use_compound_moves` flipped; the other
-// five digests reproduced unchanged.
-//
-// Combined on rebase: #201's five rows and #206's mixed/seed42/auto row are
-// disjoint (no-scalar and struct1 rows run no FJ batch; mixed/auto never hit
-// #201's no-FJ-work rule), so each row keeps the value its own change set.
+// The two row sets are disjoint (no-scalar and struct1 rows run no FJ batch;
+// mixed/auto never hit #201's no-FJ-work rule), so each row keeps the value its
+// own change set; every other digest reproduced unchanged on each build.
 const std::array<Scenario, 6> kScenarios = {{
     {"set_cover/seed42/auto", set_cover_model, 42, 4000, -1.0, 0x393b052b77449698ULL},
     {"set_cover/seed7/struct1", set_cover_model, 7, 4000, 1.0, 0xfc1af445e51ed08aULL},
