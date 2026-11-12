@@ -107,8 +107,8 @@ class TestViolation:
         #
         # invalidate_cache() below is NOT load-bearing: total_violation() diffs
         # every constraint against its cache on each call and self-corrects
-        # (src/violation.cpp), so both reads are right without it. It stays as the
-        # Python suite's only call of that binding.
+        # (src/violation.cpp), so both reads are right without it (verified by
+        # removing them).
         m = cbls.Model()
         x = m.float_var(0, 10)
         m.add_constraint(m.sum([x, m.constant(-5.0)]))

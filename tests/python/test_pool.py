@@ -140,12 +140,12 @@ def test_solve_parallel_accepts_a_python_lns_factory() -> None:
 def test_solve_parallel_builds_each_factory_once_per_worker_not_per_restart() -> None:
     """A worker restarts inside its own thread; its factories must not re-run.
 
-    A worker whose solve returns with budget left restarts on the remaining clock.
-    Factory calls inside that loop would build a Model, hook and LNS per restart:
-    a deep copy and, from Python, a GIL acquisition each. The scenario forces many
-    restarts (small max_iterations against a wall clock) and asserts one build per
-    worker. Child process: a GIL regression deadlocks, which no in-process
-    deadline can report.
+    A worker whose solve returns with budget left restarts on the remaining clock,
+    so its core is never idle. Factory calls inside that loop would build a Model,
+    hook and LNS per restart: a deep copy and, from Python, a GIL acquisition each.
+    The scenario forces many restarts (small max_iterations against a wall clock)
+    and asserts one build per worker. Child process: a GIL regression deadlocks,
+    which no in-process deadline can report.
     """
     out = _assert_scenario_ok("restarts")
     assert "factory_calls=2" in out

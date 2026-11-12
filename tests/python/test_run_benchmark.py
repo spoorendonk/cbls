@@ -541,9 +541,9 @@ def test_resuming_under_a_different_search_arm_is_refused(tmp_path: Path) -> Non
 
 
 def test_a_default_run_resumes_over_a_job_it_killed(tmp_path: Path) -> None:
-    # Resume keeps the row the driver writes for a killed job, which carries its
-    # arm keys (#226): without them it read as the tie-break's off arm and a
-    # default run refused to resume any directory holding one.
+    # Resume keeps the row the driver writes for a killed job, which records its
+    # arm under `driver_arm` (#226): without it the row read as the tie-break's
+    # off arm and a default run refused to resume any directory holding one.
     args = _driver_args()
     jobs = [Job("cbls", "a"), Job("cpsat", "a")]
     for job in jobs:
