@@ -292,19 +292,8 @@ if(CBLS_BUILD_TESTS)
     # warning-clean, so an ordinary build leaves it out (EXCLUDE_FROM_ALL); the
     # target exists so the probe has a real entry in compile_commands.json,
     # with the same flags as every other first-party target.
-    #
-    # CBLS_GATE_PROBE_IN_ALL=1 in the environment puts the probe INTO the
-    # build, so its three warnings pass through exactly the output path of
-    # every other TU: a compiler-warning scan of the build log can use them as
-    # its control. The pre-wcp pre-push hook did that; today's hooks set the
-    # variable nowhere (docs/git-hooks.md), so the probe builds only on
-    # request.
-    if("$ENV{CBLS_GATE_PROBE_IN_ALL}" STREQUAL "1")
-        add_library(cbls_tidy_probe STATIC .githooks/tidy-probe/incomplete_switch.cpp)
-    else()
-        add_library(cbls_tidy_probe STATIC EXCLUDE_FROM_ALL
-            .githooks/tidy-probe/incomplete_switch.cpp)
-    endif()
+    add_library(cbls_tidy_probe STATIC EXCLUDE_FROM_ALL
+        .githooks/tidy-probe/incomplete_switch.cpp)
     cbls_enable_warnings(cbls_tidy_probe)
     # Only the pinned copy: a system clang-tidy of another vintage merges a
     # different default set and rejects keys this .clang-tidy uses. Without it
