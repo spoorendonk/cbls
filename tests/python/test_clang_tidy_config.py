@@ -1,10 +1,8 @@
 """src/io/.clang-tidy must APPEND to the root check list, not replace it.
 
-Without ``InheritParentConfig: true`` clang-tidy drops the root's ``Checks:``,
-leaves nothing enabled, and exits 1 with "Error: no checks enabled." -- every
-translation unit under ``src/io/`` then goes silently unlinted unless whoever
-runs clang-tidy reads that exit 1 as a fault. That was the live state until
-issue #121's ``src/io`` half; this test is what stops it coming back.
+Without ``InheritParentConfig: true`` clang-tidy drops the root's ``Checks:``
+and exits 1 with "Error: no checks enabled.", leaving ``src/io/`` unlinted
+(#121).
 """
 
 from __future__ import annotations

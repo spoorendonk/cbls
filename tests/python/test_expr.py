@@ -1,14 +1,10 @@
 """Expr wrapper, operator overloading and the int32 handle API, via the bindings.
 
-What these tests are for: that every operation is REACHABLE from Python under
-the name it is bound as, in both APIs, and that it dispatches to the operation
-it names. The arithmetic itself belongs to the engine and is asserted in
-`tests/test_expr.cpp` and `tests/test_dag.cpp`, at C++ speed and nearer the code
--- so a value here is a dispatch witness (it separates `tan` from `sin`), not a
-second opinion on whether the DAG evaluates correctly.
-
-Two surfaces are bound and both are covered, because they are separate binding
-code and either can break alone:
+Every operation is reachable under its bound name in both APIs and dispatches
+to the operation it names. Arithmetic is asserted in `tests/test_expr.cpp` and
+`tests/test_dag.cpp`; a value here is a dispatch witness (it separates `tan`
+from `sin`). The two surfaces are separate binding code and either can break
+alone:
 
   * the int32 handle API -- `m.float_var()`, `m.tan_expr(handle)`;
   * the `Expr` API -- `m.Float()`, `cbls.tan(expr)`, and Python's operators
@@ -125,11 +121,9 @@ def test_an_operator_between_an_expr_and_a_scalar(
 #: satisfaction is reported as. A residual is `lhs - rhs` shaped: `<= 0` for the
 #: non-strict forms, `< 0` for the strict ones, and exactly 0 for equality.
 #:
-#: The last two rows sit ON the boundary, and they are what makes the strict and
-#: non-strict forms distinguishable at all: `Lt` is `Leq` plus 1e-9 (src/dag.cpp),
-#: so at any point away from equality both land on the same side of zero and a
-#: binding wiring `__le__` to `Lt` would pass every other row here. The other
-#: half of that pair is `test_a_strict_comparison_is_violated_at_equality`.
+#: The last two rows sit on the boundary, the only place strict and non-strict
+#: differ (`Lt` is `Leq` plus 1e-9, src/dag.cpp), so `__le__` wired to `Lt` fails
+#: there. The other half is `test_a_strict_comparison_is_violated_at_equality`.
 COMPARISONS = [
     (lambda x, y: x <= y, 3.0, 5.0, "le"),
     (lambda x, y: x >= y, 7.0, 3.0, "le"),
@@ -214,10 +208,8 @@ def test_a_comparison_against_a_scalar(
 def test_a_strict_comparison_is_violated_at_equality(
     build: Callable[[Any, Any], Any],
 ) -> None:
-    # The other half of the boundary rows in COMPARISONS. `x < y` and `x > y`
-    # must REJECT x == y, where `<=` and `>=` accept it -- this is the only
-    # point at which the two forms differ, so without it nothing in the file
-    # separates them.
+    # The other half of COMPARISONS' boundary rows: `<` and `>` reject x == y,
+    # where `<=` and `>=` accept it.
     m = cbls.Model()
     x = m.Float(0.0, 10.0)
     y = m.Float(0.0, 10.0)
@@ -272,12 +264,9 @@ def test_pow_with_a_constant_expr() -> None:
 
 
 def test_minimize_and_maximize_accept_an_expr() -> None:
-    # `add_constraint`, `minimize` and `maximize` each carry BOTH an int32 and an
-    # Expr overload (python/bindings.cpp). `eval_handle` unwraps to `.handle`, so
-    # every other test here takes the int32 path -- which left the Expr overloads
-    # of minimize and maximize witnessed by nothing, and deleting one of them
-    # would have kept the suite green. Overload resolution is binding code that
-    # no C++ test can reach.
+    # `add_constraint`, `minimize` and `maximize` each have an int32 and an Expr
+    # overload (python/bindings.cpp); `eval_handle` takes the int32 path, so this
+    # is the only witness of the Expr overloads of minimize and maximize.
     m = cbls.Model()
     x = m.Float(0.0, 10.0)
     y = m.Float(0.0, 10.0)
@@ -305,12 +294,8 @@ def test_is_var_distinguishes_a_variable_from_an_expression() -> None:
 
 
 def test_the_two_apis_build_the_same_model() -> None:
-    """The cross-API equivalence, which is what makes either surface trustworthy.
-
-    Neither API is the other's wrapper on the Python side -- `Expr` builds nodes
-    through its own bound operators -- so agreeing on a non-trivial expression is
-    a real statement about both.
-    """
+    """`Expr` builds nodes through its own bound operators, not the handle API, so
+    agreeing on a non-trivial expression is a statement about both."""
     m1 = cbls.Model()
     x1 = m1.float_var(-10.0, 10.0)
     y1 = m1.float_var(-10.0, 10.0)

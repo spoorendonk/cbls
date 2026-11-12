@@ -1,15 +1,8 @@
 """DAG entry points that are bound as free functions, from Python.
 
-`full_evaluate`, `delta_evaluate` and `compute_partial` are bound separately from
-the model-building surface `test_expr.py` covers. `delta_evaluate` carries a
-caster of its own -- a Python set arriving as a `std::set<int32_t>` -- while the
-other two cross only built-in conversions, so what is at stake for them is that
-they are reachable and hand back the value they computed rather than a
-neighbouring one. The DAG semantics
-themselves (what Sum evaluates to, that delta agrees with full, the chain rule)
-belong to `tests/test_dag.cpp`, which asserts them on far more shapes than these
-do; what is left here is that the three entry points are reachable and hand back
-what they computed.
+`full_evaluate`, `delta_evaluate` (whose Python set crosses a caster of its own)
+and `compute_partial` are reachable and hand back the value they computed, not a
+neighbouring one. DAG semantics belong to `tests/test_dag.cpp`.
 """
 
 import math
@@ -19,11 +12,9 @@ from support import vid
 
 
 def test_delta_evaluate_takes_a_set_of_var_ids_and_returns_the_objective() -> None:
-    # The set argument is the binding-specific part: C++ takes a pointer and a
-    # count, so this crosses a caster that a signature change could silently
-    # break (a set of one, arriving empty, would still "work" -- delta_evaluate
-    # returns the objective unchanged -- so the value is checked after a change
-    # that MUST move it).
+    # The set crosses a caster to C++'s pointer and count. An empty arrival
+    # returns the objective unchanged, so the value is checked after a change
+    # that must move it.
     m = cbls.Model()
     x = m.float_var(0, 10)
     y = m.float_var(0, 10)
@@ -56,9 +47,8 @@ def test_compute_partial_returns_the_derivative_it_was_asked_for() -> None:
     cbls.full_evaluate(m)
     assert cbls.compute_partial(m, s, vid(x)) == 1.0
     assert cbls.compute_partial(m, s, vid(y)) == 3.0
-    # An expr_id that is NOT the objective, whose partial differs from the
-    # objective's. Without it every expr_id here is the objective id, so a
-    # binding that dropped the argument entirely would be coincidentally right.
+    # A non-objective expr_id whose partial differs, so a binding that dropped
+    # the argument is not coincidentally right.
     assert cbls.compute_partial(m, scaled_y, vid(x)) == 0.0
 
     m2 = cbls.Model()

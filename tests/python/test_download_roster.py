@@ -1,9 +1,8 @@
 """Tests for the MIPfeas roster derivation.
 
-The roster is not published as a name list, so it is derived from two MIPLIB files
-and the derivation is asserted. That assertion is what stops a MIPLIB revision
-silently redefining the benchmark, and it is a guarantee the README makes in
-writing — so it gets a test rather than being trusted.
+The roster is not published as a name list, so it is derived from two MIPLIB
+files and the derivation asserted, so a MIPLIB revision cannot silently redefine
+the benchmark (a guarantee the README makes).
 """
 
 from __future__ import annotations
@@ -344,12 +343,8 @@ def test_write_manifest_adds_an_instance_it_has_never_pinned(tmp_path: Path) -> 
 
 
 def test_an_absent_manifest_does_not_silently_re_pin_what_is_on_disk(tmp_path: Path) -> None:
-    """The add path is flagless; a missing pin table must not borrow that.
-
-    Delete `manifest.csv`, substitute an instance, and the unflagged add path
-    pinned the substituted bytes and exited 0 -- after which every later
-    `--verify` passed, because the manifest agreed with the file.
-    """
+    """The add path is flagless; a missing pin table must not borrow that, or
+    substituted bytes get pinned and every later `--verify` passes."""
     (tmp_path / "a.mps.gz").write_bytes(b"SUBSTITUTED")
 
     assert pin_fetched_instances(["a"], tmp_path, update=False) == 3

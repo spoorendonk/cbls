@@ -1,16 +1,13 @@
 """element, ceil/floor/round and the extra-reading lambdas, from Python (#186).
 
-The engine's arithmetic is pinned in `tests/test_element_rounding.cpp`; what is
-pinned here is the binding: every new builder is REACHABLE under the name it is
-bound as, in both APIs (the int32 handle API and `Expr`, including Python's own
-`math.ceil`/`math.floor`/`round` through the dunders), and a round trip -- built
-in Python, evaluated in C++, read back -- gives the value it names.
+The arithmetic is pinned in `tests/test_element_rounding.cpp`. Here: every
+builder is reachable under its bound name in both APIs (int32 handles and
+`Expr`, including `math.ceil`/`math.floor`/`round` via the dunders), and a
+Python-built, C++-evaluated round trip gives the value it names.
 
-Validation is pinned in a CHILD interpreter, following `test_model_handles.py`:
-the table and every handle an `element` or an extra-lambda is handed are
-indexed by the engine without a bounds test on the hot path, so an unvalidated
-one is a crash rather than an exception, and a crash in-process would take the
-whole pytest run down instead of failing one test.
+Validation runs in a child interpreter (as `test_model_handles.py`): the engine
+indexes the table and handles unchecked, so an unvalidated one crashes the
+whole pytest run instead of failing one test.
 """
 
 from __future__ import annotations

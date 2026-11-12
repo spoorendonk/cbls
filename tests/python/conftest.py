@@ -15,19 +15,11 @@ if os.path.exists(build_dir):
 # Add the repo root so tests can import benchmark modules (benchmarks.<name>.<module>).
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-# If the compiled bindings aren't built, skip the tests that need them rather than
-# failing with ImportError during collection. Detected from the source rather than
-# hardcoded, so a new binding test is covered without touching this file — and so a
-# pure-Python test still runs when the bindings are absent.
-#
-# The skip is announced rather than silent. It used to be silent, and because
-# CBLS_BUILD_PYTHON defaults to OFF, the documented build produced a run that
-# reported a green summary while never executing any of the 255 binding tests — a
-# result indistinguishable from one where they all passed. Nothing in the gates
-# would have caught a binding regression. So: the terminal summary names what was
-# dropped, and CBLS_REQUIRE_BINDINGS=1 (set by the ```test fence in CLAUDE.md)
-# turns the skip into a hard error, on the same principle as the hooks refusing
-# to lint quietly when ruff is missing from the venv.
+# Without compiled bindings, skip the tests that import them (found from the
+# source, so a new one is covered and pure-Python tests still run) instead of
+# failing collection with ImportError. A silent skip reads as a green run, so the
+# terminal summary names what was dropped, and CBLS_REQUIRE_BINDINGS=1 (set by
+# the ```test fence in CLAUDE.md) makes it a hard error.
 _ignored_binding_tests: list[str] = []
 
 #: The compiled module a binding test needs.
@@ -38,14 +30,10 @@ BINDING_MODULE = "_cbls_core"
 def _no_inherited_git_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     """Strip every GIT_* variable before a test can spawn git.
 
-    A git hook exports GIT_DIR and GIT_INDEX_FILE (pre-commit does, for the commit
-    it is gating), and any git a test runs inherits them -- whatever its `cwd`.
-    During #160 a test's `git init` in a tmp dir re-initialised the repository
-    being committed to instead, setting `core.bare = true` in the shared
-    `.git/config` for every worktree, and its `git add` staged into the commit's
-    index. Stripping here, for every test, is what keeps the next test that runs
-    git from repeating it; a test that genuinely needs a GIT_* variable sets its
-    own with `monkeypatch.setenv`.
+    A git hook exports GIT_DIR and GIT_INDEX_FILE, and any git a test runs
+    inherits them whatever its `cwd`, so a tmp-dir `git init` re-initialises the
+    repository being committed to (#160). A test that needs a GIT_* variable sets
+    its own with `monkeypatch.setenv`.
     """
     for name in [name for name in os.environ if name.startswith("GIT_")]:
         monkeypatch.delenv(name)
@@ -54,17 +42,11 @@ def _no_inherited_git_environment(monkeypatch: pytest.MonkeyPatch) -> None:
 def imports_module(text: str, module: str) -> bool:
     """Whether this source really imports `module` -- by AST, not by substring.
 
-    A substring search gets this wrong in both directions, and this file has
-    shipped both mistakes. `"_cbls_core" in text` collect-ignored the very suite
-    that polices this announcement, because its DOCSTRING names the module. The
-    narrower `"import _cbls_core" in text` that replaced it then missed
-    `from _cbls_core import X` and `importlib.import_module("_cbls_core")` --
-    and a missed binding test does not merely run, it raises ImportError during
-    collection, which aborts the WHOLE session: pytest exits 2 having run
-    nothing.
-
-    Docstrings and comments are not in the AST, so neither hazard survives
-    parsing. All three import spellings are recognised.
+    A substring match ignores a pure-Python test whose docstring names the
+    module, or misses `from _cbls_core import X` /
+    `importlib.import_module("_cbls_core")`, and a missed binding test raises
+    ImportError at collection, aborting the whole session. Docstrings and
+    comments are not in the AST; all three import spellings are recognised.
     """
     try:
         tree = ast.parse(text)
@@ -120,18 +102,11 @@ except ImportError:
         ) from None
 
 
-# The same hazard one layer out. `ortools`, `pyscipopt` and `pyvrp` live in the
-# `benchmarks` extra, not `dev`, so a checkout synced with `--extra dev` alone
-# has none of them -- and every test of the
-# CP-SAT baseline, of the independent solution verifier and of the PyVRP
-# baseline opens with `pytest.importorskip`, so all of them vanish into a green
-# summary. That is the same failure shape as the 255 binding tests, and gets the
-# same answer: the skip is named in the summary, and CBLS_REQUIRE_BENCHMARKS=1
-# (set by the ```test fence in CLAUDE.md) turns it into a hard error.
-#
-# The *files* are detected from the source rather than listed here, so a new test
-# guarded on one of these packages is covered without an edit. The package names
-# themselves are not: a guard on a third package needs this tuple extended, which
+# `ortools`, `pyscipopt` and `pyvrp` live in the `benchmarks` extra, not `dev`,
+# and the tests needing them `pytest.importorskip` them, so the same rule holds:
+# the skip is named in the summary and CBLS_REQUIRE_BENCHMARKS=1 (the ```test
+# fence) makes it a hard error. Files are found from the source; a guard on a
+# new package needs this tuple extended, which
 # `test_every_importorskipped_dependency_is_one_this_gate_watches` enforces.
 BENCHMARK_IMPORTS = ("ortools", "pyscipopt", "pyvrp")
 
@@ -179,12 +154,10 @@ if _ignored_benchmark_tests and os.environ.get("CBLS_REQUIRE_BENCHMARKS") == "1"
 def pytest_terminal_summary(terminalreporter: pytest.TerminalReporter) -> None:
     """Announce every silently skipped suite so a short run cannot look complete.
 
-    Reported here, next to the pass count, rather than printed at import or via
-    `pytest_report_header`: pytest captures stdout/stderr during conftest import
-    and discards it for a passing session, and `-q` suppresses the header --
-    which is what the gate and every documented command run, so both stayed
-    invisible in the one case that matters. `get_terminal_writer()` is not usable
-    from `pytest_configure` either; it asserts before the reporter exists.
+    Here, not at import or in `pytest_report_header`: pytest discards conftest
+    import output on a passing run and `-q` (the gate's flag) hides the header.
+    `get_terminal_writer()` asserts in `pytest_configure`, before the reporter
+    exists.
     """
     if _ignored_binding_tests:
         terminalreporter.write_line(

@@ -1,10 +1,9 @@
 """Tests for the CP-SAT baseline's log parsing.
 
-The CP-SAT incumbent trace exists only because a regex matches lines of a debug log
-format that carries no stability guarantee. If an OR-Tools release changes it,
-`parse_trace` silently returns nothing, every CP-SAT instance scores a Primal
-Integral near 2, and the aggregate reads as "CP-SAT is bad" rather than as a broken
-harness — after a 39 CPU-hour run. These are the golden lines that pin it down.
+The CP-SAT incumbent trace is a regex over a debug log with no stability
+guarantee. If an OR-Tools release changes it, `parse_trace` silently returns
+nothing and every CP-SAT instance scores a Primal Integral near 2 ("CP-SAT is
+bad", not a broken harness) after a 39 CPU-hour run. Golden lines pin it.
 """
 
 from __future__ import annotations
@@ -128,11 +127,10 @@ def test_cli_mode_maps_workers_0_to_defaults(
 
 # --- Preflight ----------------------------------------------------------------
 #
-# The baseline's whole configuration is empirical against one OR-Tools release,
-# while the parsing runs against whatever is installed. These pin the two things
-# that can break silently (issue #137) and, crucially, that the failure names
-# which one -- so they are driven from captured log text rather than from a
-# solve, which is what lets a broken release be tested without installing it.
+# The configuration is empirical against one OR-Tools release; the parsing runs
+# against whatever is installed. These pin the two silent breaks (#137) and that
+# the failure names which one, from captured log text so a broken release is
+# testable without installing it.
 
 #: The subsolver announcement and search header a correctly restricted run emits.
 RESTRICTED_HEADER = """\
@@ -202,10 +200,9 @@ def test_a_release_that_reformatted_the_solution_line_fails_as_a_log_format_brea
 
 
 def test_the_full_portfolio_running_alongside_fj_and_ls_is_a_restriction_failure() -> None:
-    # An unrestricted CP-SAT run announces `full problem subsolvers`, not `full`.
-    # A role whitelist spelling it the short way never matches the line at all, so
-    # the preflight passed clean while the baseline was CP-SAT's default portfolio
-    # -- the comparison epic #87 rejects -- across the whole roster.
+    # An unrestricted run announces `full problem subsolvers`, not `full`; a
+    # whitelist spelling it short never matches, and passes the default portfolio
+    # epic #87 rejects.
     log = (
         RESTRICTED_HEADER.replace(
             "3 helper subsolvers",
@@ -231,13 +228,9 @@ def test_a_role_this_harness_has_never_seen_is_not_waved_through() -> None:
 def test_a_dropped_restriction_is_reported_and_the_ambiguity_is_named() -> None:
     """Both roles gone at once is the case the log cannot attribute.
 
-    An earlier form of this test asserted the restriction check ALONE, on the
-    premise that an unrestricted run announces neither expected role. A log
-    captured from live ortools 9.15 says otherwise -- an unrestricted run
-    announces `2 first solution subsolvers: [fj, fs_random_no_lp]` -- so losing
-    both roles is as likely to be the labels being renamed. Naming one check
-    exonerates the other and sends the reader to the wrong place, so both are
-    named and the ambiguity is stated.
+    A live ortools 9.15 unrestricted run still announces `2 first solution
+    subsolvers: [fj, fs_random_no_lp]`, so losing both roles is as likely a
+    label rename; naming one check would exonerate the other, so both are named.
     """
     log = (
         "Starting search at 0.00s with 1 workers.\n"
@@ -414,10 +407,8 @@ def test_the_documented_ortools_range_matches_the_declared_dependency() -> None:
 
 # --- A withheld baseline row says why -----------------------------------------
 #
-# The scorer publishes one message per withheld row, and "no message recorded" is
-# the least useful form of the most important defect class this baseline has. It
-# is also the class the preflight exists to catch before a roster rather than
-# after one.
+# The scorer publishes one message per withheld row; "no message recorded" hides
+# the defect class the preflight exists to catch before a roster.
 
 
 def test_a_rejected_parameter_string_records_why_the_row_is_withheld() -> None:

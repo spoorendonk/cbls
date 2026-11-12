@@ -1,14 +1,10 @@
-"""The ordinary builders refuse a closed model from Python (#173).
+"""The ordinary builders refuse a closed model from Python (#173): build the
+whole model before `close()`.
 
-Before the refusal, `add_constraint` (or any other builder) on a closed model was
-accepted, but the new node was never placed in the topological order, so no
-evaluation computed it and `solve` reported feasible over a violated row -- a
-silent wrong answer. A closed model does not grow; build the whole model before
-`close()`.
-
-The binding half of the `[closed]` cases in `tests/test_build_after_close.cpp`: the
-refusal is a C++ `std::logic_error`, which reaches Python as `RuntimeError`
-with no binding code of its own, so this pins that it does.
+Pre-#173, a node built after `close()` was never placed in the topological
+order, so `solve` reported feasible over a violated row. Binding half of the
+`[closed]` cases in `tests/test_build_after_close.cpp`: pins that the C++
+`std::logic_error` reaches Python as `RuntimeError`.
 """
 
 from __future__ import annotations

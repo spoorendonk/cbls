@@ -1,12 +1,9 @@
 """Shell-level smoke tests for the `cbls` CLI binary.
 
-These run the built executable as a subprocess rather than calling into the
-bindings, because what they check is only observable at that level: the exit
-status and stderr a shell sees. A malformed numeric flag used to let
-`std::stod`'s exception escape `main`, which is `std::terminate` -- the process
-died on SIGABRT with `terminate called after throwing an instance of
-'std::invalid_argument' / what(): stod` and no mention of which flag was wrong.
-Nothing in-process can distinguish that from a clean non-zero exit.
+They run the built executable because the exit status and stderr a shell sees
+are only observable there: an exception escaping `main` (a malformed flag's
+`std::stod` did, pre-fix: SIGABRT, `what(): stod`, no flag named) is
+indistinguishable in-process from a clean non-zero exit.
 """
 
 from __future__ import annotations
@@ -47,13 +44,9 @@ def test_a_malformed_numeric_flag_is_reported_and_names_the_flag(flag: str) -> N
     # is what separates a reported error from an abort. Pre-fix this was -6.
     assert 0 < result.returncode < 128, f"{flag}: returncode {result.returncode}"
     assert "terminate" not in result.stderr, f"{flag}: {result.stderr}"
-    # Naming the flag is the point: `what(): stod` told the user nothing about
-    # which of the numeric flags they mistyped.
     assert flag in result.stderr, f"{flag}: {result.stderr}"
-    # ...and says what was wrong with the *value*. Without this, a refactor that
-    # dropped the parse and let the flag fall through to `unknown option
-    # '--threads'` would keep the test green: same exit code, and that message
-    # names the flag too.
+    # The value is named too: a flag fallen through to `unknown option` exits
+    # the same and also names the flag.
     assert "'abc' is not a" in result.stderr, f"{flag}: {result.stderr}"
 
 
@@ -64,9 +57,8 @@ INT_WIDTH_FLAGS = ["--lns-interval", "--threads"]
 
 @pytest.mark.parametrize("flag", INT_WIDTH_FLAGS)
 def test_a_value_wider_than_int_is_reported_as_out_of_range(flag: str) -> None:
-    # std::stoi threw out_of_range here, which escaped main exactly like a
-    # malformed value did. The widened parse plus an explicit bound is what
-    # replaced it, and nothing else covers that branch.
+    # Pre-fix, std::stoi's out_of_range escaped main like a malformed value; the
+    # widened parse's explicit bound is covered only here.
     result = _run_cbls(flag, "2147483648")
 
     assert 0 < result.returncode < 128, f"{flag}: returncode {result.returncode}"
@@ -74,11 +66,8 @@ def test_a_value_wider_than_int_is_reported_as_out_of_range(flag: str) -> None:
 
 
 def test_well_formed_numeric_flags_are_all_accepted() -> None:
-    # The negative tests cannot show the flags still work. Every numeric flag
-    # gets a valid value and no model file, so the CLI stops at the model check
-    # -- reaching that message proves each flag before it parsed. Without this,
-    # an inverted bound in the int overload or a wrong conversion in the uint64
-    # one would be caught by nothing.
+    # Valid values and no model file: reaching the model check proves every flag
+    # parsed (an inverted int bound or a wrong uint64 conversion fails here).
     result = _run_cbls(
         "--time-limit",
         "0.1",
@@ -97,14 +86,10 @@ def test_well_formed_numeric_flags_are_all_accepted() -> None:
 
 
 def test_the_seed_the_cli_prints_can_be_parsed_back() -> None:
-    # --seed is unsigned and the CLI echoes it back unsigned, so `--seed -1` is
-    # recorded as 2**64-1. Parsing the seed as int64 would make the tool unable
-    # to read back the seed it just printed, defeating the flag's purpose.
-    #
-    # This has to run a real model: the seed is printed by the header, which
-    # only runs once a model has loaded. Asserting on the parse alone would
-    # leave the round trip -- the reason the flag is unsigned at all -- unpinned,
-    # and a formatter that printed the seed signed would keep such a test green.
+    # --seed is unsigned and echoed unsigned (`--seed -1` prints 2**64-1), so an
+    # int64 parse could not read back the seed it printed. A real model runs
+    # because the header that prints the seed needs one; that also catches a
+    # formatter printing it signed.
     printed = _run_cbls(str(MODEL), "--seed", "-1", "--time-limit", "0.1")
     assert printed.returncode == 0, printed.stderr
 
@@ -134,20 +119,17 @@ def test_an_out_of_range_value_is_reported_as_such_not_as_a_typo(flag: str, valu
 
 
 def test_a_nan_time_limit_is_rejected() -> None:
-    # "nan" is a well-formed double, so strict syntax alone accepts it -- and it
-    # yields a solve that never searched. There is no downstream guard in the
-    # CLI to catch it, so the parse rejects it.
+    # "nan" is a well-formed double that yields a solve that never searched, and
+    # nothing downstream in the CLI guards it, so the parse rejects it.
     result = _run_cbls("--time-limit", "nan")
 
     assert 0 < result.returncode < 128, result.stderr
     assert "--time-limit: 'nan' is not a number" in result.stderr
 
 
-# The benchmark runners have the same exposure with a worse consequence: they
-# run for minutes to hours, so a mistyped flag that parses to a default produces
-# a result-shaped artifact rather than an error. setcover's `--seed` went
-# through `strtoull`, which reports nothing at all -- `--seed abc` ran the whole
-# roster at seed 0 and wrote a CSV row naming it.
+# In the long-running benchmark runners a mistyped flag that parses to a default
+# yields a result-shaped artifact, not an error (pre-fix, setcover's `strtoull`
+# ran `--seed abc` over the whole roster at seed 0).
 SETCOVER_BINARY = Path(__file__).resolve().parents[2] / "build" / "cbls_setcover"
 
 SETCOVER_BAD_FLAGS = [
@@ -174,12 +156,8 @@ def test_setcover_refuses_a_malformed_numeric_flag(flag: str, value: str) -> Non
 
 
 def test_setcover_refuses_an_unknown_selection() -> None:
-    """`--structural-selection` is a word, not a number, so it has its own reject path.
-
-    Same failure shape as the numeric flags above, and the same reason it is
-    pinned: a benchmark arm that silently fell back to the default policy would
-    publish rows naming an arm nobody ran.
-    """
+    """`--structural-selection` is a word with its own reject path: a silent
+    fall-back to the default would publish rows naming an arm nobody ran."""
     if not SETCOVER_BINARY.exists():
         pytest.skip("cbls_setcover not built")
     result = subprocess.run(
@@ -214,13 +192,10 @@ def test_setcover_refuses_a_structural_flag_read_by_nothing(args: list[str]) -> 
     assert "read by nothing" in result.stderr or "no effect" in result.stderr, result.stderr
 
 
-# The uc-chped runner writes a published results table, so its guards are the
-# thing most worth pinning: a cold review found they tested whether `--out` was
-# OMITTED rather than which file it named, which meant the command the README
-# documents -- `--out <the published table>` spelled out -- satisfied every
-# guard while doing exactly the damage they exist to stop. A shortened run
-# rewrote the table and deleted the cited reference rows for every instance it
-# did not run, at exit 0.
+# The uc-chped runner writes a published table; its guards judge which file
+# `--out` names, not whether it was given, so `--out <the published table>`
+# spelled out (the README's form) is refused too. Pre-fix, a shortened run that
+# way rewrote the table and dropped the unrun instances' reference rows, exit 0.
 UC_CHPED_BINARY = Path(__file__).resolve().parents[2] / "build" / "cbls_uc_chped"
 
 
@@ -300,10 +275,8 @@ def test_uc_chped_requires_a_commit_and_verify_to_write_the_published_table(
     assert published.read_bytes() == before, "the published table was modified"
 
 
-# The search-configuration flags (#136). An ablation arm is a command-line change
-# recorded in the row, which puts two things at the shell level: the arm must not
-# be able to regenerate the published table as a side effect, and every row the
-# runner writes has to say which arm produced it.
+# The search-configuration flags (#136): an ablation arm must not rewrite the
+# published table, and every row the runner writes names the arm.
 @pytest.mark.parametrize(
     "arm",
     [
@@ -437,13 +410,9 @@ def test_uc_chped_records_the_arm_on_every_measured_row(tmp_path: Path) -> None:
     assert measured > 0, "no measured rows in the table"
 
 
-# The anytime trace (#147). The defect was that this runner passed `nullptr`
-# where solve() takes a SolveCallback, so nothing recorded what the incumbent was
-# doing when the clock stopped and every published gap was a number at an
-# undefended budget. The Catch2 side (tests/test_uc_chped_trace.cpp) pins the
-# recorder's contract; what only the shell can prove is that the RUNNER hands it
-# to solve() -- with the argument back at `nullptr` the file below still gets its
-# header and no rows at all.
+# The anytime trace (#147). tests/test_uc_chped_trace.cpp pins the recorder;
+# only the shell shows the runner hands it to solve(). Pre-#147 it passed
+# `nullptr` as the SolveCallback, and the file got a header and no rows.
 UC_CHPED_TRACE_HEADER = (
     "instance,periods,time_limit_s,time_seconds,batches,objective,new_best,commit_sha"
 )
@@ -458,10 +427,8 @@ def test_uc_chped_records_an_anytime_trace(tmp_path: Path) -> None:
     out = tmp_path / "run.csv"
     trace = tmp_path / "trace.csv"
 
-    # Iteration-budgeted, so the run is bounded by work rather than by this
-    # machine's speed: the same reason test_uc_chped_records_the_arm_on_every
-    # _measured_row uses it. The wall-clock cells in the trace are still real
-    # seconds; nothing below asserts on their values.
+    # Iteration-budgeted, so bounded by work, not machine speed. The trace's
+    # wall-clock cells are real seconds; nothing asserts on their values.
     result = subprocess.run(
         [
             str(UC_CHPED_BINARY),
@@ -488,19 +455,16 @@ def test_uc_chped_records_an_anytime_trace(tmp_path: Path) -> None:
     lines = trace.read_text().splitlines()
     assert lines[0] == UC_CHPED_TRACE_HEADER
     rows = [ln.split(",") for ln in lines[1:] if ln]
-    # The point of the test: rows, not just a header. A header-only file is
-    # exactly what the unfixed runner produces.
+    # Rows, not just a header: header-only is what the pre-#147 runner wrote.
     assert rows, "the trace has no rows, so no callback reached solve()"
 
     horizons = set()
     for cells in rows:
         assert len(cells) == len(UC_CHPED_TRACE_HEADER.split(",")), cells
         assert cells[0] == "ucp13"
-        # One row per (instance, horizon) pair, so the horizon is what makes a
-        # trace row attributable at all.
+        # The horizon makes a trace row attributable to its (instance, horizon).
         assert cells[1] in {"1", "3", "6", "12", "24"}, cells
-        # The budget the row was measured against. This arm is clock-free, so it
-        # is 0 -- which is itself the honest statement of what bounded the run.
+        # The row's time budget: 0 on this clock-free arm.
         assert float(cells[2]) == 0.0, cells
         assert float(cells[3]) >= 0.0
         assert int(cells[4]) >= 0
@@ -508,8 +472,7 @@ def test_uc_chped_records_an_anytime_trace(tmp_path: Path) -> None:
         assert cells[6] in {"0", "1"}
         assert cells[7] == "deadbee"
         horizons.add(cells[1])
-    # Every horizon this run solved appears, not just the first: a trace that
-    # covered one row could not defend a budget map with a number per horizon.
+    # Every solved horizon appears: a budget map has a number per horizon.
     assert horizons == {"1", "3", "6", "12", "24"}, horizons
 
 
@@ -549,13 +512,11 @@ def test_uc_chped_refuses_a_trace_onto_the_published_trace(tmp_path: Path) -> No
 def test_uc_chped_refuses_either_flag_onto_either_published_artifact(
     flag: str, tmp_path: Path
 ) -> None:
-    """The guard is about the FILES, not about which flag names them.
+    """The guard is about the files, not which flag names them.
 
-    An earlier cut tested --out only against comparison.csv and --trace only
-    against anytime_trace.csv, so `--trace <the comparison table>` fell through
-    both: the trace's truncating open emptied the published results and the run
-    exited 0, deleting the ten cited Pedroso rows. Verified against that cut --
-    a 3789-byte comparison.csv came back as 688 bytes of trace rows.
+    Pre-fix, `--trace <the comparison table>` passed a per-flag guard and its
+    truncating open replaced the ten cited Pedroso rows, exit 0 (a 3789-byte
+    comparison.csv came back as 688 bytes of trace rows).
     """
     if not UC_CHPED_BINARY.exists():
         pytest.skip("cbls_uc_chped not built")
@@ -604,9 +565,8 @@ def test_uc_chped_refuses_one_path_for_both_outputs(tmp_path: Path) -> None:
     ("extra", "message"),
     [
         ([], "requires an explicit --commit"),
-        # The trace has no `verified` column, but only the verified published
-        # run writes it, so a trace-only publish is refused too -- with a
-        # message that says why for the trace rather than for the table (#146).
+        # Only the verified published run writes the trace, so a trace-only
+        # publish is refused too, with a trace-specific reason (#146).
         (["--commit", "deadbee"], "requires --verify: the published trace belongs"),
     ],
 )
@@ -623,9 +583,8 @@ def test_uc_chped_requires_a_commit_and_verify_to_write_the_published_trace(
     published_trace.write_text("published rows nobody may overwrite\n")
     before = published_trace.read_bytes()
 
-    # No --instance and no budget override, so the run IS the published protocol
-    # and is refused for the missing flag alone. It exits during argument resolution,
-    # before a single instance is read, which is what keeps this cheap.
+    # No --instance or budget override, so this is the published protocol,
+    # refused for the missing flag alone during argument resolution (cheap).
     result = subprocess.run(
         [
             str(UC_CHPED_BINARY),
@@ -814,10 +773,8 @@ def test_minlplib_rejects_a_bad_search_flag_value(bad: list[str], tmp_path: Path
     inst_dir = _minlplib_scratch(tmp_path)
     out = tmp_path / "scratch.csv"
 
-    # The bad flag goes LAST. With it in the middle, `--lns-interval --out` is
-    # a value flag that finds a value: it swallows "--out", and the exit 2 comes
-    # from the integer parse rather than from the trailing-flag path the first
-    # case is meant to exercise.
+    # The bad flag goes last, or `--lns-interval --out` swallows "--out" and
+    # exits on the integer parse, not the trailing-flag path the first case pins.
     result = _run_minlplib(str(inst_dir), "--out", str(out), *bad)
 
     assert result.returncode == 2, result.stdout
@@ -859,18 +816,14 @@ def test_minlplib_records_the_arm_on_an_early_exit_row(tmp_path: Path) -> None:
     assert cells[-1] == MINLPLIB_DEFAULT_ARM.replace(
         "compound_moves=on", "compound_moves=off"
     ).replace("lns_interval=3", "lns_interval=5")
-    # The #143 LNS counter is on the row too, and on THIS row it must read NaN:
-    # no solve ran, and a 0 here would be indistinguishable from "LNS ran and
-    # never repaired" -- the reading the ablation's LNS gate is decided on. The
-    # #150 acceptance counter obeys the same rule for the same reason, and is
-    # asserted beside it so a row cannot end up half-NaN.
+    # No solve ran, so the #143 and #150 LNS counters read NaN together: a 0
+    # would read as "LNS ran and never repaired", what the ablation's LNS gate
+    # decides on.
     row = dict(zip(header, cells, strict=True))
     assert row["lns_repairs"] == "NaN"
     assert row["lns_repairs_accepted"] == "NaN"
-    # #149's pair obeys the same rule, and for the sharper version of the same
-    # reason: a 0 in `time_to_first_feasible` would read as "reached feasibility
-    # instantly", which is the single most favourable reading a row that never
-    # ran could be given, and the #149 correlation would consume it as data.
+    # Likewise #149's pair: a 0 `time_to_first_feasible` would read as "feasible
+    # instantly", and the #149 correlation would consume it as data.
     assert row["first_feasible_objective"] == "NaN"
     assert row["time_to_first_feasible"] == "NaN"
 
@@ -897,8 +850,7 @@ def test_minlplib_refuses_an_ablation_arm_onto_the_published_trace(tmp_path: Pat
     )
 
     assert result.returncode == 2, result.stdout
-    # Names the artifact it is actually refusing. It said "table" for both
-    # before, which sent a reader of a --trace refusal looking at --out.
+    # Names the artifact it refuses, so a --trace refusal does not point at --out.
     assert "cannot write the published anytime trace" in result.stderr, result.stderr
     assert "--trace" in result.stderr, result.stderr
     assert trace.read_bytes() == before, "the published trace was modified"
@@ -918,9 +870,7 @@ def test_minlplib_help_lists_the_search_flags() -> None:
         "--perturbation-period",
         "--max-iterations",
         "--no-time-limit",
-        # The ninth. Listed last because it was the one the original assertion
-        # missed, and a help text that omits a shipped arm is how an ablation
-        # gets run without it.
+        # A help text that omits a shipped arm is how an ablation runs without it.
         "--compound-moves",
     ):
         assert flag in result.stdout, flag
@@ -941,16 +891,11 @@ def test_uc_chped_refuses_a_crossed_artifact_on_a_published_run(
 ) -> None:
     """Only --out ever writes the table and only --trace ever writes the trace.
 
-    The protocol ladder cannot police this pairing, because the run it lets
-    through is the legitimate published one: no --instance, no --time-limit, no
-    arm flag, and an explicit --commit satisfies every rung. Against the cut
-    that keyed the refusal on the protocol, this command truncated a 3789-byte
-    published comparison.csv to 3362 bytes of trace rows -- the ten cited
-    Pedroso rows gone -- within a second of launch, before any solve started,
-    and would have exited 0.
-
-    The run is refused during argument resolution, so no solving happens and
-    the test stays cheap.
+    The protocol ladder cannot police this: the run is the legitimate published
+    one, and --commit satisfies every rung. With the refusal keyed on the
+    protocol, this command truncated a 3789-byte comparison.csv to 3362 bytes of
+    trace rows (the ten cited Pedroso rows gone) before any solve, exit 0.
+    Refused during argument resolution, so the test is cheap.
     """
     if not UC_CHPED_BINARY.exists():
         pytest.skip("cbls_uc_chped not built")
@@ -1018,13 +963,10 @@ def test_uc_chped_trace_ends_every_solve_at_its_budget(tmp_path: Path) -> None:
     """Every (instance, horizon) the runner starts appears in the trace, and its
     last row is the one at the run's final time.
 
-    Two failures this pins, both of which make a trace unreadable rather than
-    wrong: the engine samples at most once a second and `record_best` resets
-    that timer, so without a closing row the record ends up to ~1.5s short of
-    the budget and -- when the last thing before the gap was an improvement --
-    reads as "still improving when the clock stopped"; and a solve that never
-    finds a valued incumbent writes no rows at all, which is indistinguishable
-    from a filtered roster or a callback that regressed to nullptr.
+    The engine samples at most once a second and `record_best` resets that
+    timer, so without a closing row a record ends up to ~1.5s short and can read
+    as "still improving"; and a solve with no valued incumbent would write no
+    rows, indistinguishable from a callback regressed to nullptr.
     """
     if not UC_CHPED_BINARY.exists():
         pytest.skip("cbls_uc_chped not built")
@@ -1074,10 +1016,8 @@ def test_uc_chped_trace_ends_every_solve_at_its_budget(tmp_path: Path) -> None:
 def test_minlplib_records_a_probability_it_can_be_read_back_from(tmp_path: Path) -> None:
     """The recorded cell must name the value the search actually received.
 
-    `%g`'s six significant digits could not: `--novelty-prob 0.1234567` and
-    `--novelty-prob 0.1234568` are two different runs that both recorded
-    `novelty_prob=0.123457`, so a results file did not, in fact, state the
-    configuration it was produced under.
+    `%g`'s six significant digits recorded `0.1234567` and `0.1234568` both as
+    `novelty_prob=0.123457`.
     """
     if not MINLPLIB_BINARY.exists():
         pytest.skip("cbls_minlplib not built")
@@ -1103,13 +1043,10 @@ def test_minlplib_records_a_probability_it_can_be_read_back_from(tmp_path: Path)
 
 @pytest.mark.parametrize("value", ["-1", "-300"])
 def test_minlplib_rejects_a_negative_unproductive_iters(value: str, tmp_path: Path) -> None:
-    """A negative and a zero are the SAME run -- the engine arms the
-    unproductive-batch exit only on `> 0` -- so accepting both would put two
-    different `search_config` cells on one configuration.
-
-    That invariant is what justifies refusing the no-effect flag
-    combinations, so it has to hold. 0 stays as the documented spelling for the
-    fixed-cadence arm.
+    """A negative and a zero are the same run (the unproductive-batch exit arms
+    only on `> 0`), so accepting both would give one configuration two
+    `search_config` cells, the invariant the no-effect refusals rest on. 0 is
+    the documented spelling of the fixed-cadence arm.
     """
     if not MINLPLIB_BINARY.exists():
         pytest.skip("cbls_minlplib not built")
@@ -1129,11 +1066,9 @@ def test_minlplib_refuses_an_off_protocol_run_onto_the_published_table(
 ) -> None:
     """The budget and the numerics belong in the guard, not just the roster.
 
-    `--time-limit 1` over the full roster satisfied every other rung and
-    republished the published table with one-second results at exit 0 -- the #88
-    hazard by name. `--seed` and `--feas-tol` did the same with rows differing
-    from the published protocol in a way no column records. The sibling uc-chped
-    runner has always guarded these; minlplib was the odd one out.
+    Unguarded, `--time-limit 1` over the full roster republished the table with
+    one-second results at exit 0 (the #88 hazard); `--seed` and `--feas-tol`
+    change rows in a way no column records. uc-chped guards these too.
     """
     if not MINLPLIB_BINARY.exists():
         pytest.skip("cbls_minlplib not built")
@@ -1207,8 +1142,8 @@ def test_minlplib_refuses_a_crossed_artifact(tmp_path: Path) -> None:
     """Only --out writes the table and only --trace writes the trace.
 
     `--trace` truncates its file on open before any solving, so `--trace <the
-    comparison table>` empties the published results at exit 0 -- reproduced on
-    the sibling uc-chped runner against a real table.
+    comparison table>` would empty the published results at exit 0 (reproduced
+    on uc-chped).
     """
     if not MINLPLIB_BINARY.exists():
         pytest.skip("cbls_minlplib not built")

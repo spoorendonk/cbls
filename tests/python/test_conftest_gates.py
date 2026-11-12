@@ -1,10 +1,8 @@
 """Tests for the conftest gates that stop a short run from looking complete.
 
-Two suites in this repo disappear silently when an optional dependency is
-missing: the binding tests when `_cbls_core` is not built, and every test of the
-CP-SAT baseline and the independent solution verifier when the `benchmarks`
-extra is not installed. Both leave a green summary behind, which is
-indistinguishable from a run where they all passed.
+The binding tests skip when `_cbls_core` is not built, and the tests guarded on
+the `benchmarks` extra skip when it is not installed; either would otherwise
+leave a green summary indistinguishable from a full pass.
 """
 
 from __future__ import annotations
@@ -44,12 +42,7 @@ def test_nothing_is_named_when_nothing_is_missing(tmp_path: Path) -> None:
 
 
 def test_every_package_in_the_benchmarks_extra_is_watched() -> None:
-    """Read off pyproject rather than restated here.
-
-    A third package added to the extra would otherwise leave this green while a
-    test guarded on it vanished with no announcement -- which is the drift the
-    gate exists to stop.
-    """
+    """Read off pyproject, so a package added to the extra cannot skip unannounced."""
     import re
     import tomllib
     from pathlib import Path
@@ -80,12 +73,8 @@ def test_every_importorskipped_dependency_is_one_this_gate_watches() -> None:
 
 # --- the binding gate ----------------------------------------------------------
 #
-# The rule that decides which files are collect-ignored when `_cbls_core` is not
-# built had no test at all, and shipped two opposite defects in turn: a whole-file
-# substring search that ignored this very suite because its docstring names the
-# module, and a narrower one that missed `from _cbls_core import X` -- which does
-# not merely run the test, it raises ImportError during collection and aborts the
-# entire session.
+# Which files are collect-ignored without `_cbls_core`: prose naming the module
+# must not count, and every import spelling must (see `imports_module`).
 
 
 def test_a_file_that_only_mentions_the_module_in_prose_is_not_a_binding_test() -> None:
@@ -130,10 +119,8 @@ def test_binding_test_files_names_only_the_importers(tmp_path: Path) -> None:
 def test_a_prose_only_test_still_runs_when_the_bindings_are_absent(tmp_path: Path) -> None:
     """End to end, in a directory where `_cbls_core` genuinely cannot be imported.
 
-    The unit tests above pin the predicate; this pins what the predicate is FOR.
-    conftest adds `../../build/python` to `sys.path` relative to its own location,
-    so a copy of it two levels below `tmp_path` finds no such directory and the
-    bindings really are missing -- the situation the gate exists for.
+    conftest adds `../../build/python` relative to its own location, so a copy
+    two levels below `tmp_path` finds no bindings.
     """
     root = tmp_path / "tests" / "python"
     root.mkdir(parents=True)
@@ -146,9 +133,8 @@ def test_a_prose_only_test_still_runs_when_the_bindings_are_absent(tmp_path: Pat
     (root / "test_real_binding.py").write_text(
         "from _cbls_core import Model\n\ndef test_needs_bindings() -> None:\n    assert Model\n"
     )
-    # Without stripping it, the gated run's own CBLS_REQUIRE_BINDINGS=1 is
-    # inherited and the child raises UsageError before collecting anything --
-    # which is the gate working, but not the thing under test here.
+    # An inherited CBLS_REQUIRE_BINDINGS=1 would raise UsageError before
+    # collection, which is not what this test checks.
     env = {k: v for k, v in os.environ.items() if k != "CBLS_REQUIRE_BINDINGS"}
     completed = subprocess.run(
         [sys.executable, "-m", "pytest", str(root), "-q", "-p", "no:cacheprovider"],

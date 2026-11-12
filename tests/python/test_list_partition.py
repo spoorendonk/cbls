@@ -1,17 +1,12 @@
 """Variable-length List variables and list partitions through the bindings (#164).
 
-Two things are being pinned here. The ordinary half is that the new variable
-form, the partition and its two enums are reachable from Python at all, and that
-every invariant `add_list_partition` checks is checked on this side of the
-binding too.
+The variable form, the partition and its two enums are reachable, and every
+invariant `add_list_partition` checks is checked from Python too.
 
-The other half runs in a CHILD interpreter, following `test_model_handles.py`
-and `test_pool.py`. `Variable.elements` is a `def_rw`, so Python can put anything
-in a List at any moment -- an element outside the universe, the same element in
-two lists of one partition, a length outside `[min_len, max_len]` -- and the
-engine's move generators then read it on a path that indexes by element id. That
-is CLAUDE.md's #156 crash class: it takes the interpreter down rather than
-failing a test, so the scenario cannot be asserted in-process.
+`Variable.elements` is a `def_rw`, so Python can write any List (out-of-universe
+ids, an element in two lists of a partition, a bad length) that move generators
+index by element id: the #156 crash class, so those scenarios run in a child
+interpreter (as `test_model_handles.py`).
 """
 
 import sys
@@ -106,10 +101,8 @@ def test_add_list_partition_rejects_an_unknown_cover_string() -> None:
 def test_add_list_partition_validates_its_group() -> None:
     """Each failed call must leave the model exactly as it was.
 
-    The sequence is deliberately cumulative: every later assertion relies on the
-    earlier ones having *thrown*, so `wide` is still unpartitioned when the
-    successful call reaches it. That is the property being checked -- a rejected
-    group writes nothing to the structure and sets no `partitioned` flag.
+    Deliberately cumulative: `wide` is still unpartitioned when the successful
+    call reaches it only if no rejected group set its `partitioned` flag.
     """
     m = cbls.Model()
     a = m.list_var(4, 0, 4)
@@ -187,11 +180,9 @@ def _partitioned_model(*, tabulated: bool) -> tuple["cbls.Model", list[int]]:
 def _scenario_broken_invariant() -> None:
     """The same element in two lists of one partition, and a length out of range.
 
-    The engine cannot repair this -- nothing maintains the cover but the moves,
-    and they preserve it rather than restore it. What it must not do is crash:
-    the partition generator recomputes membership from the lists on every call
-    with every stamp write bounds-tested, so a corrupt state is a wrong search
-    and not a heap write.
+    The moves preserve the cover, not restore it, so the engine cannot repair
+    this; but membership is recomputed per call with bounds-tested stamp
+    writes, so it is a wrong search, not a heap write.
     """
     m, routes = _partitioned_model(tabulated=True)
     # Every route holds the same three elements, and one is longer than max_len
@@ -211,9 +202,8 @@ def _scenario_out_of_universe() -> None:
     """Element ids past the universe, which the membership stamps index by.
 
     Every stamp write in `list_membership` and `partition_unassigned` is
-    bounds-tested, so an id Python wrote is ignored rather than becoming a heap
-    write. The search then runs on a state it cannot repair, which is the honest
-    outcome -- but it runs, and the interpreter survives.
+    bounds-tested, so such an id is ignored, not a heap write; the search runs
+    on an unrepairable state and the interpreter survives.
     """
     cfg = cbls.SearchConfig()
     cfg.max_iterations = 2000
@@ -234,9 +224,8 @@ def _scenario_out_of_universe() -> None:
     cbls.full_evaluate(m2)
     cbls.solve(m2, 0.0, 5, True, None, None, 3, None, cfg)
 
-    # And a tabulated read of the same corruption REPORTS it rather than
-    # indexing past the table -- the pre-existing #156 guard, still in force on a
-    # variable-length List.
+    # A tabulated read of the same corruption reports it instead of indexing
+    # past the table: the #156 guard, on a variable-length List.
     m3, spoiled = _partitioned_model(tabulated=True)
     m3.var_mut(vid(spoiled[0])).elements = [1_000_000]
     try:

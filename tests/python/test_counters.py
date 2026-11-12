@@ -1,15 +1,11 @@
 """`SearchResult.counters` from Python (#169).
 
-The C++ side (`tests/test_counters.cpp`) owns the identities and the portfolio
-aggregation. What is left for here is what only a binding can get wrong: a field
-that was never exposed, one exposed under a name that does not match the C++
-one, and the per-generator rows, which are a bound `std::vector` of a bound
-struct and so the part most likely to come back as an opaque handle.
+`tests/test_counters.cpp` owns the identities and the portfolio aggregation;
+this pins what only a binding gets wrong: a field missing or misnamed, and the
+per-generator rows (a bound `std::vector` of a bound struct) as an opaque handle.
 
-Every run is iteration-budgeted with `time_limit = 0.0`, which is also the
-regime in which `inner_solver_seconds` is deliberately 0.0 -- asserted below, so
-a future change that starts reading a clock there fails a test rather than
-quietly costing the determinism claim.
+Every run is iteration-budgeted with `time_limit = 0.0`, where
+`inner_solver_seconds` is deliberately 0.0 so no clock costs determinism.
 """
 
 import _cbls_core as cbls
@@ -64,12 +60,10 @@ def _config() -> "cbls.SearchConfig":
 def _structural_config() -> "cbls.SearchConfig":
     """Every batch structural, so the assertions below need no luck.
 
-    `batch_iterations` is not bound, so the default 1000 GLS iterations per batch
-    would give a 5000-iteration run about five batches and a 0.33 structural
-    probability could take none of them. Forcing the probability to 1.0 instead
-    makes the batch count the budget (a structural batch charges no GLS
-    iteration, so `max_iterations` binds on batches -- see
-    `budget_exhausted()`), which is both deterministic and quick.
+    `batch_iterations` is not bound, so at the default 1000 per batch a
+    5000-iteration run has about five batches and a 0.33 structural probability
+    could take none. At 1.0, `max_iterations` binds on batches (a structural
+    batch charges no GLS iteration; see `budget_exhausted()`).
     """
     config = cbls.SearchConfig()
     config.max_iterations = 300
