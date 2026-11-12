@@ -18,10 +18,7 @@
 //
 // It lives under .githooks/ so that neither an ordinary build (the CMake target
 // naming it is EXCLUDE_FROM_ALL; it exists to put this file's compile command
-// in compile_commands.json) nor the tree sweep in .clang-tidy ever sees it. The
-// pre-push hook drops .githooks/ from the files it lints for the same reason --
-// and alone compiles it INTO the gated build, as the positive control for its
-// compiler-warning scan (see cbls_tidy_probe in CMakeLists.txt).
+// in compile_commands.json) nor the tree sweep in .clang-tidy ever sees it.
 // Do not "fix" the findings here: the probe passes by being reported.
 
 namespace cbls_tidy_probe {
