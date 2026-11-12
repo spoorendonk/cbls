@@ -675,10 +675,10 @@ TEST_CASE("an iteration-only portfolio returns instead of restarting forever", "
 // ---------------------------------------------------------------------------
 
 TEST_CASE("adjacent base seeds do not share worker streams", "[parallel][seed]") {
-    // A `base + worker + restart * n_threads` scheme is a bijection within one
-    // run, but at 12 workers (the default count) `--seed 42` and `--seed 43`
-    // would share 11 of their 12 base streams, so bumping the seed would barely
-    // change the portfolio.
+    // The summed `base + worker + restart * n_threads` scheme #135 replaced
+    // was a bijection within one run, but at 12 workers `--seed 42` and
+    // `--seed 43` shared 11 of their 12 base streams, so bumping the seed
+    // barely changed the portfolio.
     constexpr int kWorkers = 12;
     std::set<uint64_t> a;
     std::set<uint64_t> b;
@@ -911,8 +911,9 @@ TEST_CASE("drawing an infeasible pool entry is safe", "[parallel][coord]") {
     // The model has NO feasible point (x, y in [0, 1] cannot sum to 5), which is
     // what makes the plant reachable at all: `share()` is only called from
     // `record_best`, so a run that never becomes feasible never submits, and the
-    // plant is never outranked (on a solvable model the worker's first feasible
-    // submit would evict it before any draw). `submit` sorts feasible-first, so
+    // plant is never outranked (on a solvable model feasible submits outrank
+    // it, and with a capacity-1 pool the first one evicted it before any
+    // draw). `submit` sorts feasible-first, so
     // an infeasible entry sorts LAST and the better-half draw can only ever
     // reach it when the pool is entirely infeasible.
     //

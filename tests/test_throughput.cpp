@@ -50,7 +50,8 @@
 //
 // Hand-registered in tests/CMakeLists.txt with LABELS "timing;slow" and an
 // explicit TIMEOUT: `timing` makes them a class (`ctest -L timing`), `slow`
-// keeps their three wall-clock seconds out of `ctest -LE slow`.
+// keeps their three wall-clock seconds out of `ctest -LE slow`; pre-push
+// runs everything.
 
 #include "benchmarks/uc-chped/data.h"
 #include "benchmarks/uc-chped/uc_model.h"

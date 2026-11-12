@@ -621,8 +621,9 @@ TEST_CASE("a kick on one large Set is bounded by the deadline, not by the Set",
           "[fj][perturb][structural][deadline]") {
     using FJ = FeasibilityJump;
     Model m;
-    // The shape #115 measured at 2.3 s for a single kick. A Set move also scans
-    // the universe, so its moves are the more expensive of the two.
+    // A universe-20000 Set: #115 measured one perturb(0.1) at 250 ms on this
+    // universe (2269 ms at 50000). A Set move also scans the universe, so its
+    // moves are the more expensive of the two.
     add_set_vars(m, /*num_sets=*/1, /*universe=*/20000, /*min_size=*/5000, /*max_size=*/20000);
     m.close();
     RNG rng(42);
@@ -699,12 +700,13 @@ TEST_CASE("a deadline that expires mid-kick stops it within a stride",
     RNG rng(42);
     GFJConfig cfg;
     cfg.two_phase = false;
-    // Two margins, both wide; the List must outrun a 0.2 s budget, so it was
-    // re-sized at #164, whose positional edits cut a 20 000-element kick to
-    // 0.022 s. Before #164 that kick did NOT finish inside 0.2 s, so the
-    // measured speedup is AT LEAST ~9x (no ~2.3 s figure was measured on this
-    // path: that was #115's 1021 ms for 3000 moves on a 30 000-element List,
-    // extrapolated). Measured after #164 with the wall clock removed, one
+    // Two margins, both wide; the List must outrun a 0.2 s budget, so #164
+    // made it ten times longer: its positional edits cut a 20 000-element kick
+    // to 0.022 s. Before #164 that kick did NOT finish inside 0.2 s (the old
+    // form of this test asserted the deadline cut it short), so the speedup
+    // is AT LEAST ~9x. No ~2.3 s figure was measured on this path: it was
+    // #115's 1021 ms for 3000 moves on a 30 000-element List, scaled to
+    // ~230 us/move x 10 000 moves. Measured after #164 with the wall clock removed, one
     // thread, Release: n = 20 000 / 10 000 moves / 0.022 s; 50 000 / 25 000 /
     // 0.126 s; 100 000 / 50 000 / 0.489 s; 200 000 / 100 000 / 1.95 s. The
     // last is ~10x this 0.2 s budget. In the other direction the budget affords
