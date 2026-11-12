@@ -61,7 +61,7 @@ const std::string kSmallLp =
 //   min   3 x1 + 2 x2 + 4 x3
 //   s.t.  x1 + x2 + x3 >= 2
 //   x_i in {0,1}
-// Optimum: two of three must be 1; {x1, x2} costs 3 + 2 = 5, {x2, x3} 6.
+// Optimum: at least two of three are 1; {x1, x2} costs 3 + 2 = 5, the least.
 const std::string kSmallBinary =
     "NAME          BIN\n"
     "ROWS\n"

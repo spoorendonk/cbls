@@ -10,14 +10,15 @@
 //
 // The `domain_window` / `random_in_domain` cases pin the guard, inert on a
 // finite domain (existing runs keep their draw sequence); the kick cases fail
-// pre-#112. The LNS case discriminates only by requiring an accepted repair: a
-// NaN repair scores +inf in the acceptance key and is always rolled back.
+// pre-#112. The LNS case also requires an accepted repair: a NaN repair
+// scores +inf in the acceptance key and is always rolled back, so finiteness
+// alone could hold by never accepting.
 //
-// Three existing guards absorb a non-finite constraint value
-// (ViolationManager::clamped_node_violation, solve()'s max_real_violation,
-// LNS's state_key; see tests/test_nonfinite_guard.cpp). Float jump candidates
-// still read `var.lb`/`var.ub` directly, so that route to an infinite
-// assignment stays open; the Int one is closed by #114.
+// No NaN detector is added: three existing guards absorb a non-finite
+// constraint value (ViolationManager::clamped_node_violation, solve()'s
+// max_real_violation, LNS's state_key; see tests/test_nonfinite_guard.cpp).
+// Float jump candidates still read `var.lb`/`var.ub` directly, so that route
+// to an infinite assignment stays open; the Int one is closed by #114.
 
 #include "test_helpers.h"
 
@@ -105,10 +106,10 @@ TEST_CASE("domain_window is inert on a finite domain", "[unbounded][randomize]")
         // narrowing it to int_inf_clamp.
         {VarType::Int, -1.0e8, 1.0e8},
         {VarType::Float, -1.0e12, 3.0e11},
-        // Past 2^53: trimming each Int bound here into the int64-nameable range
-        // is not inert, [0, 1e17] -> [0, 2^53-1] and [-1e18, -1e17] -> the
-        // out-of-domain point -2^53 (#114). The trim happens at the cast, in
-        // `int_sample_window`.
+        // Past 2^53. Trimming each Int bound in `domain_window` into the
+        // int64-nameable range is not inert: [0, 1e17] -> [0, 2^53-1], and
+        // [-1e18, -1e17] -> the out-of-domain point -2^53 (#114). The trim
+        // happens at the cast, in `int_sample_window`.
         {VarType::Int, 0.0, 1.0e17},
         {VarType::Int, -1.0e18, -1.0e17},
         {VarType::Int, 1.0e16, 1.0e16 + 5.0},
@@ -376,9 +377,9 @@ TEST_CASE("LNS destroy/repair works on an unbounded model", "[unbounded][lns]") 
 TEST_CASE("ListOrder::Perturb keeps a List's elements, Regenerate need not",
           "[unbounded][randomize][list]") {
     // LNS shuffles a List's current `elements`; the initialisers regenerate the
-    // order from iota. Collapsing both onto Regenerate changes LNS's repair
-    // trajectory on every List model at the same RNG draw count, so only these
-    // pins catch it.
+    // order from iota (#112). Collapsing both onto Regenerate changes LNS's
+    // repair trajectory on every List model at the same RNG draw count, so only
+    // these pins catch it.
     Model m;
     int32_t l = m.list_var(8, "l");
     m.close();

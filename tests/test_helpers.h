@@ -22,9 +22,10 @@ inline int32_t vid(int32_t handle) {
 // A test that keeps a wall clock asserts timing itself (e.g. "SA returns
 // result" checks time_seconds > 0) and is commented as such.
 //
-// The call sites' iteration budgets were calibrated against the wall-clock
-// budgets they replaced. Raise a budget if a quality assertion needs more
-// search; never swap it back for a time limit.
+// The call sites' iteration budgets were measured: each wall-clock budget was
+// converted at its own model's rate (CBLS_TEST_CALIBRATE below), since rates
+// span ~700x. Raise a budget if a quality assertion needs more search; never
+// swap it back for a time limit.
 // ---------------------------------------------------------------------------
 inline cbls::SearchResult solve_deterministic(cbls::Model& model, int64_t max_iterations,
                                               uint64_t seed = 42,

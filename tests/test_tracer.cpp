@@ -3,8 +3,9 @@
 //
 // A recording tracer sees ORDERED, WELL-FORMED events whose counts agree with
 // the counters the same run reports (the only independent check on an event
-// stream); a null tracer changes NOTHING; a portfolio gives each worker its own
-// tracer and absorbs one that throws.
+// stream); a null tracer changes NOTHING; the base Tracer is a no-op; a single
+// solve propagates a throwing tracer, while a portfolio gives each worker its
+// own tracer and absorbs one that throws.
 //
 // No per-iteration event is tested because there is none: every method fires
 // at batch, kick or inner-solver granularity, by contract.
