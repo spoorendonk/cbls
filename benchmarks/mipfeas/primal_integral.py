@@ -140,11 +140,11 @@ CONFIG_KEYS = (
     "parameters",
 )
 
-#: The engine knobs `cbls_mipfeas` took as flags in #267, at the values every
-#: row before them ran: LNS on at interval 3 (the runner's old constant) and the
-#: engine's defaults for the other three. A key at this value is dropped from
-#: the config cell, so an old row (no key) and a new default row share one cell
-#: and every table scored before #267 stays byte-identical.
+#: The engine knobs `cbls_mipfeas` takes as flags (#267), at the values rows
+#: written before #267 ran: LNS on at interval 3 and the engine's defaults for
+#: the other three. A key at this value is dropped from the config cell, so a row
+#: without the key and a default row share one cell and every table scored
+#: before #267 stays byte-identical.
 TUNABLE_DEFAULTS: dict[str, object] = {
     "lns": True,
     "lns_interval": 3,
@@ -158,26 +158,24 @@ def config_string(result: dict[str, object]) -> str:
     """The `config` cell: every CONFIG_KEYS entry the result carries.
 
     One key is back-filled, the opt-in engine flag (`objective_tie_break`, #218)
-    dropped when off, and #267's tunable knobs (TUNABLE_DEFAULTS) dropped at their defaults;
-    see their lines.
-    `share_objective_bound` (#179) did not exist before
-    the shared bound, and at one thread it names no behaviour at all -- a single
-    `solve()` has no pool -- so a pre-#179 single-threaded row IS the default
-    configuration and is read as such. A pre-#179 PORTFOLIO row is left without
-    it, so the uniformity check keeps refusing to average it with post-#179
-    portfolio rows: which arm it matches is exactly what the key records.
+    dropped when off, and #267's tunable knobs (TUNABLE_DEFAULTS) dropped at their
+    defaults. `share_objective_bound` (#179) names no behaviour at one thread -- a
+    single `solve()` has no pool -- so a single-threaded row without it IS the
+    default configuration and is read as such. A PORTFOLIO row without it is left
+    so, and the uniformity check keeps refusing to average it with portfolio rows
+    that carry it: which arm it matches is exactly what the key records.
     """
     cells = dict(result)
     if "share_objective_bound" not in cells and cells.get("threads") == 1:
         cells["share_objective_bound"] = True
     # The objective tie-break (#218) the other way round: its off arm is what
-    # every row from before the flag ran, so off is DROPPED rather than
-    # back-filled. Off rows old and new then share one cell, which also keeps
-    # every table scored before the flag byte-identical, and only an on-arm row
-    # carries the key. The tie-break has been on by default since #226, so a new default row carries
-    # `objective_tie_break=True` and does not match a table scored before it --
-    # which is the point: that table was measured on the old default and must
-    # be regenerated, not averaged in.
+    # every row written before the flag ran, so off is DROPPED rather than
+    # back-filled. Off rows then share one cell, which also keeps every table
+    # scored before the flag byte-identical, and only an on-arm row carries the
+    # key. The tie-break is on by default (#226), so a default row carries
+    # `objective_tie_break=True` and does not match a table scored before #226:
+    # that table was measured on the old default and must be regenerated, not
+    # averaged in.
     if cells.get("objective_tie_break") is False:
         del cells["objective_tie_break"]
     # #267's tunable knobs, the same rule at their pre-#267 values. The type is
@@ -214,8 +212,8 @@ class Verification(NamedTuple):
     #: earned it. The row check is `1e-6 + 1e-9 * row_scale`, where `row_scale` is
     #: `max(|lower|, |upper|, sum|a_ij x_j|)` -- unbounded, so "the solution
     #: satisfies every row to tolerance" is only as strong as the largest
-    #: tolerance that was granted. Published rather than argued about. Absent from
-    #: a verdict written before the verifier recorded it.
+    #: tolerance that was granted. Published rather than argued about. None when
+    #: the verdict does not record it.
     max_row_tolerance: float | None = None
     loosest_row: str = ""
 
@@ -292,16 +290,14 @@ class Scored(NamedTuple):
     #: True when a proven optimum was beaten — a bug signal, not an achievement.
     below_reference: bool
     primal_integral: float
-    #: The solve call only -- what `wall_seconds` has always meant in a result
-    #: file, renamed here because the table now carries the other half beside it.
-    #: It can exceed the budget: search initialisation is not bounded by the
-    #: deadline, so a large model's first batch runs to completion whatever the
-    #: clock says. That is a different effect from `setup_seconds` below and the
-    #: two are separate columns so a reader can tell them apart (issue #139).
+    #: The solve call only -- a result file's `wall_seconds`. It can exceed the
+    #: budget: search initialisation is not bounded by the deadline, so a large
+    #: model's first batch runs to completion whatever the clock says. That is a
+    #: different effect from `setup_seconds` below and the two are separate
+    #: columns so a reader can tell them apart (issue #139).
     solve_seconds: float | None
     #: Instance read + model build + bound propagation: everything outside the
-    #: solve bracket, which no table this harness has published had ever measured. Blank
-    #: for a results directory written before the runners recorded it.
+    #: solve bracket. Blank when the result file does not record it.
     setup_seconds: float | None
     n_vars: int | None
     n_cons: int | None
@@ -347,9 +343,8 @@ class Scored(NamedTuple):
     #: it instead of arguing about it after the fact.
     n_free_cons: int | None
     #: Whatever the job recorded about why it did not search: the driver's kill
-    #: message, the reader's exception, the adapter's rejection. Recorded in every
-    #: result since the driver was written and published by nothing until now, so
-    #: a dead job showed up in the table as a gap.
+    #: message, the reader's exception, the adapter's rejection. Published so a
+    #: dead job does not show up in the table as a mere gap.
     message: str
     #: The independent verdict on this row's solution: `pass`, `fail`, `error`,
     #: or `unverified`. Only `pass` lets the objective above be a number.
@@ -373,8 +368,8 @@ class Scored(NamedTuple):
     checker_n_cons: int | None
     #: The loosest row tolerance this row's verdict granted, and the row that
     #: earned it. The row tolerance grows with the row's scale, so a pass says
-    #: less on a model with large coefficients than on a small one. Blank for a
-    #: verdict written before the verifier recorded it.
+    #: less on a model with large coefficients than on a small one. Blank when
+    #: the verdict does not record it.
     verification_row_tolerance: float | None
     verification_loosest_row: str
     #: The threads the solve actually ran (#285): CBLS's `threads`, CP-SAT's
@@ -383,7 +378,7 @@ class Scored(NamedTuple):
     threads_used: int | None = None
     #: What the driver measured from outside the solver (`driver_measured`):
     #: the whole job's wall and CPU seconds, and their ratio, the CPU share the
-    #: row actually got. None for a row written before the driver measured them.
+    #: row actually got. None when the row does not record them.
     driver_wall_seconds: float | None = None
     driver_cpu_seconds: float | None = None
     cpu_wall_ratio: float | None = None
@@ -586,9 +581,10 @@ def score_instance(
     raw_objective = result.get("objective")
     objective = float(raw_objective) if isinstance(raw_objective, (int, float)) else None
     # Kept across the withholding below. `below_reference` is a defect flag, not a
-    # published number, and 232 of the 233 references are proven optima -- dropping
-    # it for a row the checker rejected would disable the cheapest gate this
-    # benchmark has on precisely the rows most likely to trip it.
+    # published number, and nearly every reference is a proven optimum
+    # (BELOW_REFERENCE_TOLERANCE) -- dropping it for a row the checker rejected
+    # would disable the cheapest gate this benchmark has on precisely the rows
+    # most likely to trip it.
     reported_objective = objective
 
     verification = read_verification(results_dir, engine, instance)
@@ -617,7 +613,7 @@ def score_instance(
     wall = result.get("wall_seconds")
     # `setup_seconds` where the runner wrote it; otherwise its two halves, so a
     # result that recorded only the read (a build that threw) still reports what
-    # it measured. Absent entirely in a directory written before #139.
+    # it measured. None when the result records neither (#139).
     setup = result.get("setup_seconds")
     if not isinstance(setup, (int, float)):
         halves = [result.get(k) for k in ("read_seconds", "build_seconds")]
@@ -841,8 +837,7 @@ PARITY_NO_SOLUTION = "no_solution"
 #: A row that cannot answer the parity question either way: it never ran, it was
 #: killed, its model was rejected, or its solution was withheld. Counting one of
 #: these as "did not reach feasibility" would charge a harness failure to the
-#: search, which is the same mistake `not_run` has always been kept out of the
-#: aggregates to avoid.
+#: search, the mistake `not_run` is kept out of the aggregates to avoid.
 PARITY_EXCLUDED = "excluded"
 
 #: Statuses that mean the engine searched. Anything else is a job that did not
@@ -1035,12 +1030,9 @@ def _constraint_disagreement(
         # engines happen to differ by exactly the free-row count -- which is the
         # disagreement this cross-check exists to catch.
         #
-        # An ABSENT checker is not agreement. A verdict exists only for a row that
-        # reported a solution, so on every instance where NEITHER engine found one
-        # there is no third reading -- and `free_rows` itself is written only by
-        # cpsat_solve.py, so without SCIP the excuse is certified by the reader
-        # under test alone. Those instances are exactly where a translation defect
-        # is the likeliest explanation for the double failure, so absence flags.
+        # An ABSENT checker is not agreement, so absence flags (SHAPE_RULE says
+        # why): `free_rows` is written only by cpsat_solve.py, so without SCIP the
+        # excuse is certified by the reader under test alone.
         checker_agrees = checker is not None and checker == mine
         if explained and checker_agrees:
             explanation = f"{second} keeps {free} free row(s) the CBLS adapter drops"
@@ -1101,8 +1093,8 @@ def cross_check_shapes(
     """Compare what each engine -- and the checker -- read from the same file.
 
     "Both engines solved the same program" is this benchmark's entire admission
-    ground, and until now each side merely *disclosed* its own shape. A real
-    disagreement and a benign one looked identical.
+    ground. Comparing the shapes, rather than letting each side merely *disclose*
+    its own, is what tells a real disagreement from a benign one.
     """
     if len(engines) != 2:
         raise ValueError(f"the cross-check compares exactly two engines, got {engines}")
@@ -1218,9 +1210,9 @@ class JobFailure(NamedTuple):
 def job_failures(rows: list[Scored]) -> list[JobFailure]:
     """Every reason a row is missing or withheld, from the records that hold them.
 
-    The driver has always written a message on the job it killed, and the verifier
-    on the solution it refused. Neither reached the table, so a dead job appeared
-    there as a blank and the reason lived on only in a results directory nobody
+    The driver writes a message on the job it kills, and the verifier on the
+    solution it refuses. Publishing them keeps a dead job from appearing in the
+    table as a blank whose reason lives only in a results directory nobody
     publishes.
     """
     failures: list[JobFailure] = []
@@ -1232,8 +1224,8 @@ def job_failures(rows: list[Scored]) -> list[JobFailure]:
                     engine=row.engine,
                     kind=row.status,
                     # `solver_status` before giving up. The baseline sets a
-                    # message on these paths now (#137), but a results directory
-                    # written before that does not, and that is the CP-SAT defect
+                    # message on these paths (#137), but an older results
+                    # directory may not, and that is the CP-SAT defect
                     # class most likely to reach a published table -- "no message
                     # recorded" preserves nothing for the failure worth preserving.
                     reason=row.message or row.solver_status or "no message recorded",
@@ -1265,15 +1257,15 @@ class TimingSummary(NamedTuple):
     """Setup and solve time for one engine, kept apart on purpose.
 
     Two different effects hide behind a single wall-clock column. `setup` is work
-    the old column never bracketed at all -- reading the instance, building the
-    model, propagating bounds. `overrun` is solve time past the budget, which
+    outside the solve bracket -- reading the instance, building the model,
+    propagating bounds. `overrun` is solve time past the budget, which
     happens because search initialisation is not bounded by the deadline. A reader
     has to be able to tell them apart, so they are never summed here.
     """
 
     engine: str
-    #: Rows whose result recorded a setup time. Zero for a results directory
-    #: written before the runners measured it -- in which case no magnitude for
+    #: Rows whose result recorded a setup time. Zero when no result records one
+    #: -- in which case no magnitude for
     #: setup may be stated at all, and the report says so instead of guessing.
     setup_measured: int
     searched: int
@@ -1528,9 +1520,9 @@ def _shape_section(
 ) -> list[str]:
     """Section 4, with its own denominator.
 
-    Section 5 states the set its counts are over; this one did not, and a reader
-    cannot tell "every instance agreed" from "one instance agreed and 232 were
-    never compared" without it.
+    Like section 5 it states the set its counts are over, because without it a
+    reader cannot tell "every instance agreed" from "one instance agreed and 232
+    were never compared".
     """
     checked = cross_checked_instances(rows, engines)
     roster = {row.instance for row in rows}
@@ -1559,8 +1551,8 @@ def _shape_section(
             f"Every one of the {len(checked)} cross-checked instance(s) reads the same shape "
             "from every reader.",
         ]
-    # Without this the sentence above is printed over zero comparisons, which is
-    # how a run where every job was killed asserts that every instance agreed.
+    # Zero comparisons get their own sentence: "every one agreed" over none is
+    # how a run where every job was killed would assert that every instance agreed.
     return [*out, "No instance could be cross-checked: no pair of rows carried both shapes."]
 
 
@@ -1611,9 +1603,9 @@ def _format_memory(kib: object) -> str:
     """Total memory, as GiB.
 
     `float` as well as `int`, because a record that round-tripped through JSON in
-    anything but this driver can carry `16777216.0` -- which the int-only test
-    reported as "not recorded", discarding a number the run did measure. `bool` is
-    excluded explicitly: it is an `int` in Python, and `True` rendered "0.0 GiB".
+    anything but this driver can carry `16777216.0`, a number the run did measure.
+    `bool` is excluded explicitly: it is an `int` in Python, and `True` would
+    render "0.0 GiB".
     """
     if isinstance(kib, bool) or not isinstance(kib, (int, float)):
         return "not recorded"
@@ -1628,10 +1620,9 @@ def _format_concurrency(record: dict[str, object]) -> str:
     cap = _record_field(record, "concurrency", "mem_limit_gb")
     if jobs is None and large is None and workers is None and cap is None:
         return "not recorded"
-    # Per field, not all-or-nothing. The previous guard only fired when all three
-    # were absent, so a partial record printed a literal `None` into the published
-    # table for the one field criterion 4 names -- and a record carrying only the
-    # memory cap reported "not recorded", discarding the cap it did record.
+    # Per field, not all-or-nothing: a partial record must not print a literal
+    # `None` into the published table for the one field criterion 4 names, and a
+    # record carrying only the memory cap must not discard it as "not recorded".
     # 0 is CP-SAT at its defaults (#284): its own worker count, per row.
     cpsat = (
         "CP-SAT at its defaults (workers per row)"
@@ -1721,9 +1712,9 @@ def run_record_section(record: dict[str, object] | None, run_count: int) -> list
         # anecdote, and it belongs in the artifact rather than in lost scrollback.
         rows.append(["preconditions", "**NOT CHECKED** (--skip-preconditions): not publishable"])
     elif checked is None:
-        # Three states, not two. `is False` alone fails OPEN on an absent key: a
-        # record written by an older driver, or by anything else, rendered exactly
-        # like a properly-checked run. Absence is not a passing check.
+        # Three states, not two. `is False` alone would fail OPEN on an absent key:
+        # a record written by an older driver, or by anything else, would render
+        # exactly like a properly-checked run. Absence is not a passing check.
         rows.append(["preconditions", "not recorded -- this record does not say either way"])
     out += _md_table(["field", "value"], rows)
     out.append("")
@@ -2104,11 +2095,10 @@ def _cpu_line(rows: list[Scored]) -> str:
     """Per-solve CPU, as the rows themselves record it.
 
     Read back off the rows for the same reason `_tolerance_line` is: a table has
-    to state what its OWN run did. This used to be the literal "both engines
-    here get 1", which stopped being true the moment the runner learned
-    `--threads` -- and the sentence sits in the artifact that travels, next to
-    the claim that these numbers are not comparable to a published MIPfeas
-    entry. `check_uniform_configuration` has already refused a mixture, so one
+    to state what its OWN run did, since the runner takes `--threads`, and the
+    sentence sits in the artifact that travels, next to the claim that these
+    numbers are not comparable to a published MIPfeas entry.
+    `check_uniform_configuration` has already refused a mixture, so one
     value per engine is all there can be.
     """
 
@@ -2214,8 +2204,8 @@ def shape_notes_by_instance(
     stated rule accounts for the difference, `FLAGGED:<kind>` where it does not,
     and `not_compared` where no comparison was possible -- a killed job, a job
     that never ran, or a runner that died before publishing its shape. That last
-    case used to read `agree`, which asserted the benchmark's admission ground
-    from an instance nobody had looked at.
+    case must not read `agree`, which would assert the benchmark's admission
+    ground from an instance nobody had looked at.
     """
     checked = cross_checked_instances(rows, engines)
     notes: dict[str, str] = {
@@ -2230,9 +2220,9 @@ def shape_notes_by_instance(
 def _failure_reason(row: Scored) -> str:
     """The one-cell reason this row is not an ordinary search result.
 
-    Empty for a row that searched and was accepted. The driver and the verifier
-    have always recorded these; nothing published them, so a dead job reached the
-    table as a blank (issue #139).
+    Empty for a row that searched and was accepted. Published from what the
+    driver and the verifier record, so a dead job does not reach the table as a
+    blank (issue #139).
     """
     if row.status not in SEARCHED_STATUSES:
         return f"{row.status}: {row.message}" if row.message else row.status
@@ -2451,9 +2441,9 @@ def write_comparison(
             ),
         ]
     )
-    # Temp-then-rename, like the C++ runners: `open(path, "w")` truncates before
-    # a single row is written, so a job killed mid-write leaves a header and
-    # nothing else where a table used to be, at exit 0.
+    # Temp-then-rename, like the C++ runners: `open(path, "w")` would truncate
+    # before a single row is written, so a job killed mid-write would leave a
+    # header and nothing else in place of the previous table, at exit 0.
     atomic_write(path, "\n".join(header) + "\n" + table)
 
 
@@ -2788,10 +2778,9 @@ def main() -> int:
         Path(args.report) if args.report else out_path.with_name(f"{out_path.stem}_report.md")
     )
     run_record, run_count = read_run_record(results_dir)
-    # Temp-then-rename, like the table above. The report is a published artifact
-    # and is written AFTER the table, so a kill between the two would otherwise
-    # leave a fresh table beside a torn or empty report -- the same failure, one
-    # function later.
+    # Temp-then-rename, like the table above: the report is a published artifact
+    # written AFTER the table, so a kill between the two would otherwise leave a
+    # fresh table beside a torn or empty report.
     atomic_write(
         report_path,
         render_report(

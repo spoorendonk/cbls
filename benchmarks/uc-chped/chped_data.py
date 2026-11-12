@@ -8,7 +8,6 @@ Cost function: F_i(P_i) = a_i + b_i*P_i + c_i*P_i^2 + |d_i*sin(e_i*(P_min_i - P_
 
 # 13-unit instance (Sinha et al. 2003)
 # Source: al-roomi.org/economic-dispatch/13-units-system
-# Cost: F(P) = a + b*P + c*P^2 + |d*sin(e*(Pmin - P))|
 # Units 1-3: large thermal, 4-9: medium, 10-13: small
 CHPED_13UNIT = {
     "name": "13-unit",
@@ -99,7 +98,6 @@ CHPED_13UNIT = {
 
 # 40-unit instance (Taipower system)
 # Source: al-roomi.org/economic-dispatch/40-units-system
-# Cost: F(P) = a + b*P + c*P^2 + |d*sin(e*(Pmin - P))|
 CHPED_40UNIT = {
     "name": "40-unit",
     "n_units": 40,
@@ -356,11 +354,10 @@ CHPED_40UNIT = {
         25.0,
         242.0,
     ],
-    # Units 19-20 are 550 MW (#193; this table carried 500 until then). Source:
-    # Pedroso's GPL `ucp_data.py`, http://www.dcc.fc.up.pt/~jpp/code/valve/
-    # (sha256 3d5b8f07..., pinned in benchmarks/uc-chped/FIDELITY.md section 7.1),
-    # whose `eld40()` and `ucp40()` both give 550; the authors' 10500 MW optimum
-    # (121412.53, RESULTS/eld40-10500.txt) dispatches both at 511.28 MW.
+    # Units 19-20 are 550 MW (#193). Source: Pedroso's GPL `ucp_data.py`,
+    # http://www.dcc.fc.up.pt/~jpp/code/valve/ (sha256 3d5b8f07..., pinned in
+    # benchmarks/uc-chped/FIDELITY.md section 7.1), whose `eld40()` and `ucp40()`
+    # both give 550.
     "P_max": [
         114.0,
         114.0,
@@ -408,7 +405,7 @@ CHPED_40UNIT = {
     # 121412.53 is the proven optimum of the authors' instance (their
     # RESULTS/eld40-10500.txt closes LB/UB to 0.003 on data field-identical to
     # this table, demand as an EQUALITY); its dispatch puts units 19-20 at
-    # 511.28 MW, feasible here since #193. Our demand row is `>=`, a relaxation
+    # 511.28 MW, within this table's P_max (#193). Our demand row is `>=`, a relaxation
     # not shown to share that optimum, so this is the reference value rounded
     # down, not a certified bound.
     "known_optimum": 121412.0,

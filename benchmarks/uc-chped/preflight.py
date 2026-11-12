@@ -4,9 +4,8 @@ The runner's own guards police what a run may WRITE; they cannot see what it was
 built from. `--commit` is a free-form string, so a SHA passed from a modified
 tree names code that did not run, and a Debug, sanitizer or frame-pointer build
 measures a different engine at a wall-clock budget. This checks exactly those,
-with the checks `benchmarks/common/provenance.py` already holds for the other
-drivers, and nothing else -- no staging, resume or assembly (the issue's scope
-note).
+with the shared checks in `benchmarks/common/provenance.py`, and nothing else:
+no staging, resume or assembly.
 
 On success it prints the commit SHA, so the `--commit` the runner records comes
 from the same check that found the tree clean; the documented command in

@@ -245,14 +245,12 @@ def solve_uc_scip(
     - Binary y[u,t] for unit commitment
     - Continuous p[u,t] for dispatch
     - Piecewise-linear approximation of valve-point cost (SOS2-like via
-      incremental formulation with n_pwl_segments breakpoints)
+      incremental formulation with n_pwl_segments segments)
     - Min up/down time constraints
     - Hot/cold startup cost modeled via auxiliary variables
     - Demand + spinning reserve constraints
 
-    Built in five steps rather than one function, along the model's own
-    boundaries: variables, balance, min up/down, startup cost, piecewise cost.
-    The arithmetic is unchanged -- this solver's numbers are published in
+    This solver's numbers are published in
     `benchmarks/instances/uc-chped/comparison.csv`.
     """
     from pyscipopt import Model, quicksum
