@@ -122,7 +122,7 @@ TEST_CASE("bound propagation's margin covers cancellation in a large activity") 
     // recursive sum over activities of ~1e8 rounds, and the computed slack is
     // 2.99999997. A margin scaled to the derived bound (max(1e-9, 1e-12 * 3))
     // could not cover that, and floor() cut x to 2 -- off the feasible point
-    // x = 3 (#211).
+    // x = 3 (#211). The coefficients come from a search for that case.
     const std::vector<double> a{-21277352.036, 90497762.657, 12689081.523,
                                 54983421.887,  8443173.837,  -57685250.429};
     const double b = 87650840.43900001;

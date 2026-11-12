@@ -348,7 +348,8 @@ TEST_CASE("a div partial that overflows is folded to 0", "[dag][domain][ad]") {
     // f = n / max(w, z) at n = 1e300, w = 1e-5, z = -1. The quotient is a finite
     // 1e305, but d(n/d)/dd = -n/d^2 = -1e310 overflows to -inf. That infinite
     // adjoint would reach the Max and make w's partial -inf. (The zero edge
-    // into the unselected z would read -inf * 0 = NaN; #260 skips zero edges.)
+    // into the unselected z would read -inf * 0 = NaN; #260 skips zero edges,
+    // and Div's fold keeps the adjoint finite here regardless.)
     Model m;
     const int32_t n = m.float_var(-1e300, 1e300, "n");
     const int32_t w = m.float_var(-1, 1, "w");

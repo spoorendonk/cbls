@@ -1089,8 +1089,8 @@ TEST_CASE("FJ reaches the auxiliary-Int reference's optimum through the breakpoi
 }
 
 // ---------------------------------------------------------------------------
-// Breakpoint slopes through NaN, repeated children and nonlinear ops; table
-// representatives (#186)
+// FJ breakpoints past a NaN midpoint, a repeated child, a nonlinear op and an
+// unselected overflow; element index representatives; a loader refusal (#186)
 // ---------------------------------------------------------------------------
 
 TEST_CASE("FJ breakpoint candidates survive a free Float's NaN box midpoint", "[fj][rounding]") {
