@@ -160,7 +160,8 @@ unpushed commits; a fresh one again for round two), at most two rounds, fix
 between them → record the receipt on a clean tree, push, close. A real
 finding left after round two, or out of scope, becomes its own issue. File
 only what has a concrete failure scenario or a missing acceptance
-criterion; fix or drop nits. Agent-team and parallel runs: `docs/development.md`; no subagent returns unreviewed work and no
+criterion; fix or drop nits. Agent-team and parallel runs:
+`docs/development.md`; no subagent returns unreviewed work and no
 orchestrator merges it (`docs/git-hooks.md`, **Agent Self-Review**). If `wcp`
 is not on PATH, say so; don't install it unasked.
 
@@ -218,7 +219,7 @@ above it and add `NOLINTNEXTLINE(readability-function-cognitive-complexity)`.
 Builds, ctest, clang-tidy and pushes run under the machine lock
 (`xk lock -- CMD`) with at most 4 jobs (group rules). The fences below are
 what pre-push runs; `$(nproc)` counts the CPUs the push inherits. Only on a
-host that does not pin pushes to 4 CPUs (`wcp build` does), set
+host that does not pin pushes to at most 4 CPUs (`wcp build` does), set
 `git config hooks.localCiCpus 0-3` (`docs/git-hooks.md`). By hand:
 `xk lock -- taskset -c 0-3 sh -c '…'`.
 Why they look this way: `docs/development.md`.
