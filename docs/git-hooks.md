@@ -32,7 +32,7 @@ The three hooks are wcp's (see **wcp's files in this repository**); `gate-lib.sh
   exemptions. That grep prints **six** lines, not five: one is `mps_reader.cpp`
   naming the directive in prose in a comment, not applying it. Count the
   directives, not the matches. Four are `readability-function-cognitive-complexity`: on
-  `src/dag.cpp`'s two 35-case `NodeOp` dispatch tables, where the score counts a
+  `src/dag.cpp`'s two `NodeOp` dispatch tables (a case per op), where the score counts a
   table a human reads as one unit and any split would have to stay inlinable on
   the delta-evaluation and reverse-mode-AD hot paths; and on the two
   `src/io/mps_reader.cpp` functions that the vendored port-the-diff-upstream

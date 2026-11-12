@@ -18,7 +18,7 @@ over an expression DAG. Generalised Feasibility Jump with GLS weights drives
 feasibility, the objective is folded in as `obj <= bound`, an inner solver
 polishes floats, perturbation/LNS diversify. C++17 core, nanobind bindings.
 
-This file holds what every session needs. The rest is read on demand:
+What every session needs; the rest is read on demand:
 
 | Read | When |
 |---|---|
@@ -39,9 +39,8 @@ Be terse. No preamble. No filler.
 
 ## Code Navigation
 
-LSP (`goToDefinition`, `hover`, `documentSymbol`) for symbol questions; Grep
-with a small `head_limit` and `-n` for strings; `Read` with `offset`/`limit`
-for the slice. Bound the output, whichever tool produces it.
+LSP for symbol questions; Grep with a small `head_limit` and `-n` for
+strings; `Read` with `offset`/`limit` for the slice. Bound the output, whichever tool produces it.
 
 ## C++
 
@@ -122,10 +121,10 @@ target (library, CLI, examples, benchmark runners) in the root
 checks, never rewrites: ruff, mypy, clang-format over the tree; runs no tests.
 `commit-msg`: Conventional Commits, subject ≤72, no `fixup!`/`squash!`.
 `pre-push`: no merge commits on main, review receipt required, then the
-`clean`/`build`/`test` fences below as local CI. Local CI is the only gate: the
-repo has no GitHub Actions workflow. Internals: `docs/git-hooks.md`.
+`clean`/`build`/`test` fences below as local CI, the only gate (no GitHub
+Actions). Internals: `docs/git-hooks.md`.
 
-**Checked by hand before every push**, because no hook enforces it now: zero
+**Checked by hand before every push**, as no hook enforces it: zero
 clang-tidy warnings (`.venv/bin/clang-tidy -p build <changed files>`) and zero
 first-party compiler warnings in the build log.
 
@@ -157,17 +156,17 @@ issue comment when unclear; re-plan if a later issue's plan changes it) →
 implement → gate (the full fences, even for a trivial-looking change) and
 commit → **one cold reviewer** (a fresh subagent running `/code-review` on
 unpushed commits; a fresh one again for round two), at most two rounds, fix
-between them → record the receipt on a clean tree, push, close. A real finding left after round two, or out of
-scope, becomes its own issue. File only what has a concrete failure scenario
+between them → record the receipt on a clean tree, push, close. A real
+finding left after round two, or out of scope, becomes its own issue. File only what has a concrete failure scenario
 or a missing acceptance criterion; fix or drop nits. Agent-team and parallel
 runs: `docs/development.md`; no subagent returns unreviewed work and no
 orchestrator merges it (`docs/git-hooks.md`, **Agent Self-Review**). If `wcp`
 is not on PATH, say so; don't install it unasked.
 
-A hygiene goal (`wcp hygiene`) is a task worked from its note: findings are
-edits to issues or new `tech-debt` issues, nothing is fixed in the round, one
-cold reviewer checks them (at most two rounds), and it ends with the summary
-comment the note specifies, whose first line is the marker wcp looks for.
+A hygiene goal (`wcp hygiene`) is worked from its note: findings become issue
+edits or new `tech-debt` issues, nothing is fixed in the round, one cold
+reviewer checks them (at most two rounds), and it ends with the note's summary
+comment, whose first line is wcp's marker.
 
 ## Self-Review
 
@@ -186,7 +185,7 @@ again. Meaning and limits: `docs/git-hooks.md`.
 ## Plan Adherence
 
 Follow the agreed plan. To change it, stop and say so; never diverge
-silently, and say out loud when an approach is not working. No TODOs or stubs
+silently; say when an approach is not working. No TODOs or stubs
 unless asked.
 
 ## Reference Correctness
@@ -204,7 +203,7 @@ above it and add `NOLINTNEXTLINE(readability-function-cognitive-complexity)`.
 
 ## Common Mistakes
 
-- Don't invent APIs, flags or methods; verify they exist. Check current docs.
+- Don't invent APIs, flags or methods; verify they exist.
 - Don't suppress type errors or lint; fix the root cause.
 - Comments state the contract and why in one or two lines, with the issue
   number for history; no incident retelling, no story repeated across files
@@ -217,11 +216,9 @@ above it and add `NOLINTNEXTLINE(readability-function-cognitive-complexity)`.
 
 Builds, ctest, clang-tidy and pushes run under the machine lock
 (`xk lock -- CMD`) with at most 4 jobs (group rules). The fences below are
-what pre-push runs; their `$(nproc)` counts the CPUs the push inherits, as the
-host sets them (`wcp build`'s CPU pinning, `taskset`). A clone needs no setup
-where the host pins pushes to at most 4 CPUs; on one that does not, set the
-optional override `git config hooks.localCiCpus 0-3`, which pins the hook's
-local CI itself. By hand, run them as
+what pre-push runs, at `$(nproc)` of the CPUs the push inherits; on a host
+that does not pin pushes to at most 4, set `git config hooks.localCiCpus 0-3`
+(`docs/git-hooks.md`). By hand, run them as
 `xk lock -- taskset -c 0-3 sh -c '…'`.
 Why they look this way: `docs/development.md`.
 
@@ -240,15 +237,15 @@ ctest --test-dir build --output-on-failure -j$(nproc) && (py="$PWD/.venv/bin/pyt
 - No `-DCMAKE_BUILD_TYPE`: `CMakeLists.txt` defaults to Release. An existing
   `build/` keeps its first build type and `CBLS_SANITIZE`/`CBLS_PROFILE`.
 - A full clone makes its own venv, never a symlink to another checkout's:
-  `uv sync --extra dev --extra benchmarks` (the `benchmarks` extra is required
-  by the test fence). Only a subagent worktree under this checkout symlinks
+  `uv sync --extra dev --extra benchmarks` (the test fence needs
+  `benchmarks`). Only a subagent worktree under this checkout symlinks
   the checkout's `.venv`, and removes it after.
 - Single tests: `ctest --test-dir build -R "name_substring"`;
   `.venv/bin/pytest tests/python/test_foo.py::test_bar -x`.
 
 ## Measuring and testing engine changes
 
-Full rules: `docs/measuring.md`. The short list:
+Full rules: `docs/measuring.md`.
 
 - **A regression test must be shown red before the fix**: revert only the
   production change in a throwaway copy and watch it fail.
@@ -284,10 +281,9 @@ Detail: `docs/benchmarks/README.md`. Comparative benchmarks, worked top down:
   or non-convex continuous). Nothing outside the table is comparative.
 - Worked examples per structured type, not comparative: `Set` → `setcover`
   (measured, negative; don't build another `Set` benchmark), `List` → CVRP
-  (epic #182, closed; unpublished until #204).
-- **Never write that `List` is validated on a published formulation**: there
-  is no `List` evidence until #204. List engine work is filed against measured
-  CVRP data; don't reopen #183-#185, #187, #189.
+  (epic #182). **Never write that `List` is validated on a published
+  formulation**: no `List` evidence until #204. List engine work is filed
+  against measured CVRP data; don't reopen #183-#185, #187, #189.
 - Generic features go in `include/cbls/` and `src/`, never benchmark hacks.
 
 ## Issue Tracking
