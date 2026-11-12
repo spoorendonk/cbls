@@ -373,7 +373,8 @@ and both **pass when run alone** (0.39s and 0.59s). There is no AddressSanitizer
 or UndefinedBehaviorSanitizer report in either: they are scalar-only models on
 short wall-clock budgets (0.3s, 0.5s) that the sanitizer build's slowdown pushes
 over once the cores are contended. Run them singly, or with a smaller `-j`,
-before reading either as a finding.
+before reading either as a finding. The first one's likelier cause was a 5 ms
+clock tolerance, loosened in #399; not re-checked under ASan since.
 
 The 6 `[slow]` CHPED/UC-CHPED solves were **not** run under ASan — they are the
 suite's heaviest, and ASan multiplies their footprint. So the claim is "the fast
