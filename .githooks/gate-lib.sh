@@ -1,12 +1,11 @@
 #!/bin/bash
-# Shared, pure text filters for the compiler-warning gates (issue #171).
+# Pure text filters over compile_commands.json for the clang-tidy gate probe
+# (issue #171).
 #
 # Sourced by tidy-probe.sh, and exercised on synthetic input by
-# .githooks/tests/gate-lib-test.sh (ctest `gate_lib_shell_test`). The pre-wcp
-# pre-push sourced them too; today's hooks do not (docs/git-hooks.md), and the
-# push-time filters below wait for a lint fence to use them again. They live
-# apart from the hooks precisely so they can be tested: each decides what a
-# gate sees, and a filter that silently matches nothing makes the gate pass.
+# .githooks/tests/gate-lib-test.sh (ctest `gate_lib_shell_test`). They live
+# apart from the probe so they can be tested: each decides what the probe
+# sees, and a filter that silently matches nothing makes the probe pass.
 #
 # "First-party" everywhere below means: under the source root CMake recorded,
 # and NOT under the binary dir (FetchContent's _deps live there), .venv/
@@ -14,24 +13,6 @@
 # worktrees). Everything else counts as ours, so a TU in a new top-level
 # directory is gated rather than skipped. The binary dir is excluded by its
 # real path, not a `build*` pattern, so a source dir like `buildtools/` is not.
-
-# first_party_warnings LOG SRC_ROOT BIN_DIR
-# Prints the compiler warnings in LOG that are in first-party code. ANSI
-# colour is stripped first (CMAKE_COLOR_DIAGNOSTICS=ON splits ": warning:"
-# with ESC[m). A relative path -- ccache's base_dir rewrites them -- counts as
-# ours unless it names one of the excluded trees.
-first_party_warnings() {
-	sed 's/\x1b\[[0-9;]*[mK]//g' "$1" | awk -v root="$2/" -v bin="$3/" '
-		/^[^ :]+:[0-9]+:([0-9]+:)? warning:/ {
-			path = substr($0, 1, index($0, ":") - 1)
-			if (substr(path, 1, 1) == "/") {
-				if (index(path, root) != 1) next
-				if (index(path, bin) == 1) next
-				if (substr(path, length(root) + 1) ~ /^(\.venv|\.claude)\//) next
-			} else if (path ~ /(^|\/)(_deps|\.venv|site-packages)\//) next
-			print
-		}'
-}
 
 # first_party_commands DB SRC_ROOT BIN_DIR
 # Prints the "command" lines of a compile_commands.json whose translation unit
@@ -93,51 +74,4 @@ cancelled_warning_flags() { # [EXEMPT]
 				if (t == "-w" || t ~ /^-Werror(=.*)?$/ || t ~ /^-Wno-./) { print src; break }
 			}
 		}' | sort -u
-}
-
-# scan_build_log LOG SRC_ROOT BIN_DIR
-# The pre-wcp pre-push's compiler-warning decision on a build log the gate probe
-# TU was compiled into. Returns 2 when the probe's -Wswitch is absent (the
-# scan cannot see this build's compiler output, so a clean result would mean
-# nothing); 1, printing them, when first-party warnings other than the
-# probe's remain; 0 when the log is clean apart from the control.
-scan_build_log() {
-	local all
-	all=$(first_party_warnings "$1" "$2" "$3")
-	if ! echo "$all" | grep -F 'tidy-probe/incomplete_switch.cpp' | grep -qF -- '-Wswitch'; then
-		return 2
-	fi
-	local rest
-	rest=$(echo "$all" | grep -vF 'tidy-probe/incomplete_switch.cpp' | sed '/^$/d')
-	if [ -n "$rest" ]; then
-		echo "$rest"
-		return 1
-	fi
-	return 0
-}
-
-# hook_files_that_are_code: of the changed paths on stdin, the .githooks/ files
-# a push must still build and test for, though the pre-wcp pre-push otherwise
-# treated the hooks directory as not-code. The probe and its lib feed a CMake
-# target and two ctests; that pre-push also held the compiler-warning scan,
-# which only a build exercises.
-hook_files_that_are_code() {
-	grep -E '^\.githooks/(tidy-probe|gate-lib|tests/|pre-push$)' || true
-}
-
-# probe_trigger_files: of the changed paths on stdin, those that can change
-# what the clang-tidy gate sees, for which the pre-wcp pre-push ran
-# tidy-probe.sh.
-probe_trigger_files() {
-	grep -E '(^|/)\.clang-tidy$|(^|/)CMakeLists\.txt$|^\.githooks/(tidy-probe|gate-lib\.sh$)' || true
-}
-
-# restore_probe_exclusion_in BUILD_DIR
-# Reconfigure BUILD_DIR without CBLS_GATE_PROBE_IN_ALL, so the dirty probe TU
-# is out of its default build again. Idempotent; a missing build dir is fine.
-restore_probe_exclusion_in() {
-	unset CBLS_GATE_PROBE_IN_ALL
-	[ -f "$1/CMakeCache.txt" ] || return 0
-	(unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE && cmake "$1") >/dev/null 2>&1 ||
-		echo "note: could not reconfigure $1 without the gate probe"
 }

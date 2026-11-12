@@ -1,10 +1,10 @@
 #!/bin/bash
-# Tests for the compiler-warning gates' filters (.githooks/gate-lib.sh) and for
-# tidy-probe.sh's skip/fail contract, on synthetic input. Registered in ctest as
-# `gate_lib_shell_test`. Usage: gate-lib-test.sh BUILD_DIR
+# Tests for the gate probe's compile-command filters (.githooks/gate-lib.sh) and
+# for tidy-probe.sh's skip/fail contract, on synthetic input. Registered in ctest
+# as `gate_lib_shell_test`. Usage: gate-lib-test.sh BUILD_DIR
 #
-# Each filter decides what a blocking gate sees, and a filter that matches
-# nothing makes that gate pass -- so each case below is one way the filter
+# Each filter decides what the probe sees, and a filter that matches
+# nothing makes the probe pass -- so each case below is one way the filter
 # could go blind, or over-reach, and a mutation of the filter turns one red.
 
 # SC2016: the stub clang-tidy bodies below are script text for the stub to
@@ -33,33 +33,6 @@ expect() { # expect NAME EXPECTED ACTUAL
 		echo "ok: $1"
 	fi
 }
-
-# --- first_party_warnings -----------------------------------------------------
-ESC=$'\x1b'
-cat >"$SCRATCH/build.log" <<EOF
-/R/src/a.cpp:1:2: warning: plain [-Wunused]
-${ESC}[01m${ESC}[K/R/tests/b.cpp:3:4:${ESC}[m${ESC}[K ${ESC}[01;35m${ESC}[Kwarning: ${ESC}[m${ESC}[Kcoloured [-Wswitch]
-../tools/c.cpp:5:6: warning: relative, ccache base_dir [-Wunused]
-/R/buildtools/g.cpp:1:1: warning: a source dir that merely starts with build
-/R/newdir/d.cpp:7:8: warning: a new top-level dir
-/R/include/cbls/h.h:9: warning: no column
-../build/_deps/json-src/x.hpp:1:1: warning: dependency, relative
-/R/build/_deps/catch2-src/y.cpp:1:1: warning: dependency, absolute
-/R/.venv/lib/nb.cpp:1:1: warning: nanobind
-/R/.claude/worktrees/w/src/e.cpp:1:1: warning: another worktree
-/usr/bin/ld: warning: a linker note
-/other/z.cpp:1:1: warning: outside the checkout
-CMake Warning: not a compiler diagnostic
-/R/src/f.cpp:1:1: error: an error, not a warning
-EOF
-expect "first_party_warnings keeps exactly our warnings" \
-	"/R/src/a.cpp:1:2: warning: plain [-Wunused]
-/R/tests/b.cpp:3:4: warning: coloured [-Wswitch]
-../tools/c.cpp:5:6: warning: relative, ccache base_dir [-Wunused]
-/R/buildtools/g.cpp:1:1: warning: a source dir that merely starts with build
-/R/newdir/d.cpp:7:8: warning: a new top-level dir
-/R/include/cbls/h.h:9: warning: no column" \
-	"$(first_party_warnings "$SCRATCH/build.log" /R /R/build)"
 
 # --- first_party_commands / missing / cancelled ------------------------------
 cmd() { # cmd PATH FLAGS...
@@ -107,68 +80,6 @@ expect "cancelled_warning_flags exempts the environment's CMAKE_CXX_FLAGS tokens
 	"/R/buildtools/t.cpp
 /R/src/werror.cpp" \
 	"$(echo "$FP" | cancelled_warning_flags "-O2 -Werror=switch -Wno-sign-compare")"
-
-# --- scan_build_log: the pre-push decision -----------------------------------
-CONTROL='/R/.githooks/tidy-probe/incomplete_switch.cpp:31:12: warning: enumeration value not handled in switch [-Wswitch]'
-scan() { # scan LOG_TEXT -> "rc:output"
-	printf '%s\n' "$1" >"$SCRATCH/scan.log"
-	local out rc=0
-	out=$(scan_build_log "$SCRATCH/scan.log" /R /R/build) || rc=$?
-	echo "$rc:$out"
-}
-expect "scan: control only is clean (0)" "0:" "$(scan "$CONTROL")"
-expect "scan: control plus our warning blocks (1) and names only ours" \
-	"1:/R/src/a.cpp:1:2: warning: x [-Wunused]" \
-	"$(scan "$CONTROL
-/R/src/a.cpp:1:2: warning: x [-Wunused]
-/R/build/_deps/d.cpp:1:1: warning: dep")"
-expect "scan: no control is blind (2), even with warnings present" "2:" \
-	"$(scan "/R/src/a.cpp:1:2: warning: x [-Wunused]")"
-expect "scan: an empty log is blind (2)" "2:" "$(scan "")"
-
-# --- pre-push's path classification -----------------------------------------
-CHANGED='.githooks/pre-push
-.githooks/pre-commit
-.githooks/commit-msg
-.githooks/gate-lib.sh
-.githooks/tidy-probe.sh
-.githooks/tidy-probe/incomplete_switch.cpp
-.githooks/tests/gate-lib-test.sh
-.clang-tidy
-src/io/.clang-tidy
-CMakeLists.txt
-tests/CMakeLists.txt
-src/dag.cpp
-README.md'
-expect "hook_files_that_are_code: pre-push, the lib, the probe and its tests" \
-	".githooks/pre-push
-.githooks/gate-lib.sh
-.githooks/tidy-probe.sh
-.githooks/tidy-probe/incomplete_switch.cpp
-.githooks/tests/gate-lib-test.sh" \
-	"$(echo "$CHANGED" | hook_files_that_are_code)"
-expect "probe_trigger_files: configs, CMakeLists, the probe and the lib" \
-	".githooks/gate-lib.sh
-.githooks/tidy-probe.sh
-.githooks/tidy-probe/incomplete_switch.cpp
-.clang-tidy
-src/io/.clang-tidy
-CMakeLists.txt
-tests/CMakeLists.txt" \
-	"$(echo "$CHANGED" | probe_trigger_files)"
-
-# --- restore_probe_exclusion_in: reconfigures WITHOUT the probe variable -----
-mkdir -p "$SCRATCH/bin" "$SCRATCH/restore"
-printf '#!/bin/bash\necho "${CBLS_GATE_PROBE_IN_ALL:-unset}|$*" >>"%s"\n' "$SCRATCH/cmake.calls" >"$SCRATCH/bin/cmake"
-chmod +x "$SCRATCH/bin/cmake"
-touch "$SCRATCH/restore/CMakeCache.txt"
-(
-	export PATH="$SCRATCH/bin:$PATH" CBLS_GATE_PROBE_IN_ALL=1
-	restore_probe_exclusion_in "$SCRATCH/restore"
-	restore_probe_exclusion_in "$SCRATCH/no-such-build"
-)
-expect "restore_probe_exclusion_in reconfigures once, with the variable unset" \
-	"unset|$SCRATCH/restore" "$(cat "$SCRATCH/cmake.calls")"
 
 # --- tidy-probe.sh: Check A runs without clang-tidy; skip only when clean ----
 # A fake build dir whose cache names the real checkout, so the probe's own
