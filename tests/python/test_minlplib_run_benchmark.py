@@ -306,7 +306,8 @@ def test_preflight(
         # #149: `--out` off the published table does NOT move the trace: `resolve_paths`
         # defaults `trace_out` to the published `anytime_trace.csv` and `publish`
         # assembles into it, so a scratch run would replace the published profile at
-        # exit 0. The runner's guard cannot catch it: every instance is staged.
+        # exit 0. The runner's guard cannot catch it: every instance is staged, so the
+        # published path never reaches the runner.
         ({"out": "scratch.csv"}, ("--trace-out", "anytime_trace.csv")),
         # The mirror, which slips past both other guards: `--out` defaulted with
         # `--trace-out` at scratch republishes comparison.csv at this engine beside
@@ -1457,8 +1458,8 @@ def test_summary_counts_elec_in_the_roster_and_out_of_the_quality_aggregates(
 ) -> None:
     """#142: one rule for both denominators, and the summary states it.
 
-    Roster counts include `elec`; only the quality aggregates hold it out, under
-    `campaign_report.AGGREGATION_RULE`.
+    Roster counts include `elec` (pre-#142 the driver dropped it from every line); only the
+    quality aggregates hold it out, under `campaign_report.AGGREGATION_RULE`.
     """
     excluded = f"{CLAIM_EXCLUDED[0]},NaN,1,1,NaN,NaN,60,false,infeasible(residual=1),abc1234,1,0"
     out, bounds = _summary_inputs(tmp_path, excluded)
@@ -1508,8 +1509,9 @@ def test_the_published_header_still_matches_what_the_runner_writes() -> None:
 def test_the_committed_table_uses_the_columns_the_driver_assembles() -> None:
     """The assembled table must slot into the published one column-for-column.
 
-    A plain equality since #123 regenerated the table. The trailing columns date a
-    `comparison.csv`, so a header that disagrees is from another runner.
+    A plain equality since #123 regenerated the table; pre-#123 it stopped at `n_int_vars`.
+    The columns after it date a `comparison.csv` (#143, #150, #149, #136 added them), so a
+    header that disagrees is from another runner.
     """
     published = REPO_ROOT / "benchmarks" / "instances" / "minlplib" / "comparison.csv"
     with published.open(newline="") as fh:
@@ -1555,7 +1557,8 @@ def nl_header(nvars: int, ncons: int, nobjs: int) -> str:
 SOLVABLE_NL = nl_header(1, 1, 1) + "b\n0 0 10\nr\n1 7\nO0 0\nn0\nG0 1\n0 1\nC0\nn0\nJ0 1\n0 1\n"
 
 #: The instance name the runner's test seam throws for inside the solve
-#: bracket (`CBLS_MINLPLIB_THROW_IN_SOLVE`); no model throws on its own since #202.
+#: bracket (`CBLS_MINLPLIB_THROW_IN_SOLVE`); a zero-variable model threw on its own
+#: pre-#202, and the engine now solves it.
 THROW_IN_SOLVE_INSTANCE = "boom"
 THROWS_ON_SOLVE_NL = SOLVABLE_NL
 
@@ -1853,11 +1856,11 @@ def _seed_2(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *extra: str) -> int
 def test_seed_2_runs_at_seed_1s_sha_over_the_tables_seed_1_published(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """#123: the README's `for SEED in 1 2 3` loop was refused at seed 2.
+    """The README's `for SEED in 1 2 3` loop, refused at seed 2 while running #123's campaign.
 
-    Seed 1's publish modifies three tracked tables, the driver's own output, so
-    seed 2 sees the same plain SHA; committing between seeds would split the
-    campaign across two commits, and the seed summary keeps one.
+    Seed 1's publish modifies three tracked tables, the driver's own output rather than the
+    code that ran, so seed 2 sees the same plain SHA; committing between seeds would split
+    the campaign across two commits, and the seed summary keeps one.
     """
     inst, _ = _checkout(tmp_path)
     sha = _publish_seed_1(tmp_path, inst, monkeypatch)

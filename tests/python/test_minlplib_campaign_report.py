@@ -718,7 +718,7 @@ def test_the_committed_readme_blocks_are_the_generators_rendering() -> None:
     ],
 )
 def test_editing_a_readme_number_makes_its_block_stale(block: str, old: str, new: str) -> None:
-    """A one-number hand edit inside each block names exactly that block as stale."""
+    """A one-number hand edit inside any of these eight blocks names exactly it as stale."""
     text = README.read_text()
     assert text.count(old) == 1, old
     blocks = readme_blocks(_committed_report())
@@ -913,7 +913,7 @@ def test_the_driver_summary_warns_instead_of_raising(
     assert "not in bounds.csv" in err
 
 
-# --- what --write-readme refuses; one seed's files; percentage cells --------------
+# --- a feasible documented failure; --write-readme refusals; one seed; pct cells --
 
 
 def _write_feasible_elec_campaign(directory: Path) -> None:

@@ -344,7 +344,8 @@ def _moving(worse: int, better: int, still: int) -> list[dict[str, object]]:
             [],
         ),
         # A couple of instances clearing their own floors is a fact about those
-        # instances, not an arm effect, even beside "sign test p = 1.000".
+        # instances, not an arm effect: no direction is named off them, least of all
+        # beside "sign test p = 1.000".
         (_moving(2, 0, 3), {"moved_worse": 2}, ["ISOLATED MOVERS"], ["WORSE than"]),
         # A control spread of exactly zero is three seeds landing on one value, not
         # a measurement that there is no noise. Scored with a floor of 0.0, ANY
@@ -470,8 +471,9 @@ def test_a_side_with_no_reading_at_all_is_not_reported_as_zero(tmp_path: Path) -
     row reads NaN and the sum is over an empty set.
 
     `math.fsum(())` is 0.0, the STRONGEST claim either counter can make ("LNS
-    repaired nothing"). `--report-only` re-scores such files: #150's counter landed
-    after the #143 campaign was already running.
+    repaired nothing"), so a file that never measured it must not publish it.
+    `--report-only` re-scores such files: #150's counter landed after the #143
+    campaign was already running.
     """
     rows = [
         *run_rows("a", CONTROL_ARM, [10.0, 12.0, 14.0], repairs=4),
@@ -601,7 +603,7 @@ def solve_error_rows(instance: str, arm: str, seeds: Sequence[int]) -> list[dict
     The runner bumps `Tally::errored`, writes an unsolved row and exits 3 (#153);
     `run_ablation._failed_run_row` records this row as is. It is well-formed and
     `feasible=false`: objective, gap and LNS counters NaN; the published bounds and
-    a 0.0 wall, which `write_unsolved_row` knows unsolved. Only the note says no
+    a 0.0 wall, which `write_unsolved_row` knows without solving. Only the note says no
     search ran.
     """
     return [
