@@ -78,8 +78,8 @@ The three hooks are wcp's (see **wcp's files in this repository**); `gate-lib.sh
   in this tree's or the main checkout's `.venv`), and `gate_lib_shell_test`
   tests the compile-command filters in `.githooks/gate-lib.sh` that the probe
   uses, and the probe's skip/fail contract. The old pre-push's build-log and
-  changed-path filters went in #389 (git history). Never add a `default:` to a `NodeOp`
-  switch: it is what would hide the case.
+  changed-path filters are at `ebf9fe0e^:.githooks/gate-lib.sh`. Never add a
+  `default:` to a `NodeOp` switch: it is what would hide the case.
 
   **No `-Werror`**: with it in `compile_commands.json` every clang-diagnostic
   finding becomes a compiler error and clang-tidy exits 1. GCC, the build

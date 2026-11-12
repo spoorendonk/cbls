@@ -1,7 +1,8 @@
 #!/bin/bash
-# Tests for the gate probe's compile-command filters (.githooks/gate-lib.sh) and
-# for tidy-probe.sh's skip/fail contract, on synthetic input. Registered in ctest
-# as `gate_lib_shell_test`. Usage: gate-lib-test.sh BUILD_DIR
+# Tests for the gate probe's compile-command filters (.githooks/gate-lib.sh),
+# tidy-probe.sh's skip/fail contract and pre-commit's choice of Python tools, on
+# synthetic input. Registered in ctest as `gate_lib_shell_test`.
+# Usage: gate-lib-test.sh BUILD_DIR
 #
 # Each filter decides what the probe sees, and a filter that matches
 # nothing makes the probe pass -- so each case below is one way the filter

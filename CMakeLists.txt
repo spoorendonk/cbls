@@ -348,8 +348,9 @@ if(CBLS_BUILD_TESTS)
         COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/.githooks/tidy-probe.sh"
                 "${CBLS_CLANG_TIDY}" "${CMAKE_BINARY_DIR}")
     set_tests_properties(clang_tidy_gate_probe PROPERTIES SKIP_RETURN_CODE 77)
-    # The gates' text filters and the probe's skip/fail contract, on
-    # synthetic input -- a filter that matches nothing makes a gate pass.
+    # gate-lib.sh's compile-command filters, the probe's skip/fail contract
+    # and pre-commit's choice of Python tools, on synthetic input -- a filter
+    # that matches nothing makes the probe pass.
     add_test(NAME gate_lib_shell_test
         COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/.githooks/tests/gate-lib-test.sh"
                 "${CMAKE_BINARY_DIR}")
