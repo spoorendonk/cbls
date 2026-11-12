@@ -1,14 +1,13 @@
 // The folded objective row's neighbour walk (#210).
 //
-// Every move of an objective variable used to invalidate the cached jump of
-// every other objective variable, because the `obj <= bound` row is in
-// vars_of_constraint_ like any row. update_var and Novelty's re-queue now skip
-// the row while it is inert -- bound +inf, or slack by more than any one
-// variable's reach (OR-Tools' row_max_variations) -- and keep the walk
-// otherwise. These tests pin both halves: a cached objective-variable jump that
-// the move cannot affect survives it and equals a fresh computation, and one
-// the move CAN affect is invalidated (which fails if the skip is applied
-// unconditionally).
+// The `obj <= bound` row is in vars_of_constraint_ like any row, so walking it
+// would invalidate the cached jump of every other objective variable on every
+// objective move. update_var and Novelty's re-queue skip the row while it is
+// inert -- bound +inf, or slack by more than any one variable's reach
+// (OR-Tools' row_max_variations) -- and keep the walk otherwise. These tests
+// pin both halves: a cached objective-variable jump that the move cannot affect
+// survives it and equals a fresh computation, and one the move CAN affect is
+// invalidated (which fails if the skip is applied unconditionally).
 
 #include "test_helpers.h"
 
@@ -194,13 +193,11 @@ TEST_CASE("FJ keeps the objective row's walk once the objective itself is infini
     // With no bound the row's residual is -inf both for a finite objective and
     // for obj = -inf, but only the first is inert: at obj = -inf a jump that
     // adds +inf to it gives -inf + inf = NaN, which reads as violated, so the
-    // skip must not apply there. This test used to reach obj = -inf through FJ
-    // itself, committing a free column to its -inf box bound; #211 stopped FJ
-    // offering infinite candidates, so the state is now set through the C++ API
-    // (var_mut, which -- unlike Python's checked setter -- takes any value).
-    // z, a free column only the objective reads, sits at -inf; a's move is the
-    // one under test, and y's entry, scored in the same apply_jump, must not
-    // survive it.
+    // skip must not apply there. FJ offers no infinite candidates (#211), so
+    // the state is set through the C++ API (var_mut, which -- unlike Python's
+    // checked setter -- takes any value). z, a free column only the objective
+    // reads, sits at -inf; a's move is the one under test, and y's entry,
+    // scored in the same apply_jump, must not survive it.
     const double inf = std::numeric_limits<double>::infinity();
     Model m;
     const int32_t a = m.bool_var();

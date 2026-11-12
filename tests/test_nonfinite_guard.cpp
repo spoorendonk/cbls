@@ -494,14 +494,13 @@ TEST_CASE("a search starting feasible with a +inf objective still finds a finite
 // Issue #118: the sentinel bound must not blind the structural pass.
 //
 // The sentinel is what makes `obj <= 1e30` a *violated* row while the objective
-// is not a number, and a violated row clamps to kInfPenalty. The structural pass
-// used to decide a move by differencing two whole-sum `total_violation()`
-// values, so with 1e30 in the sum both sides rounded to the same double — a ULP
-// up there is ~1.4e14 — and `after < before - 1e-12` became `before < before`.
-// Every structural move was rolled back for as long as the sentinel was
-// installed, whatever it did to the real rows. That is the #100 defect in a
-// second place, and it takes the same fix: difference per constraint, so the
-// clamped row cancels exactly.
+// is not a number, and a violated row clamps to kInfPenalty. Differencing two
+// whole-sum `total_violation()` values with 1e30 in the sum rounds both sides
+// to the same double — a ULP up there is ~1.4e14 — so `after < before - 1e-12`
+// becomes `before < before` and every structural move is rolled back for as
+// long as the sentinel is installed, whatever it does to the real rows. That
+// is the #100 defect in a second place, with the same fix: difference per
+// constraint, so the clamped row cancels exactly.
 //
 // The clamped row is only half of what whole-sum differencing got wrong, and it
 // is the half the search-level test below covers. The other half needs no
@@ -618,10 +617,10 @@ TEST_CASE("a structural repair is accepted while the sentinel bound is installed
 // ViolationManager::total_violation() maintains cached_total_ incrementally
 // (`cached_total_ += (new - old) * W`) and only rebuilds it from scratch every
 // 1000 calls, which bounds the accumulated rounding error without removing it.
-// The structural pass used to judge a candidate move by `after < before - 1e-12`
-// over two such readings, with `before` threaded across candidates — so a move
-// that was applied and rolled back could still leave the two readings one ulp
-// apart and be committed as an "improvement" that changed nothing.
+// A structural pass judging a candidate move by `after < before - 1e-12` over
+// two such readings, with `before` threaded across candidates, lets a move that
+// was applied and rolled back leave the two readings one ulp apart and commit
+// it as an "improvement" that changed nothing.
 //
 // The constants below are synthetic, chosen so that arithmetic rather than luck
 // produces the drift, at the magnitude #118 measured on scp41/Set (a weighted
@@ -635,10 +634,9 @@ TEST_CASE("a structural repair is accepted while the sentinel bound is installed
 //
 // and T is above 2^14, so `T - 1e-12 == T` and the guard cannot filter it.
 //
-// This is the fixture the previous round of #118 work claimed was impossible.
-// It is not: ViolationManager::weights is public and the node values are
-// settable, so cached_total_ can be driven into a known-drifted state without
-// going through solve() at all.
+// ViolationManager::weights is public and the node values are settable, so
+// cached_total_ can be driven into a known-drifted state without going through
+// solve() at all.
 // ---------------------------------------------------------------------------
 TEST_CASE("cache drift makes a rolled-back move look like an improvement",
           "[nonfinite][structural]") {
@@ -687,7 +685,7 @@ TEST_CASE("cache drift makes a rolled-back move look like an improvement",
     REQUIRE(after == std::nextafter(before, 0.0));
 
     // 2. `- 1e-12` cannot filter it: above 2^14 the subtraction is inert, so the
-    //    old whole-sum test degenerates to `after < before` and accepts.
+    //    whole-sum test degenerates to `after < before` and accepts.
     REQUIRE(before - 1e-12 == before);
     REQUIRE(after < before - 1e-12);
 

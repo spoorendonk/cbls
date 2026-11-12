@@ -1,18 +1,14 @@
 // A model with no Feasibility-Jump-jumpable variable (#201).
 //
-// FJ jumps Bool/Int/Float variables only. On a model whose decisions are all
-// List/Set variables -- CVRP in the List encoding is the case that found this --
-// an FJ batch has nothing to jump. At the automatic 0.33 structural probability
-// two thirds of all batches were such empty FJ batches, and each one spun its
-// GLS loop to the iteration limit, reported itself stuck and triggered #102's
-// unproductive diversification kick, which re-randomises every List. The
-// structural batches never kept their progress, and the default arm returned no
-// feasible solution where `structural_batch_probability = 1.0` was feasible at
-// once.
-//
-// The fix routes every batch to the structural sweep when FJ has no movable
-// variable, and makes SearchResult::iterations report the unit max_iterations
-// was actually charged in (the batch count, on such a run) rather than 0.
+// FJ jumps Bool/Int/Float variables only, so on a model whose decisions are all
+// List/Set variables (CVRP in the List encoding) every batch goes to the
+// structural sweep, and SearchResult::iterations reports the unit
+// max_iterations was actually charged in (the batch count, on such a run)
+// rather than 0. Left at the automatic 0.33 structural probability, two thirds
+// of the batches were empty FJ batches that spun GLS to the iteration limit,
+// reported stuck and triggered #102's unproductive kick, which re-randomises
+// every List: the default arm returned no feasible solution where
+// `structural_batch_probability = 1.0` was feasible at once.
 //
 // Every model here CONSUMES its Lists: capacity reads each route through a
 // `lambda_sum`, distance through a `pair_lambda_sum`, so a List that the search
@@ -205,13 +201,14 @@ TEST_CASE("an explicit structural probability is honoured, but its empty FJ batc
     // An explicit probability is the in-engine control arm, so it keeps its
     // mix: FJ batches really are scheduled. What #201 takes away from them is
     // the damage: an FJ batch with nothing to jump reports itself stuck by
-    // construction, and before #201 every such batch took the unproductive
-    // kick -- and counted toward perturbation_period -- re-randomising every
-    // List. Probed at this budget (kicks per seed 1/2/3): with both gates 4/4/2
-    // and feasible; without the kick gate ~1070-1140 and infeasible on all
-    // three; without the stagnation gate 14/11/17, which the kick bound below
-    // catches, and infeasible on seed 3. The default batch length matters: a
-    // batch shorter than unproductive_iterations can never report itself stuck.
+    // construction, and without #201's gates every such batch takes the
+    // unproductive kick -- and counts toward perturbation_period --
+    // re-randomising every List. Probed at this budget (kicks per seed
+    // 1/2/3): with both gates 4/4/2 and feasible; without the kick gate
+    // ~1070-1140 and infeasible on all three; without the stagnation gate
+    // 14/11/17, which the kick bound below catches, and infeasible on seed 3.
+    // The default batch length matters: a batch shorter than
+    // unproductive_iterations can never report itself stuck.
     const Cvrp c = make_cvrp();
     for (const uint64_t seed : {1ULL, 2ULL, 3ULL}) {
         INFO("seed " << seed);
@@ -224,7 +221,7 @@ TEST_CASE("an explicit structural probability is honoured, but its empty FJ batc
         REQUIRE(r.counters.structural_batches > 0);
         REQUIRE(r.feasible);
         REQUIRE(independently_feasible(c, b, r));
-        // Kicks can now come only from perturbation_period structural batches
+        // Kicks can come only from perturbation_period structural batches
         // without improvement, not from the FJ batches.
         REQUIRE(static_cast<int64_t>(r.perturbations) * 100 <= r.counters.structural_batches);
     }

@@ -2,10 +2,10 @@
 // improving variable (#206). ViolationLS (Davies et al. CPAIOR 2024) Algorithm 2
 // loops while Q is non-empty and removes a non-positive variable without
 // counting it; OR-Tools' ScanRelevantVariables has no cap either. A draw cap
-// that also counted those removals gave up on a Q in which improving variables
-// are rare, the GLS loop bumped the weights, and the bump re-queued the whole
-// row, so the false minimum repeated. Novelty Jump's selection had the same
-// shape: draws that failed the filter F counted toward its sample of 3.
+// that also counts those removals gives up on a Q in which improving variables
+// are rare, the GLS loop bumps the weights and the bump re-queues the whole
+// row, so the false minimum repeats. Novelty Jump's selection fails the same
+// way if draws that fail the filter F count toward its sample of 3.
 //
 // Each model below hides one or two useful variables among 200 that are not,
 // in a single violated row. The capped code finds the useful one with
@@ -229,9 +229,9 @@ TEST_CASE("Novelty stops trying siblings once its budget is spent", "[fj][novelt
     // breaks R: v - sum(u) <= 0, and each u_k that repairs R breaks its own
     // S_k: u_k <= 0. At the root v passes F (novelty 1 - eps, score 0). Below
     // it every u_k passes F once (novelty 1 - eps, score 0), never commits,
-    // and fails F after its undo has promoted S_k. A level that only checked
-    // its discrepancy budget and the work cap on entry tried all K of them,
-    // so one call applied ~K moves against a cap of novelty_work_budget().
+    // and fails F after its undo has promoted S_k. A level that checks its
+    // discrepancy budget and the work cap only on entry tries all K of them,
+    // so one call applies ~K moves against a cap of novelty_work_budget().
     constexpr int kSiblings = 600;
     static_assert(kSiblings > FeasibilityJump::novelty_work_budget());
     Model m;

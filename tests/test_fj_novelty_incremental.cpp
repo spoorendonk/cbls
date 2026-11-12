@@ -1,14 +1,13 @@
 // Novelty Jump as a GLS batch with incremental W' and Q' (#209).
 //
-// Before #209 a Novelty batch was one ApplyNoveltyJump: it reseeded its scan
-// set Q' from every violated row after every committed compound move and at
-// every discrepancy level, rewrote W' over every row per level, ignored a
-// failed search instead of bumping the GLS weights, ranked its sample by the W
-// score, and could not see its deadline unless it applied a move. Each test
-// below pins one of those changes against ViolationLS (Davies et al. CPAIOR
+// Each test below pins one property against ViolationLS (Davies et al. CPAIOR
 // 2024, Algorithms 3-6) and OR-Tools' compound-move mode
-// (ortools/sat/feasibility_jump.cc) -- plus the one place #209 deliberately
-// keeps the pre-#209 behaviour: FJ-or-Novelty is still drawn every batch.
+// (ortools/sat/feasibility_jump.cc): a failed search bumps the GLS weights, the
+// sample is ranked by the compound-weight score, Q' is not reseeded from every
+// violated row after each commit or discrepancy level, W' is re-initialised
+// only on the rows that moved, and the deadline is seen even when no move is
+// applied -- plus the one place #209 deliberately keeps the pre-#209
+// behaviour: FJ-or-Novelty is still drawn every batch.
 
 #include "test_helpers.h"
 #include "test_models.h"
@@ -49,8 +48,8 @@ TEST_CASE("a Novelty batch bumps the GLS weights at a Novelty local minimum",
     // the other (score 0), so no compound move ever has a positive score: every
     // ApplyNoveltyJump fails at its largest discrepancy budget. Algorithm 6 runs
     // Novelty under GLS (line 22, Algorithm 3), which answers that failure with
-    // the decay-and-bump; before #209 the batch was one ApplyNoveltyJump whose
-    // failure was ignored, so the weights never moved.
+    // the decay-and-bump; a batch of one ApplyNoveltyJump that ignores the
+    // failure leaves the weights where they are (#209).
     Model m;
     const int32_t x = m.bool_var();
     m.add_constraint(m.geq(x, m.constant(1.0)));  // A
@@ -84,7 +83,7 @@ TEST_CASE("Novelty ranks its sample by novelty score, not by W score",
     // 2 - 1.5/1024; flipping y scores W 3 - 2.9 = 0.1 and novelty 3 - 2.9/1024.
     // Q' is {x, y} and both pass F, so the 3-sample holds both on every seed.
     // OR-Tools' ScanRelevantVariables takes the best COMPOUND-weight score, y;
-    // ranking by the W score took x. One unit of work lets exactly one move be
+    // ranking by the W score takes x. One unit of work lets exactly one move be
     // applied, and either one commits on its own positive score.
     for (uint64_t seed = 1; seed <= 20; ++seed) {
         CAPTURE(seed);
@@ -116,8 +115,8 @@ TEST_CASE("Novelty seeds its scan set once per batch, not per commit or level",
           "[fj][novelty][novelty_batch]") {
     // A chain of independent violated rows c_i: x_i >= 1, each fixed by one
     // flip: every flip commits on its own, so a batch commits once per row.
-    // Before #209 every commit (and every failed level) reseeded Q' from all of
-    // V, O(nnz(V)) each; the commits' own re-queues already hold what moved.
+    // Reseeding Q' from all of V at every commit (and every failed level) costs
+    // O(nnz(V)) each; the commits' own re-queues already hold what moved.
     constexpr int kRows = 50;
     Model m;
     for (int i = 0; i < kRows; ++i) {
@@ -217,13 +216,13 @@ TEST_CASE("a Novelty batch that applies no move still stops at the deadline",
     // worsens the other by 1, both violated at full W', so every var fails F at
     // the root and ApplyNoveltyJump returns a local minimum having applied no
     // move. The batch bumps both rows equally and descends again, forever, and
-    // with batch_iterations = 0 nothing but the deadline can stop it. The
-    // deadline used to be polled only when a move was applied (#209 review).
+    // with batch_iterations = 0 nothing but the deadline can stop it: a
+    // deadline polled only when a move is applied hangs (#209 review).
     // Hand-registered in tests/CMakeLists.txt with a TIMEOUT, so a hang reports.
     //
-    // Driven at the FJ level: since #211 solve() refuses a SearchConfig with
-    // batch_iterations <= 0, while novelty_batch(0) still means "no per-batch
-    // limit" -- exactly the call whose only exit is the deadline.
+    // Driven at the FJ level: solve() refuses a SearchConfig with
+    // batch_iterations <= 0 (#211), while novelty_batch(0) still means "no
+    // per-batch limit" -- exactly the call whose only exit is the deadline.
     Model m;
     const int32_t x = m.bool_var();
     const int32_t y = m.bool_var();

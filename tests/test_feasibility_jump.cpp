@@ -427,14 +427,14 @@ TEST_CASE("compute_var_jump: the escape probe is two-sided", "[fj][stationary]")
 // The loop cannot read the clock every iteration: steady_clock::now() measures
 // 1408 ns/call on this project's HPET reference machine against GLS iterations
 // of a few microseconds, and checking every time measured a 1.75x throughput
-// loss (2991 -> 4816 ns/iteration, Release). It used to check on a FIXED stride
-// of 64 iterations instead, which is not a time bound at all: one GLS iteration
-// is O(sampled vars x candidate values x constraints touched), so 64 of them
-// are microseconds on a small model and seconds on a large one. On 400 Int vars
+// loss (2991 -> 4816 ns/iteration, Release). A FIXED stride of 64 iterations,
+// the check before #113, is not a time bound at all: one GLS iteration is
+// O(sampled vars x candidate values x constraints touched), so 64 of them are
+// microseconds on a small model and seconds on a large one. On 400 Int vars
 // with 20 000 rows of 8, every budget from 0.05s to 3s took ~7s.
 //
-// The stride is now sized in *time*: each check measures the previous stride and
-// sizes the next one to kStrideBudgetFraction of the budget. The guarantee is
+// So the stride is sized in *time*: each check measures the previous stride
+// and sizes the next to kStrideBudgetFraction of the budget. The guarantee is
 //
 //   one stride's work, where a stride costs at most 1/64 of the budget -- or one
 //   GLS iteration, whichever is larger, an iteration being atomic.
@@ -467,13 +467,13 @@ TEST_CASE("the deadline-check stride is sized from the last measurement", "[fj][
 
     SECTION("a stride over the target shrinks, and the shrink is not capped") {
         // 10x over target shrinks 10x in ONE step, so an iteration that got more
-        // expensive is caught on the very next check. Note this is NOT by itself
-        // what stops the tuner ratcheting up and going silent — a shrink is only
-        // applied AT a check, a whole stride later. kMaxDeadlineStride is what
-        // bounds that; see "a grown stride cannot outrun its cap" below.
+        // expensive is caught on the very next check. Note this is NOT by
+        // itself what stops the tuner ratcheting up and going silent:
+        // kMaxDeadlineStride bounds that; see "a grown stride cannot outrun its
+        // cap" below.
         REQUIRE(FJ::next_deadline_stride(64, 0.010, kTarget) == 6);  // 10x over -> 10x down
         REQUIRE(FJ::next_deadline_stride(64, 1.0, kTarget) == 1);    // 1000x over -> the floor
-        // A stride from before the cap existed is clamped to it, not honoured.
+        // A stride above the cap is clamped to it, not honoured.
         REQUIRE(FJ::next_deadline_stride(65536, 1e-9, kTarget) == FJ::kMaxDeadlineStride);
     }
 
@@ -574,11 +574,10 @@ namespace {
 // Expensive GLS iterations: 60 Int vars in 1500 rows of 8, so every variable
 // sits in ~200 constraints and each of its 21 domain values has to be scored
 // against all of them — ~2.5ms per iteration here (measured, Release). A
-// scaled-down version of the model
-// in #113 (400 vars, 20 000 rows), which is the shape of the largest benchmark
-// instances: the ones whose wall times epic #87 publishes. Rows alternate
-// `<= 3` and `>= 100` over overlapping variable sets, which is unsatisfiable, so
-// the loop cannot exit early on feasibility.
+// scaled-down version of the model in #113 (400 vars, 20 000 rows), which is
+// the shape of the largest benchmark instances: the ones whose wall times epic
+// #87 publishes. Rows alternate `<= 3` and `>= 100` over overlapping variable
+// sets, which is unsatisfiable, so the loop cannot exit early on feasibility.
 void build_expensive_iterations(Model& m) {
     RNG rng(7);
     constexpr int kVars = 60;
@@ -669,8 +668,8 @@ TEST_CASE("expensive iterations pin the deadline stride to one", "[fj][deadline]
     REQUIRE(fj.iterations() > 0);                      // not inert: the batch really ran
     REQUIRE(fj.deadline_check_stride() == 1);          // one iteration per clock read...
     REQUIRE(fj.deadline_checks() == fj.iterations());  // ...and it really was read
-    // And the batch stopped long before the 64 iterations the old fixed stride
-    // let through unconditionally, which is the whole of #113.
+    // And the batch stopped long before the 64 iterations a fixed stride lets
+    // through unconditionally, which is the whole of #113.
     REQUIRE(fj.iterations() < 64);
 }
 
@@ -704,14 +703,14 @@ TEST_CASE("cheap iterations let the deadline stride grow", "[fj][deadline]") {
 
     REQUIRE(fj.iterations() == 20000);  // not inert: the deadline never fired
     // The tuner ramps 1, 8, 64 and then holds at the cap, so on a cheap model it
-    // ends up reading the clock exactly as often as the fixed stride it replaced
-    // — no more. Growing past 64 was measured at ~1.2% throughput and cost an
+    // ends up reading the clock exactly as often as a fixed stride of 64 — no
+    // more. Growing past 64 was measured at ~1.2% throughput and cost an
     // unbounded overrun when iteration cost rose, so the cap keeps the shrink
     // (which is what #113 asked for) and drops the growth.
     REQUIRE(fj.deadline_check_stride() == FJ::kMaxDeadlineStride);
-    // Still strictly fewer reads than a fixed 64 over the whole run, because the
-    // ramp spends its first iterations at a coarser-than-1 stride only after
-    // measuring: the ramp itself is 1, 8, 64.
+    // Over the whole run, at most the reads of a fixed 64 plus the ramp's own
+    // few checks: the ramp spends its first iterations at a coarser-than-1
+    // stride only after measuring, and the ramp itself is 1, 8, 64.
     REQUIRE(fj.deadline_checks() <= (fj.iterations() / 64) + 3);
 }
 
@@ -822,9 +821,10 @@ double recompute_real_violation(const Model& m, const ViolationManager& vm) {
         if (static_cast<int32_t>(c) == obj_ci || vm.weights[c] <= 0.0) {
             continue;
         }
-        // is_violated's threshold, not a bare `> 0.0`: a residual in (0, kTol]
-        // is a SATISFIED row, and counting it here would re-introduce exactly
-        // the disagreement #102's ex8_6_1 finding was about.
+        // A threshold inside is_violated's (GFJConfig::tolerance), not a bare
+        // `> 0.0`: a residual in (0, 1e-9] is a SATISFIED row, and counting it
+        // here would re-introduce exactly the disagreement #102's ex8_6_1
+        // finding was about.
         const double r = m.node_value(cids[c]);
         if (r > 1e-9 && r < std::numeric_limits<double>::infinity()) {
             total += r;
@@ -886,15 +886,14 @@ TEST_CASE("unproductive_iterations = 0 runs the batch to its budget", "[fj][unpr
 }
 
 TEST_CASE("a huge objective row cannot absorb the real rows' progress", "[fj][unproductive]") {
-    // Regression for the review finding on #102's first cut, which summed the
-    // progress measure over ALL active rows -- the artificial `obj <= bound` row
-    // included. #116 installs a sentinel bound on any model whose feasible
-    // region contains a non-finite objective (elec25/elec50), and that row's
-    // residual then sits at ~1e30, where one ulp is ~1.4e14. Summed in, it
-    // swallows every O(1) real row: the whole sum cannot be moved by a single
-    // bit however much real violation the batch sheds, no iteration ever
-    // registers as an improvement, and the batch is declared stuck at exactly
-    // unproductive_iterations regardless of what it is doing.
+    // Regression for the review finding on #102's first cut: the progress
+    // measure must leave out the artificial `obj <= bound` row. #116 installs
+    // a sentinel bound on any model whose feasible region contains a
+    // non-finite objective (elec25/elec50), and that row's residual then sits
+    // at ~1e30, where one ulp is ~1.4e14. Summed in, it swallows every O(1)
+    // real row: no iteration registers as an improvement, and the batch is
+    // declared stuck at exactly unproductive_iterations regardless of what it
+    // is doing.
     //
     // Reproduced here without needing a non-finite objective, by pushing the
     // objective bound far enough below the objective that the row's residual is
@@ -980,13 +979,13 @@ void build_tiny_residual_rows_with_objective(Model& m) {
 
 TEST_CASE("a residual below is_violated's tolerance is not progress to be made",
           "[fj][unproductive]") {
-    // Regression for #102's ex8_6_1 finding, first half. progress_residual
-    // counted any residual `> 0.0`, while every other test in this engine calls
-    // a row satisfied at `<= kTol` (1e-9). The two disagreed on the band
-    // (0, kTol], and on a model whose real rows are equalities that band is
-    // where a SATISFIED row lives -- so the measure could never reach zero, and
+    // Regression for #102's ex8_6_1 finding, first half: progress_residual
+    // calls a row satisfied at `<= GFJConfig::tolerance`, as every other test
+    // in this engine does. Counting any residual `> 0.0` disagrees on the band
+    // (0, tolerance], and on a model whose real rows are equalities that band
+    // is where a SATISFIED row lives -- so the measure never reaches zero, and
     // every test of the form "the real rows are all satisfied, so this measure
-    // has nothing left to say" was dead code there. MINLPLib ex8_6_1 is 45
+    // has nothing left to say" is dead code there. MINLPLib ex8_6_1 is 45
     // nonlinear equalities over 75 continuous variables; nothing in it ever
     // drove the sum to an exact 0.0.
     Model m;
@@ -1040,7 +1039,7 @@ TEST_CASE("a residual below is_violated's tolerance is not progress to be made",
 
 TEST_CASE("a real-feasible batch is not called stuck by a measure that cannot move",
           "[fj][unproductive]") {
-    // Regression for the review finding on #102's second cut. The progress
+    // Regression for the review finding on #102's second cut: the progress
     // measure sums the REAL rows only, so once they are all satisfied it is
     // identically zero and cannot improve on itself. Without the guard, every
     // batch of the objective-descent phase reports stuck at exactly
@@ -1424,11 +1423,12 @@ TEST_CASE("a Sum that is itself a row is not incremental and its row never drift
 }
 
 TEST_CASE("FJ never commits an unbounded Float to an infinite endpoint", "[fj][run]") {
-    // The Float candidates used to include lb, ub and their midpoint verbatim:
-    // -inf, +inf and NaN on a free column (#211). At x = 0 the row x*x >= 10 has
-    // a zero gradient, so no Newton candidate exists and only those were left --
-    // and x = +-inf satisfies the row, so FJ committed it. Downstream that is a
-    // -inf objective and NaN rows. Now no infinite value is ever offered.
+    // Regression (#211): lb, ub and their midpoint taken verbatim as Float
+    // candidates are -inf, +inf and NaN on a free column. At x = 0 the row
+    // x*x >= 10 has a zero gradient, so no Newton candidate exists and only
+    // those are left -- and x = +-inf satisfies the row, so FJ would commit it,
+    // giving a -inf objective and NaN rows downstream. No infinite value is
+    // ever offered.
     constexpr double kInf = std::numeric_limits<double>::infinity();
     Model m;
     auto x = m.float_var(-kInf, kInf);
@@ -1446,10 +1446,10 @@ TEST_CASE("FJ never commits an unbounded Float to an infinite endpoint", "[fj][r
 }
 
 TEST_CASE("FJ calls a row satisfied at the search's tolerance", "[fj][run]") {
-    // FJ's tolerance used to be a fixed 1e-9 against the search's 1e-6 (#211):
-    // a row left violated by 5e-7 -- satisfied as far as the search is
-    // concerned -- stayed in V, was bumped, and FJ never reported Feasible.
-    // x <= 1 cannot meet x >= 1 + 5e-7 better than that.
+    // FJ's default tolerance is the search's 1e-6 (#211): under a fixed 1e-9 a
+    // row left violated by 5e-7 -- satisfied as far as the search is concerned
+    // -- stays in V, is bumped, and FJ never reports Feasible. x <= 1 cannot
+    // meet x >= 1 + 5e-7 better than that.
     Model m;
     auto x = m.float_var(0.0, 1.0);
     m.add_constraint(m.geq(x, m.constant(1.0 + 5e-7)));
@@ -1475,7 +1475,7 @@ TEST_CASE("FJ calls a row satisfied at the search's tolerance", "[fj][run]") {
 
 TEST_CASE("FJ samples five in either phase, as ViolationLS does", "[fj][config]") {
     // ViolationLS §3 samples 5 for a Feasibility Jump; 3 is its Novelty sample.
-    // The general phase -- every solve() FJ batch -- used 3 (#211).
+    // The general phase -- every solve() FJ batch -- samples 5 too (#211).
     const GFJConfig cfg;
     REQUIRE(cfg.sample_size_linear == 5);
     REQUIRE(cfg.sample_size_general == 5);
@@ -1484,7 +1484,7 @@ TEST_CASE("FJ samples five in either phase, as ViolationLS does", "[fj][config]"
 TEST_CASE("two-phase run() carries the linear phase's weights into the general phase",
           "[fj][run]") {
     // ViolationLS Algorithm 6 (lines 18-19) hands the same W to both GLS calls;
-    // run() used to refill every weight to 1 between them (#211). From
+    // run() must not refill every weight to 1 between them (#211). From
     // a = b = c = 0 the linear rows r0: a + b >= 1, r1: a <= 0 and
     // r2: b - c <= 0 leave every single flip at score 0, so the linear phase
     // must bump r0 before it can finish. The general phase then starts feasible

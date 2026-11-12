@@ -259,13 +259,11 @@ TEST_CASE("an empty or inverted range is a no-op", "[executor]") {
 
 TEST_CASE("a portfolio on a caller's executor creates no threads of its own",
           "[executor][parallel]") {
-    // THE acceptance criterion. `CountingPool` counts every thread it creates,
-    // and it creates exactly one per chunk, so with one chunk per worker the
-    // count IS the worker count -- and any thread `ParallelSearch` created for
-    // itself would be a thread this number does not include. The second
-    // assertion is what makes the first mean something: every worker index was
-    // actually run, so the portfolio did not simply do the work on the calling
-    // thread and ignore the pool.
+    // THE acceptance criterion (see the file header). `CountingPool` creates
+    // exactly one thread per chunk, so with one chunk per worker its count IS
+    // the worker count. The second assertion is what makes the first mean
+    // something: every worker index was actually run, so the portfolio did not
+    // simply do the work on the calling thread and ignore the pool.
     CountingPool pool(3);
 
     std::mutex mutex;
@@ -297,8 +295,7 @@ TEST_CASE("a portfolio on a caller's executor creates no threads of its own",
     const std::set<int> expected{0, 1, 2};
     REQUIRE(worker_indices == expected);
     // The criterion, made falsifiable: every worker BEGAN on a thread the POOL
-    // created. A std::thread the portfolio made for itself would appear here as an
-    // id the pool never reported -- which is exactly what a count cannot see.
+    // created (see `CountingPool::ran_on`).
     const std::set<std::thread::id> pool_threads = pool.ran_on();
     REQUIRE(worker_threads.size() == 3);
     for (const std::thread::id& id : worker_threads) {
