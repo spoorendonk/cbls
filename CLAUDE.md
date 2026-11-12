@@ -40,7 +40,8 @@ Be terse. No preamble. No filler.
 ## Code Navigation
 
 LSP for symbol questions; Grep with a small `head_limit` and `-n` for
-strings; `Read` with `offset`/`limit` for the slice. Bound the output, whichever tool produces it.
+strings; `Read` with `offset`/`limit` for the slice. Bound the output,
+whichever tool produces it.
 
 ## C++
 
@@ -157,9 +158,9 @@ implement → gate (the full fences, even for a trivial-looking change) and
 commit → **one cold reviewer** (a fresh subagent running `/code-review` on
 unpushed commits; a fresh one again for round two), at most two rounds, fix
 between them → record the receipt on a clean tree, push, close. A real
-finding left after round two, or out of scope, becomes its own issue. File only what has a concrete failure scenario
-or a missing acceptance criterion; fix or drop nits. Agent-team and parallel
-runs: `docs/development.md`; no subagent returns unreviewed work and no
+finding left after round two, or out of scope, becomes its own issue. File
+only what has a concrete failure scenario or a missing acceptance
+criterion; fix or drop nits. Agent-team and parallel runs: `docs/development.md`; no subagent returns unreviewed work and no
 orchestrator merges it (`docs/git-hooks.md`, **Agent Self-Review**). If `wcp`
 is not on PATH, say so; don't install it unasked.
 
@@ -203,7 +204,7 @@ above it and add `NOLINTNEXTLINE(readability-function-cognitive-complexity)`.
 
 ## Common Mistakes
 
-- Don't invent APIs, flags or methods; verify they exist.
+- Don't invent APIs, flags or methods; verify they exist. Check current docs.
 - Don't suppress type errors or lint; fix the root cause.
 - Comments state the contract and why in one or two lines, with the issue
   number for history; no incident retelling, no story repeated across files
@@ -265,13 +266,13 @@ Full rules: `docs/measuring.md`.
 
 ## Benchmarks
 
-Detail: `docs/benchmarks/README.md`. Comparative benchmarks, worked top down:
+Comparative benchmarks, worked top down:
 
 | # | Benchmark | Compared against | Purpose |
 |---|---|---|---|
-| 1 | `mipfeas` | CP-SAT at its defaults | same algorithm as CP-SAT's `fj`/`ls` workers; MILP, so no expressiveness claim (#87, #255) |
-| 2 | `minlplib` | SCIP (nonlinear) | non-convex MINLP, beyond CP-SAT's LS (#87, #256) |
-| 3 | `uc-chped` | Pedroso 2014 | published unit-commitment formulation (#87, #257) |
+| 1 | `mipfeas` | CP-SAT at its defaults | same algorithm as CP-SAT's `fj`/`ls` workers; MILP, so no expressiveness claim (#255) |
+| 2 | `minlplib` | SCIP (nonlinear) | non-convex MINLP, beyond CP-SAT's LS (#256) |
+| 3 | `uc-chped` | Pedroso 2014 | published unit-commitment formulation (#257) |
 
 - **Comparison solvers run at their defaults**, CP-SAT too (not `fj`+`ls`
   only); differences are recorded per row, not evened out (Simon, 2026-11-01,
@@ -281,9 +282,10 @@ Detail: `docs/benchmarks/README.md`. Comparative benchmarks, worked top down:
   or non-convex continuous). Nothing outside the table is comparative.
 - Worked examples per structured type, not comparative: `Set` → `setcover`
   (measured, negative; don't build another `Set` benchmark), `List` → CVRP
-  (epic #182). **Never write that `List` is validated on a published
-  formulation**: no `List` evidence until #204. List engine work is filed
-  against measured CVRP data; don't reopen #183-#185, #187, #189.
+  (epic #182, closed; unpublished, and no `List` evidence, until #204).
+  **Never write that `List` is validated on a published formulation.** List
+  engine work is filed against measured CVRP data; don't reopen #183-#185,
+  #187, #189.
 - Generic features go in `include/cbls/` and `src/`, never benchmark hacks.
 
 ## Issue Tracking
@@ -296,5 +298,5 @@ follow-ups; fix them inline or leave them.
 ## CLAUDE.md Discipline
 
 When a better instruction would have prevented a mistake, fix this file in the
-same commit. Keep it under ~15 KB: reference material goes to `docs/`, with a
-pointer here. Leave the provenance lines at the top in place.
+same commit. Keep it under 15 KiB (15360 bytes): reference material goes to
+`docs/`, with a pointer here. Leave the provenance lines at the top in place.
