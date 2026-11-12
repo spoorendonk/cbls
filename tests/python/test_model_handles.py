@@ -1,15 +1,14 @@
-"""Handle validation and G_v through the Model bindings (#156).
+"""Handle, vector and value validation, and G_v, through the Model bindings (#156).
 
-Python hands the int32 handle API raw integers, so a typo'd or stale handle
-reaches the engine unchecked by any type system. Since #156 flattened the DAG's
-edges into CSR arrays, such a handle is no longer caught late by a throwing
-accessor: the back-reference rebuild would count it into an offsets array and
-write past the end -- silent heap corruption, a segfault on a far-out id. The
-model now rejects it when the node naming it is built.
+Python hands the int32 handle API raw integers, unchecked by any type system.
+With the DAG's edges in CSR arrays (#156), the back-reference rebuild would
+count a bad handle into an offsets array and write past the end (silent heap
+corruption, a segfault on a far-out id), so the model rejects it when the node
+naming it is built.
 
-The rejection is asserted in a CHILD interpreter, following `test_pool.py`: the
-failure being guarded against is a crash, and a crashing scenario run in-process
-would take the whole pytest run down instead of failing one test.
+Rejections are asserted in a CHILD interpreter, following `test_pool.py`: the
+failure guarded against is a crash, and a crashing scenario run in-process would
+take the whole pytest run down instead of failing one test.
 
 `constraints_of_var` is custom binding code -- the C++ accessor returns a view,
 which the binding copies out to a list -- so it is covered here too.
@@ -282,10 +281,10 @@ def _scenario_variable_handle_realloc() -> None:
     """A Variable held across builders that reallocate the variable array reads
     and writes the model, not freed heap.
 
-    var()/var_mut() used to return reference_internal into that array; writing
-    `.value` through one held across a reallocating builder was a heap
-    use-after-free (#167's cold review). They now return a (model, id) handle
-    that resolves on every access and keeps the model alive.
+    Pre-#167 var()/var_mut() returned reference_internal into that array, so
+    writing `.value` through one held across a reallocating builder was a heap
+    use-after-free. The (model, id) handle resolves on every access and keeps the
+    model alive.
     """
     m = cbls.Model()
     h = m.float_var(0, 1)

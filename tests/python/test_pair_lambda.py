@@ -178,16 +178,12 @@ def test_the_table_form_makes_no_python_calls_during_solve() -> None:
     functor_calls, functor_objective = _count_python_calls_during_solve(use_table=False)
     table_calls, table_objective = _count_python_calls_during_solve(use_table=True)
 
-    # The functor arm is the control: if it did not call back into Python
-    # either, the counter is measuring nothing. The floor sits below what the arm
-    # actually does (981 at the time of writing), because the absolute count is
-    # not the subject: it tracks how often the engine RE-EVALUATES the PairLambda
-    # node, which #164 roughly halved by rolling a rejected structural candidate
-    # back once per sample instead of once per candidate. That is not a
-    # trajectory change, so a threshold tracking the recomputation count would
-    # fail on a change that did not move the search at all -- as a 1000 floor
-    # did. 500 is half the observed value: still insensitive to another halving,
-    # and still red if the functor arm stops calling back.
+    # The functor arm is the control: if it did not call back into Python either,
+    # the counter measures nothing. The count tracks how often the engine
+    # RE-EVALUATES the PairLambda node, which #164 roughly halved (one rollback per
+    # sample, not per candidate) without moving the trajectory; a 1000 floor failed
+    # on that. 500 is about half the measured 981: insensitive to another halving,
+    # still red if the functor arm stops calling back.
     assert functor_calls > 500, functor_calls
     assert table_calls == 0, table_calls
     # Same cost function, so the same trajectory and the same answer.
@@ -229,10 +225,8 @@ def _scenario_bad_table() -> None:
         ("functor node handle", lambda: m.pair_lambda_sum(0, dist), ValueError),
         ("functor scalar var", lambda: m.pair_lambda_sum(b, dist), ValueError),
         ("functor stale handle", lambda: m.pair_lambda_sum(-100, dist), IndexError),
-        # lambda_sum is held to it too -- it was the last collection builder
-        # without the check, and an unguarded node or scalar handle there builds
-        # a Lambda whose child is not a variable, which evaluates to 0.0 for
-        # ever. Un-pinned, reverting the guard leaves a green suite.
+        # lambda_sum too: an unguarded node or scalar handle builds a Lambda whose
+        # child is not a variable, which evaluates to 0.0 for ever.
         ("lambda_sum node handle", lambda: m.lambda_sum(0, lambda e: 0.0), ValueError),
         ("lambda_sum scalar var", lambda: m.lambda_sum(b, lambda e: 0.0), ValueError),
         ("lambda_sum stale handle", lambda: m.lambda_sum(-100, lambda e: 0.0), IndexError),

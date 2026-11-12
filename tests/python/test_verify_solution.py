@@ -226,9 +226,8 @@ def test_parse_solution_reads_the_format_the_runners_write() -> None:
 
 
 def test_parse_solution_keeps_a_hash_inside_a_column_name() -> None:
-    # 13 roster instances name columns `x#1#1` / `delay#1` / `P#0#0`. Treating `#`
-    # as a comment marker anywhere on the line makes every solution on those
-    # instances unparseable, so both engines' rows are withheld for a format bug.
+    # `#` is part of a column name on 13 roster instances (see TINY_MPS), not a
+    # comment marker.
     values, objective = parse_solution("# engine cbls\n=obj= 6.0\nx#1#1 4\ny 2\n")
     assert values == {"x#1#1": 4.0, "y": 2.0}
     assert objective == pytest.approx(6.0)

@@ -1,8 +1,8 @@
 """Tests for the MIPfeas parity report: feasibility sets, defects, cross-checks.
 
-The benchmark is admitted as a head-to-head against the reference implementation
-of the same jump-based algorithm, and the run it now carries is a correctness
-sweep. These tests cover what that sweep has to report (issue #139) and, in
+The benchmark is a head-to-head against the reference implementation of the same
+jump-based algorithm, run as a correctness sweep. These tests cover what that
+sweep has to report (issue #139) and, in
 `test_regenerating_the_report_reproduces_the_committed_numbers`, pin the whole of
 it against a frozen results directory.
 """
@@ -388,12 +388,9 @@ def test_an_instance_is_reported_as_agreeing_only_when_both_shapes_were_read(
 def test_every_fixture_file_is_tracked_by_git() -> None:
     """An untracked fixture file is green here and red nowhere else.
 
-    The regeneration test reads the working tree, not the index.
-
-    This already happened once: `.gitignore`'s blanket `results/` swallowed the
-    whole fixture directory, so criterion 8 passed only on the machine that
-    generated it, while the guard test beside it stayed green because it reads
-    the tracked expected file.
+    The regeneration test reads the working tree, not the index: when
+    `.gitignore`'s blanket `results/` swallowed the fixture directory, it passed
+    only on the machine that generated it.
     """
     tracked = subprocess.run(
         ["git", "ls-files", "-z", "benchmarks/mipfeas/testdata"],
@@ -511,8 +508,9 @@ def test_the_headline_block_leads_with_defects_then_parity(tmp_path: Path) -> No
 
 
 def test_the_anytime_aggregate_names_the_worker_pairing_it_measures() -> None:
-    # Not "solvers" in general: the only baseline is CP-SAT's fj + ls subsolvers
-    # under num_violation_ls, and a table quoted out of context must say so.
+    # Not "solvers" in general: this label's baseline is CP-SAT's fj + ls
+    # subsolvers under num_violation_ls (a defaults table is labelled by
+    # `anytime_label`, #284), and a table quoted out of context must say so.
     assert "fj + ls" in ANYTIME_LABEL
     assert "num_violation_ls" in ANYTIME_LABEL
     assert "Primal Integral" in ANYTIME_LABEL

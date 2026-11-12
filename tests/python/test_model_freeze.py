@@ -19,11 +19,9 @@ def _closed_model() -> tuple[cbls.Model, int, int, int]:
     m = cbls.Model()
     x = m.int_var(0, 20, "x")
     y = m.int_var(0, 20, "y")
-    # A structured variable too, so the lambda_sum case below can hand
-    # lambda_sum a handle it ACCEPTS and still be refused for being frozen.
-    # With an int handle the freeze check is never reached: lambda_sum now
-    # rejects a non-List/Set handle outright, which is the same rule its
-    # table-backed and pair siblings follow.
+    # A structured variable, so lambda_sum gets a handle it ACCEPTS and is refused
+    # for being frozen: it rejects a non-List/Set handle before the freeze check,
+    # as its table-backed and pair siblings do.
     s = m.set_var(4, 0, 4, "s")
     total = m.sum([x, y, m.lambda_sum(s, lambda e: float(e))])
     row = m.leq(total, m.constant(10.0))
@@ -102,9 +100,9 @@ def test_a_frozen_model_still_does_everything_a_search_does() -> None:
 
 
 def test_node_value_range_checks_its_index() -> None:
-    """`Model.node_value(id)` replaced `ExprNode.value`, so it is a new raw-int32
-    index reachable from Python. CLAUDE.md's nanobind rule is that such a guard
-    gets a test: unchecked, these would be heap reads rather than exceptions.
+    """`Model.node_value(id)` is a raw-int32 index reachable from Python, and
+    CLAUDE.md's nanobind rule is that its guard gets a test: unchecked, these
+    would be heap reads rather than exceptions.
     """
     m, _x, row, _s = _closed_model()
     # x + y + lambda_sum(s) - 10, with s empty so its term is 0.0.
@@ -128,8 +126,8 @@ def test_freeze_caches_every_variables_cone() -> None:
 
 
 def test_the_first_freezes_cap_holds() -> None:
-    """A cap of 0 caches nothing, and a later `freeze()` is the no-op it always
-    was: it does not build the cache the first call left out."""
+    """A cap of 0 caches nothing, and a later `freeze()` is a no-op: it does not
+    build the cache the first call left out."""
     m, _x, _row, _s = _closed_model()
     m.freeze(cone_cache_bytes=0)
     assert m.is_frozen()

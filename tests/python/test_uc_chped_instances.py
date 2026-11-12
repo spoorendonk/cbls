@@ -1,14 +1,13 @@
 """#148/#193: the Table 2 bounds describe this repository's ucp13 and ucp40.
 
-#148 settled it against the authors' GPL `ucp_data.py` (FIDELITY.md section
-7; its script, `instance_identity.py`, is in git history). #148 found ucp40's units 19-20 capped at
-500 MW where the source has 550, and relabelled its cited rows as bounds for a
-related system; #193 corrected the data (now `benchmarks/uc-chped/chped_data.py`) and removed the
-relabel. What this pins is the corrected state: the committed instances carry
-the source's limits, and the runner scores ucp40 against its own Table 2 bounds
-exactly as it does ucp13. It also pins #194: no committed instance asks for
-more demand + reserve than its total P_max in any period, and
-`extend_horizon()` never scales a day above the base profile.
+#148 checked the instances against the authors' GPL `ucp_data.py` (FIDELITY.md
+section 7; its script, `instance_identity.py`, is in git history) and found
+ucp40's units 19-20 capped at 500 MW where the source has 550; #193 corrected the
+data (now `benchmarks/uc-chped/chped_data.py`). Pinned: the committed instances
+carry the source's limits, and the runner scores ucp40 against its own Table 2
+bounds exactly as it does ucp13. Also #194: no committed instance asks for more
+demand + reserve than its total P_max in any period, and `extend_horizon()`
+never scales a day above the base profile.
 """
 
 from __future__ import annotations

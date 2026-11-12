@@ -485,8 +485,8 @@ def test_resuming_at_a_different_thread_count_is_refused(tmp_path: Path) -> None
     # mixed-configuration guard to catch, and an operator who believes they
     # measured 4. Caught before the run rather than after it is paid for.
     (tmp_path / "cbls").mkdir()
-    # `objective_tie_break` is on the row because it has been on by default
-    # since #226 and a row without it ran it off; this test is about threads.
+    # The tie-break is on by default since #226 (a row without it ran it off), so
+    # rows here and below carry it; this test is about threads.
     tie = {"objective_tie_break": True}
     (tmp_path / "cbls" / "a.json").write_text(json.dumps({"instance": "a", "threads": 1, **tie}))
     jobs = [Job("cbls", "a")]
@@ -518,8 +518,8 @@ def test_resuming_under_a_different_search_arm_is_refused(tmp_path: Path) -> Non
     def check(**overrides: object) -> int | None:
         return run_benchmark.check_resume_configuration(jobs, tmp_path, _driver_args(**overrides))
 
-    # The rows below carry the tie-break, on by default since #226, so that each
-    # part tests only its own flag; the tie-break's own part is further down.
+    # Rows carry the tie-break so each part tests only its own flag; the
+    # tie-break's own part is further down.
     tie = {"objective_tie_break": True}
     result.write_text(json.dumps({"instance": "a", "threads": 1, "compound_moves": True, **tie}))
     assert check() is None
@@ -527,8 +527,8 @@ def test_resuming_under_a_different_search_arm_is_refused(tmp_path: Path) -> Non
     # A row without the key predates it: nothing to contradict.
     result.write_text(json.dumps({"instance": "a", "threads": 1, **tie}))
     assert check(compound_moves=False) is None
-    # And the objective tie-break (#218), on by default since #226: a row from
-    # before ran it off, so a default run cannot resume onto one.
+    # The objective tie-break (#218): a row without the key ran it off, so a
+    # default run cannot resume onto one.
     result.write_text(json.dumps({"instance": "a", "threads": 1, "objective_tie_break": False}))
     assert check(objective_tie_break=False) is None
     assert check() == 2
@@ -541,9 +541,9 @@ def test_resuming_under_a_different_search_arm_is_refused(tmp_path: Path) -> Non
 
 
 def test_a_default_run_resumes_over_a_job_it_killed(tmp_path: Path) -> None:
-    # The driver writes the row for a job it killed, and resume keeps that row. It
-    # carried no arm keys once, so it read back as the tie-break's off arm and a
-    # default run (on since #226) refused to resume any directory holding one.
+    # Resume keeps the row the driver writes for a killed job, which carries its
+    # arm keys (#226): without them it read as the tie-break's off arm and a
+    # default run refused to resume any directory holding one.
     args = _driver_args()
     jobs = [Job("cbls", "a"), Job("cpsat", "a")]
     for job in jobs:
@@ -624,8 +624,7 @@ def _row(
     job = job or Job("cbls", "inst")
     job.result_path(results_dir).parent.mkdir(parents=True, exist_ok=True)
     if status is not None:
-        # The tie-break is on by default since #226; a row without it ran it off,
-        # which a default resume would refuse.
+        # Without the tie-break key the row ran it off; a default resume refuses it.
         row = {"status": status, "objective": 1.0, "objective_tie_break": True}
         job.result_path(results_dir).write_text(json.dumps(row))
     if solution:
@@ -1696,11 +1695,8 @@ def test_the_machine_record_exists_before_the_first_job_is_dispatched(
 ) -> None:
     """The point of writing it first: a run killed at hour six still has one.
 
-    Nothing pinned this. Moving the write after `execute`, or deleting it from
-    `main` outright, left the whole Python suite green -- criterion 4's central
-    property held up by a comment. The spy asserts the file is on disk at the
-    moment the first job would be dispatched, which is the only moment that
-    distinguishes the two orderings.
+    The spy asserts the file is on disk when the first job would be dispatched,
+    the only moment that tells writing first from writing after `execute`.
     """
     inst_dir, roster = _instance_dir(tmp_path, "inst", b"NAME tiny\nENDATA\n", 1.0)
     results_dir = tmp_path / "results"
@@ -1749,15 +1745,13 @@ def test_a_non_default_cbls_bin_is_not_attributed_to_the_checkouts_commit(
 ) -> None:
     """An A/B built with --cbls-bin must not stamp both arms with HEAD.
 
-    The checkout's commit describes `build/cbls_mipfeas` and nothing else, so a
-    run whose binary came from elsewhere was labelled with the working tree's
-    commit -- which made the CONTROL arm of a two-arm comparison claim to be the
-    treatment. That is the one moment the recorded commit is load-bearing, so it
-    is pinned here rather than left to the next person to notice.
+    The checkout's commit describes `build/cbls_mipfeas` and nothing else; stamped
+    on a binary from elsewhere, it made a two-arm comparison's CONTROL arm claim
+    to be the treatment, the one case where the recorded commit is load-bearing.
     """
     monkeypatch.setattr(run_benchmark, "commit_sha", lambda: "deadbee")
 
-    # The default path is attributed to the checkout, as before.
+    # The default path is attributed to the checkout.
     assert run_benchmark.engine_commit(run_benchmark.DEFAULT_CBLS_BIN) == "deadbee"
 
     # Any other binary is attributed to its own bytes.
@@ -1777,9 +1771,7 @@ def test_a_non_default_cbls_bin_is_not_attributed_to_the_checkouts_commit(
     assert run_benchmark.engine_commit(other, "abc1234") == "abc1234"
     assert run_benchmark.engine_commit(run_benchmark.DEFAULT_CBLS_BIN, "abc1234") == "abc1234"
 
-    # A binary that is not there is "unknown", NOT a traceback. The stamp must
-    # not be the first thing to touch the file: `main` refuses a cbls run with a
-    # missing binary at exit 2 with a message naming the target to build, and a
-    # `--engines cpsat` run needs no cbls binary at all. Reading it here first
-    # turned both into a FileNotFoundError out of a provenance read.
+    # A binary that is not there is "unknown", NOT a FileNotFoundError: `main`
+    # refuses a cbls run with a missing binary at exit 2 naming the target to
+    # build, and a `--engines cpsat` run needs no cbls binary at all.
     assert run_benchmark.engine_commit(tmp_path / "absent") == "unknown"

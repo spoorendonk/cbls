@@ -1,15 +1,11 @@
 """`cbls.StopToken`: cancelling a running solve from another Python thread (#169).
 
-Every scenario here runs in a **child interpreter**, for the reason
-`tests/python/test_pool.py` sets out at length and this file inherits: the
-failure mode is a starved interpreter, and no in-process deadline can report
-one. `cbls.solve` did not release the GIL before #169, so a Python thread that
-wanted to call `StopToken.request()` mid-solve could not run at all -- the
-regression this guards against is exactly a deadlocked child, where the solve
-runs its whole budget while the canceller thread waits for a GIL it never gets.
-`pytest-timeout` cannot see that (its `thread` method needs the same GIL; its
-`signal` method only takes effect at the next bytecode in a main thread parked
-inside a C++ call), so the deadline is a wall clock on a subprocess.
+Every scenario runs in a **child interpreter** under a wall-clock timeout, for
+the reason `tests/python/test_pool.py` gives: a starved interpreter, which
+neither an in-process deadline nor `pytest-timeout` can report. Pre-#169
+`cbls.solve` held the GIL, so a thread calling `StopToken.request()` mid-solve
+never ran; the regression is a child whose solve runs its whole budget while the
+canceller waits for the GIL.
 
 The C++ side of the same feature is `tests/test_stop.cpp`, which covers the
 `TerminationReason::Cancelled` contract without an interpreter in the way.
@@ -30,11 +26,10 @@ CHILD_TIMEOUT_SECONDS = 30.0
 # is provable from the iteration count rather than from the wall clock -- the
 # #104 discipline the C++ tests follow.
 #
-# Sized with a wide margin on purpose. `_scenario_cancel_running_solve` raises the
-# token on a 0.5s timer, so a budget the search could EXHAUST inside that window
-# would make the scenario report IterationLimit and fail with no other symptom --
-# a flake. At this size an unpolled stop instead runs into the child's own
-# wall-clock deadline, which `_assert_scenario_ok` reports by name.
+# The margin is wide because `_scenario_cancel_running_solve` raises the token on
+# a 0.5s timer: a budget exhausted inside that window reports IterationLimit, a
+# flake. At this size an unpolled stop instead hits the child's wall-clock
+# deadline, which `_assert_scenario_ok` reports by name.
 UNREACHABLE_ITERATIONS = 200_000_000
 
 

@@ -1,19 +1,14 @@
 """Tests for ParallelSearch via Python bindings (#128, #129, #159).
 
-Every scenario here runs in a **child interpreter**, not in-process. That is
-deliberate: the bugs these tests cover are a GIL deadlock (#128), a double
-free of a factory's return value (#129) and a Python exception released without
-the GIL (#159), and none is reportable from inside
-the process that hits it -- a deadlocked interpreter cannot fail a test, and an
-aborting one takes the whole pytest run down with it. `pytest-timeout` cannot
-rescue it either -- its `thread` method runs `timeout_timer` on a
-`threading.Timer`, which is a Python thread and so needs the GIL it is waiting
-on, and its `signal` method sets a flag that only takes effect at the next
-bytecode in the main thread, which is parked inside the C++ `join()`. Both
-mechanisms are starved by
-exactly the condition they would have to report. A child process with a
-wall-clock timeout is the only kind of deadline that still fires, so a
-regression here fails the suite in ~20s instead of hanging it forever.
+Every scenario runs in a **child interpreter** under a wall-clock timeout. The
+bugs covered, a GIL deadlock (#128), a double free of a factory's return value
+(#129) and a Python exception released without the GIL (#159), cannot be
+reported from the process that hits them: a deadlocked interpreter cannot fail a
+test, and an aborting one takes the pytest run down. `pytest-timeout` is starved
+too: its `thread` method's `threading.Timer` needs the GIL being waited on, and
+its `signal` method's flag acts only at the next bytecode in the main thread,
+parked in the C++ `join()`. A child-process timeout still fires, so a regression
+fails in ~20s instead of hanging.
 
 The child re-executes this file as a script (`__main__` block at the bottom),
 so the scenarios stay next to the assertions that consume them.
@@ -80,9 +75,8 @@ def test_solve_accepts_a_python_model_factory() -> None:
 def test_solve_calls_the_factory_on_every_worker_thread() -> None:
     """Two workers means two factory calls, on two distinct threads.
 
-    This is what the binding's docstring warns about, so it is worth asserting
-    rather than describing: releasing the GIL is what lets the workers run the
-    factory concurrently in the first place.
+    The binding's docstring warns of it: the released GIL lets workers run the
+    factory concurrently.
     """
     out = _assert_scenario_ok("solve")
     assert "distinct_factory_threads=2" in out
@@ -97,14 +91,11 @@ def test_solve_parallel_accepts_a_python_model_factory() -> None:
 def test_a_factory_returning_one_frozen_master_gives_each_worker_a_replica() -> None:
     """The Python route to #157's shared structure works end to end.
 
-    What this pins is that `m.freeze()` plus `lambda: m` is a usable factory: the
-    workers run, and the master comes back frozen and unsearched. Sharing itself is
-    NOT observable from Python -- it is pinned by address in
-    tests/test_model_share.cpp -- so do not read a green run here as evidence of it.
-
-    In a child process for the same reason every scenario here is -- the factory
-    runs on the worker threads, so a GIL mistake hangs the interpreter rather than
-    failing a test.
+    `m.freeze()` plus `lambda: m` is a usable factory: the workers run, and the
+    master comes back frozen and unsearched. Sharing itself is NOT observable from
+    Python (tests/test_model_share.cpp pins it by address), so a green run is no
+    evidence of it. Child process: the factory runs on worker threads, so a GIL
+    mistake hangs the interpreter rather than failing a test.
     """
     out = _assert_scenario_ok("frozen_master")
     assert "OK" in out
@@ -125,13 +116,11 @@ def test_solve_surfaces_a_raising_python_factory() -> None:
 def test_solve_parallel_accepts_a_python_hook_factory() -> None:
     """A Python hook_factory runs once per worker and its object is freed once (#129).
 
-    The factory type used to hand back a raw owning pointer that src/pool.cpp
-    adopted into a unique_ptr, so a nanobind-owned return value was deleted by
-    C++ and again by the interpreter -- an unconditional SIGABRT, not a race.
-    It now returns a shared_ptr, whose nanobind caster holds a Python reference
-    and drops it under the GIL. Both regression modes are fatal to the process
-    that hits them -- an abort, or a deadlock if the GIL handling is wrong --
-    so this runs in a child, like every other scenario in this file.
+    Pre-#129 the factory returned a raw owning pointer that src/pool.cpp adopted
+    into a unique_ptr, so C++ and the interpreter both deleted a nanobind-owned
+    value: an unconditional SIGABRT. A shared_ptr's caster holds a Python reference
+    and drops it under the GIL. Child process: both regressions (an abort, or a
+    deadlock if the GIL handling is wrong) kill the process that hits them.
     """
     out = _assert_scenario_ok("hook_factory")
     assert "hook_calls=2 hooks_destroyed=2 hook_threads=2" in out
@@ -140,10 +129,9 @@ def test_solve_parallel_accepts_a_python_hook_factory() -> None:
 def test_solve_parallel_accepts_a_python_lns_factory() -> None:
     """The same round trip for lns_factory, which has its own lifetime (#129).
 
-    Checked separately from hook_factory rather than folded into one scenario:
-    the two arguments have the same shape but are built from different places --
-    one per worker model, one per worker -- so a fix that only reached one of
-    them would pass a combined test.
+    Separate from hook_factory: the two are built in different places (one per
+    worker model, one per worker), so a fix reaching only one would pass a
+    combined test.
     """
     out = _assert_scenario_ok("lns_factory")
     assert "lns_calls=2 lns_destroyed=2 lns_threads=2" in out
@@ -152,17 +140,12 @@ def test_solve_parallel_accepts_a_python_lns_factory() -> None:
 def test_solve_parallel_builds_each_factory_once_per_worker_not_per_restart() -> None:
     """A worker restarts inside its own thread; its factories must not re-run.
 
-    The portfolio no longer runs one `solve()` per worker -- a worker whose
-    solve returns with budget left is restarted on the remaining clock, so the
-    cores are never idle. The factory contract is the thing that quietly breaks
-    under that change: moving the factory calls inside the restart loop would
-    build a fresh Model, hook and LNS per restart, which is a deep copy of the
-    model and, from Python, a GIL acquisition on every one. The scenario forces
-    many restarts (a small max_iterations against a wall clock) and asserts the
-    counts are still one per worker.
-
-    Runs in a child like every other scenario here: the failure mode if the GIL
-    handling regresses is a deadlock, which no in-process deadline can report.
+    A worker whose solve returns with budget left restarts on the remaining clock.
+    Factory calls inside that loop would build a Model, hook and LNS per restart:
+    a deep copy and, from Python, a GIL acquisition each. The scenario forces many
+    restarts (small max_iterations against a wall clock) and asserts one build per
+    worker. Child process: a GIL regression deadlocks, which no in-process
+    deadline can report.
     """
     out = _assert_scenario_ok("restarts")
     assert "factory_calls=2" in out
@@ -176,12 +159,11 @@ def test_solve_parallel_builds_each_factory_once_per_worker_not_per_restart() ->
 def test_solve_parallel_calls_a_python_callback_from_a_worker_thread() -> None:
     """The progress callback is the other Python path the GIL release unblocked.
 
-    `SolveCallback` reaches C++ through a nanobind trampoline, which acquires the
-    GIL from worker 0 -- so before the release it deadlocked for exactly the same
-    reason `model_factory` did. Every worker now reports, through the portfolio's
-    serializing wrapper, so what this pins is that no call lands on the CALLING
-    thread; without this test a change that reverted the guard on `solve_parallel`
-    alone would leave the other scenarios green.
+    `SolveCallback`'s nanobind trampoline acquires the GIL from a worker, so
+    without the call guard it deadlocks as `model_factory` did (#128). Every worker
+    reports through the portfolio's serializing wrapper; this pins that no call
+    lands on the CALLING thread, so reverting the guard on `solve_parallel` alone
+    fails here.
     """
     out = _assert_scenario_ok("callback")
     assert "callback_all_calls_off_main_thread=True" in out
@@ -278,13 +260,11 @@ def test_a_portfolio_that_loses_a_worker_says_so_and_its_row_is_refused(
 ) -> None:
     """A dead worker is counted, and a MIPfeas row built from the result is refused (#170).
 
-    One worker's hook factory raises `MemoryError` -- the failure an
-    address-space cap produces -- so that worker never searches, while its peer
-    does. The portfolio absorbs it and returns the peer's answer, as it always
-    has; what is new is that the result says 1 of 2 completed and why the other
-    did not. The row below carries the keys `benchmarks/mipfeas/mipfeas.cpp`
-    writes, filled from this result, and the scorer must refuse it rather than
-    average it in as a 2-thread measurement.
+    One worker's hook factory raises `MemoryError` (what an address-space cap
+    produces), so only its peer searches. The portfolio returns the peer's answer
+    and says 1 of 2 completed and why. The row below carries the keys
+    `benchmarks/mipfeas/mipfeas.cpp` writes, and the scorer must refuse it rather
+    than average it in as a 2-thread measurement.
     """
     out = _assert_scenario_ok("hook_factory_fails_one_worker")
     report = json.loads(out.splitlines()[0])
@@ -513,8 +493,7 @@ def _scenario_callback() -> None:
     off_main = [i for i in idents if i != main_thread]
     assert len(off_main) == len(idents), f"callback ran on the calling thread: {idents}"
     # A flag, not the count: how many rows arrive depends on which worker
-    # improves first (a peer reports only a new portfolio-wide best), and a
-    # count of 1 printed here failed under load when both workers reported.
+    # improves first (a peer reports only a new portfolio-wide best).
     print("callback_all_calls_off_main_thread=True")
 
 
@@ -660,13 +639,9 @@ if __name__ == "__main__":
 def test_termination_reason_exposes_stopped() -> None:
     """`Stopped` is part of the enum a Python caller reads off a SearchResult.
 
-    It was added when ParallelSearch gained a shared stop flag, and a binding
-    that forgot it would leave Python unable to name the reason its own runs
-    report -- silently, since nanobind simply would not create the attribute.
-
-    Python cannot *produce* a Stopped result: SearchCoordination is not bound,
-    by design, so the flag is reachable only from C++. The enum value is what
-    Python needs, and it is what this pins.
+    A binding missing it leaves Python unable to name the reason its runs report,
+    silently (nanobind just omits the attribute). Python cannot *produce* Stopped:
+    SearchCoordination is unbound by design, so only the enum value is pinned.
     """
     assert hasattr(cbls.TerminationReason, "Stopped")
     assert hasattr(cbls.TerminationReason, "Cancelled")
@@ -769,11 +744,9 @@ def test_share_objective_bound_reaches_the_workers(share: bool) -> None:
 def test_adjacent_base_seeds_do_not_share_worker_streams() -> None:
     """Bumping --seed must actually give a different portfolio.
 
-    The old scheme was `base + worker + restart * n_threads`: correct within a
-    run, but at 12 workers seeds 42 and 43 shared 11 of their 12 base streams,
-    so the standard way to draw an independent sample barely changed anything.
-    Exposed to Python so the property is checked directly rather than inferred
-    from two search trajectories.
+    Pre-#135 the scheme `base + worker + restart * n_threads` made seeds 42 and 43
+    share 11 of 12 base streams at 12 workers. Bound to Python so the property is
+    checked directly, not inferred from two trajectories.
     """
     workers = 12
     a = {cbls.portfolio_worker_seed(42, w, 0) for w in range(workers)}

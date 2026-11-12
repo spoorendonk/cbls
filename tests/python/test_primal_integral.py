@@ -531,9 +531,9 @@ NAN = "nan"
             {"unverified": 1},
         ),
         # The escape hatch for a results directory filled before #138. It relaxes
-        # "nobody checked", never "checked and rejected" -- and the row is still
-        # counted: the counter once keyed on `withheld`, which this turns off, so
-        # the one mode that publishes unchecked numbers reported none of them.
+        # "nobody checked", never "checked and rejected", and the row is still
+        # counted: a counter keyed on `withheld`, which this turns off, would report
+        # none of the unchecked numbers this mode publishes.
         (
             {"status": "feasible", "objective": 100.0},
             None,
@@ -673,12 +673,11 @@ def test_a_write_that_dies_leaves_the_previous_table_intact(
 ) -> None:
     """`open(path, "w")` truncates before a single row is written.
 
-    CLAUDE.md's rule for anything that writes a published table: a job killed
-    mid-write must not replace it with a header and nothing else, at exit 0. The
-    C++ runners already write to a temp path and rename; this one did not. The
-    kill lands at the last instant -- the new table fully written beside the old
-    one -- because a write that goes straight to the published path has already
-    destroyed it by then, and an earlier kill cannot tell the two apart.
+    CLAUDE.md's rule for a published table: a job killed mid-write must not
+    replace it with a header and nothing else, at exit 0, so it is written to a
+    temp path and renamed. The kill lands at the last instant (the new table fully
+    written beside the old) because a direct write has destroyed the old one by
+    then, and an earlier kill cannot tell the two apart.
     """
     _write_result(tmp_path, "cbls", "inst", {"status": "feasible", "objective": 10.0})
     scored = _score(tmp_path, reference=10.0)
@@ -698,9 +697,9 @@ def test_a_write_that_dies_leaves_the_previous_table_intact(
 @pytest.mark.parametrize(
     ("record", "verification", "require", "cells", "said", "not_said"),
     [
-        # write_comparison builds its header and its rows as two parallel lists.
-        # #120 inserted two entries into the middle of both, the most
-        # misalignment-prone edit that function admits. Tolerances are read back
+        # write_comparison builds its header and rows as two parallel lists, and
+        # #120's two mid-list entries are the most misalignment-prone edit it
+        # admits. Tolerances are read back
         # off the verdicts, not restated in the scorer: a table has to quote the
         # thresholds its own rows were judged by. A fully verified table carries no
         # --allow-unverified banner.

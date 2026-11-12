@@ -174,13 +174,11 @@ def _scenario_solve_master_registers_the_master() -> None:
 
 
 def _scenario_an_expr_keeps_its_model_alive() -> None:
-    """`cbls.Model().Float(0, 1)` used to leave the Expr pointing at a freed model.
+    """An Expr from `cbls.Model().Float(0, 1)` keeps its model alive.
 
-    The Expr held a raw Model* and nothing tied the Python Model to it. Freed, the
-    model's memory is reused by the next Model of the same size, so the stale
-    pointer then reads (and writes) THAT model: `x.model` returned the new model
-    and `x + 1.0` built a node in it. Checked on the direct result, on a chain of
-    operators, and on the free functions.
+    With a raw Model* tied to nothing, the freed model's memory was reused by the
+    next Model of the same size: `x.model` returned it and `x + 1.0` built a node
+    in it. Checked on the direct result, an operator chain and the free functions.
     """
     import gc
 

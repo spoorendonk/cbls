@@ -37,8 +37,8 @@ class TestMoves:
     def test_a_structured_change_carries_positional_edits(self) -> None:
         """A structured candidate is an edit, not the whole element vector (#164).
 
-        `elements_after` is what a caller uses to see the absolute vector the
-        change used to carry; the engine applies the edit in place instead.
+        `elements_after` gives a caller the absolute vector; the engine applies
+        the edit in place.
         """
         m = cbls.Model()
         lv = m.list_var(5, "perm")
