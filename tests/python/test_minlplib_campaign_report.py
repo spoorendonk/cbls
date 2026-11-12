@@ -137,11 +137,10 @@ def test_the_committed_tables_reproduce_the_readme() -> None:
 
     Section by section, in README order: these literals pin the GENERATOR, and
     `test_the_committed_readme_blocks_are_the_generators_rendering` pins the
-    README to the generator, so the two together pin the README. When this was
-    first written three README numbers had drifted from the committed tables and
-    the README was corrected, not this test: `ex8_4_5` is 1.20% worse than BKS
-    (not 1.38%), `eg_all_s` walks 15930 steps between 15931 incumbents (not
-    "15931 steps"), and the "within 1%" sentence missed `prob09`.
+    README to the generator, so the two together pin the README. Three drifted
+    README numbers were corrected to the tables, not this test: `ex8_4_5` is 1.20%
+    worse than BKS (not 1.38%), `eg_all_s` walks 15930 steps between 15931
+    incumbents (not "15931 steps"), and the "within 1%" sentence missed `prob09`.
     """
     report = build_report(DEFAULT_INST_DIR, budget=None, seed=None, machine=None, feas_tol=None)
     res = report.results
@@ -514,7 +513,7 @@ def test_json_has_no_nan(tmp_path: Path) -> None:
     assert "NaN" not in to_json(report)
 
 
-# --- review round: definitions that must not fail open ---------------------------
+# --- definitions and inputs that must not fail open ------------------------------
 
 
 def verify_failed(instance: str) -> Row:
@@ -719,7 +718,7 @@ def test_the_committed_readme_blocks_are_the_generators_rendering() -> None:
     ],
 )
 def test_editing_a_readme_number_makes_its_block_stale(block: str, old: str, new: str) -> None:
-    """The cold review's edits, each of which every earlier test let through."""
+    """A one-number hand edit inside each block names exactly that block as stale."""
     text = README.read_text()
     assert text.count(old) == 1, old
     blocks = readme_blocks(_committed_report())
@@ -914,7 +913,7 @@ def test_the_driver_summary_warns_instead_of_raising(
     assert "not in bounds.csv" in err
 
 
-# --- fix round 2: a documented failure that comes back feasible -------------------
+# --- what --write-readme refuses; one seed's files; percentage cells --------------
 
 
 def _write_feasible_elec_campaign(directory: Path) -> None:

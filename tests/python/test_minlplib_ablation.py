@@ -810,10 +810,9 @@ def test_the_drivers_failed_row_carries_no_measurement(tmp_path: Path) -> None:
         (["0"] * 20, False, 0, 0, 20, "would measure nothing"),
         # `lns_repairs` is NaN on a row the runner wrote without solving -- for an
         # unsupported instance (exit 0) and for a solve that threw (exit 3). It
-        # must not read as a repair, must not crash the gate -- and must not read
-        # as a reading of ZERO repairs either, which is what an earlier cut did. A
-        # skip assembled from rows where nothing ran is not "the counter reading
-        # that justified skipping"; with no reading at all the arm runs.
+        # must not read as a repair, crash the gate, or read as ZERO repairs: a skip
+        # from rows where nothing ran is no "counter reading that justified
+        # skipping"; with no reading at all the arm runs.
         (["NaN", ""], True, 0, 0, 0, "produced an lns_repairs reading"),
         (["NaN"] * 20, True, 0, 0, 0, "produced an lns_repairs reading"),
         # A skip may stand on a reading with a few holes in it, and says so...
@@ -912,7 +911,7 @@ def test_one_enormous_instance_cannot_decide_the_verdict(tmp_path: Path) -> None
     """The roster's gaps span six orders of magnitude, so an unweighted mean is
     not an average over the roster -- it is the largest instance's seed draw.
 
-    Against the cut that took `statistics.fmean` of raw per-instance deltas,
+    A `statistics.fmean` of raw per-instance deltas over
     this exact campaign printed `mean gap delta -1140.74 points is INSIDE THE
     NOISE (measured floor +/-3733.20 points)`, where both numbers were entirely
     `gear4`. Here there is no arm effect at all, so the only honest verdict is
@@ -933,7 +932,7 @@ def test_one_enormous_instance_cannot_decide_the_verdict(tmp_path: Path) -> None
 
 def test_a_uniform_regression_is_not_hidden_by_the_enormous_instance(tmp_path: Path) -> None:
     """The other half of the same defect: a real, uniform regression on every
-    small instance moved the old mean by 9.8 points against a floor of 3733,
+    small instance moved the raw mean by 9.8 points against a floor of 3733,
     and was reported as inside the noise. It must now be seen."""
     results = _campaign_csv(
         tmp_path / RESULTS_NAME,

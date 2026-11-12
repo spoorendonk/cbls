@@ -303,13 +303,10 @@ def test_preflight(
         # anytime_trace.csv keeps the previous one, and nothing in either file says so.
         ({"trace": False}, ("--no-trace",)),
         ({"trace": False, "out": "scratch.csv"}, None),
-        # `--out` moved off the published table does NOT move the trace with it:
-        # `resolve_paths` defaults `trace_out` to the published `anytime_trace.csv`
-        # and `publish` assembles into it unconditionally, so a scratch run at
-        # another seed or budget would replace the published anytime profile at
-        # exit 0 while reporting that it wrote a scratch table. The runner's own
-        # guard cannot catch it: every instance is staged, so the published path
-        # never reaches the runner. The #149 campaign's shape, which found it.
+        # #149: `--out` off the published table does NOT move the trace: `resolve_paths`
+        # defaults `trace_out` to the published `anytime_trace.csv` and `publish`
+        # assembles into it, so a scratch run would replace the published profile at
+        # exit 0. The runner's guard cannot catch it: every instance is staged.
         ({"out": "scratch.csv"}, ("--trace-out", "anytime_trace.csv")),
         # The mirror, which slips past both other guards: `--out` defaulted with
         # `--trace-out` at scratch republishes comparison.csv at this engine beside
@@ -371,8 +368,8 @@ def test_preflight(
             {"out": "scratch.csv", "trace_out": "inst/anytime_trace.csv"},
             ("--trace-out names the published",),
         ),
-        # A non-default budget may not publish: a smoke run replaced seed 2's 60s
-        # block in comparison_seeds.csv, and seed 1's comparison.csv likewise.
+        # A non-default budget may not publish: it would replace the seed's 60s block
+        # in comparison_seeds.csv, or seed 1's comparison.csv.
         ({"time_limit": 5.0}, ("--time-limit 5", "comparison.csv")),
         ({"seed": 2, "time_limit": 5.0}, ("--time-limit 5", "comparison_seeds.csv")),
         ({"time_limit": 5.0, "out": "s.csv", "trace_out": "t.csv"}, None),
@@ -493,10 +490,9 @@ def _stage(
 @pytest.mark.parametrize(
     ("note", "stands_in"),
     [
-        # The #153 hole: the row a thrown instance leaves is COMPLETE by every
-        # structural check, and `--resume` is the default. `run_roster` aborts on
-        # the first run, but without this the next would skip the instance and
-        # `publish` would assemble a row that measured nothing.
+        # #153: a thrown instance's row is COMPLETE by every structural check and
+        # `--resume` is the default, so the next run would skip it and `publish`
+        # would assemble a row that measured nothing.
         ("solve-error", False),
         ("read-error", False),
         ("build-error", False),
@@ -1461,9 +1457,8 @@ def test_summary_counts_elec_in_the_roster_and_out_of_the_quality_aggregates(
 ) -> None:
     """#142: one rule for both denominators, and the summary states it.
 
-    Before #142 the driver dropped `elec` from every line while the README's tally
-    counted the whole roster. Now the roster counts include it and only the
-    quality aggregates hold it out, under `campaign_report.AGGREGATION_RULE`.
+    Roster counts include `elec`; only the quality aggregates hold it out, under
+    `campaign_report.AGGREGATION_RULE`.
     """
     excluded = f"{CLAIM_EXCLUDED[0]},NaN,1,1,NaN,NaN,60,false,infeasible(residual=1),abc1234,1,0"
     out, bounds = _summary_inputs(tmp_path, excluded)
@@ -1499,17 +1494,10 @@ def test_summary_warns_when_a_documented_failure_comes_back_feasible(tmp_path: P
 def test_the_published_header_still_matches_what_the_runner_writes() -> None:
     """Every `RUNNER_COLUMNS` name appears in `minlplib.cpp`, delimited as a cell.
 
-    A substring search per name, so it catches a *renamed* or deleted column but
-    not a reordered or inserted one — several of these names also occur in that
-    file's prose. The exact pin is the next test, which compares the header
-    against the committed table field for field.
-
-    The delimiter is load-bearing and not decoration: a bare `column in source`
-    is satisfied for `lns_repairs` by the presence of `lns_repairs_accepted`, so
-    deleting the shorter column would leave this green. Requiring the trailing
-    comma (or, for the last column, the literal's closing newline) separates the
-    two. It works only because the header literal is split BETWEEN cells in that
-    file, never mid-name — which is itself a thing this assertion pins.
+    Catches a renamed or deleted column, not a reordered or inserted one; the next
+    test pins the order. The trailing comma (or the last column's closing newline)
+    is load-bearing: bare `lns_repairs` matches inside `lns_repairs_accepted`. It
+    relies on, and so pins, the header literal splitting BETWEEN cells.
     """
     source = (REPO_ROOT / "benchmarks" / "minlplib" / "minlplib.cpp").read_text()
     assert all(f"{column}," in source for column in RUNNER_COLUMNS[:-1])
@@ -1520,13 +1508,8 @@ def test_the_published_header_still_matches_what_the_runner_writes() -> None:
 def test_the_committed_table_uses_the_columns_the_driver_assembles() -> None:
     """The assembled table must slot into the published one column-for-column.
 
-    A plain equality since #123 regenerated the table. Until then the committed
-    header stopped at `n_int_vars`, five columns short: `search_config` (#136),
-    `lns_repairs` (#143), `lns_repairs_accepted` (#150), and the first-feasible
-    pair (#149) were added to the runner after that table was measured. The
-    trailing columns are how a reader dates a `comparison.csv`, so a header that
-    disagrees with the runner's is a table from another runner, not a table to
-    publish beside this one.
+    A plain equality since #123 regenerated the table. The trailing columns date a
+    `comparison.csv`, so a header that disagrees is from another runner.
     """
     published = REPO_ROOT / "benchmarks" / "instances" / "minlplib" / "comparison.csv"
     with published.open(newline="") as fh:
@@ -1551,11 +1534,8 @@ def test_the_drivers_exit_constant_is_the_runners_own() -> None:
 
 # --- the runner's exit status (issue #153) ------------------------------------
 #
-# These run the REAL binary. The exit status is a property of the process
-# contract every automated consumer depends on -- `run_roster` above raises on
-# it and `run_ablation.execute_runs` records a failed run from it -- not a
-# property of any function, and the whole defect was that the contract said
-# "success" while the tally said otherwise.
+# These run the REAL binary: the exit status is a process contract, which
+# `run_roster` raises on and `run_ablation.execute_runs` records a failed run from.
 
 
 def nl_header(nvars: int, ncons: int, nobjs: int) -> str:
@@ -1575,9 +1555,7 @@ def nl_header(nvars: int, ncons: int, nobjs: int) -> str:
 SOLVABLE_NL = nl_header(1, 1, 1) + "b\n0 0 10\nr\n1 7\nO0 0\nn0\nG0 1\n0 1\nC0\nn0\nJ0 1\n0 1\n"
 
 #: The instance name the runner's test seam throws for inside the solve
-#: bracket (`CBLS_MINLPLIB_THROW_IN_SOLVE`). Until #202 a zero-variable model
-#: provoked the throw on its own -- the old LNS reached for variable 0 -- and the
-#: engine now solves that model, so the seam names the instance instead.
+#: bracket (`CBLS_MINLPLIB_THROW_IN_SOLVE`); no model throws on its own since #202.
 THROW_IN_SOLVE_INSTANCE = "boom"
 THROWS_ON_SOLVE_NL = SOLVABLE_NL
 
@@ -1645,26 +1623,20 @@ def notes_of(out: Path) -> dict[str, str]:
 
 
 def test_a_solve_that_throws_makes_the_runner_exit_nonzero(tmp_path: Path) -> None:
-    """The #153 defect: `run_benchmark` returned 0 whatever its error tally said.
+    """#153: `run_benchmark` returned 0 whatever its error tally said.
 
-    A thrown solve still writes a well-formed row -- `feasible=false`,
-    `note=solve-error`, measured cells NaN -- so the row alone cannot stop a
-    consumer that checks `$?`, and every one of them saw success.
+    A thrown solve still writes a well-formed row (`note=solve-error`, measured
+    cells NaN), so only the exit status stops a consumer that checks `$?`.
     """
     result = run_the_runner(tmp_path, {"ok": SOLVABLE_NL, "boom": THROWS_ON_SOLVE_NL})
 
     assert result.returncode == RUNNER_EXIT_ERRORED
     assert "ERROR solving" in result.stdout
     assert "exiting 3" in result.stderr
-    # ... and the tally agrees with that message. The thrown instance's model
-    # WAS closed, so without holding it apart the tally printed "infeasible: 1"
-    # two lines above a stderr line saying these are not infeasibility results,
-    # and counted the instance twice in the closed-model rate's denominator.
-    #
-    # Asserted on a `boom`-ONLY roster: with `ok` in it, a healthy instance that
-    # misses its one-second budget would print "infeasible: 1" and red a
-    # process-contract test for a reason that has nothing to do with the
-    # contract. Alone, the two numbers can only move if the arithmetic regresses.
+    # ... and the tally agrees: the thrown instance's model WAS closed, but it is
+    # held apart, not printed as "infeasible: 1" nor counted twice in the
+    # closed-model rate's denominator. A `boom`-ONLY roster, so a healthy instance
+    # missing its one-second budget cannot move these numbers.
     alone_dir = tmp_path / "alone"
     alone_dir.mkdir()
     alone = run_the_runner(alone_dir, {"boom": THROWS_ON_SOLVE_NL})
@@ -1881,12 +1853,11 @@ def _seed_2(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *extra: str) -> int
 def test_seed_2_runs_at_seed_1s_sha_over_the_tables_seed_1_published(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """The README's `for SEED in 1 2 3` loop, which #123's campaign found refused at seed 2.
+    """#123: the README's `for SEED in 1 2 3` loop was refused at seed 2.
 
-    Seed 1's publish modifies three tracked tables. They are this driver's own
-    output, not the code that ran, so seed 2 must see the same plain SHA --
-    committing between seeds instead would split the campaign across two
-    commits, and the seed summary keeps one.
+    Seed 1's publish modifies three tracked tables, the driver's own output, so
+    seed 2 sees the same plain SHA; committing between seeds would split the
+    campaign across two commits, and the seed summary keeps one.
     """
     inst, _ = _checkout(tmp_path)
     sha = _publish_seed_1(tmp_path, inst, monkeypatch)

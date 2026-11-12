@@ -110,13 +110,10 @@ def write_results(
                 }
             )
             full.update({k: str(v) for k, v in row.items() if k in full})
-            # The scorer allowlists the notes a COMPLETED search writes (#153),
-            # so a fixture row that leaves the cell empty is a row the runner
-            # could never have written and is now held out of every count.
-            # Filled from the row's own `feasible` cell, after the merge, so the
-            # pair stays a combination the runner could actually produce. Keyed
-            # on whether the row NAMED a note, not on whether the cell is empty:
-            # a row that asks for an empty note is testing exactly that.
+            # The scorer allowlists the notes a COMPLETED search writes (#153), so an
+            # empty cell would hold the row out. Filled from the row's own `feasible`
+            # cell after the merge, so the pair is one the runner could produce. Keyed
+            # on whether the row NAMED a note: one asking for an empty note tests that.
             if "note" not in row:
                 full["note"] = "feasible" if full["feasible"] == "true" else INFEASIBLE_NOTE
             writer.writerow([full[column] for column in columns])
@@ -134,13 +131,9 @@ def run_rows(
 ) -> list[dict[str, object]]:
     """One row per seed; a None gap is an infeasible run.
 
-    `primal_bks` is left empty unless a test needs it: it reads back as NaN,
-    which sizes the floor at its scale-free infimum and so leaves every test
-    written before the floor became per-instance saying what it said.
-
-    The `note` is the one the runner would have written for the row: a search
-    completed either way, and since #153 that is what decides whether the row is
-    scored at all.
+    `primal_bks` is left empty unless a test needs it: it reads back as NaN, which
+    sizes the floor at its scale-free infimum. The `note` is the runner's for a
+    completed search, which since #153 decides whether the row is scored at all.
     """
     return [
         {
@@ -223,7 +216,7 @@ def test_the_floor_is_computed_from_the_control_s_own_across_seed_spread() -> No
 
 def test_the_band_widens_when_the_control_has_fewer_seeds() -> None:
     """Three seeds is df = 2 and a multiplier of 4.30; two seeds is df = 1 and
-    12.71. A flat 2.0 (an earlier cut) prints a band about half its nominal
+    12.71. A flat 2.0 would print a band about half its nominal
     width at three seeds and a sixth of it at two."""
     three = noise_floor(
         [compare(cell("a", CONTROL_ARM, [10.0, 12.0, 14.0]), cell("a", "x", [1.0, 2.0, 3.0]))],
@@ -351,8 +344,7 @@ def _moving(worse: int, better: int, still: int) -> list[dict[str, object]]:
             [],
         ),
         # A couple of instances clearing their own floors is a fact about those
-        # instances, not an arm effect. An earlier cut named a direction off a
-        # SINGLE mover, beside "sign test p = 1.000" and "median gap delta +0.00".
+        # instances, not an arm effect, even beside "sign test p = 1.000".
         (_moving(2, 0, 3), {"moved_worse": 2}, ["ISOLATED MOVERS"], ["WORSE than"]),
         # A control spread of exactly zero is three seeds landing on one value, not
         # a measurement that there is no noise. Scored with a floor of 0.0, ANY
@@ -477,11 +469,9 @@ def test_a_side_with_no_reading_at_all_is_not_reported_as_zero(tmp_path: Path) -
     """A campaign written before a counter existed has no column for it, so every
     row reads NaN and the sum is over an empty set.
 
-    `math.fsum(())` is 0.0, and 0 is the STRONGEST claim either counter can make
-    -- "LNS repaired nothing", "LNS kept nothing". Publishing that out of a file
-    that never measured it is the same defect as folding a single NaN row to
-    zero, one level up. `--report-only` re-scores exactly such files: #150's
-    counter landed after the #143 campaign was already running.
+    `math.fsum(())` is 0.0, the STRONGEST claim either counter can make ("LNS
+    repaired nothing"). `--report-only` re-scores such files: #150's counter landed
+    after the #143 campaign was already running.
     """
     rows = [
         *run_rows("a", CONTROL_ARM, [10.0, 12.0, 14.0], repairs=4),
@@ -608,13 +598,11 @@ def crash_rows(instance: str, arm: str, seeds: Sequence[int]) -> list[dict[str, 
 def solve_error_rows(instance: str, arm: str, seeds: Sequence[int]) -> list[dict[str, object]]:
     """Rows as the RUNNER writes them when `cbls::solve` throws.
 
-    `minlplib.cpp` catches the exception, bumps `Tally::errored`, writes an
-    unsolved row and carries on; since #153 the process then exits 3, and
-    `run_ablation._failed_run_row` records this very row rather than downgrading
-    it. The row is well-formed and `feasible=false` -- objective, gap and both
-    LNS counters are NaN, while `primal_bks`/`dual_bound` carry the published
-    bounds and the wall is 0.0, since `write_unsolved_row` knows those without
-    having solved. Nothing but the note says no search ran.
+    The runner bumps `Tally::errored`, writes an unsolved row and exits 3 (#153);
+    `run_ablation._failed_run_row` records this row as is. It is well-formed and
+    `feasible=false`: objective, gap and LNS counters NaN; the published bounds and
+    a 0.0 wall, which `write_unsolved_row` knows unsolved. Only the note says no
+    search ran.
     """
     return [
         {
@@ -665,10 +653,8 @@ def solve_error_rows(instance: str, arm: str, seeds: Sequence[int]) -> list[dict
             lambda: solve_error_rows("i", "x", [1, 2, 3]),
             {"counts.control-only-feasible": 0, "treatment.no_search_runs": 3, "treatment.runs": 0},
         ),
-        # The denylist failed open: a seventh runner outcome carried
-        # `feasible=false`, matched no held-out prefix, and was counted as this arm
-        # losing feasibility -- #151 re-armed. Scoring is now decided by the notes a
-        # COMPLETED search writes, so the unfamiliar note falls out of every count.
+        # #153: a denylist counted an unknown `feasible=false` note as the arm losing
+        # feasibility; scored by the allowlist, it falls out of every count.
         (
             lambda: run_rows("i", CONTROL_ARM, [7.0, 7.1, 7.2]),
             lambda: unknown_note_rows("i", "x", [1, 2, 3], "budget-exhausted-before-init"),
@@ -778,11 +764,10 @@ def test_a_delta_below_the_resolution_of_its_own_gap_is_not_a_move(tmp_path: Pat
     """A spread of ~1e-7 gap points is a measurement of nothing the gap can
     resolve, and a 1e-5 delta against it is not a result.
 
-    Four such instances moving 1e-5 the same way was enough to print "the arm is
-    WORSE than the control" beside "median gap delta +0.00 points", with the
-    quoted floor (the roster median, +/-3.51) three million times the movers'
-    own. The floor now cannot fall below the resolution at which the campaign
-    knows an objective at all.
+    #151: four such instances moving 1e-5 printed "the arm is WORSE" beside
+    "median gap delta +0.00 points", the quoted floor (+/-3.51) three million times
+    the movers' own. The floor cannot fall below the resolution the campaign knows
+    an objective at.
     """
     rows = near_zero_rows(["p", "q", "r", "s"], 1e-5)
     cells = build_cells(load_rows(write_results(tmp_path / "r.csv", rows)))
@@ -813,14 +798,9 @@ def test_a_named_direction_never_quotes_a_median_delta_of_zero(tmp_path: Path) -
     """Issue #151's criterion, as an invariant rather than as a readability aim:
     "a verdict naming a direction cannot coexist with a median delta of +0.00".
 
-    Naming the denominators was not enough. Six scored instances holding at
-    delta 0 and four movers at +0.001 put the roster median at exactly 0.00,
-    and the verdict still read "the arm is WORSE than the control ... median gap
-    delta over the 10 scored instance(s) +0.00 points" -- the forbidden sentence,
-    reached through the fix for the floor rather than through the floor bug.
-
-    The roster median is not suppressed; it moves to the report line that owns
-    it, where it sits beside its denominator and no direction is claimed.
+    Six scored instances at delta 0 and four movers at +0.001 put the roster median
+    at exactly 0.00. It is not suppressed: it moves to the line beside its
+    denominator, where no direction is claimed.
     """
     names = ["h1", "h2", "h3", "h4", "h5", "h6"]
     rows: list[dict[str, object]] = []
@@ -867,10 +847,8 @@ def test_the_median_and_the_mean_each_state_their_own_denominator(tmp_path: Path
 
 
 def test_the_unmeasurable_floor_line_names_both_reasons(tmp_path: Path) -> None:
-    """Every control here produced three feasible runs with finite gaps, so
-    "no instance has two comparable control runs" is false. The verdict on the
-    next line has given the two-part reason since the zero-spread guard went in;
-    this string was not updated with it."""
+    """Every control here has three feasible runs with finite gaps, so "no instance
+    has two comparable control runs" is false; the line gives the zero-spread reason too."""
     rows = [
         *run_rows("flat", CONTROL_ARM, [5.0, 5.0, 5.0]),
         *run_rows("flat", "x", [6.0, 6.0, 6.0]),
@@ -918,17 +896,12 @@ def test_a_row_where_a_search_did_complete_is_never_held_out(tmp_path: Path) -> 
 
 
 def test_every_preread_note_the_runner_writes_is_held_out() -> None:
-    """Since #153 the classification is an ALLOWLIST, so a preread note is held
-    out whether or not this list knows it. What this guards now is the other
-    half: every preread literal must collapse to a NAMED label under
-    `no_search_label`, or the disclosure line degrades into one
-    `unrecognised-note(...)` bucket per distinct reason string -- and none of
-    them may be allowlisted, which would score it as a measurement.
+    """Every preread literal collapses to a NAMED `no_search_label`, and none is allowlisted.
 
-    `write_preread_row` is the tight half of the contract: it exists only for a
-    row where nothing is known about the instance yet, so EVERY literal it is
-    called with must be covered. (`write_unsolved_row` is called with measured
-    notes too, so it cannot be swept the same way.)
+    The allowlist (#153) holds a preread note out regardless; unnamed, the disclosure
+    degrades into one `unrecognised-note(...)` bucket per reason. `write_preread_row`
+    runs only where nothing is known yet, so EVERY literal it takes is covered;
+    `write_unsolved_row` also takes measured notes, so it cannot be swept so.
     """
     source = (REPO_ROOT / "benchmarks" / "minlplib" / "minlplib.cpp").read_text()
     # EVERY call site, not every string literal: counting only the literals
