@@ -242,8 +242,7 @@ TEST_CASE("cvrp tiny instance is solved to its proven optimum", "[cvrp]") {
     cbls::SearchConfig cfg;
     cfg.max_iterations = 3000;
     cbls::LNS lns;
-    // time_limit 0 switches the wall clock off: an iteration budget alone, so
-    // the run is the same on every machine and under any load.
+    // time_limit 0 switches the wall clock off (see the file header).
     const cbls::SearchResult result = cbls::solve(cm.model, /*time_limit=*/0.0, /*seed=*/7,
                                                   /*use_fj=*/true, nullptr, &lns, 3, nullptr, cfg);
     REQUIRE(result.feasible);

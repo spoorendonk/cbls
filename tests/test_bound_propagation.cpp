@@ -122,7 +122,7 @@ TEST_CASE("bound propagation's margin covers cancellation in a large activity") 
     // recursive sum over activities of ~1e8 rounds, and the computed slack is
     // 2.99999997. A margin scaled to the derived bound (max(1e-9, 1e-12 * 3))
     // could not cover that, and floor() cut x to 2 -- off the feasible point
-    // x = 3 (#211). The instance was found by a search for exactly that.
+    // x = 3 (#211).
     const std::vector<double> a{-21277352.036, 90497762.657, 12689081.523,
                                 54983421.887,  8443173.837,  -57685250.429};
     const double b = 87650840.43900001;
@@ -281,7 +281,7 @@ MpsProblem far_optimum_problem() {
 }  // namespace
 
 TEST_CASE("mps adapter clamps the optimum away without propagation") {
-    // The behaviour propagation replaces, pinned so the fix is visibly a fix.
+    // The control: without propagation the fixed clamp loses the optimum.
     MpsToModelOptions opts;
     opts.propagate_bounds = false;
     opts.inf_clamp = 1.0e7;
@@ -427,7 +427,7 @@ TEST_CASE("nl adapter derives implied bounds for a free continuous column") {
 }
 
 TEST_CASE("nl adapter derives implied bounds for a free integer column") {
-    // The path that used to hand a free Int the ±1e6 int_inf_clamp box.
+    // Without propagation a free Int gets the int_inf_clamp box (±1e6 default).
     NlToModelOptions opts;
     opts.inf_clamp = 1.0e5;
     opts.int_inf_clamp = 1.0e4;
@@ -501,7 +501,7 @@ TEST_CASE("mps adapter survives a sub-tolerance crossed box") {
 
 TEST_CASE("mps adapter clips an integer column to the int range and says so") {
     // A finite bound is honoured however wide, so a declared integer domain
-    // beyond int32 now reaches variable creation. `Model::int_var` takes an int,
+    // beyond int32 reaches variable creation. `Model::int_var` takes an int,
     // so the column is clipped — a narrowing, and counted as one.
     MpsProblem p;
     p.name = "BIGINT";

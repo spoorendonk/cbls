@@ -1,9 +1,9 @@
-// A closed model does not grow (#173). Before the builders refused a closed
-// model, a node or row they appended after close() was never placed in the
-// topological order, so no evaluation computed it and solve() reported feasible
-// over a violated row. The one internal post-close addition is the objective
-// row, which `add_objective_soft_constraint` appends and rebuilds for -- and
-// which `freeze()` and the first `solve()` of an objective model both run, so a
+// A closed model does not grow: its builders refuse (#173). Pre-#173 a node or
+// row appended after close() was never placed in the topological order, so no
+// evaluation computed it and solve() reported feasible over a violated row.
+// The one internal post-close addition is the objective row, which
+// `add_objective_soft_constraint` appends and rebuilds for -- and which
+// `freeze()` and the first `solve()` of an objective model both run, so a
 // ViolationManager or FeasibilityJump built before it is one row short.
 //
 // `tests/python/test_build_after_close.py` is the binding half.
@@ -108,9 +108,9 @@ void require_refused(ClosedFixture& f, const std::function<void()>& build) {
 }  // namespace
 
 TEST_CASE("solving an unclosed model without an objective closes it and solves it", "[closed]") {
-    // Without an objective there is no objective row, so nothing rebuilt the
-    // derived indices: the run read an unbuilt variable-to-constraint index and
-    // failed with "var id out of range" instead of solving the model.
+    // Without an objective there is no objective row to trigger the rebuild, so
+    // solve() must close the model itself, or the run reads an unbuilt
+    // variable-to-constraint index and fails with "var id out of range".
     Model m;
     const int32_t x = m.int_var(0, 10, "x");
     m.add_constraint(m.geq(x, m.constant(5.0)));
@@ -127,9 +127,9 @@ TEST_CASE("solving an unclosed model without an objective closes it and solves i
 
 TEST_CASE("solving an unclosed objective model closes it, so later builders refuse", "[closed]") {
     // The first solve of an objective model appends the objective row and runs
-    // the same rebuild close() does. It used to leave closed_ false, so a row
-    // added afterwards was accepted, never evaluated, and the next solve
-    // reported feasible over it -- #173's wrong answer without a close() call.
+    // the same rebuild close() does, and must also mark the model closed, or a
+    // row added afterwards is accepted, never evaluated, and the next solve
+    // reports feasible over it -- #173's wrong answer without a close() call.
     Model m;
     const int32_t x = m.float_var(0.0, 10.0, "x");
     const int32_t five = m.constant(5.0);

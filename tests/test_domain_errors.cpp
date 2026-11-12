@@ -1,16 +1,13 @@
 // Domain errors evaluate as undefined, never as a satisfiable value (#205).
 //
-// The DAG used to map a point where a function is undefined to an ordinary
-// number -- sqrt of a negative to 0.0, log of a negative to -inf, any non-finite
-// pow to +inf, a near-zero denominator to an infinity signed by the numerator
-// alone -- and a comparison row read that number as a finite-side difference.
-// `geq(pow(x, 0.5), 2)` at x = -10 was `2 - inf = -inf`: satisfied. The search
-// found and exploited such points because they improved the objective, and
-// reported `feasible`.
+// Pre-#205 the DAG mapped an undefined point to an ordinary number (sqrt of a
+// negative to 0.0, log of a negative to -inf, a non-finite pow to +inf, a
+// near-zero denominator to an infinity signed by the numerator alone), which a
+// comparison row could read as satisfied: `geq(pow(x, 0.5), 2)` at x = -10 was
+// `2 - inf = -inf`, and the search reported such points `feasible`.
 //
-// The four models below are the issue's repros. Each is solved
-// deterministically (iteration budget, no wall clock); on the unfixed engine
-// each reports a feasible point that is not one.
+// The repro models below are solved deterministically (iteration budget, no
+// wall clock); pre-#205 each reports a feasible point that is not one.
 
 #include "test_helpers.h"
 #include "test_models.h"
@@ -68,17 +65,13 @@ const char* const kLogModel = R"({"var":"x","type":"Float","lb":-10,"ub":10}
 {"minimize":"o"}
 )";
 
-// The issue's fourth repro is `-1/y <= c`, minimising y. Its false claim sits
-// at the pole: the unfixed engine signed a near-zero quotient by the numerator
-// alone. At y = +0 that sign is also the true one (-1/+0 = -inf), and this
-// issue keeps a signed infinity at the pole by design, so that literal model
-// reaches y = 0 before and after the fix alike -- see the last test in this
-// section. Where the numerator-only rule was WRONG is a negative zero or a
-// negative near-zero denominator, and this model is the same row with the
-// denominator negated so that the search lands there: 1/(-y) >= 5 over
-// y in [0, 10] has no feasible point -- -y <= 0, so the quotient is negative
-// for y > 0 and -inf at y = 0, where -y = -0.0. The unfixed engine read
-// 1/(-0.0) as +inf and reported y = 0 feasible.
+// The issue's fourth repro `-1/y <= c` reaches the pole y = +0 before and
+// after the fix: there the numerator's sign is the true one (-1/+0 = -inf), and
+// a signed infinity at the pole is kept by design (last test in this section).
+// The numerator-only sign is wrong at a negative (near-)zero denominator, so
+// this is the row with the denominator negated: 1/(-y) >= 5 over y in [0, 10]
+// has no feasible point (negative for y > 0, -inf at -y = -0.0). Pre-#205
+// 1/(-0.0) read +inf and y = 0 was reported feasible.
 const char* const kDivModel = R"({"var":"y","type":"Float","lb":0,"ub":10}
 {"node":"one","op":"Const","value":1.0}
 {"node":"ny","op":"Neg","children":["y"]}
@@ -266,9 +259,8 @@ TEST_CASE("a comparison over a domain error is maximally violated", "[dag][domai
 // Ops that consume a NaN child must not turn it back into a defined value
 // ---------------------------------------------------------------------------
 //
-// A NaN constant stands in for any undefined child. Each of these used to read
-// it as a finite, satisfiable value; a domain error underneath one of them would
-// otherwise reach a row as an ordinary number after all.
+// A NaN constant stands in for any undefined child. Each op must keep it
+// undefined, or a domain error beneath it reaches a row as an ordinary number.
 
 TEST_CASE("min and max propagate a NaN child wherever it sits", "[dag][domain]") {
     Model m;
@@ -355,9 +347,8 @@ TEST_CASE("no slope is offered where log's value is NaN", "[dag][domain][ad]") {
 TEST_CASE("a div partial that overflows is folded to 0", "[dag][domain][ad]") {
     // f = n / max(w, z) at n = 1e300, w = 1e-5, z = -1. The quotient is a finite
     // 1e305, but d(n/d)/dd = -n/d^2 = -1e310 overflows to -inf. That infinite
-    // adjoint would reach the Max and make w's partial -inf. (Its zero edge into
-    // the unselected z read -inf * 0 = NaN in z's partial until #260 skipped zero
-    // edges; Div's fold of the overflow to 0 kept that from happening here.)
+    // adjoint would reach the Max and make w's partial -inf. (The zero edge
+    // into the unselected z would read -inf * 0 = NaN; #260 skips zero edges.)
     Model m;
     const int32_t n = m.float_var(-1e300, 1e300, "n");
     const int32_t w = m.float_var(-1, 1, "w");

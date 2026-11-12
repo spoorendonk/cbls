@@ -813,8 +813,8 @@ TEST_CASE("line planning: both encodings solve to the brute-force optimum",
 }
 
 // ---------------------------------------------------------------------------
-// Review round 1 (#186): delta per rounding op, the builders' refusals, and FJ
-// candidates where only the breakpoints reach the answer
+// Delta per rounding op, the builders' refusals, and FJ candidates where only
+// the breakpoints reach the answer (#186)
 // ---------------------------------------------------------------------------
 
 TEST_CASE("ceil floor and round follow their argument under delta evaluation", "[dag][rounding]") {
@@ -1089,7 +1089,8 @@ TEST_CASE("FJ reaches the auxiliary-Int reference's optimum through the breakpoi
 }
 
 // ---------------------------------------------------------------------------
-// Review round 2 (#186)
+// Breakpoint slopes through NaN, repeated children and nonlinear ops; table
+// representatives (#186)
 // ---------------------------------------------------------------------------
 
 TEST_CASE("FJ breakpoint candidates survive a free Float's NaN box midpoint", "[fj][rounding]") {

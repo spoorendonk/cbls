@@ -1,16 +1,13 @@
 // Tests for the benchmark runners' search-configuration flags (#136).
 //
-// Two halves, and the second is the point. A flag that parses is worth nothing
-// on its own: the failure this issue exists to prevent is a flag that is
-// accepted, recorded on the results row and then ignored by the engine, which
-// produces an ablation that measures nothing while looking rigorous. So every
-// flag below is also given a PROBE -- two runs that differ only in that flag,
-// asserted to produce different observables from the same seed.
+// Every flag is parsed and also given a PROBE: two runs that differ only in
+// that flag must produce different observables from the same seed. A flag
+// accepted, recorded and then ignored by the engine makes an ablation that
+// measures nothing.
 //
-// Every probe is wall-clock-free: `time_limit = 0` disables solve()'s clock
-// entirely, so each run is bounded by `max_iterations` alone and is
-// bit-reproducible for a given seed. A probe that depended on elapsed time
-// would be flaky, and a flaky probe is not evidence.
+// Every probe is wall-clock-free: `time_limit = 0` disables solve()'s clock, so
+// each run is bounded by `max_iterations` alone and bit-reproducible per seed;
+// a probe on elapsed time would be flaky, and so no evidence.
 
 #include <array>
 #include <benchmarks/common/search_config_flags.h>
@@ -278,11 +275,10 @@ TEST_CASE("the on/off pairs are order-independent", "[bench][flags]") {
 }
 
 TEST_CASE("a value flag with no value falls through to the unknown-option path", "[bench][flags]") {
-    // The ArgCursor rule (benchmarks/common/runner_args.h): a trailing
-    // `--lns-interval` must not read past argv's end, and must not silently keep
-    // the default either -- a published results table is what a silently-kept
-    // default costs. It has to reach the runner's unknown-option branch, which
-    // reports and exits 2.
+    // The ArgCursor rule (benchmarks/common/runner_args.h): a trailing value
+    // flag neither reads past argv's end nor silently keeps the default, which
+    // a published table would then carry. It reaches the runner's
+    // unknown-option branch, which reports and exits 2.
     for (const char* flag : {"--lns-interval", "--novelty-prob", "--unproductive-iters",
                              "--perturbation-period", "--max-iterations"}) {
         const ParseOutcome parsed = parse({flag});
@@ -497,7 +493,7 @@ TEST_CASE("a negative --unproductive-iters is the same run as zero, so it is ref
     // IDENTICAL run -- but they record two different `search_config` cells.
     // That breaks the invariant search_config_string() states outright, and
     // that invariant is the justification for refusing the no-effect flag
-    // combinations elsewhere in this file. An earlier cut accepted both.
+    // combinations elsewhere in this file.
     std::string error;
     for (const char* value : {"-1", "-300"}) {
         const ParseOutcome parsed = parse({"--unproductive-iters", value});

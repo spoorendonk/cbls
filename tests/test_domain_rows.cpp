@@ -155,7 +155,7 @@ TEST_CASE("verify_model holds a domain row to 0 whatever its tolerance", "[domai
 }
 
 TEST_CASE("the violation manager holds a domain row to 0 whatever its tolerance", "[domain-rows]") {
-    // #258 review: is_feasible(tol) and violated_constraints(tol) compared a
+    // #258: is_feasible(tol) and violated_constraints(tol) compared a
     // domain row to tol, which a margin set tighter than tol undercuts.
     Model m;
     const int32_t x = m.float_var(-kInf, kInf, "x");
@@ -172,7 +172,7 @@ TEST_CASE("the violation manager holds a domain row to 0 whatever its tolerance"
 }
 
 TEST_CASE("LNS acceptance holds a domain row to 0 whatever its tolerance", "[domain-rows]") {
-    // #258 round 2: lns_acceptance_key counted a domain row only above tol, so
+    // #258: lns_acceptance_key counted a domain row only above tol, so
     // under a margin tighter than tol an argument below its floor scored as
     // feasible.
     Model m;
@@ -186,7 +186,7 @@ TEST_CASE("LNS acceptance holds a domain row to 0 whatever its tolerance", "[dom
 }
 
 TEST_CASE("a direct FJ run sets the domain margin from its own tolerance", "[domain-rows]") {
-    // #258 review: only solve() set the margin, so fj_nl_initialize at 1e-4
+    // #258: only solve() set the margin, so fj_nl_initialize at 1e-4
     // read a log at x = 0 (margin 1e-6) as feasible and stopped there.
     Model m;
     const int32_t x = m.float_var(-kInf, kInf, "x");
@@ -202,7 +202,7 @@ TEST_CASE("a direct FJ run sets the domain margin from its own tolerance", "[dom
 
 TEST_CASE("the inner solver steps a domain row violated below the default tolerance",
           "[domain-rows]") {
-    // #258 review: its Newton gate was g > 1e-6, so at a tighter tolerance a
+    // #258: its Newton gate was g > 1e-6, so at a tighter tolerance a
     // domain row missing by less than that got no candidate.
     Model m;
     const int32_t x = m.float_var(-kInf, kInf, "x");
@@ -219,7 +219,7 @@ TEST_CASE("the inner solver steps a domain row violated below the default tolera
 
 TEST_CASE("a Newton step out of a domain row lands at the floor, not past the margin",
           "[domain-rows]") {
-    // #258 review: the step aimed at a residual of 0 on the stepped value, so
+    // #258: the step aimed at a residual of 0 on the stepped value, so
     // at tol 1e-4 it landed at x = 1e-4 and sqrt read 1e-2.
     SearchConfig cfg;
     cfg.feasibility_tolerance = 1e-4;
