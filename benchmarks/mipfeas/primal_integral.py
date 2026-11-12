@@ -290,7 +290,8 @@ class Scored(NamedTuple):
     #: True when a proven optimum was beaten — a bug signal, not an achievement.
     below_reference: bool
     primal_integral: float
-    #: The solve call only -- a result file's `wall_seconds`. It can exceed the
+    #: The solve call only -- a result file's `wall_seconds`, named for the solve
+    #: here because the table carries `setup_seconds` beside it. It can exceed the
     #: budget: search initialisation is not bounded by the deadline, so a large
     #: model's first batch runs to completion whatever the clock says. That is a
     #: different effect from `setup_seconds` below and the two are separate
@@ -1264,9 +1265,9 @@ class TimingSummary(NamedTuple):
     """
 
     engine: str
-    #: Rows whose result recorded a setup time. Zero when no result records one
-    #: -- in which case no magnitude for
-    #: setup may be stated at all, and the report says so instead of guessing.
+    #: Rows whose result recorded a setup time. Zero when no result records one,
+    #: in which case no magnitude for setup may be stated at all, and the report
+    #: says so instead of guessing.
     setup_measured: int
     searched: int
     setup_median: float

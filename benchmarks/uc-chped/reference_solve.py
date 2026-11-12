@@ -250,8 +250,8 @@ def solve_uc_scip(
     - Hot/cold startup cost modeled via auxiliary variables
     - Demand + spinning reserve constraints
 
-    This solver's numbers are published in
-    `benchmarks/instances/uc-chped/comparison.csv`.
+    Its numbers are published in `benchmarks/instances/uc-chped/comparison.csv`,
+    so a change to its arithmetic means regenerating that table.
     """
     from pyscipopt import Model, quicksum
 
