@@ -1,19 +1,13 @@
 // `Tracer` (#169): the host's event stream, separate from the throttled
 // `SolveCallback` progress stream.
 //
-// Two properties are worth testing and the rest is noise:
+// A recording tracer sees ORDERED, WELL-FORMED events whose counts agree with
+// the counters the same run reports (the only independent check on an event
+// stream); a null tracer changes NOTHING; a portfolio gives each worker its own
+// tracer and absorbs one that throws.
 //
-//  1. a recording tracer sees ORDERED, WELL-FORMED events for a short
-//     deterministic run -- and the counts it derives agree with the counters the
-//     same run reports, which is the only independent check available on an
-//     event stream;
-//  2. a null tracer changes NOTHING -- same objective, same iteration count,
-//     same final assignment, event for event with the run that had one.
-//
-// What is deliberately NOT tested is a per-iteration event, because there is
-// none: every method fires at batch, kick or inner-solver granularity. A test
-// asserting a per-iteration cadence would be asserting a contract the class is
-// written to refuse.
+// No per-iteration event is tested because there is none: every method fires
+// at batch, kick or inner-solver granularity, by contract.
 
 #include "test_models.h"
 
@@ -252,10 +246,9 @@ TEST_CASE("an inner-solver call is reported with its duration", "[tracer]") {
             traced_seconds += e.seconds;
         }
     }
-    // Summed and required POSITIVE, which `>= 0.0` per event is not. The subject of
-    // this test is that a tracer WIDENS polish_and_record's timing gate, and a gate
-    // that still only timed the hook under has_deadline_ would reach here handing
-    // every event a 0.0.
+    // Summed and required POSITIVE, which `>= 0.0` per event is not: a tracer
+    // WIDENS polish_and_record's timing gate, and a gate that timed the hook
+    // only under has_deadline_ would hand every event a 0.0.
     REQUIRE(traced_seconds > 0.0);
     // The counter is blind on a clockless run; the event is not. Both halves of
     // that asymmetry are deliberate.

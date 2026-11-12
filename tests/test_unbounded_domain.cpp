@@ -1,37 +1,23 @@
 // Regression tests for unbounded variable domains: #112 (randomising a variable
-// over one) and #114 (generating FJ jump candidates for one — see the second
-// block comment, below the #112 cases).
+// over one) and #114 (FJ jump candidates for one, the second block below).
 //
 // `rng.uniform(lb, ub)` violates uniform_real_distribution's precondition
-// (`ub - lb <= DBL_MAX`) on an infinite domain, and libstdc++'s `lb + (ub-lb)*u`
-// then returns NaN on `(-inf, +inf)` and +inf on `[0, +inf)`; an infinite Int
-// bound casts to INT64_MIN. That draw sits on the default `solve()` path via
-// FeasibilityJump's diversification kick, so one kick replaced the assignment
-// with NaN, `full_evaluate` propagated it through the DAG, and the search burned
-// the rest of its budget on a dead assignment while `solve()` still returned an
-// ordinary-looking infeasible result.
+// (`ub - lb <= DBL_MAX`) on an infinite domain: libstdc++'s `lb + (ub-lb)*u`
+// returns NaN on `(-inf, +inf)` and +inf on `[0, +inf)`, and an infinite Int
+// bound casts to INT64_MIN. FeasibilityJump's diversification kick draws it on
+// the default `solve()` path, so pre-#112 one kick left a NaN assignment and
+// `solve()` returned an ordinary-looking infeasible result.
 //
-// The tests below are split by what they can catch:
+// The `domain_window` / `random_in_domain` cases pin the guard, inert on a
+// finite domain (existing runs keep their draw sequence); the kick cases fail
+// pre-#112. The LNS case discriminates only by requiring an accepted repair: a
+// NaN repair scores +inf in the acceptance key and is always rolled back.
 //
-//  - the `domain_window` / `random_in_domain` cases pin the guard itself,
-//    including that it is INERT on a finite domain (existing runs must keep
-//    their exact draw sequence);
-//  - "a kick keeps the assignment finite" and "the search still improves after a
-//    kick" are the discriminating ones — both fail on the pre-fix engine;
-//  - the LNS case is required by the issue but is NOT discriminating on its own:
-//    destroy/repair maps a NaN constraint to +inf in its acceptance key and
-//    rolls back on non-improvement, so a NaN-poisoned repair could never win
-//    even before the fix. It is made discriminating by also requiring that a
-//    repair is *accepted*, which pre-fix never happens.
-//
-// No new NaN *detector* is added here. Three guards already absorb a non-finite
-// constraint value safely (ViolationManager::clamped_node_violation, solve()'s
-// max_real_violation, LNS's state_key — see tests/test_nonfinite_guard.cpp), and
-// with randomisation no longer able to inject one, that route is closed. It is
-// not the only one: Float jump candidates are still drawn from `var.lb`/`var.ub`
-// directly, so an unbounded model can still reach an infinite assignment by a
-// path this fix does not touch. (The *Int* jump path was a second such route and
-// is closed as of #114, below; Float remains open.)
+// Three existing guards absorb a non-finite constraint value
+// (ViolationManager::clamped_node_violation, solve()'s max_real_violation,
+// LNS's state_key; see tests/test_nonfinite_guard.cpp). Float jump candidates
+// still read `var.lb`/`var.ub` directly, so that route to an infinite
+// assignment stays open; the Int one is closed by #114.
 
 #include "test_helpers.h"
 
@@ -119,12 +105,9 @@ TEST_CASE("domain_window is inert on a finite domain", "[unbounded][randomize]")
         // narrowing it to int_inf_clamp.
         {VarType::Int, -1.0e8, 1.0e8},
         {VarType::Float, -1.0e12, 3.0e11},
-        // Past 2^53, where an earlier attempt at #114 trimmed each Int bound
-        // independently into the int64-nameable range. That was not inert:
-        // [0, 1e17] came back as [0, 2^53-1] (halving the reachable jump), and
-        // [-1e18, -1e17] collapsed to the single point -2^53 — which is not even
-        // in the domain, so `random_in_domain` returned an out-of-domain value
-        // (a #112 defect). The cast is trimmed at the cast instead; see
+        // Past 2^53: trimming each Int bound here into the int64-nameable range
+        // is not inert, [0, 1e17] -> [0, 2^53-1] and [-1e18, -1e17] -> the
+        // out-of-domain point -2^53 (#114). The trim happens at the cast, in
         // `int_sample_window`.
         {VarType::Int, 0.0, 1.0e17},
         {VarType::Int, -1.0e18, -1.0e17},
@@ -140,10 +123,9 @@ TEST_CASE("domain_window is inert on a finite domain", "[unbounded][randomize]")
 TEST_CASE("domain_window is a subset of the declared domain", "[unbounded][randomize]") {
     // The contract `randomize.h` states — "always a subset of the variable's own
     // domain, so a value drawn from it is in-domain by construction" — asserted
-    // rather than assumed. It held for every case here until an Int-only trim
-    // was added to `domain_window`: clamping each bound independently into
-    // +/-2^53 moves a bound *outward* when the whole domain sits past it, so
-    // [-1e18, -1e17] came back as [-2^53, -2^53], above the declared ub.
+    // rather than assumed. Clamping each Int bound into +/-2^53 would move one
+    // *outward* when the whole domain sits past it: [-1e18, -1e17] became
+    // [-2^53, -2^53], above the declared ub (#114).
     struct Case {
         const char* label;
         VarType type;
@@ -182,11 +164,10 @@ TEST_CASE("domain_window is a subset of the declared domain", "[unbounded][rando
 }
 
 TEST_CASE("random_in_domain stays in domain past 2^53", "[unbounded][randomize]") {
-    // `random_in_domain`'s Int arm casts the window to int64_t, so the window it
-    // reads has to be nameable. Trimming it inside `domain_window` made these
-    // domains *leave* the declared box; trimming at the cast keeps the draw
-    // inside it, falling back to the untrimmed window when no int64_t range
-    // names the domain at all. Measured before the fix: [-1e18, -1e17] returned
+    // `random_in_domain`'s Int arm casts the window to int64_t, so it trims at
+    // the cast, keeping the draw in the declared box, and falls back to the
+    // untrimmed window when no int64_t range names the domain (#114). Measured
+    // with the trim inside `domain_window`: [-1e18, -1e17] returned
     // -9007199254740992, above the declared ub.
     struct Case {
         const char* label;
@@ -277,10 +258,10 @@ TEST_CASE("randomize_var keeps an unbounded model's assignment finite", "[unboun
 }
 
 TEST_CASE("standard moves stay finite on an unbounded domain", "[unbounded][moves]") {
-    // `generate_standard_moves` is a public entry point (and a Python binding)
-    // that read the raw bounds too. It is NOT on solve()'s default path —
-    // the structural batch calls it only for List/Set — but `normal(0, (ub-lb)*0.1)`
-    // is NaN when the width is infinite, and int_rand's cast hit INT64_MIN.
+    // `generate_standard_moves` is a public entry point (and a Python binding),
+    // off solve()'s default path (the structural batch calls it only for
+    // List/Set). On raw bounds `normal(0, (ub-lb)*0.1)` is NaN for an infinite
+    // width, and int_rand's cast hits INT64_MIN.
     Model m;
     int32_t x = m.float_var(-kInf, kInf, "x");
     int32_t n = m.int_var(0, 5, "n");
@@ -307,14 +288,13 @@ TEST_CASE("standard moves stay finite on an unbounded domain", "[unbounded][move
 }
 
 // ---------------------------------------------------------------------------
-// The kick path. Both cases below FAIL on the pre-fix engine.
+// The kick path. Both cases below fail pre-#112.
 // ---------------------------------------------------------------------------
 
 TEST_CASE("a diversification kick keeps an unbounded model finite", "[unbounded][perturb]") {
-    // Pre-fix: the first kick writes NaN (either from a per-variable draw or,
-    // when those move nothing, from the guaranteed-move fallback of #109 —
-    // which is precisely the small models this one is), full_evaluate spreads it
-    // over the DAG, and nothing recovers.
+    // Pre-#112 the first kick writes NaN (from a per-variable draw, or from
+    // #109's guaranteed-move fallback that small models like this take) and
+    // full_evaluate spreads it over the DAG.
     for (uint64_t seed = 1; seed <= kSeeds; ++seed) {
         INFO("seed " << seed);
         Model m = unit_circle_model();
@@ -331,17 +311,13 @@ TEST_CASE("a diversification kick keeps an unbounded model finite", "[unbounded]
 }
 
 TEST_CASE("solve solves a model only a kick can escape", "[unbounded][search]") {
-    // End-to-end, and the measurement from the issue. On `|x^2 + y^2 - 1| <= 0`
-    // the closest-to-zero start (0, 0) is a stationary point of the only
-    // constraint — both partials of |x^2 + y^2 - 1| vanish there — so no jump
-    // value can move either variable and the search is stuck at violation 1
-    // until a diversification kick moves it off the origin. The kick is
-    // therefore load-bearing, not incidental.
+    // End-to-end, the measurement from #112. On `|x^2 + y^2 - 1| <= 0` the
+    // closest-to-zero start (0, 0) is a stationary point (both partials vanish
+    // there), so no jump moves either variable and only a diversification kick
+    // escapes violation 1: the kick is load-bearing.
     //
-    // Pre-fix the kick writes NaN instead: `max_real_violation()` returns +inf
-    // from then on, nothing is ever feasible again, and `solve()` returns the
-    // pre-kick closest-approach state — `feasible = false`, `best_violation = 1`
-    // — looking like an ordinary infeasible run.
+    // Pre-#112 the kick wrote NaN, `max_real_violation()` stayed +inf, and
+    // `solve()` returned `feasible = false`, `best_violation = 1`.
     Model m = unit_circle_model();
 
     SearchConfig cfg;
@@ -363,16 +339,11 @@ TEST_CASE("solve solves a model only a kick can escape", "[unbounded][search]") 
 // ---------------------------------------------------------------------------
 
 TEST_CASE("LNS destroy/repair works on an unbounded model", "[unbounded][lns]") {
-    // The acceptance count is the load-bearing assertion. A NaN-poisoned repair
-    // scores +inf in the lexicographic key and is always rolled back, so
-    // "finiteness after the call" can be satisfied by never accepting anything —
-    // requiring an accepted repair is what rules that out.
-    //
-    // (Finiteness turns out to fail pre-fix as well, for a second reason: with
-    // the destroyed variable at NaN every partial derivative is NaN too, so the
-    // repair finds no Newton candidate and falls back to the box constants —
-    // which on an unbounded domain are +/-inf. The repair then "succeeds" at
-    // x = +inf and is accepted.)
+    // The acceptance count is load-bearing: a NaN-poisoned repair scores +inf
+    // in the lexicographic key and is rolled back, so finiteness alone holds by
+    // never accepting. Pre-#112 finiteness fails too: at NaN every partial is
+    // NaN, so the repair falls back to the box constants (+/-inf here) and
+    // accepts x = +inf.
     int accepted = 0;
     for (uint64_t seed = 1; seed <= 20; ++seed) {
         INFO("seed " << seed);
@@ -404,11 +375,10 @@ TEST_CASE("LNS destroy/repair works on an unbounded model", "[unbounded][lns]") 
 
 TEST_CASE("ListOrder::Perturb keeps a List's elements, Regenerate need not",
           "[unbounded][randomize][list]") {
-    // The three merged copies were NOT byte-equivalent: LNS shuffled a List's
-    // current `elements`, the initialisers regenerated the order from iota.
-    // Collapsing both onto Regenerate changed LNS's repair trajectory on every
-    // List model (pharma-glsp among them; since retired) while the RNG draw
-    // count stayed the same, so nothing caught it. Pin both semantics here.
+    // LNS shuffles a List's current `elements`; the initialisers regenerate the
+    // order from iota. Collapsing both onto Regenerate changes LNS's repair
+    // trajectory on every List model at the same RNG draw count, so only these
+    // pins catch it.
     Model m;
     int32_t l = m.list_var(8, "l");
     m.close();
@@ -498,29 +468,22 @@ TEST_CASE("ListOrder::Perturb keeps a List's elements, Regenerate need not",
 // FJ jump candidates on an unbounded Int (#114).
 // ---------------------------------------------------------------------------
 //
-// The other half of the same hazard, and pre-existing rather than introduced by
-// #112. `int_jump_candidates` truncated the *raw* declared bounds with
-// `std::lround`, in `long`, and that failed three different ways:
+// Pre-#114 `int_jump_candidates` truncated the raw declared bounds with
+// `std::lround`, in `long`, which failed three ways:
 //
-//  - glibc's `lround` returns LONG_MIN for BOTH +inf and -inf. On
-//    `(-inf, +inf)` the range collapsed (`ub - lb == 0`), the `ub <= lb`
-//    early-out fired and the variable got no candidates at all — permanently
-//    frozen in the jump table, never selected by a scan, unreachable by GLS
-//    reweighting. On `[lb, +inf)` the same early-out fired (`LONG_MIN <= lb`).
-//  - On `(-inf, ub]` with `ub >= 0` the early-out did not fire: `ub - lb`
-//    overflowed `long` and wrapped negative, so the `<= 256` test chose the
-//    EXHAUSTIVE arm and the loop ran up from LONG_MIN — ~9.2e18 candidates, each
-//    a weighted_violation_delta. That case HANGS on the pre-fix engine rather
-//    than returning a bad jump, so re-verify it under a timeout.
-//  - On `(-inf, ub]` with `ub < 0` the width is a valid positive `long`, so the
-//    grid arm ran instantly — off a `lb` of LONG_MIN, handing back jumps near
-//    -9.2e18. Fast, and wrong.
+//  - glibc's `lround` returns LONG_MIN for both +inf and -inf, so on
+//    `(-inf, +inf)` and `[lb, +inf)` the `ub <= lb` early-out fired: no
+//    candidates, the variable frozen and unreachable by GLS reweighting.
+//  - On `(-inf, ub]`, `ub >= 0`, `ub - lb` wrapped negative, the `<= 256` test
+//    chose the exhaustive arm, and it looped up from LONG_MIN (~9.2e18
+//    weighted_violation_delta calls). It HANGS pre-fix: re-verify under a
+//    timeout.
+//  - On `(-inf, ub]`, `ub < 0`, the grid arm ran off an `lb` of LONG_MIN and
+//    returned jumps near -9.2e18.
 //
 // A *finite* bound past LONG_MAX (9.22e18) overflows `lround` the same way.
-//
-// The fix reads the bounds as doubles through `domain_window`, which substitutes
-// only for an infinity, so a finite in-range domain keeps exactly the candidates
-// it had.
+// The bounds are now read as doubles through `domain_window`, which substitutes
+// only for an infinity, so a finite in-range domain keeps its candidates.
 
 TEST_CASE("an unbounded Int is offered jump candidates", "[unbounded][fj]") {
     struct Case {
@@ -537,12 +500,10 @@ TEST_CASE("an unbounded Int is offered jump candidates", "[unbounded][fj]") {
         // Finite, but past LONG_MAX (9.22e18): `lround` overflowed here exactly
         // as it did on an infinity.
         {"int [-1e19, 1e19], n >= 5", -1.0e19, 1.0e19, true, 5.0, 0.0},
-        // Far from zero, so the sampling window sits past 2^53. An earlier
-        // attempt at this issue trimmed the window inside `domain_window` and
-        // collapsed both of these to a point, taking the early-out — the very
-        // freeze this test exists to prevent, reintroduced one domain over. The
-        // targets are inside the +/-1e6 window an infinite bound stands in for,
-        // so a candidate that reaches them exists.
+        // Far from zero, so the window sits past 2^53: trimming it inside
+        // `domain_window` collapses both to a point and freezes them again.
+        // The targets are inside the +/-1e6 window an infinite bound stands in
+        // for, so a candidate that reaches them exists.
         {"int (-inf, -1e18], n <= -1e18-5e5", -kInf, -1.0e18, false, -1.0e18 - 5.0e5, -1.0e18},
         {"int [1e18, +inf), n >= 1e18+5e5", 1.0e18, kInf, true, 1.0e18 + 5.0e5, 1.0e18},
         // LAST deliberately: this is the one that HANGS pre-fix (see above), so
@@ -550,16 +511,15 @@ TEST_CASE("an unbounded Int is offered jump candidates", "[unbounded][fj]") {
         {"int (-inf, 0], n <= -5", -kInf, 0.0, false, -5.0, 0.0},
     };
 
-    // A section per case rather than a bare loop: REQUIRE aborts the whole
-    // TEST_CASE, so a plain loop would have reported only the first failure and
-    // left the other cases unverified.
+    // A section per case: REQUIRE aborts the whole TEST_CASE, so a bare loop
+    // would report only the first failure.
     for (const Case& c : cases) {
         DYNAMIC_SECTION(c.label) {
             // `int_var` takes `int`, so the out-of-range bound is written
             // afterwards. No reader can produce one — .cbls goes through
             // `int_var(int, int)`, and the .nl/.mps readers clamp infinities to
             // 1e6/1e9 and then saturate to the `int` range — so this domain is
-            // reachable only from the C++ API, which is what the issue is about.
+            // reachable only from the C++ API (#114).
             Model m;
             int32_t n = m.int_var(-10, 10, "n");
             m.add_constraint(c.at_least ? m.geq(n, m.constant(c.bound))
@@ -573,25 +533,22 @@ TEST_CASE("an unbounded Int is offered jump candidates", "[unbounded][fj]") {
             const std::vector<double> weights(m.constraint_ids().size(), 1.0);
             const JumpResult r = compute_var_jump(m, weights, vid(n));
 
-            // A positive score means some candidate strictly reduced weighted
-            // violation, which is what "offered candidates" has to mean to be
-            // worth anything: pre-fix these returned {x0, 0} — no candidates at
-            // all — bar the hanging case and the two far-from-zero ones.
+            // "Offered candidates" means a positive score: some candidate
+            // strictly reduced weighted violation. Pre-#114 these returned
+            // {x0, 0}, bar the hanging case and the two far-from-zero ones.
             REQUIRE(r.score > 0.0);
             REQUIRE(r.jump_value != c.x0);
             REQUIRE(std::isfinite(r.jump_value));
             REQUIRE(r.jump_value >= c.lb);
             REQUIRE(r.jump_value <= c.ub);
-            // ...and it lands in the box randomisation samples, so the two paths
-            // agree on this variable's searchable range. This is the half that
-            // fails on the `lround` code for `(-inf, ub < 0]`: it returned a
-            // jump near -9.2e18, in-domain but nowhere near the window.
-            // Asserted against the window rather than against
-            // `kRandomIntInfClamp`, because on a declared bound past the clamp
-            // the window legitimately sits outside it. (Only the endpoints and
-            // grid are bounded this way — the `x0 +/- 1` neighbours are clamped
-            // to the raw domain, so a variable that has walked outside the
-            // window keeps its local moves. Every x0 here is inside it.)
+            // ...and it lands in the box randomisation samples, so both paths
+            // agree on the searchable range; the `lround` code failed this on
+            // `(-inf, ub < 0]` (in-domain, near -9.2e18). Asserted against the
+            // window, not `kRandomIntInfClamp`: past the clamp the window sits
+            // outside it. Only endpoints and grid are bounded so; the
+            // `x0 +/- 1` neighbours are clamped to the raw domain, so a
+            // variable outside the window keeps its local moves. Every x0 here
+            // is inside it.
             const DomainWindow win = domain_window(m.var(vid(n)));
             REQUIRE(r.jump_value >= win.lo);
             REQUIRE(r.jump_value <= win.hi);
@@ -639,11 +596,9 @@ TEST_CASE("finite Int jump candidates are unchanged", "[unbounded][fj]") {
     }
 
     SECTION("grid arm past 2^53") {
-        // The two sections above sit far inside 2^53, so they say nothing about
-        // the range where determinism actually broke: trimming the window inside
-        // `domain_window` clipped this domain's upper bound to 2^53-1, and the
-        // jump went from 1e17 — which satisfies the row outright — to
-        // 9007199254740991, leaving it violated by ~1e15.
+        // The sections above sit far inside 2^53. Past it, trimming the window
+        // inside `domain_window` clipped ub to 2^53-1 and the jump went from
+        // 1e17 (row satisfied) to 9007199254740991 (violated by ~1e15).
         Model m;
         int32_t n = m.int_var(0, 10, "n");
         m.add_constraint(m.geq(n, m.constant(1.0e16)));
@@ -660,14 +615,11 @@ TEST_CASE("finite Int jump candidates are unchanged", "[unbounded][fj]") {
 }
 
 TEST_CASE("solve moves a free Int that must move for feasibility", "[unbounded][fj][search]") {
-    // End-to-end, and the acceptance criterion from the issue.
-    // `set_initial_assignment` puts a free Int at the closest-to-zero point (0),
-    // and `|n - 123457| <= 0` admits exactly one value, so the run reaches
-    // feasibility only if the jump machinery actually walks the variable there.
-    //
-    // Pre-fix the variable is frozen at 0: the only thing that can move it is a
-    // diversification kick, which draws uniformly over +/-1e6 and so hits the
-    // one feasible value with probability 5e-7 per kick.
+    // End-to-end, #114's acceptance criterion. `set_initial_assignment` puts a
+    // free Int at the closest-to-zero point (0), and `|n - 123457| <= 0` admits
+    // one value, so feasibility needs the jump machinery to walk n there.
+    // Pre-#114 n is frozen at 0; only a kick, uniform over +/-1e6, moves it,
+    // hitting the feasible value with probability 5e-7 per kick.
     struct Case {
         const char* label;
         double lb;
@@ -699,12 +651,10 @@ TEST_CASE("solve moves a free Int that must move for feasibility", "[unbounded][
     }
 }
 
-// #114, from independent review of b94cfe5: `movable_domain` truncated its
-// window with `static_cast<int64_t>`, which rounds toward zero and so called
-// `[0.9, 1.2]` movable. Only one integer lies in that domain, so nothing can
-// move; the forced perturbation path then drew `rng.integers(0, 1) == 0` and
-// wrote 0.0, BELOW the declared lb. `floor(hi) - ceil(lo) >= 1.0` is exact at
-// any magnitude and calls the domain immovable, so the kick is a no-op instead.
+// #114: `movable_domain` truncated its window toward zero and called
+// `[0.9, 1.2]` movable; with one integer in it, the forced perturbation drew
+// `rng.integers(0, 1) == 0` and wrote 0.0, below lb. `floor(hi) - ceil(lo)
+// >= 1.0` is exact at any magnitude, so the kick is a no-op instead.
 //
 // `perturb(0.0)` reaches that path deterministically: every per-variable draw
 // fails `rng_.random() >= 0.0`, so nothing moves and the fallback runs.

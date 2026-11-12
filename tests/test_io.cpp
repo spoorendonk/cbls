@@ -169,7 +169,7 @@ TEST_CASE("idempotent save(load(save(load(file))))", "[io]") {
 }
 
 TEST_CASE("round-trip SignPower and Tanh ops", "[io]") {
-    // Build a model using the new MINLPLib ops, serialise, reload, and confirm
+    // Build a model using the MINLPLib ops, serialise, reload, and confirm
     // the op names survive and the reloaded model evaluates identically.
     Model m1;
     int32_t x = m1.float_var(-5, 5, "x");

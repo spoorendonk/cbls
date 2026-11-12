@@ -61,9 +61,7 @@ const std::string kSmallLp =
 //   min   3 x1 + 2 x2 + 4 x3
 //   s.t.  x1 + x2 + x3 >= 2
 //   x_i in {0,1}
-// Optimum: x1=0, x2=1, x3=1 (or x1=1,x2=1,x3=0) -> obj 5? let's check:
-//   {x2=1,x3=1}: 0 + 2 + 4 = 6
-//   {x1=1,x2=1}: 3 + 2 + 0 = 5  <- optimum
+// Optimum: two of three must be 1; {x1, x2} costs 3 + 2 = 5, {x2, x3} 6.
 const std::string kSmallBinary =
     "NAME          BIN\n"
     "ROWS\n"
@@ -85,10 +83,8 @@ const std::string kSmallBinary =
 
 // An E row carrying a RANGES entry, the only MPS shape that turns one row into
 // TWO constraints. `range > 0` means [rhs, rhs + range]; `range < 0` means
-// [rhs + range, rhs]. Nothing in the suite covered RANGES at all until the
-// adapter's per-row builder was split out, and the split silently reordered
-// this arm's node creation -- see the regression test below for why that
-// matters.
+// [rhs + range, rhs]. The regression test below pins this arm's node
+// creation order.
 //   min  x
 //   s.t. 2 <= x + y <= 5      (E row, rhs 2, range +3)
 //        0 <= x, y <= 10
@@ -229,16 +225,15 @@ TEST_CASE("a coefficient costs 0, 1 or 2 nodes by its value", "[mps][adapter]") 
     }
     REQUIRE(term_nodes == 6);
 
-    // The adapter's model must fit the reservation that count feeds, or the
-    // node array grew after all.
-    // Exact, not a bound. `<= reserved` would stay green through any change that
-    // spends FEWER nodes -- including a new fast path that silently invalidates
-    // the reservation formula in the other direction. The decomposition: 6 term
-    // nodes, the row's Sum, its RHS Const, the Geq, and the objective's Sum.
+    // Exact, not a bound: `<= reserved` stays green through a change that
+    // spends FEWER nodes, such as a fast path that invalidates the reservation
+    // formula. The decomposition: 6 term nodes, the row's Sum, its RHS Const,
+    // the Geq, and the objective's Sum.
     auto built = cbls::mps_to_model(prob);
     REQUIRE(built.model.num_nodes() == term_nodes + 4);
 
-    // Which must fit the reservation that same count feeds.
+    // The adapter's model must fit the reservation that count feeds, or the
+    // node array grew after all.
     const std::size_t reserved = term_nodes + (6 * prob.rows.size()) + (2 * prob.vars.size()) + 16;
     REQUIRE(built.model.num_nodes() <= reserved);
 }
@@ -267,8 +262,8 @@ TEST_CASE("CBLS finds a feasible point on a small binary IP", "[mps][solve]") {
     cbls::LNS lns(0.3);
     auto result = solve_deterministic(built.model, 1486000, 42, &hook, &lns);
     REQUIRE(result.feasible);
-    // Minimum is 5; any feasible binary solution is at most 9 (1+1+1=3 sum
-    // with all costs); accept any feasible point satisfying the assertion.
+    // Minimum is 5; every feasible binary point costs at most 9 (all three
+    // set, 3 + 2 + 4), so any feasible point passes.
     REQUIRE(result.objective >= 5.0 - 1e-6);
     REQUIRE(result.objective <= 9.0 + 1e-6);
 }
@@ -511,11 +506,9 @@ TEST_CASE("RANGES on an E row becomes a two-sided constraint", "[mps][adapter]")
 TEST_CASE("a ranged E row creates its upper bound before the geq node", "[mps][adapter]") {
     // Node ids order the work the engine does, so the order in which a row's
     // nodes are created is part of the model, not an implementation detail.
-    // Splitting the adapter's per-row builder out of mps_to_model moved this
-    // arm's `m.constant(rhs + range)` to AFTER its `m.geq(...)`, which shifts
-    // every later node id on such a row. Nothing caught it: the model is
-    // otherwise identical and the whole suite stayed green. This pins the
-    // order.
+    // Creating this arm's `m.constant(rhs + range)` after its `m.geq(...)`
+    // shifts every later node id on such a row while the model stays otherwise
+    // identical, so only this pin catches it.
     //
     // The row's constraint node is the `leq`; the two nodes immediately before
     // it must be the `geq` and, before that, the constant holding rhs + range.

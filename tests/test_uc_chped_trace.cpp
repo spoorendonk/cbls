@@ -1,18 +1,13 @@
-// The UC-CHPED anytime trace (#147).
+// The UC-CHPED anytime trace (#147). Pre-#147 the runner passed `nullptr` as
+// solve()'s SolveCallback, so no trace existed; a header-only test passes with
+// that, so the central case drives a REAL solve() with the recorder attached
+// and asserts rows came out of it.
 //
-// The defect this covers is not "the trace file is malformed" -- it is that the
-// runner passed `nullptr` where solve() takes a SolveCallback, so no trace
-// existed at all. A test that only checked a header would pass with the
-// callback still `nullptr`, so the central case here drives a REAL solve() with
-// the recorder attached and asserts that rows came out of it.
-//
-// Wall-clock-free, as tests/test_bench_flags.cpp is and for the same reason:
-// `time_limit = 0` disables solve()'s clock entirely, so the run is bounded by
-// `max_iterations` alone and the incumbents it records are reproducible for a
-// given seed. The one thing that is NOT asserted is the row count, because
-// solve() also emits a periodic progress report roughly once a second and that
-// is a clock decision -- so the assertions are on what every row must say, and
-// on the improvement sequence, neither of which the periodic reports disturb.
+// Wall-clock-free, as tests/test_bench_flags.cpp is: `time_limit = 0` bounds
+// the run by `max_iterations` alone, so its incumbents are reproducible for a
+// given seed. The row count is NOT asserted: solve()'s roughly once-a-second
+// progress report is a clock decision. The assertions are on what every row
+// must say and on the improvement sequence, which those reports do not disturb.
 
 #include "benchmarks/uc-chped/data.h"
 #include "benchmarks/uc-chped/greedy_init.h"
@@ -259,11 +254,10 @@ TEST_CASE("a recorder handed to solve() records the run's incumbents", "[uc-chpe
 TEST_CASE("the trace closes every solve at the time the run ended", "[uc-chped][trace]") {
     // The engine reports at most once a second and `record_best` resets that
     // timer, so an improvement inside the final second is the last thing the
-    // periodic sampling writes. Measured before the closing row existed, every
-    // horizon's last row fell 0.65-1.45s short of its budget, and on one the
-    // last row WAS an improvement -- a record that ends on a rising incumbent
-    // with budget apparently left, which reads as the opposite of what
-    // happened.
+    // periodic sampling writes. Measured without the closing row, every
+    // horizon's last row fell 0.65-1.45s short of its budget, and on one it
+    // WAS an improvement: a record ending on a rising incumbent with budget
+    // apparently left.
     std::ostringstream out;
     TraceRecorder recorder(out, "ucp13", 24, /*time_limit_s=*/300.0, "abc1234");
 

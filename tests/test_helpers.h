@@ -16,20 +16,15 @@ inline int32_t vid(int32_t handle) {
 // ---------------------------------------------------------------------------
 // Deterministic solve for tests.
 //
-// A wall-clock budget makes a test's outcome depend on machine speed: the same
-// assertion can pass on a fast machine and fail on a loaded CI box, because a
-// different number of batches ran. Tests therefore bound the search by GLS
-// *iterations* instead (`time_limit = 0` disables the wall clock entirely), so a
-// given seed always produces exactly the same result.
+// A wall-clock budget makes a test's outcome depend on machine speed (how many
+// batches ran), so tests bound the search by GLS *iterations* (`time_limit = 0`
+// disables the wall clock): a given seed always gives exactly the same result.
+// A test that keeps a wall clock asserts timing itself (e.g. "SA returns
+// result" checks time_seconds > 0) and is commented as such.
 //
-// Not every call site is converted: a few tests deliberately keep a wall clock
-// because the thing they assert *is* timing (e.g. "SA returns result" checks
-// time_seconds > 0). Those are the exception and are commented as such.
-//
-// The iteration budgets at the call sites were calibrated against the wall-clock
-// budgets they replaced — see tools note in the commit that introduced this.
-// Raise a budget if a quality assertion needs more search; never swap it back
-// for a time limit.
+// The call sites' iteration budgets were calibrated against the wall-clock
+// budgets they replaced. Raise a budget if a quality assertion needs more
+// search; never swap it back for a time limit.
 // ---------------------------------------------------------------------------
 inline cbls::SearchResult solve_deterministic(cbls::Model& model, int64_t max_iterations,
                                               uint64_t seed = 42,
@@ -47,14 +42,11 @@ inline cbls::SearchResult solve_deterministic(cbls::Model& model, int64_t max_it
     // Deliberately opt-in: with it set, tests are NOT deterministic.
     const char* calib = std::getenv("CBLS_TEST_CALIBRATE");
     if (calib != nullptr) {
-        // std::atof has no error path -- a mistyped value would become 0.0 and
-        // read as "no wall clock" (bugprone-unchecked-string-to-number-conversion).
-        // cbls::try_parse_double is the one rule the CLI and the benchmark
-        // runners parse their own flags with, trailing characters included:
-        // CBLS_TEST_CALIBRATE="5s" must be refused rather than quietly calibrate
-        // against 5 seconds. This used to be a third hand-written copy of that
-        // rule, which is where a fix to one silently diverges from the others.
-        // It leaves time_limit untouched on failure, so the guard below reports.
+        // cbls::try_parse_double, the one rule the CLI and the benchmark
+        // runners parse their flags with: std::atof would read a typo as 0.0,
+        // "no wall clock" (bugprone-unchecked-string-to-number-conversion), and
+        // trailing characters are refused, so "5s" is not read as 5 seconds.
+        // A failed parse resets time_limit to 0, so the guard below refuses.
         if (!cbls::try_parse_double(calib, time_limit)) {
             time_limit = 0.0;
         }
