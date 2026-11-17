@@ -31,13 +31,13 @@ struct Box {
     double hi;
 };
 
-bool finite_bound(double b) {
-    return std::abs(b) < kBoundInfinity;
+bool finite_bound(double b, double inf) {
+    return std::abs(b) < inf;
 }
 
-Box boxed(double lo, double hi) {
-    const bool has_lo = finite_bound(lo);
-    const bool has_hi = finite_bound(hi);
+Box boxed(double lo, double hi, double inf) {
+    const bool has_lo = finite_bound(lo, inf);
+    const bool has_hi = finite_bound(hi, inf);
     if (has_lo && has_hi) {
         return {lo, hi};
     }
@@ -55,13 +55,13 @@ double clamp(double v, double lo, double hi) {
 }
 
 /// Static locks: per variable, the rows a move up (down) could violate.
-void count_locks(const LinearRowStore& store, size_t n, std::vector<int32_t>& up,
+void count_locks(const LinearRowStore& store, size_t n, double inf, std::vector<int32_t>& up,
                  std::vector<int32_t>& down) {
     up.assign(n, 0);
     down.assign(n, 0);
     for (int32_t r = 0; r < store.num_rows(); ++r) {
-        const bool has_lo = finite_bound(store.row_lo(r));
-        const bool has_hi = finite_bound(store.row_hi(r));
+        const bool has_lo = finite_bound(store.row_lo(r), inf);
+        const bool has_hi = finite_bound(store.row_hi(r), inf);
         for (size_t k = store.row_start(r); k < store.row_start(r + 1); ++k) {
             const auto v = static_cast<size_t>(store.cols()[k]);
             const double a = store.coefs()[k];
@@ -87,9 +87,10 @@ struct LockDelta {
 
 /// loosedyn's locks from one row (paper Sect. 4.2): none from a row already
 /// infeasible or already redundant at the current activities.
-LockDelta dynamic_locks(double a, double row_lo, double row_hi, double min_act, double max_act) {
-    const bool has_lo = finite_bound(row_lo);
-    const bool has_hi = finite_bound(row_hi);
+LockDelta dynamic_locks(double a, double row_lo, double row_hi, double min_act, double max_act,
+                        double inf) {
+    const bool has_lo = finite_bound(row_lo, inf);
+    const bool has_hi = finite_bound(row_hi, inf);
     if ((has_hi && min_act > row_hi) || (has_lo && max_act < row_lo)) {
         return {0, 0};
     }
@@ -109,7 +110,7 @@ FprConfig fpr_portfolio_config(int64_t worker, int64_t attempt) {
 }
 
 FprSearch::FprSearch(const Model& model, const LinearRowStore& store, DomainPropagator& prop)
-    : model_(model), store_(store), prop_(prop) {
+    : model_(model), store_(store), prop_(prop), inf_(prop.options().bounds.infinity) {
     const size_t n = model.num_vars();
     integral_.assign(n, 0);
     binary_.assign(n, 0);
@@ -123,12 +124,12 @@ FprSearch::FprSearch(const Model& model, const LinearRowStore& store, DomainProp
             continue;
         }
         scalars_.push_back(static_cast<int32_t>(v));
-        const bool integral = var.type != VarType::Float;
+        const bool integral = var.type == VarType::Bool || var.type == VarType::Int;
         integral_[v] = static_cast<uint8_t>(integral);
         binary_[v] = static_cast<uint8_t>(integral && var.lb == 0.0 && var.ub == 1.0);
     }
     node_cap_ = static_cast<int64_t>(n) + 1;
-    count_locks(store, n, up_locks_, down_locks_);
+    count_locks(store, n, inf_, up_locks_, down_locks_);
     for (const int32_t v : scalars_) {
         const size_t stored = store.col_start(v + 1) - store.col_start(v);
         linear_only_[static_cast<size_t>(v)] = static_cast<uint8_t>(rows_of(model, v) == stored);
@@ -195,7 +196,7 @@ double FprSearch::loose_dyn(int32_t var, double lo, double hi) const {
         const double max_act =
             prop_.max_activity_infinite(r) > 0 ? kInf : prop_.max_activity_sum(r);
         const LockDelta d = dynamic_locks(store_.coefs()[store_.col_entries()[e]], store_.row_lo(r),
-                                          store_.row_hi(r), min_act, max_act);
+                                          store_.row_hi(r), min_act, max_act, inf_);
         up += d.up;
         down += d.down;
         // Early exit, as the reference: one side already wins outright.
@@ -216,7 +217,7 @@ double FprSearch::loose_dyn(int32_t var, double lo, double hi) const {
 
 double FprSearch::choose_value(int32_t var, double lo, double hi, FprValueRule rule,
                                RNG& rng) const {
-    const Box b = boxed(lo, hi);
+    const Box b = boxed(lo, hi, inf_);
     const double c = cost_[static_cast<size_t>(var)];
     const bool integral = integral_[static_cast<size_t>(var)] != 0;
     double v = b.lo;
@@ -251,7 +252,7 @@ double FprSearch::alternative(int32_t var, double preferred) const {
     if (binary_[i] != 0) {  // unfixed, so still [0, 1]
         return preferred < 0.5 ? 1.0 : 0.0;
     }
-    const Box b = boxed(prop_.lo(var), prop_.hi(var));
+    const Box b = boxed(prop_.lo(var), prop_.hi(var), inf_);
     const double alt = std::abs(preferred - b.lo) < kFeasTol ? b.hi : b.lo;
     return integral_[i] != 0 ? std::round(alt) : alt;
 }
@@ -263,8 +264,11 @@ bool FprSearch::fixed(int32_t var) const {
 void FprSearch::trivial_fixings() {
     // Paper Sect. 6: a variable with locks on one side only goes to its other
     // bound. Only where every row of it is linear (the store's): a nonlinear
-    // row could lock it unseen. A refuted fixing is skipped, not kept: the
-    // propagator's state after a conflict is partial.
+    // row could lock it unseen. Every value is read off the root box first, as
+    // the reference fixes them all before one propagation; a refuted fixing is
+    // then skipped, not kept: the propagator's state after a conflict is
+    // partial and must be backtracked.
+    trivial_.clear();
     for (const int32_t v : scalars_) {
         const auto i = static_cast<size_t>(v);
         if (integral_[i] == 0 || linear_only_[i] == 0 || fixed(v)) {
@@ -275,9 +279,12 @@ void FprSearch::trivial_fixings() {
         if (!up_free && !down_free) {
             continue;
         }
-        const Box b = boxed(prop_.lo(v), prop_.hi(v));
+        const Box b = boxed(prop_.lo(v), prop_.hi(v), inf_);
+        trivial_.emplace_back(v, up_free ? b.hi : b.lo);
+    }
+    for (const auto& [v, value] : trivial_) {
         const int32_t level = prop_.checkpoint();
-        if (prop_.fix(v, up_free ? b.hi : b.lo)) {
+        if (prop_.fix(v, value)) {
             continue;  // the checkpoint stays held: `run` unwinds it at exit
         }
         prop_.backtrack(level);
@@ -341,15 +348,23 @@ void FprSearch::fill(const FprConfig& cfg, RNG& rng, FprResult& out) const {
         const Variable& var = model_.var(v);
         double lo = prop_.lo(v);
         double hi = prop_.hi(v);
-        if (lo > hi) {  // a refuted node's partial state: fall back to the model's box
+        if (lo > hi) {  // a refuted root (the caller's): fall back to the model's box
             lo = var.lb;
             hi = var.ub;
         }
+        const double c = cost_[i];
         double value = 0.0;
         if (forced_[i] != 0) {
             value = forced_value_[i];
         } else if (integral_[i] == 0) {
-            value = clamp(var.value, lo, hi);
+            // The cost-preferred bound, else the reference's cont_fallback (the
+            // current value); either clamped to the boxed domain.
+            const Box b = boxed(lo, hi, inf_);
+            double want = var.value;
+            if (std::abs(c) > kZeroCost) {
+                want = c > 0 ? lo : hi;
+            }
+            value = clamp(want, b.lo, b.hi);
         } else if (lo == hi) {
             value = lo;
         } else {
@@ -369,7 +384,13 @@ void FprSearch::run(const FprConfig& cfg, int64_t attempt, RNG& rng, FprResult& 
     stack_.clear();
     heap_.clear();
 
-    static_order(dynamic ? FprVarOrder::Type : cfg.order, rng, order_);
+    const FprVarOrder base = dynamic ? FprVarOrder::Type : cfg.order;
+    const auto slot = static_cast<size_t>(base);
+    if (!have_order_[slot]) {
+        static_order(base, rng, orders_[slot]);
+        have_order_[slot] = true;
+    }
+    order_ = orders_[slot];
     if (attempt > 0 && !order_.empty()) {
         const size_t len = std::max<size_t>(1, order_.size() * 3 / 10);
         std::shuffle(order_.begin(), order_.begin() + static_cast<std::ptrdiff_t>(len),
@@ -417,7 +438,11 @@ void FprSearch::dive(const FprConfig& cfg, RNG& rng, FprResult& out) {
         if (infeas) {
             ++out.conflicts;
             if (backtracks) {
-                continue;  // lines 9-10: the sibling is next on the stack
+                // Lines 9-10: the sibling is next on the stack. Undone now, so
+                // a stack this empties fills from the parent's consistent state.
+                prop_.backtrack(node.level);
+                prop_.checkpoint();  // the sibling's pop backtracks to it
+                continue;
             }
             // Diveprop does not stop (the paper's single big dive). The
             // propagator's state after a conflict is partial, so the fixing is

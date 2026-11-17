@@ -2575,10 +2575,15 @@ wants leaf repair; repair itself is the caller's (#426).
   outside the propagator, and the dive goes on. `Dfs` backtracks to the next
   sibling value on a conflict, at most `num_vars + 1` nodes. `Dfsrep` searches
   as `Dfs` and asks for leaf repair (in-tree repair is deferred, #419).
-- **Fill**: Floats take their current value clamped to the final box; a box
-  emptied by a partial dive falls back to the model's; for value choice an
-  infinite bound is boxed to width 1e5 from the finite one, or to ±1e5
-  (paper Section 6).
+- **Fill**: a Float with a cost takes its cost-preferred bound, one without
+  its current value (the reference's `cont_fallback`), clamped to the final
+  box; an infinite bound is boxed to width 1e5 from the finite one, or to
+  ±1e5 (paper Section 6). A Dfs conflict is undone at once, so an exhausted
+  stack fills from the last consistent state.
+- **Deviations**, both forced by `DomainPropagator`'s rule that a conflict is
+  backtracked: a refuted trivial rounding is skipped, and a refuted Diveprop
+  fixing is kept outside the propagator; the reference carries on in the
+  refuted state.
 - `kFprPortfolio` is mip-heuristics' six initial configs less Dive and
   RepairSearch; `fpr_portfolio_config(worker, attempt)` rotates through it.
 

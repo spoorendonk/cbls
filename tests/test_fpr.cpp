@@ -8,6 +8,7 @@
 #include <cbls/fpr.h>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <vector>
 
 using namespace cbls;
@@ -280,6 +281,29 @@ TEST_CASE("a Float takes its current value clamped to its propagated box", "[fpr
     CHECK(val(r, b) == 1.0);
     CHECK(std::abs(val(r, f) - 4.0) < 1e-6);  // a derived Float bound keeps its safety margin
     CHECK(val(r, g) == 3.0);
+}
+
+TEST_CASE("a Float with a cost takes its cost-preferred bound", "[fpr]") {
+    Model m;
+    const int32_t b = m.bool_var();
+    const int32_t up = m.float_var(0.0, 10.0);
+    const int32_t down = m.float_var(0.0, 10.0);
+    const int32_t free_side = m.float_var(2.0, std::numeric_limits<double>::infinity());
+    m.add_constraint(m.geq(m.sum({b, up, down}), m.constant(0.5)));
+    m.minimize(m.sum({m.prod(m.constant(3.0), up), m.prod(m.constant(-2.0), down),
+                      m.prod(m.constant(-1.0), free_side)}));
+    m.close();
+    m.var_mut(vid(up)).value = 7.0;
+    m.var_mut(vid(down)).value = 7.0;
+    m.var_mut(vid(free_side)).value = 7.0;
+    full_evaluate(m);
+    Rig rig(m);
+    RNG rng(1);
+    FprResult r;
+    rig.fpr.run({FprVarOrder::LR, FprValueRule::Up, FprMode::Dfs}, 0, rng, r);
+    CHECK(val(r, up) == 0.0);               // positive cost: the lower bound
+    CHECK(val(r, down) == 10.0);            // negative cost: the upper bound
+    CHECK(val(r, free_side) == 2.0 + 1e5);  // an infinite bound is boxed
 }
 
 TEST_CASE("an attempt is deterministic under its seed and leaves the propagator as found",

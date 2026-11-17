@@ -201,6 +201,7 @@ public:
     [[nodiscard]] int max_activity_infinite(int32_t r) const;
 
     [[nodiscard]] const DomainPropagationStats& stats() const noexcept { return stats_; }
+    [[nodiscard]] const DomainPropagationOptions& options() const noexcept { return opts_; }
 
 private:
     struct RowEntry;  // a trailed row: its index and both old activities

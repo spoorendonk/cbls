@@ -53,14 +53,14 @@ struct FprConfig {
 
 /// mip-heuristics' `kInitialFprConfigs` (paper Section 6.3, Class 1) less its
 /// Dive and RepairSearch entries, with typecl read as type (no clique table):
-/// Badobj Dfs, Locks2 Dfs, Locks Dfsrep, Badobj Dfsrep, Random2 Diveprop,
-/// Domsize Dfs.
+/// Badobjcl Dfs, Locks2 Dfs, Locks Dfsrep, Badobjcl Dfsrep, Random (typecl /
+/// random) Diveprop, Domsize Dfs.
 inline constexpr std::array<FprConfig, 6> kFprPortfolio{{
     {FprVarOrder::Type, FprValueRule::BadObj, FprMode::Dfs},
     {FprVarOrder::Locks, FprValueRule::LooseDyn, FprMode::Dfs},
     {FprVarOrder::LR, FprValueRule::LooseDyn, FprMode::Dfsrep},
     {FprVarOrder::Type, FprValueRule::BadObj, FprMode::Dfsrep},
-    {FprVarOrder::Random, FprValueRule::Random, FprMode::Diveprop},
+    {FprVarOrder::Type, FprValueRule::Random, FprMode::Diveprop},
     {FprVarOrder::DomainSize, FprValueRule::LooseDyn, FprMode::Dfs},
 }};
 
@@ -85,9 +85,16 @@ struct FprResult {
 /// run its `propagate_all` once at depth 0 first (the root tightenings), and
 /// `run` leaves it at the depth it found it.
 ///
-/// Integral variables are branched; Floats are never branched and take their
-/// current value clamped to their final box; an integral variable in no linear
-/// row is fixed by the value rule with nothing to propagate.
+/// Integral variables are branched; Floats are never branched: a Float with a
+/// nonzero cost takes its cost-preferred bound, one without its current value
+/// (the reference's `cont_fallback`), clamped to its final box. An integral
+/// variable in no linear row is fixed by the value rule with nothing to
+/// propagate.
+///
+/// Two deviations, both forced by `DomainPropagator`'s rule that a conflict is
+/// backtracked: a trivial rounding propagation refutes is skipped, and a
+/// Diveprop fixing propagation refutes is undone there and kept outside it
+/// (the reference carries on in the refuted state).
 ///
 /// Costs: the constructor is O(vars + nnz) plus one reverse sweep of the
 /// objective. `run` is at most `num_vars + 1` nodes, each a `fix` plus
@@ -151,8 +158,14 @@ private:
     std::vector<double> cost_;
     std::vector<int32_t> up_locks_;
     std::vector<int32_t> down_locks_;
+    double inf_;  // the propagator's infinity: a bound at or past it is infinite
+    /// Each static order, computed on its first `run` and kept, as
+    /// mip-heuristics precomputes one per strategy; empty until then.
+    std::array<std::vector<int32_t>, 5> orders_;
+    std::array<bool, 5> have_order_{};
 
     // Per attempt, reused.
+    std::vector<std::pair<int32_t, double>> trivial_;
     std::vector<int32_t> order_;
     std::vector<Node> stack_;
     std::vector<std::pair<double, int32_t>> heap_;  // (domain size, var), min-heap
