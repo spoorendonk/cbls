@@ -78,9 +78,13 @@ def test_batch_buckets_sum_to_the_batch_count() -> None:
     counters = result.counters
     assert counters.batches > 0
     assert (
-        counters.fj_batches + counters.novelty_batches + counters.structural_batches
+        counters.fj_batches
+        + counters.novelty_batches
+        + counters.structural_batches
+        + counters.fpr_batches
         == counters.batches
     )
+    assert counters.fpr_batches == 0, "FPR is off by default"
     # A scalar model runs feasibility-jump batches and nothing else.
     assert counters.fj_batches == counters.batches
 
@@ -130,8 +134,9 @@ def test_batch_kind_enum_is_bound() -> None:
         cbls.BatchKind.FeasibilityJump,
         cbls.BatchKind.NoveltyJump,
         cbls.BatchKind.Structural,
+        cbls.BatchKind.FixPropagateRepair,
     }
-    assert len(members) == 3, "a duplicated enum value would collapse this set"
+    assert len(members) == 4, "a duplicated enum value would collapse this set"
 
 
 def test_counters_are_read_only() -> None:

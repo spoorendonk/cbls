@@ -408,6 +408,12 @@ private:
     // and jump-table, i.e. if the loop owes an fj_.resync().
     bool run_batch(BatchKind kind);
     bool run_fpr_batch();
+    // Whether the last batch ran FJ: an FJ batch, or an FPR batch's repair or
+    // failed-attempt FJ batch, the batches fj_.batch_stuck() describes.
+    [[nodiscard]] bool ran_fj_batch(BatchKind kind) const {
+        return kind == BatchKind::FeasibilityJump ||
+               (kind == BatchKind::FixPropagateRepair && fpr_ran_fj_);
+    }
     void note_closest_approach(double batch_violation);
     // Steps 3-4: bank the feasible point, polish it, bank the polish. Returns
     // whether the batch produced a new best, and may set `resync`.
@@ -482,8 +488,10 @@ private:
     // Owns this search's clone of every registered generator, so portfolio
     // workers share no mutable generator state (#157, #165).
     StructuralBatch structural_;
-    // Built only when fpr_batch_probability > 0 (#426), else null.
+    // Built only when fpr_batch_probability > 0 and the root is consistent
+    // (#426, #429), else null: a refuted root's batches are plain FJ ones.
     std::unique_ptr<FprBatch> fpr_;
+    bool fpr_ran_fj_ = false;
 
     double best_feasible_obj_ = std::numeric_limits<double>::infinity();
     Model::State best_state_;
@@ -526,6 +534,17 @@ private:
     TerminationReason termination_ = TerminationReason::TimeLimit;
 };
 
+// Null at probability 0 (nothing built) and on a refuted root (#429).
+std::unique_ptr<FprBatch> make_fpr_batch(Model& model, const SearchConfig& config,
+                                         const Budget& budget) {
+    if (!(config.fpr_batch_probability > 0.0)) {
+        return nullptr;
+    }
+    auto batch =
+        std::make_unique<FprBatch>(model, config.fpr_worker, budget.has_deadline, budget.deadline);
+    return batch->root_ok() ? std::move(batch) : nullptr;
+}
+
 ViolationLSLoop::ViolationLSLoop(Model& model, ViolationManager& vm, RNG& rng, FeasibilityJump& fj,
                                  const SearchConfig& config, const Budget& budget,
                                  InnerSolverHook* hook, LNS* lns, int lns_interval,
@@ -555,8 +574,7 @@ ViolationLSLoop::ViolationLSLoop(Model& model, ViolationManager& vm, RNG& rng, F
       unproductive_arm_stagnation_(
           std::max(1, config.perturbation_period / kUnproductiveArmDivisor)),
       structural_(model, config, structural_probability_ > 0.0),
-      fpr_(config.fpr_batch_probability > 0.0 ? std::make_unique<FprBatch>(model, config.fpr_worker)
-                                              : nullptr),
+      fpr_(make_fpr_batch(model, config, budget)),
       best_state_(model.copy_state()),
       closest_state_(best_state_),
       last_callback_(budget.start),
@@ -1107,17 +1125,19 @@ bool ViolationLSLoop::run_batch(BatchKind kind) {
     return false;
 }
 
-// The dive's point replaces the current one (scalars only), as an adoption
-// does; a repairing mode then runs an FJ batch from it, on the full model (FJ
-// also sees the nonlinear rows). A refuted root leaves an FJ batch.
+// A written dive point replaces the current one (scalars only), as an
+// adoption does; a repairing mode then runs an FJ batch from it, on the full
+// model (FJ also sees the nonlinear rows). A failed attempt (a Dfs dive with
+// no leaf) keeps FJ's point and runs an FJ batch instead.
 bool ViolationLSLoop::run_fpr_batch() {
     const FprBatch::Outcome out = fpr_->run(rng_);
-    if (out.ran) {
+    if (out.written) {
         full_evaluate(model_);
         vm_.invalidate_cache();
         fj_.resync();
     }
-    if (!out.ran || out.wants_repair) {
+    fpr_ran_fj_ = !out.written || out.wants_repair;
+    if (fpr_ran_fj_) {
         fj_.batch(config_.batch_iterations);
     }
     return false;
@@ -1230,7 +1250,7 @@ void ViolationLSLoop::maybe_diversify(BatchKind kind, bool improved) {
     // construction, and its kick would re-randomise every List. Reachable only
     // at an explicit structural probability; false wherever FJ has work.
     const bool unproductive_kick =
-        kind == BatchKind::FeasibilityJump && !improved && fj_.batch_stuck() && !fj_idle_;
+        ran_fj_batch(kind) && !improved && fj_.batch_stuck() && !fj_idle_;
     if (stagnation_ >= config_.perturbation_period && !past_deadline()) {
         // Arm the Float escape probe: a variable at a stationary point of every
         // violated row has no other candidate, and a kick re-converges there.
@@ -1343,11 +1363,11 @@ SearchResult ViolationLSLoop::run() {
             config_.auditor->audit(AuditPoint::BeforeBatch, fj_);
         }
         bool resync = run_batch(kind);
-        if (config_.auditor != nullptr && kind != BatchKind::Structural &&
-            kind != BatchKind::FixPropagateRepair) {
-            config_.auditor->audit(kind == BatchKind::FeasibilityJump
-                                       ? AuditPoint::AfterFeasibilityJump
-                                       : AuditPoint::AfterNoveltyJump,
+        // An FPR batch ends on FJ state too (resynced, maybe batched).
+        if (config_.auditor != nullptr && kind != BatchKind::Structural) {
+            config_.auditor->audit(kind == BatchKind::NoveltyJump
+                                       ? AuditPoint::AfterNoveltyJump
+                                       : AuditPoint::AfterFeasibilityJump,
                                    fj_);
         }
         account_behind_batch();

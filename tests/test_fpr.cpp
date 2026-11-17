@@ -439,7 +439,7 @@ TEST_CASE("an FPR batch solves a chain FJ alone cannot in the budget", "[fpr]") 
     CHECK(r.counters.fpr_batches >= 1);
 }
 
-TEST_CASE("an FPR batch on a refuted root runs FJ instead", "[fpr]") {
+TEST_CASE("a refuted root builds no FPR batch: every batch is FJ", "[fpr]") {
     Model m;
     const int32_t a = m.bool_var();
     const int32_t b = m.bool_var();
@@ -451,14 +451,16 @@ TEST_CASE("an FPR batch on a refuted root runs FJ instead", "[fpr]") {
     config.fpr_batch_probability = 1.0;
     const SearchResult r = fpr_solve(m, config);
     CHECK_FALSE(r.feasible);
-    CHECK(r.counters.fpr_batches == r.counters.batches);
-    // The fallback's FJ work is charged: more than one iteration per batch.
-    CHECK(r.iterations > r.counters.batches);
+    CHECK(r.counters.fpr_batches == 0);
+    CHECK(r.counters.batches > 0);
+    CHECK(r.counters.fj_batches + r.counters.novelty_batches == r.counters.batches);
 }
 
 TEST_CASE("FPR off draws nothing: fpr_worker cannot move the trajectory", "[fpr]") {
-    // Probability 0 builds no FprBatch and skips the draw, so a run is the
-    // pre-#426 one; a worker index that keyed anything would show here.
+    // Probability 0 builds no FprBatch, so a worker index that keyed anything
+    // would show here. That 0 also skips the draw (the pre-#426 trajectory)
+    // is pinned by test_structured_trajectory.cpp's recorded signatures of
+    // default solve() runs (libstdc++ hosts).
     SearchConfig base;
     base.max_iterations = 3000;
     base.batch_iterations = 100;

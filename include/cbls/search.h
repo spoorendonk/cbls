@@ -97,7 +97,9 @@ struct SearchConfig {
     // linear rows (`FprSearch`, the portfolio rotated per attempt) written to
     // the model, then, for a repairing mode, an FJ batch from it. Drawn first,
     // and only when > 0, so 0 (off) draws nothing and builds nothing. A
-    // refuted root makes the batch an FJ batch. In [0, 1].
+    // refuted root builds nothing either: the run is then the one at 0. A Dfs
+    // attempt without a leaf keeps FJ's point and runs an FJ batch. Dives stop
+    // at the deadline. In [0, 1].
     double fpr_batch_probability = 0.0;
     // Keys the FPR portfolio rotation (`fpr_portfolio_config(worker,
     // attempt)`); ParallelSearch sets each worker's index.

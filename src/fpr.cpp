@@ -435,6 +435,11 @@ void FprSearch::dive(const FprConfig& cfg, RNG& rng, FprResult& out) {
     const bool backtracks = cfg.mode != FprMode::Diveprop;
     const bool dynamic = cfg.order == FprVarOrder::DomainSize;
     while (!stack_.empty() && out.nodes < node_cap_) {
+        // Every 16 nodes: a clock read is cheap next to 16 fixings (#429).
+        if (has_deadline_ && (out.nodes & 15) == 15 &&
+            std::chrono::steady_clock::now() >= deadline_) {
+            return;
+        }
         const Node node = stack_.back();
         stack_.pop_back();
         ++out.nodes;

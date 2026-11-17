@@ -3,6 +3,7 @@
 #include "cbls/domain_propagation.h"
 #include "cbls/fpr.h"
 
+#include <chrono>
 #include <cstdint>
 
 namespace cbls {
@@ -19,19 +20,27 @@ class RNG;
 /// propagator and the engine's O(vars + nnz); each `run` is one dive.
 class FprBatch {
 public:
-    /// `worker` keys the portfolio rotation (`fpr_portfolio_config`).
-    FprBatch(Model& model, int64_t worker);
+    /// `worker` keys the portfolio rotation (`fpr_portfolio_config`); a dive
+    /// stops past `deadline` when `has_deadline`.
+    FprBatch(Model& model, int64_t worker, bool has_deadline,
+             std::chrono::steady_clock::time_point deadline);
+
+    /// Whether root propagation left the linear rows consistent. When false,
+    /// no attempt can branch; the caller builds no batch (#429).
+    [[nodiscard]] bool root_ok() const { return root_ok_; }
 
     struct Outcome {
-        /// The root is consistent and the attempt's scalars were written.
-        bool ran = false;
+        /// The attempt's scalars were written: a leaf, or any fill of a
+        /// repairing mode. A Dfs dive that ended without a leaf (out of
+        /// siblings, or past the deadline) writes nothing: a failed attempt.
+        bool written = false;
         /// The attempt's mode asks for leaf repair (Diveprop, Dfsrep).
         bool wants_repair = false;
     };
 
-    /// Runs the next portfolio attempt from the model's current point and
-    /// writes its scalar values into the model (node values are left stale: the
-    /// caller re-evaluates). A refuted root writes nothing.
+    /// Runs the next portfolio attempt from the model's current point and,
+    /// per `Outcome::written`, writes its scalar values into the model (node
+    /// values are left stale: the caller re-evaluates). Needs `root_ok()`.
     Outcome run(RNG& rng);
 
 private:

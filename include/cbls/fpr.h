@@ -6,6 +6,7 @@
 // Repair is the caller's: it is told whether the mode wants one (#426).
 
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <utility>
 #include <vector>
@@ -116,6 +117,13 @@ public:
     /// values (Incumbent, the Float fill); the model is not written.
     void run(const FprConfig& cfg, int64_t attempt, RNG& rng, FprResult& out);
 
+    /// A wall-clock deadline for `run`: the dive reads the clock every 16
+    /// nodes and stops, incomplete, past it (#429). None by default.
+    void set_deadline(std::chrono::steady_clock::time_point deadline) {
+        has_deadline_ = true;
+        deadline_ = deadline;
+    }
+
     /// The min-form objective's partial per variable at construction, 0 without
     /// an objective: a linear objective's costs.
     [[nodiscard]] double cost(int32_t var) const { return cost_[static_cast<size_t>(var)]; }
@@ -166,6 +174,8 @@ private:
     std::vector<int32_t> down_locks_;
     double inf_;           // the propagator's infinity: a bound at or past it is infinite
     bool root_ok_ = true;  // `propagate_root`'s verdict
+    bool has_deadline_ = false;
+    std::chrono::steady_clock::time_point deadline_{};
     /// Each static order by `FprVarOrder`, built once at construction from a
     /// fixed-seed RNG, as mip-heuristics precomputes one per strategy before
     /// any attempt, so an attempt does not depend on what ran before it.
