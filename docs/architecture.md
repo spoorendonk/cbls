@@ -87,7 +87,7 @@ A one-screen map of the pipeline, its files, the extension points, build targets
 7. **LNS** (`src/lns.cpp`) — every N-th diversification kick: SISR ruin-and-recreate on each `ListPartition`, destroy 30% and repair by FJ elsewhere; accepted on a lexicographic (real violation, objective) key.
 8. **Violation & penalty** (`src/violation.cpp`) — `total_violation = Σ W[c]·max(0, viol_c)`; `weighted_violation_delta` is the no-commit counterfactual δ_G; `augmented_objective()` is the inner solver's descent metric.
 9. **Parallel search** (`src/pool.cpp`) — `SolutionPool` + `ParallelSearch`, a cooperative portfolio that shares incumbents and the objective bound. Workers share the frozen model's immutable structure (#157) and copy only what a search writes. Nondeterministic; `--threads 1` is the reproducible run. See [Solution Pool & Parallel Search](#solution-pool--parallel-search); the benchmark driver's CPU policy is in `benchmarks/instances/mipfeas/README.md`.
-10. **I/O** (`src/io.cpp`, `src/io/`) — JSONL `.cbls` format; the MPS reader (`mps_reader.cpp` + `mps_to_model.cpp`, gzip, optional bzip2), the AMPL `.nl` reader (`nl_reader.cpp` + `nl_to_model.cpp`) and the MIPLIB `.solu` reader (`solu_reader.cpp`). CLI in `src/cli.cpp`. Load-time reduction for the adapters: implied bounds (`src/bound_propagation.cpp`); see [Implied variable bounds](#implied-variable-bounds). Presolve was removed ([Presolve](#presolve)).
+10. **I/O** (`src/io.cpp`, `src/io/`) — JSONL `.cbls` format; the MPS reader (`mps_reader.cpp` + `mps_to_model.cpp`, gzip, optional bzip2), the AMPL `.nl` reader (`nl_reader.cpp` + `nl_to_model.cpp`) and the MIPLIB `.solu` reader (`solu_reader.cpp`). CLI in `src/cli.cpp`. Load-time reduction for the adapters: implied bounds (`src/bound_propagation.cpp`); see [Implied variable bounds](#implied-variable-bounds). Its search-time, undoable form is `src/domain_propagation.cpp` ([Search-time propagation](#search-time-propagation)). Presolve was removed ([Presolve](#presolve)).
 
 ### Key extension points
 
@@ -998,7 +998,9 @@ default, and off was the Novelty path bit for bit. #331 measured it at
 and the MINLPLib dev sample's GM(gap+1) ratio 1.052, both worse and both
 inside the control's noise floor. #380 removed it; the code, its counters
 (`novelty_propagation_tightenings`, `novelty_propagation_conflicts`) and the
-`--compound-propagation` runner flag are in git history at `57cdbfba`.
+`--compound-propagation` runner flag are in git history at `57cdbfba`. #420
+restored the propagator alone, without the Novelty hook or FJ's `box`, for
+fix-propagate-repair ([Search-time propagation](#search-time-propagation)).
 
 ---
 
@@ -2518,6 +2520,35 @@ never validity. Where propagation proves the linear system empty, the adapters
 **discard** the derived bounds and build the model from the declared ones: an
 infeasible instance should be reported by the search, not by the reader handing
 it an empty box.
+
+### Search-time propagation
+
+**Files:** `include/cbls/domain_propagation.h`, `src/domain_propagation.cpp`
+
+`propagate_bounds` runs once, at load, over the adapter's matrix. Search-time
+propagation is its incremental, undoable form over the frozen model, for
+fixing variables one at a time under propagation (fix-propagate-repair, #421):
+
+- **`LinearRowStore`** reads every row `affine_row_terms` accepts, so models
+  built in C++ or Python are covered as well as MPS and `.nl`. It skips the
+  objective row (soft: propagating the cutoff would make it hard), domain rows,
+  `Neq` and rows over `List`/`Set` variables. About 24 B per nonzero.
+- **`DomainPropagator`** holds the bounds and each row's min/max activity
+  (a finite sum plus an infinite count). `fix`/`tighten` propagate the changed
+  variable's rows; `propagate_all` queues every row, the root pass. Derived
+  bounds follow `propagate_bounds`'s rules exactly (outward margins, inward
+  integer rounding), from activities summed afresh per scanned row; the
+  incremental sums only drive an O(1) slack filter.
+- **Cascade to a fixpoint** is the default. A call stops early once it has
+  scanned `max_cascade_terms` terms, by default 100 times the store's
+  nonzeros (the valve of mip-heuristics' FPR). Stopping early is sound, only
+  weaker.
+- **`checkpoint`/`backtrack`** trail old values, never differences, so a
+  backtrack restores bounds and activities bit for bit.
+
+It never writes the model's domains: the adapters already tighten at load.
+`DomainPropagationStats::propagate_all_bounds_derived` counts the root's
+tightenings.
 
 ### Presolve
 

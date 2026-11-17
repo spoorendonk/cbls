@@ -1,7 +1,8 @@
 #pragma once
 
-// Row-activity arithmetic for bound propagation (src/bound_propagation.cpp); internal, not
-// installed (#329).
+// Row-activity arithmetic shared by bound propagation (src/bound_propagation.cpp)
+// and the domain propagator (src/domain_propagation.cpp, #329, #420); internal,
+// not installed.
 
 #include "cbls/bound_propagation.h"
 
