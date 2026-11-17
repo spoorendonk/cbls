@@ -25,6 +25,8 @@ constexpr double kBox = 1e5;
 constexpr double kZeroCost = 1e-15;
 /// `compute_alt`'s "is the preferred value the lower bound" tolerance.
 constexpr double kFeasTol = 1e-6;
+/// The Random order's seed: fixed, as the reference precomputes its orders.
+constexpr uint64_t kOrderSeed = 0x5EED;
 
 struct Box {
     double lo;
@@ -140,6 +142,11 @@ FprSearch::FprSearch(const Model& model, const LinearRowStore& store, DomainProp
         for (const auto& [v, d] : partials) {
             cost_[static_cast<size_t>(v)] = d;
         }
+    }
+    RNG order_rng(kOrderSeed);
+    for (const FprVarOrder o :
+         {FprVarOrder::LR, FprVarOrder::Type, FprVarOrder::Random, FprVarOrder::Locks}) {
+        static_order(o, order_rng, orders_[static_cast<size_t>(o)]);
     }
 }
 
@@ -265,9 +272,8 @@ void FprSearch::trivial_fixings() {
     // Paper Sect. 6: a variable with locks on one side only goes to its other
     // bound. Only where every row of it is linear (the store's): a nonlinear
     // row could lock it unseen. Every value is read off the root box first, as
-    // the reference fixes them all before one propagation; a refuted fixing is
-    // then skipped, not kept: the propagator's state after a conflict is
-    // partial and must be backtracked.
+    // the reference fixes them all before one propagation; a refuted one is
+    // skipped (a deviation, see the header; #427).
     trivial_.clear();
     for (const int32_t v : scalars_) {
         const auto i = static_cast<size_t>(v);
@@ -384,13 +390,17 @@ void FprSearch::run(const FprConfig& cfg, int64_t attempt, RNG& rng, FprResult& 
     stack_.clear();
     heap_.clear();
 
-    const FprVarOrder base = dynamic ? FprVarOrder::Type : cfg.order;
-    const auto slot = static_cast<size_t>(base);
-    if (!have_order_[slot]) {
-        static_order(base, rng, orders_[slot]);
-        have_order_[slot] = true;
+    // A refuted root (the caller's propagate_all) is no leaf: nothing is
+    // branched on a propagator in conflict, and the fill falls back per variable.
+    const bool root_refuted = std::any_of(scalars_.begin(), scalars_.end(),
+                                          [&](int32_t v) { return prop_.lo(v) > prop_.hi(v); });
+    if (root_refuted) {
+        fill(cfg, rng, out);
+        prop_.backtrack(entry);
+        return;
     }
-    order_ = orders_[slot];
+
+    order_ = orders_[static_cast<size_t>(dynamic ? FprVarOrder::Type : cfg.order)];
     if (attempt > 0 && !order_.empty()) {
         const size_t len = std::max<size_t>(1, order_.size() * 3 / 10);
         std::shuffle(order_.begin(), order_.begin() + static_cast<std::ptrdiff_t>(len),
@@ -444,10 +454,8 @@ void FprSearch::dive(const FprConfig& cfg, RNG& rng, FprResult& out) {
                 prop_.checkpoint();  // the sibling's pop backtracks to it
                 continue;
             }
-            // Diveprop does not stop (the paper's single big dive). The
-            // propagator's state after a conflict is partial, so the fixing is
-            // undone there and kept outside it, as mip-heuristics' "ignoring
-            // any constraint that would lead to empty domains".
+            // Diveprop does not stop (the paper's single big dive); the fixing
+            // is kept outside the propagator (a deviation, see the header; #427).
             prop_.backtrack(node.level);
             prop_.checkpoint();
             forced_[static_cast<size_t>(node.var)] = 1;

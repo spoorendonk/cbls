@@ -94,7 +94,8 @@ struct FprResult {
 /// Two deviations, both forced by `DomainPropagator`'s rule that a conflict is
 /// backtracked: a trivial rounding propagation refutes is skipped, and a
 /// Diveprop fixing propagation refutes is undone there and kept outside it
-/// (the reference carries on in the refuted state).
+/// (the reference carries on in the refuted state; #427). A refuted root is
+/// not branched and reports `complete = false`.
 ///
 /// Costs: the constructor is O(vars + nnz) plus one reverse sweep of the
 /// objective. `run` is at most `num_vars + 1` nodes, each a `fix` plus
@@ -159,10 +160,10 @@ private:
     std::vector<int32_t> up_locks_;
     std::vector<int32_t> down_locks_;
     double inf_;  // the propagator's infinity: a bound at or past it is infinite
-    /// Each static order, computed on its first `run` and kept, as
-    /// mip-heuristics precomputes one per strategy; empty until then.
+    /// Each static order by `FprVarOrder`, built once at construction from a
+    /// fixed-seed RNG, as mip-heuristics precomputes one per strategy before
+    /// any attempt, so an attempt does not depend on what ran before it.
     std::array<std::vector<int32_t>, 5> orders_;
-    std::array<bool, 5> have_order_{};
 
     // Per attempt, reused.
     std::vector<std::pair<int32_t, double>> trivial_;

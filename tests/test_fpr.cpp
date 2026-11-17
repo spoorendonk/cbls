@@ -332,7 +332,11 @@ TEST_CASE("an attempt is deterministic under its seed and leaves the propagator 
         lo.push_back(rig.prop.lo(v));
         hi.push_back(rig.prop.hi(v));
     }
-    for (const FprConfig& cfg : kFprPortfolio) {
+    std::vector<FprConfig> configs(kFprPortfolio.begin(), kFprPortfolio.end());
+    // No portfolio entry uses the Random order; its first run must not differ
+    // from its second either.
+    configs.push_back({FprVarOrder::Random, FprValueRule::Random, FprMode::Dfs});
+    for (const FprConfig& cfg : configs) {
         RNG r1(42);
         RNG r2(42);
         FprResult a;
