@@ -6,6 +6,7 @@
 #include "cbls/randomize.h"
 #include "cbls/structural_batch.h"
 #include "cbls/tracer.h"
+#include "fpr_batch.h"
 // The SearchCoordination definition search.h forward-declares: ViolationLSLoop
 // reads both of its channels.
 #include "cbls/solution_pool.h"
@@ -406,6 +407,7 @@ private:
     // Run the batch. Returns true if it committed changes outside FJ's scan-set
     // and jump-table, i.e. if the loop owes an fj_.resync().
     bool run_batch(BatchKind kind);
+    bool run_fpr_batch();
     void note_closest_approach(double batch_violation);
     // Steps 3-4: bank the feasible point, polish it, bank the polish. Returns
     // whether the batch produced a new best, and may set `resync`.
@@ -480,6 +482,8 @@ private:
     // Owns this search's clone of every registered generator, so portfolio
     // workers share no mutable generator state (#157, #165).
     StructuralBatch structural_;
+    // Built only when fpr_batch_probability > 0 (#426), else null.
+    std::unique_ptr<FprBatch> fpr_;
 
     double best_feasible_obj_ = std::numeric_limits<double>::infinity();
     Model::State best_state_;
@@ -551,6 +555,8 @@ ViolationLSLoop::ViolationLSLoop(Model& model, ViolationManager& vm, RNG& rng, F
       unproductive_arm_stagnation_(
           std::max(1, config.perturbation_period / kUnproductiveArmDivisor)),
       structural_(model, config, structural_probability_ > 0.0),
+      fpr_(config.fpr_batch_probability > 0.0 ? std::make_unique<FprBatch>(model, config.fpr_worker)
+                                              : nullptr),
       best_state_(model.copy_state()),
       closest_state_(best_state_),
       last_callback_(budget.start),
@@ -1041,7 +1047,7 @@ bool ViolationLSLoop::budget_exhausted() {
     return false;
 }
 
-// Exactly one arm per batch, so fj + novelty + structural == batches
+// Exactly one arm per batch, so fj + novelty + structural + fpr == batches
 // (tests/test_counters.cpp).
 void ViolationLSLoop::count_batch(BatchKind kind) {
     ++counters_.batches;
@@ -1055,6 +1061,9 @@ void ViolationLSLoop::count_batch(BatchKind kind) {
         case BatchKind::Structural:
             ++counters_.structural_batches;
             break;
+        case BatchKind::FixPropagateRepair:
+            ++counters_.fpr_batches;
+            break;
     }
 }
 
@@ -1065,8 +1074,13 @@ void ViolationLSLoop::count_batch(BatchKind kind) {
 // 95% CI [+0.016, +0.046], 110 pairs. A sticky draw drifts toward Novelty, whose
 // stretches run to perturbation_period while FJ's end at a new best. OR-Tools'
 // ls worker likewise redraws use_compound_moves at each Luby restart and new
-// best. No draw without compound moves; the structural draw is our extension.
+// best. No draw without compound moves; the structural and FPR draws are our
+// extensions. The FPR draw is skipped at probability 0, keeping off's RNG
+// stream (#426).
 BatchKind ViolationLSLoop::pick_batch_kind() {
+    if (fpr_ != nullptr && rng_.random() < config_.fpr_batch_probability) {
+        return BatchKind::FixPropagateRepair;
+    }
     if (rng_.random() < structural_probability_) {
         return BatchKind::Structural;
     }
@@ -1087,6 +1101,24 @@ bool ViolationLSLoop::run_batch(BatchKind kind) {
         case BatchKind::FeasibilityJump:
             fj_.batch(config_.batch_iterations);
             return false;
+        case BatchKind::FixPropagateRepair:
+            return run_fpr_batch();
+    }
+    return false;
+}
+
+// The dive's point replaces the current one (scalars only), as an adoption
+// does; a repairing mode then runs an FJ batch from it, on the full model (FJ
+// also sees the nonlinear rows). A refuted root leaves an FJ batch.
+bool ViolationLSLoop::run_fpr_batch() {
+    const FprBatch::Outcome out = fpr_->run(rng_);
+    if (out.ran) {
+        full_evaluate(model_);
+        vm_.invalidate_cache();
+        fj_.resync();
+    }
+    if (!out.ran || out.wants_repair) {
+        fj_.batch(config_.batch_iterations);
     }
     return false;
 }
@@ -1311,7 +1343,8 @@ SearchResult ViolationLSLoop::run() {
             config_.auditor->audit(AuditPoint::BeforeBatch, fj_);
         }
         bool resync = run_batch(kind);
-        if (config_.auditor != nullptr && kind != BatchKind::Structural) {
+        if (config_.auditor != nullptr && kind != BatchKind::Structural &&
+            kind != BatchKind::FixPropagateRepair) {
             config_.auditor->audit(kind == BatchKind::FeasibilityJump
                                        ? AuditPoint::AfterFeasibilityJump
                                        : AuditPoint::AfterNoveltyJump,
@@ -1362,6 +1395,10 @@ void validate_search_config(const SearchConfig& config) {
     }
     if (!(config.feasibility_tolerance >= 0.0) || !std::isfinite(config.feasibility_tolerance)) {
         throw std::invalid_argument("SearchConfig::feasibility_tolerance must be finite and >= 0");
+    }
+    const double fpr_p = config.fpr_batch_probability;
+    if (std::isnan(fpr_p) || fpr_p < 0.0 || fpr_p > 1.0) {
+        throw std::invalid_argument("SearchConfig::fpr_batch_probability must be in [0, 1]");
     }
 }
 

@@ -10,11 +10,17 @@ namespace cbls {
 /// FJ/NJ; Structural is the List/Set peer). Public since #169 for
 /// `SearchCounters` and `Tracer::batch_end`. A Structural batch commits outside
 /// FJ's scan-set and jump-table, so the loop owes `fj.resync()` after it; a
-/// Novelty batch rebuilds FJ's state itself (#209).
-enum class BatchKind : std::uint8_t { FeasibilityJump, NoveltyJump, Structural };
+/// Novelty batch rebuilds FJ's state itself (#209). A FixPropagateRepair
+/// batch writes a fix-propagate-repair dive's point and resyncs FJ (#426).
+enum class BatchKind : std::uint8_t {
+    FeasibilityJump,
+    NoveltyJump,
+    Structural,
+    FixPropagateRepair
+};
 
 /// Stable snake_case token for a `BatchKind` ("feasibility_jump",
-/// "novelty_jump", "structural"). Returns a static string; never null.
+/// "novelty_jump", "structural", "fix_propagate_repair"). Returns a static string; never null.
 const char* batch_kind_name(BatchKind kind);
 
 /// One move generator's share of the structural work, keyed per generator
@@ -39,8 +45,8 @@ struct GeneratorCounters {
 /// already on `SearchResult` (iterations, perturbations, LNS) stay there
 /// (#169).
 struct SearchCounters {
-    /// `fj_batches + novelty_batches + structural_batches == batches` exactly
-    /// (pinned by `tests/test_counters.cpp`).
+    /// `fj_batches + novelty_batches + structural_batches + fpr_batches ==
+    /// batches` exactly (pinned by `tests/test_counters.cpp`).
     int64_t batches = 0;
     int64_t fj_batches = 0;
     int64_t novelty_batches = 0;
@@ -52,6 +58,8 @@ struct SearchCounters {
     int64_t novelty_commits = 0;
     int64_t novelty_weight_bumps = 0;
     int64_t structural_batches = 0;
+    /// Fix-propagate-repair batches (#426), its leaf-repair FJ work included.
+    int64_t fpr_batches = 0;
 
     /// Totals over `by_generator`, so callers need not sum the vector.
     int64_t structural_moves_tried = 0;

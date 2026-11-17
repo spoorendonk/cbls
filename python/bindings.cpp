@@ -756,7 +756,8 @@ NB_MODULE(_cbls_core, m) {
     nb::enum_<BatchKind>(m, "BatchKind")
         .value("FeasibilityJump", BatchKind::FeasibilityJump)
         .value("NoveltyJump", BatchKind::NoveltyJump)
-        .value("Structural", BatchKind::Structural);
+        .value("Structural", BatchKind::Structural)
+        .value("FixPropagateRepair", BatchKind::FixPropagateRepair);
 
     // SearchCounters and its per-generator rows (#169): read-only, a report on
     // a finished run. Registered before SearchResult, which exposes one.
@@ -773,6 +774,7 @@ NB_MODULE(_cbls_core, m) {
         .def_ro("novelty_commits", &SearchCounters::novelty_commits)
         .def_ro("novelty_weight_bumps", &SearchCounters::novelty_weight_bumps)
         .def_ro("structural_batches", &SearchCounters::structural_batches)
+        .def_ro("fpr_batches", &SearchCounters::fpr_batches)
         .def_ro("structural_moves_tried", &SearchCounters::structural_moves_tried)
         .def_ro("structural_moves_accepted", &SearchCounters::structural_moves_accepted)
         .def_ro("by_generator", &SearchCounters::by_generator)

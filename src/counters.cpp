@@ -13,6 +13,8 @@ const char* batch_kind_name(BatchKind kind) {
             return "novelty_jump";
         case BatchKind::Structural:
             return "structural";
+        case BatchKind::FixPropagateRepair:
+            return "fix_propagate_repair";
     }
     // Unreachable for any value of the enum; keeps the function total so a caller
     // can print the kind unconditionally.
@@ -27,6 +29,7 @@ void SearchCounters::merge(const SearchCounters& other) {
     novelty_commits += other.novelty_commits;
     novelty_weight_bumps += other.novelty_weight_bumps;
     structural_batches += other.structural_batches;
+    fpr_batches += other.fpr_batches;
     structural_moves_tried += other.structural_moves_tried;
     structural_moves_accepted += other.structural_moves_accepted;
     inner_solver_calls += other.inner_solver_calls;

@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <stdexcept>
 #include <vector>
 
 using namespace cbls;
@@ -391,4 +392,94 @@ TEST_CASE("the portfolio rotates on worker plus attempt", "[fpr]") {
     CHECK(same(fpr_portfolio_config(2, 3), kFprPortfolio[5]));
     CHECK(same(fpr_portfolio_config(1, 6), kFprPortfolio[1]));
     CHECK(same(fpr_portfolio_config(0, -1), kFprPortfolio[5]));
+}
+
+namespace {
+
+// x_0 >= 1 and x_{i+1} == x_i over Bools: FJ starts every x at 0 and repairs
+// the chain one flip at a time; the root propagation fixes all of it.
+Model fpr_chain(int n) {
+    Model m;
+    std::vector<int32_t> x;
+    x.reserve(static_cast<size_t>(n));
+    for (int i = 0; i < n; ++i) {
+        x.push_back(m.bool_var());
+    }
+    m.add_constraint(m.geq(x[0], m.constant(1.0)));
+    for (int i = 0; i + 1 < n; ++i) {
+        m.add_constraint(
+            m.eq_expr(m.sum({x[static_cast<size_t>(i) + 1], m.neg(x[static_cast<size_t>(i)])}),
+                      m.constant(0.0)));
+    }
+    return m;
+}
+
+SearchResult fpr_solve(Model& m, const SearchConfig& config) {
+    return solve(m, /*time_limit=*/0.0, /*seed=*/7, nullptr, nullptr, 3, nullptr, config);
+}
+
+}  // namespace
+
+TEST_CASE("an FPR batch solves a chain FJ alone cannot in the budget", "[fpr]") {
+    SearchConfig config;
+    config.max_iterations = 40;
+    config.batch_iterations = 20;
+    config.use_compound_moves = false;
+    {
+        Model m = fpr_chain(200);
+        const SearchResult r = fpr_solve(m, config);
+        CHECK_FALSE(r.feasible);
+        CHECK(r.counters.fpr_batches == 0);
+    }
+    config.fpr_batch_probability = 1.0;
+    Model m = fpr_chain(200);
+    const SearchResult r = fpr_solve(m, config);
+    CHECK(r.feasible);
+    CHECK(r.counters.fpr_batches == r.counters.batches);
+    CHECK(r.counters.fpr_batches >= 1);
+}
+
+TEST_CASE("an FPR batch on a refuted root runs FJ instead", "[fpr]") {
+    Model m;
+    const int32_t a = m.bool_var();
+    const int32_t b = m.bool_var();
+    m.add_constraint(m.geq(m.sum({a, b}), m.constant(2.0)));
+    m.add_constraint(m.leq(m.sum({a, b}), m.constant(1.0)));
+    SearchConfig config;
+    config.max_iterations = 200;
+    config.batch_iterations = 50;
+    config.fpr_batch_probability = 1.0;
+    const SearchResult r = fpr_solve(m, config);
+    CHECK_FALSE(r.feasible);
+    CHECK(r.counters.fpr_batches == r.counters.batches);
+    // The fallback's FJ work is charged: more than one iteration per batch.
+    CHECK(r.iterations > r.counters.batches);
+}
+
+TEST_CASE("FPR off draws nothing: fpr_worker cannot move the trajectory", "[fpr]") {
+    // Probability 0 builds no FprBatch and skips the draw, so a run is the
+    // pre-#426 one; a worker index that keyed anything would show here.
+    SearchConfig base;
+    base.max_iterations = 3000;
+    base.batch_iterations = 100;
+    SearchConfig moved = base;
+    moved.fpr_worker = 5;
+    Model m1 = fpr_chain(60);
+    Model m2 = fpr_chain(60);
+    const SearchResult r1 = fpr_solve(m1, base);
+    const SearchResult r2 = fpr_solve(m2, moved);
+    CHECK(r1.iterations == r2.iterations);
+    CHECK(r1.counters.batches == r2.counters.batches);
+    CHECK(r1.counters.novelty_batches == r2.counters.novelty_batches);
+    CHECK(r1.best_state.values == r2.best_state.values);
+    CHECK(r1.counters.fpr_batches == 0);
+}
+
+TEST_CASE("fpr_batch_probability outside [0, 1] is refused", "[fpr]") {
+    for (const double p : {-0.1, 1.5, std::numeric_limits<double>::quiet_NaN()}) {
+        SearchConfig config;
+        config.fpr_batch_probability = p;
+        Model m = fpr_chain(3);
+        CHECK_THROWS_AS(fpr_solve(m, config), std::invalid_argument);
+    }
 }

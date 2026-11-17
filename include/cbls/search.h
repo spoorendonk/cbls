@@ -93,6 +93,15 @@ struct SearchConfig {
     // P(a scalar batch is Novelty Jump), drawn every batch, not held until a new
     // best as ViolationLS §5 does (#209; see pick_batch_kind).
     double novelty_jump_probability = 0.5;
+    // P(a batch is fix-propagate-repair, #426): one LP-free dive over the
+    // linear rows (`FprSearch`, the portfolio rotated per attempt) written to
+    // the model, then, for a repairing mode, an FJ batch from it. Drawn first,
+    // and only when > 0, so 0 (off) draws nothing and builds nothing. A
+    // refuted root makes the batch an FJ batch. In [0, 1].
+    double fpr_batch_probability = 0.0;
+    // Keys the FPR portfolio rotation (`fpr_portfolio_config(worker,
+    // attempt)`); ParallelSearch sets each worker's index.
+    int fpr_worker = 0;
 
     // A constraint is satisfied when its violation is <= this: absolute, on the
     // constraint node's value (|lhs - rhs| for an equality). See

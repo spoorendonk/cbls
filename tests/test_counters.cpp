@@ -84,15 +84,16 @@ SearchResult run(Model& model, const SearchConfig& config, uint64_t seed,
 
 TEST_CASE("batches by kind sum to the batch count", "[counters]") {
     // The identity the breakdown rests on: `pick_batch_kind` returns exactly one
-    // of three, and every batch is counted once. A kind that stopped being
-    // counted -- a fourth added without a bucket, say -- shows up here and
+    // of four, and every batch is counted once. A kind that stopped being
+    // counted -- a fifth added without a bucket, say -- shows up here and
     // nowhere else.
     SearchConfig config;
     config.max_iterations = 20000;
     config.batch_iterations = 100;
-    // Both non-default batch kinds armed, so all three buckets can be nonzero.
+    // Every non-default batch kind armed, so all four buckets can be nonzero.
     config.use_compound_moves = true;
     config.novelty_jump_probability = 0.3;
+    config.fpr_batch_probability = 0.2;
 
     // With a movable scalar, or FJ would have nothing to jump and the run would
     // be all structural batches (#201).
@@ -101,7 +102,8 @@ TEST_CASE("batches by kind sum to the batch count", "[counters]") {
     const SearchCounters& c = r.counters;
 
     REQUIRE(c.batches > 0);
-    REQUIRE(c.fj_batches + c.novelty_batches + c.structural_batches == c.batches);
+    REQUIRE(c.fj_batches + c.novelty_batches + c.structural_batches + c.fpr_batches == c.batches);
+    REQUIRE(c.fpr_batches > 0);
     // Not a tautology of the line above: a model with List/Set variables and the
     // automatic structural probability must actually run structural batches, or
     // the identity would hold trivially with everything in one bucket.
@@ -130,6 +132,7 @@ TEST_CASE("a scalar model runs feasibility-jump batches only", "[counters]") {
     REQUIRE(c.fj_batches == c.batches);
     REQUIRE(c.novelty_batches == 0);
     REQUIRE(c.structural_batches == 0);
+    REQUIRE(c.fpr_batches == 0);
     REQUIRE(c.by_generator.empty());
     REQUIRE(c.structural_moves_tried == 0);
 }
@@ -258,8 +261,9 @@ TEST_CASE("merge sums scalars and merges generator rows by name", "[counters]") 
     SearchCounters b;
     b.structural_moves_tried = 8;
     b.structural_moves_accepted = 4;
-    b.batches = 4;
+    b.batches = 6;
     b.novelty_batches = 4;
+    b.fpr_batches = 2;
     b.inner_solver_calls = 2;
     b.inner_solver_seconds = 0.5;
     b.portfolio_restarts = 2;
@@ -273,10 +277,11 @@ TEST_CASE("merge sums scalars and merges generator rows by name", "[counters]") 
 
     a.merge(b);
 
-    REQUIRE(a.batches == 7);
+    REQUIRE(a.batches == 9);
     REQUIRE(a.fj_batches == 2);
     REQUIRE(a.novelty_batches == 4);
     REQUIRE(a.structural_batches == 1);
+    REQUIRE(a.fpr_batches == 2);
     REQUIRE(a.inner_solver_calls == 3);
     REQUIRE(a.inner_solver_seconds == 0.75);
     REQUIRE(a.portfolio_restarts == 3);
@@ -348,7 +353,7 @@ TEST_CASE("an empty target takes every row unchanged", "[counters]") {
 
 TEST_CASE("BatchKind has a distinct stable token", "[counters]") {
     const std::vector<BatchKind> all = {BatchKind::FeasibilityJump, BatchKind::NoveltyJump,
-                                        BatchKind::Structural};
+                                        BatchKind::Structural, BatchKind::FixPropagateRepair};
     std::vector<std::string> tokens;
     for (BatchKind k : all) {
         REQUIRE(batch_kind_name(k) != nullptr);
@@ -357,6 +362,7 @@ TEST_CASE("BatchKind has a distinct stable token", "[counters]") {
     REQUIRE(tokens[0] == "feasibility_jump");
     REQUIRE(tokens[1] == "novelty_jump");
     REQUIRE(tokens[2] == "structural");
+    REQUIRE(tokens[3] == "fix_propagate_repair");
 }
 
 TEST_CASE("two generators of one kind keep separate rows", "[counters][structural]") {

@@ -440,9 +440,12 @@ std::unique_ptr<Tracer> make_worker_tracer(const PortfolioContext& ctx, int inde
 //  - the worker's tracer whenever a factory exists, null included: otherwise a
 //    declining worker would share the caller's `SearchConfig::tracer` across
 //    threads, the race tracer_factory removes;
-//  - skip_init after the first, so the worker keeps the assignment it holds.
-SearchConfig restart_config(const PortfolioContext& ctx, Tracer* tracer, int restart) {
+//  - skip_init after the first, so the worker keeps the assignment it holds;
+//  - the worker's index as fpr_worker, so workers rotate FPR's portfolio from
+//    different entries (#426).
+SearchConfig restart_config(const PortfolioContext& ctx, Tracer* tracer, int index, int restart) {
     SearchConfig cfg = ctx.config;
+    cfg.fpr_worker = index;
     if (ctx.tracer_factory) {
         cfg.tracer = tracer;
     }
@@ -528,7 +531,7 @@ std::optional<SearchResult> run_worker(const PortfolioContext& ctx, int index, W
             end.starved = restart == 0;
             break;
         }
-        const SearchConfig cfg = restart_config(ctx, tracer.get(), restart);
+        const SearchConfig cfg = restart_config(ctx, tracer.get(), index, restart);
         // Distinct per (worker, restart); see portfolio_worker_seed.
         const uint64_t run_seed = portfolio_worker_seed(ctx.seed, index, restart);
 
