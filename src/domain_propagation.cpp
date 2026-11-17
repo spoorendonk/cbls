@@ -46,7 +46,13 @@ LinearRowStore::LinearRowStore(const Model& model) {
             continue;  // soft: propagating it would make the cutoff hard
         }
         double constant = 0.0;
-        if (!affine_row_terms(model, c, terms, constant) || terms.empty()) {
+        if (!affine_row_terms(model, c, terms, constant)) {
+            continue;
+        }
+        if (terms.empty()) {
+            const int32_t cid = model.constraint_ids()[static_cast<size_t>(c)];
+            const bool is_eq = model.nodes()[static_cast<size_t>(cid)].op == NodeOp::Eq;
+            constant_rows_.push_back(ConstantRow{c, constant, is_eq});
             continue;
         }
         const bool structured = std::any_of(terms.begin(), terms.end(), [&](const auto& t) {
@@ -219,15 +225,21 @@ void DomainPropagator::set_bounds(int32_t var, double lo, double hi) {
     const double old_hi = eff_hi(hi_[j], inf);
     const double new_lo = eff_lo(lo, inf);
     const double new_hi = eff_hi(hi, inf);
-    bound_trail_.push_back(BoundEntry{var, lo_[j], hi_[j]});
+    // At depth 0 nothing can backtrack, so nothing is trailed.
+    const bool trail = !levels_.empty();
+    if (trail) {
+        bound_trail_.push_back(BoundEntry{var, lo_[j], hi_[j]});
+    }
     lo_[j] = lo;
     hi_[j] = hi;
     for (size_t e = store_.col_start(var); e < store_.col_start(var + 1); ++e) {
         const int32_t r = store_.col_rows()[e];
         const auto ri = static_cast<size_t>(r);
         const double a = store_.coefs()[store_.col_entries()[e]];
-        row_trail_.push_back(RowEntry{r, min_act_[ri], max_act_[ri]});
-        ++updates_[ri];
+        if (trail) {
+            row_trail_.push_back(RowEntry{r, min_act_[ri], max_act_[ri]});
+        }
+        ++updates_[ri];  // the drift is real either way
         min_act_[ri].remove(min_contribution(a, old_lo, old_hi));
         min_act_[ri].add(min_contribution(a, new_lo, new_hi));
         max_act_[ri].remove(max_contribution(a, old_lo, old_hi));
@@ -406,16 +418,27 @@ bool DomainPropagator::tighten(int32_t var, double lo, double hi) {
     if (var < 0 || var >= store_.num_vars()) {
         throw std::out_of_range("DomainPropagator::tighten: variable " + std::to_string(var));
     }
+    if (std::isnan(lo) || std::isnan(hi)) {
+        throw std::invalid_argument("DomainPropagator::tighten: NaN bound on variable " +
+                                    std::to_string(var));
+    }
     ++stats_.calls;
     const auto j = static_cast<size_t>(var);
     const BoundPropagationOptions& b = opts_.bounds;
+    if (integral_[j] != 0) {
+        // Inward, after the same margin `apply` allows a derived bound.
+        lo = std::ceil(lo - relaxation(lo, b));
+        hi = std::floor(hi + relaxation(hi, b));
+    }
     double new_lo = std::max(lo, lo_[j]);
     double new_hi = std::min(hi, hi_[j]);
     if (new_lo > new_hi) {
         if (new_lo > new_hi + relaxation(new_lo, b)) {
             return conflict();
         }
-        new_lo = new_hi = (lo_[j] == new_lo) ? new_lo : new_hi;
+        // A crossing within the margin: a point, inside the current box.
+        const double point = (lo_[j] == new_lo) ? new_lo : new_hi;
+        new_lo = new_hi = std::min(std::max(point, lo_[j]), hi_[j]);
     }
     if (new_lo == lo_[j] && new_hi == hi_[j]) {
         return true;
@@ -428,6 +451,13 @@ bool DomainPropagator::tighten(int32_t var, double lo, double hi) {
 
 bool DomainPropagator::propagate_all() {
     ++stats_.propagate_all_calls;
+    const BoundPropagationOptions& b = opts_.bounds;
+    for (const LinearRowStore::ConstantRow& row : store_.constant_rows()) {
+        const double excess = row.eq ? std::abs(row.residual) : row.residual;
+        if (excess > relaxation(row.residual, b)) {
+            return conflict();
+        }
+    }
     const int64_t derived_before = stats_.bounds_derived;
     begin_call();
     for (int32_t r = 0; r < store_.num_rows(); ++r) {
@@ -451,13 +481,15 @@ void DomainPropagator::begin_call() {
 }
 
 // Scans the queued rows; with cascade on, rows of derived bounds join the
-// queue, until it empties or the call's terms reach the valve.
+// queue, until it empties or, past the call's own rows, the valve trips.
 bool DomainPropagator::run_queue() {
     enqueue_derived_ = opts_.cascade;
+    const size_t own = queue_.size();  // the call's own rows: never cut
     // By index: with cascade on, scan_row appends to queue_ as it goes.
     size_t q = 0;
     while (q < queue_.size()) {
-        if (opts_.cascade && call_terms_ >= cascade_limit_) {
+        if (q >= own && call_terms_ >= cascade_limit_) {
+            ++stats_.valve_stops;
             break;
         }
         const int32_t r = queue_[q];

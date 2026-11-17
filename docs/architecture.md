@@ -2539,12 +2539,17 @@ fixing variables one at a time under propagation (fix-propagate-repair, #421):
   bounds follow `propagate_bounds`'s rules exactly (outward margins, inward
   integer rounding), from activities summed afresh per scanned row; the
   incremental sums only drive an O(1) slack filter.
-- **Cascade to a fixpoint** is the default. A call stops early once it has
-  scanned `max_cascade_terms` terms, by default 100 times the store's
-  nonzeros (the valve of mip-heuristics' FPR). Stopping early is sound, only
-  weaker.
+- **Cascade to a fixpoint** is the default. Once a call has scanned
+  `max_cascade_terms` terms, by default 100 times the store's nonzeros (the
+  valve of mip-heuristics' FPR), it scans no further cascaded row; the rows it
+  queued itself are always scanned. Stopping early is sound, only weaker, and
+  `valve_stops` counts it.
+- **`tighten`** rounds an integral variable's requested bounds inward and
+  throws on NaN. A row whose terms all cancel is a constant, which
+  `propagate_all` reports as a conflict when it is violated.
 - **`checkpoint`/`backtrack`** trail old values, never differences, so a
-  backtrack restores bounds and activities bit for bit.
+  backtrack restores bounds and activities bit for bit. With no checkpoint
+  held nothing is trailed, so the root pass leaves no trail behind.
 
 It never writes the model's domains: the adapters already tighten at load.
 `DomainPropagationStats::propagate_all_bounds_derived` counts the root's

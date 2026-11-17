@@ -8,6 +8,7 @@
 #include <cbls/domain_propagation.h>
 #include <cmath>
 #include <cstdint>
+#include <stdexcept>
 #include <vector>
 
 using namespace cbls;
@@ -368,23 +369,81 @@ TEST_CASE("the work valve stops a cascade early, and off is one pass", "[domain_
     Model m;
     const std::vector<int32_t> xs = build_chain(m);
     const LinearRowStore store(m);
-    SECTION("a valve of one term scans the first row only") {
+    SECTION("a valve of one term stops after the call's own rows") {
         DomainPropagationOptions opts;
         opts.max_cascade_terms = 1;
         DomainPropagator p(store, m, opts);
         REQUIRE(p.propagate_all());
-        CHECK(p.stats().rows_scanned == 1);
-        CHECK(p.lo(vid(xs[0])) == 1.0);
-        CHECK(p.hi(vid(xs[1])) == 9.0);
-        CHECK(p.hi(vid(xs[5])) == 10.0);
+        CHECK(p.stats().rows_scanned == 5);
+        CHECK(p.stats().valve_stops == 1);
+        CHECK(p.hi(vid(xs[5])) == 5.0);  // with row order
+        CHECK(p.lo(vid(xs[0])) == 1.0);  // against it: one step only
     }
-    SECTION("cascade off scans each row once") {
+    SECTION("cascade off scans each row once, and no valve trips") {
         DomainPropagationOptions opts;
         opts.cascade = false;
         DomainPropagator p(store, m, opts);
         REQUIRE(p.propagate_all());
         CHECK(p.stats().rows_scanned == 5);
-        CHECK(p.hi(vid(xs[5])) == 5.0);  // with row order
-        CHECK(p.lo(vid(xs[0])) == 1.0);  // against it: one step only
+        CHECK(p.stats().valve_stops == 0);
+        CHECK(p.hi(vid(xs[5])) == 5.0);
+        CHECK(p.lo(vid(xs[0])) == 1.0);
     }
+    SECTION("the default valve lets the chain reach its fixpoint") {
+        DomainPropagator p(store, m);
+        REQUIRE(p.propagate_all());
+        CHECK(p.stats().valve_stops == 0);
+        CHECK(p.lo(vid(xs[0])) == 5.0);
+    }
+}
+
+TEST_CASE("tighten rounds an integral variable inward and rejects NaN", "[domain_propagation]") {
+    Model m;
+    const int32_t x = m.int_var(0, 10);
+    const int32_t f = m.float_var(0.0, 10.0);
+    m.add_constraint(m.leq(m.sum({x, f}), m.constant(20.0)));
+    m.close();
+    full_evaluate(m);
+    const LinearRowStore store(m);
+    DomainPropagator p(store, m);
+    const int32_t base = p.checkpoint();
+    REQUIRE(p.tighten(vid(x), 0.3, 4.7));
+    CHECK(p.lo(vid(x)) == 1.0);
+    CHECK(p.hi(vid(x)) == 4.0);
+    REQUIRE(p.tighten(vid(f), 0.3, 4.7));
+    CHECK(p.lo(vid(f)) == 0.3);
+    CHECK(p.hi(vid(f)) == 4.7);
+    CHECK_FALSE(p.fix(vid(x), 2.5));  // no integer in [2.5, 2.5]
+    p.backtrack(base);
+    CHECK_THROWS_AS(p.fix(vid(f), std::nan("")), std::invalid_argument);
+    CHECK(p.lo(vid(f)) == 0.0);
+}
+
+TEST_CASE("a crossing within the margin collapses inside the current box", "[domain_propagation]") {
+    Model m;
+    const int32_t f = m.float_var(5.0, 10.0);
+    const int32_t g = m.float_var(0.0, 10.0);
+    m.add_constraint(m.leq(m.sum({f, g}), m.constant(20.0)));
+    m.close();
+    full_evaluate(m);
+    const LinearRowStore store(m);
+    DomainPropagator p(store, m);
+    REQUIRE(p.tighten(vid(f), 5.0 + 1e-10, 5.0 - 1e-10));
+    CHECK(p.lo(vid(f)) == 5.0);
+    CHECK(p.hi(vid(f)) == 5.0);
+}
+
+TEST_CASE("propagate_all reports a violated constant row", "[domain_propagation]") {
+    Model m;
+    const int32_t x = m.float_var(0.0, 1.0);
+    m.add_constraint(m.leq(m.sum({x, m.neg(x)}), m.constant(-1.0)));  // 0 <= -1
+    m.close();
+    full_evaluate(m);
+    const LinearRowStore store(m);
+    CHECK(store.num_rows() == 0);
+    REQUIRE(store.constant_rows().size() == 1);
+    CHECK(store.constant_rows()[0].residual == 1.0);
+    DomainPropagator p(store, m);
+    CHECK_FALSE(p.propagate_all());
+    CHECK(p.stats().conflicts == 1);
 }

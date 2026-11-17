@@ -28,13 +28,21 @@ struct Activity;  // src/activity_bounds.h
 /// body read as `residual <= 0`; Eq as `residual = 0`) over scalar variables.
 /// Skipped: the objective row (soft: propagating the incumbent cutoff would
 /// make it hard), domain rows (#248/#258: `affine_row_terms` refuses them),
-/// Neq, and every row that is not affine.
+/// Neq, and every row that is not affine. An affine row whose terms all
+/// cancel is kept apart, in `constant_rows()`, for `propagate_all` to check.
 ///
 /// Memory: per nonzero one int32 column and one double coefficient in the row
 /// CSR, plus one (row, position) entry in the column index -- about 24 B per
 /// nonzero -- and O(1) per row and per variable.
 class LinearRowStore {
 public:
+    /// An affine row with no terms: `residual <= 0` (`== 0` when `eq`).
+    struct ConstantRow {
+        int32_t constraint;
+        double residual;
+        bool eq;
+    };
+
     explicit LinearRowStore(const Model& model);
 
     [[nodiscard]] int32_t num_rows() const noexcept { return static_cast<int32_t>(row_lo_.size()); }
@@ -57,8 +65,12 @@ public:
     [[nodiscard]] const std::vector<size_t>& col_entries() const noexcept { return col_entries_; }
     [[nodiscard]] const std::vector<int32_t>& col_rows() const noexcept { return col_rows_; }
     [[nodiscard]] int64_t nnz() const noexcept { return static_cast<int64_t>(cols_.size()); }
+    [[nodiscard]] const std::vector<ConstantRow>& constant_rows() const noexcept {
+        return constant_rows_;
+    }
 
 private:
+    std::vector<ConstantRow> constant_rows_;
     std::vector<int32_t> constraint_;
     std::vector<double> row_lo_;
     std::vector<double> row_hi_;
@@ -79,8 +91,10 @@ struct DomainPropagationOptions {
     /// Off: one call scans only the rows of the variable it changed (depth 1);
     /// bounds it derives update activities but scan no further.
     bool cascade = true;
-    /// The per-call work valve; negative means 100 times the store's
-    /// nonzeros, mip-heuristics' FPR valve (#420).
+    /// The per-call work valve: once a call has scanned this many terms, no
+    /// further cascaded row is scanned (the rows the call queued itself always
+    /// are). Negative means 100 times the store's nonzeros, mip-heuristics'
+    /// FPR valve (#420).
     int64_t max_cascade_terms = -1;
     /// Skip a row whose slack is at least its max variation (the filter).
     /// Off only to check, in tests, that the filter skips nothing a scan uses.
@@ -94,6 +108,8 @@ struct DomainPropagationStats {
     int64_t terms_scanned = 0;
     int64_t bounds_derived = 0;  ///< Bounds tightened by propagation.
     int64_t conflicts = 0;
+    /// Calls the work valve stopped short of a fixpoint.
+    int64_t valve_stops = 0;
     int64_t propagate_all_calls = 0;
     /// Bounds `propagate_all` derived: at depth 0, the root tightenings.
     int64_t propagate_all_bounds_derived = 0;
@@ -112,6 +128,7 @@ struct DomainPropagationStats {
 ///
 /// The trail records old values -- bounds and whole activities -- never
 /// differences, so `backtrack` restores state bit for bit, with no drift.
+/// Changes made with no checkpoint held cannot be undone and are not trailed.
 ///
 /// Costs, for d = rows of the changed variable:
 /// - `propagate_all`: as `tighten` with every row queued, so at least O(rows).
@@ -154,13 +171,15 @@ public:
 
     /// Fixes `var` to `value`: `tighten(var, value, value)`.
     bool fix(int32_t var, double value);
-    /// Intersects `var`'s bounds with `[lo, hi]` and propagates. False on a
-    /// conflict (an empty domain beyond the safety margin); the state is then
-    /// partial, and the caller backtracks.
+    /// Intersects `var`'s bounds with `[lo, hi]` (rounded inward on an
+    /// integral variable) and propagates. False on a conflict (an empty domain
+    /// beyond the safety margin); the state is then partial, and the caller
+    /// backtracks. Throws `std::invalid_argument` on a NaN bound.
     bool tighten(int32_t var, double lo, double hi);
     /// Scans every row, cascading as `tighten` does: with cascade on, to a
     /// fixpoint under the work valve. The root propagation (#420). False on a
-    /// conflict; the state is then partial, and the caller backtracks.
+    /// conflict, a violated constant row included; the state is then partial,
+    /// and the caller backtracks.
     bool propagate_all();
 
     [[nodiscard]] double lo(int32_t var) const { return lo_[static_cast<size_t>(var)]; }
