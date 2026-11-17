@@ -8,6 +8,7 @@
 #include <cbls/domain_propagation.h>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <stdexcept>
 #include <vector>
 
@@ -160,6 +161,18 @@ TEST_CASE("a row with one infinite term bounds that term", "[domain_propagation]
     CHECK(p.lo(vid(y)) <= 2.5);
     REQUIRE(p.tighten(vid(y), 0.0, 10.0));
     CHECK(p.min_activity_infinite(0) == 0);
+
+    // A sentinel-sized row bound is no bound, as `propagate_bounds` reads it.
+    Model s;
+    const int32_t z = s.float_var(0.0, 1e30);
+    s.add_constraint(s.leq(s.prod(s.constant(1e10), z), s.constant(1e25)));
+    s.close();
+    full_evaluate(s);
+    const LinearRowStore sstore(s);
+    REQUIRE(sstore.num_rows() == 1);
+    DomainPropagator sp(sstore, s);
+    REQUIRE(sp.propagate_all());
+    CHECK(sp.hi(vid(z)) == 1e30);
 }
 
 TEST_CASE("a derived bound rounds inward on an integral variable only", "[domain_propagation]") {
@@ -397,7 +410,8 @@ TEST_CASE("the work valve stops a cascade early, and off is one pass", "[domain_
     }
 }
 
-TEST_CASE("tighten rounds an integral variable inward and rejects NaN", "[domain_propagation]") {
+TEST_CASE("tighten rounds an integral variable inward and rejects NaN and empty requests",
+          "[domain_propagation]") {
     Model m;
     const int32_t x = m.int_var(0, 10);
     const int32_t f = m.float_var(0.0, 10.0);
@@ -417,6 +431,16 @@ TEST_CASE("tighten rounds an integral variable inward and rejects NaN", "[domain
     p.backtrack(base);
     CHECK_THROWS_AS(p.fix(vid(f), std::nan("")), std::invalid_argument);
     CHECK(p.lo(vid(f)) == 0.0);
+    const double inf = std::numeric_limits<double>::infinity();
+    CHECK_FALSE(p.fix(vid(x), inf));
+    CHECK_FALSE(p.tighten(vid(x), 0.0, -inf));
+    CHECK_FALSE(p.fix(vid(f), inf));
+    CHECK_FALSE(p.fix(vid(f), -inf));
+    CHECK(p.lo(vid(x)) == 0.0);
+    CHECK(p.hi(vid(f)) == 10.0);
+    Model open;
+    open.float_var(0.0, 1.0);
+    CHECK_THROWS_AS(LinearRowStore(open), std::logic_error);
 }
 
 TEST_CASE("a crossing within the margin collapses inside the current box", "[domain_propagation]") {

@@ -22,7 +22,9 @@ struct Activity;  // src/activity_bounds.h
 }  // namespace activity_detail
 
 /// A model's linear rows in residual form, `lo <= sum_k a_k x_k <= hi`, built
-/// once from `affine_row_terms` at the model's current node values.
+/// once from `affine_row_terms` at the model's current node values: the model
+/// must be closed and fully evaluated (`full_evaluate`), or slopes and
+/// constants read zero.
 ///
 /// Kept: every row `affine_row_terms` accepts (Leq, Geq, Lt, Gt and a bare
 /// body read as `residual <= 0`; Eq as `residual = 0`) over scalar variables.
@@ -155,6 +157,9 @@ public:
     /// the same model, and outlive this.
     DomainPropagator(const LinearRowStore& store, const Model& model,
                      DomainPropagationOptions opts = {});
+    /// A temporary store would dangle.
+    DomainPropagator(LinearRowStore&& store, const Model& model,
+                     DomainPropagationOptions opts = {}) = delete;
     ~DomainPropagator();  // out of line: Activity is incomplete here
     DomainPropagator(const DomainPropagator&) = delete;
     DomainPropagator& operator=(const DomainPropagator&) = delete;

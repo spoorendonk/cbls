@@ -37,6 +37,9 @@ constexpr double kPosInf = std::numeric_limits<double>::infinity();
 
 LinearRowStore::LinearRowStore(const Model& model) {
     const auto n_vars = static_cast<int32_t>(model.num_vars());
+    if (!model.is_closed()) {
+        throw std::logic_error("LinearRowStore: the model must be closed and evaluated");
+    }
     const auto n_cons = static_cast<int32_t>(model.constraint_ids().size());
     std::vector<std::pair<int32_t, double>> terms;
     std::vector<size_t> col_count(static_cast<size_t>(n_vars) + 1, 0);
@@ -335,8 +338,8 @@ bool DomainPropagator::filtered(int32_t r) const {
     const auto ri = static_cast<size_t>(r);
     const Activity& min_act = min_act_[ri];
     const Activity& max_act = max_act_[ri];
-    const double row_lo = store_.row_lo(r);
-    const double row_hi = store_.row_hi(r);
+    const double row_lo = eff_lo(store_.row_lo(r), opts_.bounds.infinity);
+    const double row_hi = eff_hi(store_.row_hi(r), opts_.bounds.infinity);
     const auto ops = static_cast<double>(store_.row_start(r + 1) - store_.row_start(r) +
                                          (2 * static_cast<size_t>(updates_[ri])) + 2);
     const double eps = std::numeric_limits<double>::epsilon();
@@ -354,20 +357,18 @@ bool DomainPropagator::filtered(int32_t r) const {
 }
 
 // One row against the current bounds. The incremental activities only decide
-// the filter; a scanned row's activities are summed afresh, because removing
-// a large contribution from a running sum leaves its rounding behind (#334
-// review: 0.3 + 1e15 - 1e15 is 0.25), which would derive bounds that cut off
-// feasible points. They are read once, at the start, as `propagate_bounds`
-// reads them: a bound derived mid-row only tightens later terms'
-// rest-of-row, so the stale copy is sound, merely weaker. O(1) when the
-// filter skips the row, else O(nnz) plus the derived bounds' set_bounds.
+// the filter; a scanned row's activities are summed afresh, since a running
+// sum keeps the rounding of what it removed (#334). They are read once, at the start, as
+// `propagate_bounds` reads them: a bound derived mid-row only tightens later terms' rest-of-row, so
+// the stale copy is sound, merely weaker. O(1) when the filter skips the row, else O(nnz) plus the
+// derived bounds' set_bounds.
 bool DomainPropagator::scan_row(int32_t r) {
     if (opts_.filter && filtered(r)) {
         ++stats_.rows_filtered;
         return true;
     }
-    const double row_lo = store_.row_lo(r);
-    const double row_hi = store_.row_hi(r);
+    const double row_lo = eff_lo(store_.row_lo(r), opts_.bounds.infinity);
+    const double row_hi = eff_hi(store_.row_hi(r), opts_.bounds.infinity);
     Activity min_act;
     Activity max_act;
     rebuild_activities(r, min_act, max_act);
@@ -423,6 +424,9 @@ bool DomainPropagator::tighten(int32_t var, double lo, double hi) {
                                     std::to_string(var));
     }
     ++stats_.calls;
+    if (lo == kPosInf || hi == kNegInf) {
+        return conflict();  // no point satisfies it; the margins below would read inf - inf
+    }
     const auto j = static_cast<size_t>(var);
     const BoundPropagationOptions& b = opts_.bounds;
     if (integral_[j] != 0) {
@@ -453,8 +457,9 @@ bool DomainPropagator::propagate_all() {
     ++stats_.propagate_all_calls;
     const BoundPropagationOptions& b = opts_.bounds;
     for (const LinearRowStore::ConstantRow& row : store_.constant_rows()) {
+        // residual = -(row bound): a sentinel-sized bound stands for no bound.
         const double excess = row.eq ? std::abs(row.residual) : row.residual;
-        if (excess > relaxation(row.residual, b)) {
+        if (excess < b.infinity && excess > relaxation(row.residual, b)) {
             return conflict();
         }
     }
