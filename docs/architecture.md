@@ -87,7 +87,7 @@ A one-screen map of the pipeline, its files, the extension points, build targets
 7. **LNS** (`src/lns.cpp`) — every N-th diversification kick: SISR ruin-and-recreate on each `ListPartition`, destroy 30% and repair by FJ elsewhere; accepted on a lexicographic (real violation, objective) key.
 8. **Violation & penalty** (`src/violation.cpp`) — `total_violation = Σ W[c]·max(0, viol_c)`; `weighted_violation_delta` is the no-commit counterfactual δ_G; `augmented_objective()` is the inner solver's descent metric.
 9. **Parallel search** (`src/pool.cpp`) — `SolutionPool` + `ParallelSearch`, a cooperative portfolio that shares incumbents and the objective bound. Workers share the frozen model's immutable structure (#157) and copy only what a search writes. Nondeterministic; `--threads 1` is the reproducible run. See [Solution Pool & Parallel Search](#solution-pool--parallel-search); the benchmark driver's CPU policy is in `benchmarks/instances/mipfeas/README.md`.
-10. **I/O** (`src/io.cpp`, `src/io/`) — JSONL `.cbls` format; the MPS reader (`mps_reader.cpp` + `mps_to_model.cpp`, gzip, optional bzip2), the AMPL `.nl` reader (`nl_reader.cpp` + `nl_to_model.cpp`) and the MIPLIB `.solu` reader (`solu_reader.cpp`). CLI in `src/cli.cpp`. Load-time reduction for the adapters: implied bounds (`src/bound_propagation.cpp`); see [Implied variable bounds](#implied-variable-bounds). Its search-time, undoable form is `src/domain_propagation.cpp` ([Search-time propagation](#search-time-propagation)). Presolve was removed ([Presolve](#presolve)).
+10. **I/O** (`src/io.cpp`, `src/io/`) — JSONL `.cbls` format; the MPS reader (`mps_reader.cpp` + `mps_to_model.cpp`, gzip, optional bzip2), the AMPL `.nl` reader (`nl_reader.cpp` + `nl_to_model.cpp`) and the MIPLIB `.solu` reader (`solu_reader.cpp`). CLI in `src/cli.cpp`. Load-time reduction for the adapters: implied bounds (`src/bound_propagation.cpp`); see [Implied variable bounds](#implied-variable-bounds). Its search-time, undoable form is `src/domain_propagation.cpp` ([Search-time propagation](#search-time-propagation)), which the fix-propagate-repair dive (`src/fpr.cpp`) fixes over ([Fix-propagate-repair](#fix-propagate-repair)). Presolve was removed ([Presolve](#presolve)).
 
 ### Key extension points
 
@@ -2554,6 +2554,33 @@ fixing variables one at a time under propagation (fix-propagate-repair, #421):
 It never writes the model's domains: the adapters already tighten at load.
 `DomainPropagationStats::propagate_all_bounds_derived` counts the root's
 tightenings.
+
+### Fix-propagate-repair
+
+**Files:** `include/cbls/fpr.h`, `src/fpr.cpp`
+
+`FprSearch` is the LP-free dive of fix-propagate-repair (Salvagnin, Roberti,
+Fischetti, MPC 2024, Fig. 1; mip-heuristics' `fpr_attempt_step`, #425). One
+attempt fixes integral variables one at a time on a `DomainPropagator` the
+caller has root-propagated, and returns a full point plus whether the mode
+wants leaf repair; repair itself is the caller's (#426).
+
+- **Orders** (paper Table 1, no clique orders): `LR`, `Type`, `Random`,
+  `Locks`, and `DomainSize`, a lazy min-heap re-pushed with the variables a
+  fix or backtrack changed. Attempts after the first shuffle the first 30%.
+- **Values** (Table 2, LP-free): `Up`, `Random`, `GoodObj`/`BadObj` (by the
+  min-form objective's partial), `LooseDyn` (fewer locks, counting only rows
+  neither infeasible nor redundant at the current activities), `Incumbent`.
+- **Modes**: `Diveprop` never backtracks: a refuted fix is undone and kept
+  outside the propagator, and the dive goes on. `Dfs` backtracks to the next
+  sibling value on a conflict, at most `num_vars + 1` nodes. `Dfsrep` searches
+  as `Dfs` and asks for leaf repair (in-tree repair is deferred, #419).
+- **Fill**: Floats take their current value clamped to the final box; a box
+  emptied by a partial dive falls back to the model's; for value choice an
+  infinite bound is boxed to width 1e5 from the finite one, or to ±1e5
+  (paper Section 6).
+- `kFprPortfolio` is mip-heuristics' six initial configs less Dive and
+  RepairSearch; `fpr_portfolio_config(worker, attempt)` rotates through it.
 
 ### Presolve
 

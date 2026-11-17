@@ -216,6 +216,7 @@ add_library(cbls_lib
     src/feasibility_jump.cpp
     src/linear_jump.cpp
     src/domain_propagation.cpp
+    src/fpr.cpp
     src/search.cpp
     src/counters.cpp
     src/tracer.cpp
