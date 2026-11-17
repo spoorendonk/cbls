@@ -150,6 +150,15 @@ FprSearch::FprSearch(const Model& model, const LinearRowStore& store, DomainProp
     }
 }
 
+bool FprSearch::propagate_root() {
+    // propagate_all checks rows only; an empty model domain (lb > ub) on a
+    // scalar in no row is a refuted root too.
+    root_ok_ = prop_.propagate_all() &&
+               std::none_of(scalars_.begin(), scalars_.end(),
+                            [this](int32_t v) { return prop_.lo(v) > prop_.hi(v); });
+    return root_ok_;
+}
+
 void FprSearch::static_order(FprVarOrder order, RNG& rng, std::vector<int32_t>& out) const {
     out.clear();
     if (order == FprVarOrder::LR) {
@@ -354,7 +363,7 @@ void FprSearch::fill(const FprConfig& cfg, RNG& rng, FprResult& out) const {
         const Variable& var = model_.var(v);
         double lo = prop_.lo(v);
         double hi = prop_.hi(v);
-        if (lo > hi) {  // a refuted root (the caller's): fall back to the model's box
+        if (lo > hi) {  // a model domain with lb > ub: fall back to the model's box
             lo = var.lb;
             hi = var.ub;
         }
@@ -390,11 +399,7 @@ void FprSearch::run(const FprConfig& cfg, int64_t attempt, RNG& rng, FprResult& 
     stack_.clear();
     heap_.clear();
 
-    // A refuted root (the caller's propagate_all) is no leaf: nothing is
-    // branched on a propagator in conflict, and the fill falls back per variable.
-    const bool root_refuted = std::any_of(scalars_.begin(), scalars_.end(),
-                                          [&](int32_t v) { return prop_.lo(v) > prop_.hi(v); });
-    if (root_refuted) {
+    if (!root_ok_) {  // no leaf: nothing is branched on a propagator in conflict
         fill(cfg, rng, out);
         prop_.backtrack(entry);
         return;

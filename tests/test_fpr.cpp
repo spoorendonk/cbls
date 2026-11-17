@@ -18,7 +18,7 @@ namespace {
 // A closed, evaluated model's store, root-propagated propagator and engine.
 struct Rig {
     explicit Rig(Model& model) : store(model), prop(store, model), fpr(model, store, prop) {
-        REQUIRE(prop.propagate_all());
+        REQUIRE(fpr.propagate_root());
     }
     LinearRowStore store;
     DomainPropagator prop;
@@ -144,6 +144,35 @@ TEST_CASE("an infeasible pigeonhole ends incomplete: siblings run out, or the no
         for (const double v : r.values) {
             CHECK((v == 0.0 || v == 1.0));
         }
+    }
+    {
+        // a + b >= 2 refutes a + b <= 1 at the root without crossing a bound.
+        Model m;
+        const int32_t a = m.bool_var();
+        const int32_t b = m.bool_var();
+        m.add_constraint(m.geq(m.sum({a, b}), m.constant(2.0)));
+        m.add_constraint(m.leq(m.sum({a, b}), m.constant(1.0)));
+        finish(m);
+        LinearRowStore store(m);
+        DomainPropagator prop(store, m);
+        FprSearch fpr(m, store, prop);
+        REQUIRE_FALSE(fpr.propagate_root());
+        fpr.run({FprVarOrder::LR, FprValueRule::Up, FprMode::Dfs}, 0, rng, r);
+        CHECK_FALSE(r.complete);
+        CHECK(r.nodes == 0);
+    }
+    {
+        // An empty model domain on a variable in no row refutes the root too.
+        Model m;
+        m.int_var(3, 1);
+        finish(m);
+        LinearRowStore store(m);
+        DomainPropagator prop(store, m);
+        FprSearch fpr(m, store, prop);
+        REQUIRE_FALSE(fpr.propagate_root());
+        fpr.run({FprVarOrder::LR, FprValueRule::Up, FprMode::Dfs}, 0, rng, r);
+        CHECK_FALSE(r.complete);
+        CHECK(r.nodes == 0);
     }
 }
 

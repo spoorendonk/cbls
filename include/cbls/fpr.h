@@ -82,7 +82,7 @@ struct FprResult {
 
 /// One worker's FPR attempts over a closed, evaluated model, a store built
 /// from it and a propagator over that store. The propagator is the caller's:
-/// run its `propagate_all` once at depth 0 first (the root tightenings), and
+/// call `propagate_root` once at depth 0 first (the root tightenings), and
 /// `run` leaves it at the depth it found it.
 ///
 /// Integral variables are branched; Floats are never branched: a Float with a
@@ -94,8 +94,8 @@ struct FprResult {
 /// Two deviations, both forced by `DomainPropagator`'s rule that a conflict is
 /// backtracked: a trivial rounding propagation refutes is skipped, and a
 /// Diveprop fixing propagation refutes is undone there and kept outside it
-/// (the reference carries on in the refuted state; #427). A refuted root is
-/// not branched and reports `complete = false`.
+/// (the reference carries on in the refuted state; #427). After a refuted
+/// root, `run` branches nothing and reports `complete = false`.
 ///
 /// Costs: the constructor is O(vars + nnz) plus one reverse sweep of the
 /// objective. `run` is at most `num_vars + 1` nodes, each a `fix` plus
@@ -105,6 +105,11 @@ struct FprResult {
 class FprSearch {
 public:
     FprSearch(const Model& model, const LinearRowStore& store, DomainPropagator& prop);
+
+    /// The root pass: the propagator's `propagate_all` at depth 0. Its verdict
+    /// is kept, since a conflict leaves no mark on the bounds: false refutes
+    /// the model's linear rows, and every later `run` is then a bare fill.
+    bool propagate_root();
 
     /// One attempt; `attempt` > 0 shuffles the first 30% of the order, as
     /// mip-heuristics does on later attempts. Values read the model's current
@@ -159,7 +164,8 @@ private:
     std::vector<double> cost_;
     std::vector<int32_t> up_locks_;
     std::vector<int32_t> down_locks_;
-    double inf_;  // the propagator's infinity: a bound at or past it is infinite
+    double inf_;           // the propagator's infinity: a bound at or past it is infinite
+    bool root_ok_ = true;  // `propagate_root`'s verdict
     /// Each static order by `FprVarOrder`, built once at construction from a
     /// fixed-seed RNG, as mip-heuristics precomputes one per strategy before
     /// any attempt, so an attempt does not depend on what ran before it.
