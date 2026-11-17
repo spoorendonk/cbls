@@ -470,4 +470,15 @@ TEST_CASE("propagate_all reports a violated constant row", "[domain_propagation]
     DomainPropagator p(store, m);
     CHECK_FALSE(p.propagate_all());
     CHECK(p.stats().conflicts == 1);
+
+    // A sentinel-sized bound on the wrong side is still a bound: 0 <= -1e25.
+    Model big;
+    const int32_t y = big.float_var(0.0, 1.0);
+    big.add_constraint(big.leq(big.sum({y, big.neg(y)}), big.constant(-1e25)));
+    big.close();
+    full_evaluate(big);
+    const LinearRowStore big_store(big);
+    REQUIRE(big_store.constant_rows().size() == 1);
+    DomainPropagator bp(big_store, big);
+    CHECK_FALSE(bp.propagate_all());
 }

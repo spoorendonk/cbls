@@ -457,9 +457,10 @@ bool DomainPropagator::propagate_all() {
     ++stats_.propagate_all_calls;
     const BoundPropagationOptions& b = opts_.bounds;
     for (const LinearRowStore::ConstantRow& row : store_.constant_rows()) {
-        // residual = -(row bound): a sentinel-sized bound stands for no bound.
+        // residual = -(row bound); a positive one is a bound below 0, finite
+        // on its own side however large.
         const double excess = row.eq ? std::abs(row.residual) : row.residual;
-        if (excess < b.infinity && excess > relaxation(row.residual, b)) {
+        if (excess > relaxation(row.residual, b)) {
             return conflict();
         }
     }
