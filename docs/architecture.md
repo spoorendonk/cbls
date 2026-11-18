@@ -2009,6 +2009,16 @@ When the scalar destroy chose anything, `full_evaluate`, then
 GFJ repair (2000 iterations) refining the current (partially destroyed)
 assignment toward feasibility, leaving a clean unit-weight penalty landscape.
 
+With `SearchConfig::lns_repair_fpr` (default off, #431), each round first fixes
+the kept integral scalars at their incumbent values and boxes the kept floats to
+within the feasibility tolerance, under propagation. It then runs one
+fix-propagate-repair dive over the destroyed scalars and writes their values
+before that FJ. A conflict on the kept values skips the dive for that round, and
+a root the linear rows refute skips it for good: those rounds are plain FJ. Off,
+no row store is built and the trajectory is unchanged. Runner flag:
+`--lns-repair-fpr` (scalar family, recorded as `lns_repair_fpr` only when on,
+refused with `--no-lns`). Python: `SearchConfig.lns_repair_fpr`.
+
 ### Acceptance — Lexicographic (real-violation, objective)
 
 LNS computes a `state_key = (real_violation, objective)` where `real_violation`
@@ -2379,6 +2389,7 @@ solve(model, time_limit, seed, hook, lns, lns_interval, callback, config, coord)
 | `novelty_jump_probability` | 0.5 | `SearchConfig` | P(Novelty Jump batch) when enabled |
 | `fpr_batch_probability` | 0 | `SearchConfig` | P(fix-propagate-repair batch), drawn first; 0 draws nothing and builds nothing (#429); in [0, 1] |
 | `fpr_worker` | 0 | `SearchConfig` | keys the FPR portfolio rotation; `ParallelSearch` sets each worker's index |
+| `lns_repair_fpr` | false | `SearchConfig` | LNS repair tries one fix-propagate-repair dive over the destroyed scalars before its FJ; a conflict on the kept values or a refuted root skips it (#431) |
 | `lns_interval` | 3 | `SearchConfig` / arg | LNS fires every Nth diversification kick |
 | `move_generators` | empty | `SearchConfig` | extra structural move generators, cloned per worker (#165) |
 | `default_structural_generators` | true | `SearchConfig` | also register the built-in List/Set generators |

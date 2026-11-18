@@ -110,9 +110,8 @@ void build_continuous_model(Model& m) {
 /// else differs between two calls. `batch_iterations` is a test knob rather than
 /// a flag -- it sets how often the loop reaches a batch boundary, which is where
 /// every cadence decision is taken.
-SearchResult run_arm(Model& model, const SearchFlags& flags, int64_t batch_iterations) {
+SearchResult run_arm(Model& model, const SearchFlags& flags, int64_t batch_iterations, LNS& lns) {
     cbls::FloatIntensifyHook hook;
-    LNS lns(0.3);
     SearchConfig cfg;
     cfg.batch_iterations = batch_iterations;
     cbls::bench::apply_search_flags(flags, cfg);
@@ -120,6 +119,11 @@ SearchResult run_arm(Model& model, const SearchFlags& flags, int64_t batch_itera
                        cbls::bench::hook_argument(flags, hook),
                        cbls::bench::lns_argument(flags, lns),
                        cbls::bench::lns_interval_argument(flags), nullptr, cfg);
+}
+
+SearchResult run_arm(Model& model, const SearchFlags& flags, int64_t batch_iterations) {
+    LNS lns(0.3);
+    return run_arm(model, flags, batch_iterations, lns);
 }
 
 /// Builds a fresh model per arm: solve() mutates the model (assignment, and the
@@ -214,6 +218,7 @@ TEST_CASE("search flags default to the engine's own configuration", "[bench][fla
     REQUIRE(f.perturbation_period == engine.perturbation_period);
     REQUIRE(f.max_iterations == engine.max_iterations);
     REQUIRE(f.fpr_prob == engine.fpr_batch_probability);
+    REQUIRE(f.lns_repair_fpr == engine.lns_repair_fpr);
     REQUIRE(f.float_hook);
     REQUIRE(f.lns);
     REQUIRE_FALSE(f.no_time_limit);
@@ -221,14 +226,15 @@ TEST_CASE("search flags default to the engine's own configuration", "[bench][fla
 }
 
 TEST_CASE("every search flag sets the field it claims", "[bench][flags]") {
-    // Every flag at once, and a combination that is actually runnable: the two
-    // no-effect pairs (--no-lns with --lns-interval, --novelty-prob without
-    // --compound-moves) are refused by validate_search_flags, so --no-lns is
-    // checked on its own below rather than folded in here.
-    const ParseOutcome parsed =
-        parse({"--no-float-hook", "--lns-interval", "7", "--compound-moves", "--novelty-prob",
-               "0.25", "--unproductive-iters", "0", "--perturbation-period", "9",
-               "--max-iterations", "1234", "--no-time-limit", "--fpr-prob", "0.75"});
+    // Every flag at once, and a combination that is actually runnable: the
+    // no-effect pairs (--no-lns with --lns-interval or --lns-repair-fpr,
+    // --novelty-prob without --compound-moves) are refused by
+    // validate_search_flags, so --no-lns is checked on its own below rather
+    // than folded in here.
+    const ParseOutcome parsed = parse(
+        {"--no-float-hook", "--lns-interval", "7", "--compound-moves", "--novelty-prob", "0.25",
+         "--unproductive-iters", "0", "--perturbation-period", "9", "--max-iterations", "1234",
+         "--no-time-limit", "--fpr-prob", "0.75", "--lns-repair-fpr"});
     REQUIRE(parsed.unmatched.empty());
     std::string error;
     REQUIRE(
@@ -244,6 +250,7 @@ TEST_CASE("every search flag sets the field it claims", "[bench][flags]") {
     REQUIRE(f.max_iterations == 1234);
     REQUIRE(f.no_time_limit);
     REQUIRE(f.fpr_prob == 0.75);
+    REQUIRE(f.lns_repair_fpr);
 
     // ...and that those land on the objects solve() is actually handed.
     SearchConfig cfg;
@@ -254,6 +261,7 @@ TEST_CASE("every search flag sets the field it claims", "[bench][flags]") {
     REQUIRE(cfg.perturbation_period == 9);
     REQUIRE(cfg.max_iterations == 1234);
     REQUIRE(cfg.fpr_batch_probability == 0.75);
+    REQUIRE(cfg.lns_repair_fpr);
 
     cbls::FloatIntensifyHook hook;
     LNS lns(0.3);
@@ -386,6 +394,12 @@ TEST_CASE("an opt-in flag is recorded only off its default (#226)", "[bench][fla
     REQUIRE_FALSE(cbls::bench::validate_search_flags(parse({"--fpr-prob", "0.25"}).flags,
                                                      kStructural, false, error));
     REQUIRE(error.find("--fpr-prob") != std::string::npos);
+    // The LNS repair's FPR dive is off by default (#432): recorded only when on.
+    REQUIRE(cbls::bench::search_config_string(parse({"--lns-repair-fpr"}).flags, kScalar) ==
+            base + ";lns_repair_fpr=on");
+    REQUIRE_FALSE(cbls::bench::validate_search_flags(parse({"--lns-repair-fpr"}).flags, kStructural,
+                                                     false, error));
+    REQUIRE(error.find("--lns-repair-fpr") != std::string::npos);
 }
 
 TEST_CASE("a non-default arm is named for the published-table guard", "[bench][flags]") {
@@ -408,6 +422,7 @@ TEST_CASE("a non-default arm is named for the published-table guard", "[bench][f
         {"--neighbours", "5"},
         {"--no-objective-tie-break"},
         {"--fpr-prob", "0.5"},
+        {"--lns-repair-fpr"},
     };
     REQUIRE(arms.size() == cbls::bench::kSearchFlagCount);
     for (const auto& arm : arms) {
@@ -466,6 +481,10 @@ TEST_CASE("validation rejects values the engine cannot use", "[bench][flags]") {
     REQUIRE_FALSE(rejected({"--fpr-prob", "1"}));
     REQUIRE_FALSE(rejected({"--fpr-prob", "1", "--no-compound-moves"}));
     REQUIRE_FALSE(rejected({"--fpr-prob", "0.5", "--novelty-prob", "0.25"}));
+    // Without an LNS there is no repair for the dive to run in.
+    REQUIRE(rejected({"--no-lns", "--lns-repair-fpr"}));
+    REQUIRE(error.find("--lns-repair-fpr") != std::string::npos);
+    REQUIRE_FALSE(rejected({"--lns-repair-fpr"}));
     REQUIRE(rejected({"--perturbation-period", "0"}));
     REQUIRE(rejected({"--max-iterations", "-1"}));
     // --no-time-limit without an iteration budget is a run with no budget at
@@ -715,6 +734,28 @@ TEST_CASE("the --fpr-prob flag runs fix-propagate-repair batches", "[bench][flag
     REQUIRE(never_arm.counters.fpr_batches == 0);
     REQUIRE(always_arm.counters.fpr_batches > 0);
     REQUIRE(always_arm.counters.fpr_batches == always_arm.counters.batches);
+}
+
+TEST_CASE("the --lns-repair-fpr flag runs the dive in the LNS repair", "[bench][flags][probe]") {
+    // Every kick is a repair; only the arm with the flag dives in one (#432).
+    const auto fpr_rounds = [](const std::vector<std::string>& args) {
+        const ParseOutcome parsed = parse(args);
+        REQUIRE(parsed.unmatched.empty());
+        Model m;
+        build_stagnant_model(m);
+        LNS lns(0.3);
+        const SearchResult r = run_arm(m, parsed.flags, /*batch_iterations=*/1, lns);
+        REQUIRE(r.lns_repairs > 0);
+        const LNS::FprRepairStats& s = lns.fpr_repair_stats();
+        return s.dives + s.kept_conflicts + s.root_refuted;
+    };
+    const std::vector<std::string> base = {"--perturbation-period", "1", "--lns-interval", "1",
+                                           "--max-iterations",      "25"};
+    std::vector<std::string> with_dive = base;
+    with_dive.emplace_back("--lns-repair-fpr");
+
+    REQUIRE(fpr_rounds(base) == 0);
+    REQUIRE(fpr_rounds(with_dive) > 0);
 }
 
 TEST_CASE("the --no-float-hook flag changes where a continuous run lands",

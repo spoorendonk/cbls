@@ -166,6 +166,16 @@ def test_fpr_batch_config_round_trips_and_runs_fpr_batches() -> None:
         cbls.solve(_quadratic(), 0.0, 42, config=config)
 
 
+def test_lns_repair_fpr_config_round_trips() -> None:
+    """The LNS repair's FPR switch (#432) is bound under its C++ name, off by default."""
+    config = _config()
+    assert config.lns_repair_fpr is False
+    config.lns_repair_fpr = True
+    assert config.lns_repair_fpr is True
+    config.lns_repair_fpr = False
+    assert config.lns_repair_fpr is False
+
+
 def test_counters_are_read_only() -> None:
     """They report a finished run; a writable field would be a way to falsify it."""
     import pytest

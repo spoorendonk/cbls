@@ -104,6 +104,9 @@ struct SearchFlags {
     bool objective_tie_break = SearchConfig{}.fj_objective_tie_break;
     // Fix-propagate-repair batches (#430), off by default; opt-in in the cell.
     double fpr_prob = SearchConfig{}.fpr_batch_probability;
+    // Fix-propagate-repair in the LNS repair (#432), off by default; opt-in in
+    // the cell.
+    bool lns_repair_fpr = SearchConfig{}.lns_repair_fpr;
     // First flag typed per family (indexed by family bit), or nullptr. Set
     // whatever the value, so a flag restated at its default is still refused
     // on a runner that cannot read it.
@@ -126,7 +129,7 @@ struct SearchFlagSpec {
 /// are generated from it, so no flag is documented but unrecorded or reverse.
 /// New flags go at the END: a cell is this table filtered by family, so
 /// appending keeps every existing runner's cell byte-identical.
-inline constexpr std::array<SearchFlagSpec, 15> kSearchFlagSpecs = {{
+inline constexpr std::array<SearchFlagSpec, 16> kSearchFlagSpecs = {{
     {"float_hook", "[--no-float-hook]", kScalarSearchFlags},
     {"lns", "[--no-lns]", kCommonSearchFlags},
     {"lns_interval", "[--lns-interval N]", kCommonSearchFlags},
@@ -144,6 +147,7 @@ inline constexpr std::array<SearchFlagSpec, 15> kSearchFlagSpecs = {{
     {"neighbours", "[--neighbours K]", kNeighbourSearchFlags},
     {"objective_tie_break", "[--no-objective-tie-break]", kScalarSearchFlags, true},
     {"fpr_prob", "[--fpr-prob P]", kScalarSearchFlags, true},
+    {"lns_repair_fpr", "[--lns-repair-fpr]", kScalarSearchFlags, true},
 }};
 
 inline constexpr std::size_t kSearchFlagCount = kSearchFlagSpecs.size();
@@ -250,6 +254,10 @@ inline bool match_search_flag(ArgCursor& c, const std::string& s, SearchFlags& f
         f.fpr_prob = parse_double("--fpr-prob", v) + 0.0;  // -0 onto 0, as --novelty-prob
         flag = "--fpr-prob";
         family = kScalarSearchFlags;
+    } else if (s == "--lns-repair-fpr") {
+        f.lns_repair_fpr = true;
+        flag = "--lns-repair-fpr";
+        family = kScalarSearchFlags;
     } else {
         return false;
     }
@@ -321,6 +329,40 @@ inline bool validate_structural_flags(const SearchFlags& f, std::string& error) 
     return true;
 }
 
+/// A typed flag the engine would not read is refused. Engine short-circuits
+/// (src/search.cpp): the kick tests `lns_ != nullptr` before `lns_interval_`
+/// and the repair store; the batch picker tests `use_compound_moves` before
+/// `novelty_jump_probability`. This also keeps the cell a census of runs.
+inline bool validate_search_flags_have_effect(const SearchFlags& f, std::string& error) {
+    const SearchFlags defaults;
+    if (!f.lns && f.lns_interval != defaults.lns_interval) {
+        error = "--lns-interval has no effect with --no-lns";
+        return false;
+    }
+    if (!f.lns && f.lns_repair_fpr != defaults.lns_repair_fpr) {
+        error = "--lns-repair-fpr has no effect with --no-lns";
+        return false;
+    }
+    if (!f.compound_moves && f.novelty_prob != defaults.novelty_prob) {
+        error = "--novelty-prob has no effect without --compound-moves";
+        return false;
+    }
+    // The picker draws FPR first (#430): at 1 every batch is FPR, whose repair
+    // is an FJ batch, so the Novelty draw is never reached -- unless root
+    // propagation refutes the model, which builds no FPR batch and draws as
+    // at 0: a model-dependent edge, accepted as for any flag. The compound-moves
+    // switch is not refused: runners pin different defaults for it (uc-chped
+    // off), and its cell value is always written. No runner takes both the
+    // scalar and structural families, so structural flags cannot meet it.
+    if (f.fpr_prob == 1.0 && f.novelty_prob != defaults.novelty_prob) {
+        error =
+            "--novelty-prob has no effect at --fpr-prob 1 (every batch is FPR unless the "
+            "root is refuted)";
+        return false;
+    }
+    return true;
+}
+
 /// Range and coherence checks. Returns false with a one-line reason; the
 /// runner owns the exit (runner_args.h), so a test can call this.
 /// `applicable` is the runner's families (#198): a flag from any other is
@@ -369,30 +411,7 @@ inline bool validate_search_flags(const SearchFlags& f, unsigned applicable, boo
         error = "--max-iterations must be >= 0 (0 = unlimited)";
         return false;
     }
-    // A typed flag the engine would not read is refused. Engine short-circuits
-    // (src/search.cpp): the kick tests `lns_ != nullptr` before
-    // `lns_interval_`; the batch picker tests `use_compound_moves` before
-    // `novelty_jump_probability`. This also keeps the cell a census of runs.
-    const SearchFlags defaults;
-    if (!f.lns && f.lns_interval != defaults.lns_interval) {
-        error = "--lns-interval has no effect with --no-lns";
-        return false;
-    }
-    if (!f.compound_moves && f.novelty_prob != defaults.novelty_prob) {
-        error = "--novelty-prob has no effect without --compound-moves";
-        return false;
-    }
-    // The picker draws FPR first (#430): at 1 every batch is FPR, whose repair
-    // is an FJ batch, so the Novelty draw is never reached -- unless root
-    // propagation refutes the model, which builds no FPR batch and draws as
-    // at 0: a model-dependent edge, accepted as for any flag. The compound-moves
-    // switch is not refused: runners pin different defaults for it (uc-chped
-    // off), and its cell value is always written. No runner takes both the
-    // scalar and structural families, so structural flags cannot meet it.
-    if (f.fpr_prob == 1.0 && f.novelty_prob != defaults.novelty_prob) {
-        error =
-            "--novelty-prob has no effect at --fpr-prob 1 (every batch is FPR unless the "
-            "root is refuted)";
+    if (!validate_search_flags_have_effect(f, error)) {
         return false;
     }
     if (f.no_time_limit && time_limit_set) {
@@ -460,6 +479,9 @@ inline const char* first_non_default_search_flag(const SearchFlags& f,
     if (f.fpr_prob != d.fpr_prob) {
         return "--fpr-prob";
     }
+    if (f.lns_repair_fpr != d.lns_repair_fpr) {
+        return "--lns-repair-fpr";
+    }
     return nullptr;
 }
 
@@ -495,6 +517,7 @@ inline std::array<std::string, kSearchFlagCount> search_config_values(const Sear
         f.neighbours == 0 ? std::string(off) : std::to_string(f.neighbours),
         f.objective_tie_break ? on : off,
         search_flag_number(f.fpr_prob),
+        f.lns_repair_fpr ? on : off,
     }};
 }
 
@@ -555,6 +578,7 @@ inline void apply_search_flags(const SearchFlags& f, SearchConfig& cfg) {
     cfg.structural_sample_size = static_cast<int>(f.structural_sample_size);
     cfg.fj_objective_tie_break = f.objective_tie_break;
     cfg.fpr_batch_probability = f.fpr_prob;
+    cfg.lns_repair_fpr = f.lns_repair_fpr;
 }
 
 /// `--neighbours` against the instance: `nearest_neighbours` clamps K to
