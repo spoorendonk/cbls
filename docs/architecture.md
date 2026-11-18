@@ -2606,7 +2606,8 @@ wants leaf repair; repair itself is the caller's (#426).
   its current value (the reference's `cont_fallback`), clamped to the final
   box; an infinite bound is boxed to width 1e5 from the finite one, or to
   ±1e5 (paper Section 6). A Dfs conflict is undone at once, so an exhausted
-  stack fills from the last consistent state.
+  stack fills from the state the dive started from, which a refuted trivial
+  round leaves refuted, as in the reference.
 - **Trivial roundings** (paper Section 6) are fixed together with
   `DomainPropagator::fix_all` and propagated once, the verdict ignored, as the
   reference does.

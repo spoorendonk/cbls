@@ -443,6 +443,9 @@ void FprSearch::dive(const FprConfig& cfg, RNG& rng, FprResult& out) {
             }
         }
         size_t cursor = node.cursor;
+        // In a refuted state (a kept Diveprop conflict or trivial round) a row
+        // stays infeasible, and a fix reaching it stops its propagation there
+        // and counts a conflict, as the reference's engine does (#427).
         bool infeas = !prop_.fix(node.var, node.value);
         if (infeas) {
             ++out.conflicts;
@@ -455,8 +458,13 @@ void FprSearch::dive(const FprConfig& cfg, RNG& rng, FprResult& out) {
             }
             // Diveprop does not stop (the paper's single big dive): the refuted
             // fixing and its partial deductions stay in the propagator, whose
-            // state is consistent after a conflict (#427). The value came from
-            // the node's own box, so the fixing itself was applied.
+            // state is consistent after a conflict (#427). The value comes from
+            // the node's own box, so the fixing is applied; an integral domain
+            // with fractional bounds can refuse it, and the dive then ends
+            // rather than branch on the variable again.
+            if (!fixed(node.var)) {
+                return;
+            }
         }
         if (dynamic) {
             heap_push_changed(node.level);

@@ -105,7 +105,7 @@ struct DomainPropagationOptions {
 };
 
 struct DomainPropagationStats {
-    int64_t calls = 0;          ///< fix/tighten calls.
+    int64_t calls = 0;          ///< fix/tighten calls, and fix_all fixings.
     int64_t rows_scanned = 0;   ///< Rows whose terms were read.
     int64_t rows_filtered = 0;  ///< Rows the slack filter skipped in O(1).
     int64_t terms_scanned = 0;
@@ -179,8 +179,8 @@ public:
     bool fix(int32_t var, double value);
     /// Intersects `var`'s bounds with `[lo, hi]` (rounded inward on an
     /// integral variable) and propagates. False on a conflict (an empty domain
-    /// beyond the safety margin). No domain is ever left empty: a crossing
-    /// bound is refused, not written, and every change under a checkpoint is
+    /// beyond the safety margin). The propagator never empties a domain: a
+    /// crossing bound is refused, not written, and every change under a checkpoint is
     /// trailed. So after a conflict the state is partial but consistent, and
     /// the caller may backtrack or keep fixing and propagating from it (#427).
     /// Throws `std::invalid_argument` on a NaN bound.
@@ -190,6 +190,8 @@ public:
     /// (#427). A fixing that crosses its domain is a conflict and is skipped;
     /// the rest are kept and propagated. False on any conflict; the state is
     /// then as after `tighten`'s. Throws before any change on a bad request.
+    /// Each fixing counts as one call in `stats().calls`, and a crossing one
+    /// as one conflict, besides any the propagation finds.
     bool fix_all(const std::vector<std::pair<int32_t, double>>& fixings);
     /// Scans every row, cascading as `tighten` does: with cascade on, to a
     /// fixpoint under the work valve. The root propagation (#420). False on a
