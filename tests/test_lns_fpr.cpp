@@ -187,11 +187,18 @@ TEST_CASE("the FPR repair builds and fixes nothing past its deadline", "[lns][fp
     CHECK(lns.fpr_repair_stats().dives == 0);
     CHECK(lns.fpr_repair_stats().kept_conflicts == 0);
     CHECK(values(m) == incumbent);
+
+    // destroy_repair hands the round its deadline: 1 ns has passed by the
+    // repair step.
+    ViolationManager vm(m);
+    lns.destroy_repair(m, vm, rng, /*repair_time_limit=*/1e-9);
+    CHECK(lns.fpr_repair_stats().deadline_stops == 2);
+    CHECK(lns.fpr_repair_stats().dives == 0);
 }
 
 TEST_CASE("the FPR repair's kept-value loop stops at the deadline", "[lns][fpr][deadline]") {
-    // 40k kept fixings each propagate a row pair: far over 200 us, so the
-    // loop's clock check stops the round whether or not the entry check did.
+    // 40k kept fixings each propagate a row pair. A deadline a quarter of an
+    // untimed round out passes the entry check, so the loop's check stops it.
     constexpr int kPairs = 40000;
     Model m = pair_model(kPairs, 1.0, 0.0);
     std::vector<int32_t> ys;
@@ -203,12 +210,15 @@ TEST_CASE("the FPR repair's kept-value loop stops at the deadline", "[lns][fpr][
     lns.set_repair_store(std::make_shared<const LinearRowStore>(m));
     RNG rng(7);
     REQUIRE(lns.fpr_repair(m, {ys.front()}, rng, nullptr));  // the engine, built untimed
+    const auto start = std::chrono::steady_clock::now();
+    REQUIRE(lns.fpr_repair(m, {ys.front()}, rng, nullptr));
+    const auto untimed = std::chrono::steady_clock::now() - start;
 
     const std::vector<double> incumbent = values(m);
-    const auto soon = std::chrono::steady_clock::now() + std::chrono::microseconds(200);
+    const auto soon = std::chrono::steady_clock::now() + (untimed / 4);
     CHECK_FALSE(lns.fpr_repair(m, {ys.front()}, rng, &soon));
     CHECK(lns.fpr_repair_stats().deadline_stops == 1);
-    CHECK(lns.fpr_repair_stats().dives == 1);
+    CHECK(lns.fpr_repair_stats().dives == 2);
     CHECK(values(m) == incumbent);
 }
 

@@ -56,7 +56,8 @@ public:
 
     /// As the constructor, but empty once `deadline` passes: the O(nnz) build
     /// reads the clock every 16 rows and before its column index, so it
-    /// overruns by at most that much (the LNS repair's first kick, #434).
+    /// overruns by at most 16 rows or that one O(nnz) index pass (the LNS
+    /// repair's first kick, #434).
     [[nodiscard]] static std::optional<LinearRowStore> build_until(
         const Model& model, double row_tolerance, std::chrono::steady_clock::time_point deadline);
 
