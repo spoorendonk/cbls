@@ -106,7 +106,8 @@ struct SearchConfig {
     int fpr_worker = 0;
     // LNS repair runs one fix-propagate-repair dive over the destroyed scalars,
     // the kept ones fixed, before its FJ (#431; LNS::set_repair_store). Off by
-    // default: no store is built and the trajectory is unchanged.
+    // default: no store is built and the trajectory is unchanged. The store's
+    // build at the first LNS kick stops at the time limit (#434).
     bool lns_repair_fpr = false;
 
     // A constraint is satisfied when its violation is <= this: absolute, on the

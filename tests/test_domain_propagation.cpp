@@ -6,9 +6,11 @@
 #include <catch2/catch_test_macros.hpp>
 #include <cbls/cbls.h>
 #include <cbls/domain_propagation.h>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -437,6 +439,31 @@ TEST_CASE("propagate_all reaches the fixpoint and backtracks bit for bit", "[dom
     CHECK(p.stats().propagate_all_bounds_derived == derived);
     p.backtrack(root);
     REQUIRE(snapshot(p, store) == fresh);
+}
+
+TEST_CASE("build_until is empty past its deadline and the full store before it",
+          "[domain_propagation]") {
+    Model m;
+    build_chain(m);
+    const LinearRowStore full(m);
+    const auto now = std::chrono::steady_clock::now();
+    CHECK_FALSE(LinearRowStore::build_until(m, 0.0, now - std::chrono::seconds(1)).has_value());
+    const std::optional<LinearRowStore> timed =
+        LinearRowStore::build_until(m, 0.0, now + std::chrono::hours(1));
+    if (!timed.has_value()) {
+        FAIL("a far deadline must build the store");
+        return;
+    }
+    CHECK(timed->num_rows() == full.num_rows());
+    CHECK(timed->cols() == full.cols());
+    CHECK(timed->coefs() == full.coefs());
+    CHECK(timed->col_entries() == full.col_entries());
+    CHECK(timed->col_rows() == full.col_rows());
+    for (int32_t r = 0; r < full.num_rows(); ++r) {
+        CHECK(timed->row_start(r) == full.row_start(r));
+        CHECK(timed->row_lo(r) == full.row_lo(r));
+        CHECK(timed->row_hi(r) == full.row_hi(r));
+    }
 }
 
 TEST_CASE("propagate_all reports an infeasible root as a conflict", "[domain_propagation]") {

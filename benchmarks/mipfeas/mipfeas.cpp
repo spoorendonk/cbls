@@ -494,6 +494,7 @@ void add_fpr_repair_stats(cbls::LNS::FprRepairStats& total, const cbls::LNS::Fpr
     total.kept_conflicts += s.kept_conflicts;
     total.root_refuted += s.root_refuted;
     total.nodes += s.nodes;
+    total.deadline_stops += s.deadline_stops;
 }
 
 /// The portfolio arm of the solve: N workers over one shared structure, plus
@@ -767,6 +768,7 @@ int run_benchmark(int argc, char** argv) {
         {"lns_fpr_kept_conflicts", fpr_repair.kept_conflicts},
         {"lns_fpr_root_refuted", fpr_repair.root_refuted},
         {"lns_fpr_nodes", fpr_repair.nodes},
+        {"lns_fpr_deadline_stops", fpr_repair.deadline_stops},
         // Shared-bound engagement (#179), summed over workers: a null A/B vs a
         // mechanism that never fired. Zero at --threads 1. With sharing off,
         // `bound_behind_global_*` is the opportunity it would take.

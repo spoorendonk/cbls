@@ -12,6 +12,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <limits>
 #include <numeric>
 #include <utility>
@@ -40,6 +41,31 @@ double held_at_bound(double value, double lb, double ub, double tol) {
         return lb;
     }
     return value;
+}
+
+enum class KeptFixing : uint8_t { kConsistent, kConflict, kStopped };
+
+// Fixes every kept scalar at its incumbent value (held at its bound within
+// `tol`). A non-finite value cannot be held (fix refuses NaN): a conflict.
+// Reads the clock every 16 fixings, as the dive does (#429, #434).
+KeptFixing fix_kept(const Model& model, const std::vector<char>& destroyed, DomainPropagator& prop,
+                    double tol, const std::chrono::steady_clock::time_point* deadline) {
+    int64_t fixings = 0;
+    for (int32_t v = 0; v < static_cast<int32_t>(model.num_vars()); ++v) {
+        const Variable& var = model.var(v);
+        if (destroyed[static_cast<size_t>(v)] != 0 || is_structured(var.type)) {
+            continue;
+        }
+        if ((++fixings & 15) == 0 && deadline != nullptr &&
+            std::chrono::steady_clock::now() >= *deadline) {
+            return KeptFixing::kStopped;
+        }
+        if (!std::isfinite(var.value) ||
+            !prop.fix(v, held_at_bound(var.value, var.lb, var.ub, tol))) {
+            return KeptFixing::kConflict;
+        }
+    }
+    return KeptFixing::kConsistent;
 }
 
 }  // namespace
@@ -78,6 +104,12 @@ bool LNS::fpr_repair(Model& model, const std::vector<int32_t>& destroyed, RNG& r
     if (static_cast<size_t>(repair_store_->num_vars()) != model.num_vars()) {
         return false;
     }
+    // Every setup step is O(vars + nnz) on a large model (#434): none starts
+    // past the deadline.
+    if (deadline != nullptr && std::chrono::steady_clock::now() >= *deadline) {
+        ++fpr_stats_.deadline_stops;
+        return false;
+    }
     if (fpr_ == nullptr) {
         fpr_ = std::make_unique<FprRepair>(model, *repair_store_);
     }
@@ -90,23 +122,15 @@ bool LNS::fpr_repair(Model& model, const std::vector<int32_t>& destroyed, RNG& r
     for (const int32_t v : destroyed) {
         f.destroyed[static_cast<size_t>(v)] = 1;
     }
-    // The kept scalars fixed at their incumbent values; on a conflict the round
-    // is plain FJ. A kept value a row accepts only within the feasibility
-    // tolerance holds on a store widened by it (#433), and one past its own
-    // bound by the same is held at that bound. A non-finite value cannot be
-    // held (fix refuses NaN): the same plain-FJ round.
+    // The kept scalars fixed at their incumbent values; on a conflict, or a
+    // stop at the deadline, the round is plain FJ. A kept value a row accepts
+    // only within the feasibility tolerance holds on a store widened by it
+    // (#433), and one past its own bound by the same is held at that bound.
     const int32_t level = f.prop.checkpoint();
-    bool consistent = true;
-    for (int32_t v = 0; v < static_cast<int32_t>(model.num_vars()) && consistent; ++v) {
-        const Variable& var = model.var(v);
-        if (f.destroyed[static_cast<size_t>(v)] != 0 || is_structured(var.type)) {
-            continue;
-        }
-        consistent =
-            std::isfinite(var.value) &&
-            f.prop.fix(v, held_at_bound(var.value, var.lb, var.ub, feasibility_tolerance_));
-    }
-    if (consistent) {
+    const KeptFixing kept = fix_kept(model, f.destroyed, f.prop, feasibility_tolerance_, deadline);
+    if (kept == KeptFixing::kStopped) {
+        ++fpr_stats_.deadline_stops;
+    } else if (kept == KeptFixing::kConsistent) {
         if (deadline != nullptr) {
             f.search.set_deadline(*deadline);
         } else {
@@ -125,7 +149,7 @@ bool LNS::fpr_repair(Model& model, const std::vector<int32_t>& destroyed, RNG& r
         ++fpr_stats_.kept_conflicts;
     }
     f.prop.backtrack(level);
-    return consistent;
+    return kept == KeptFixing::kConsistent;
 }
 
 // Lexicographic key (real violation, objective), as solve()'s record_best. Real

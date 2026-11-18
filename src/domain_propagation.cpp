@@ -8,8 +8,10 @@
 #include "cbls/model.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <limits>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -36,7 +38,30 @@ constexpr double kPosInf = std::numeric_limits<double>::infinity();
 // LinearRowStore
 
 LinearRowStore::LinearRowStore(const Model& model, double row_tolerance)
+    : LinearRowStore(model, row_tolerance, nullptr, nullptr) {}
+
+std::optional<LinearRowStore> LinearRowStore::build_until(
+    const Model& model, double row_tolerance, std::chrono::steady_clock::time_point deadline) {
+    bool complete = true;
+    LinearRowStore store(model, row_tolerance, &deadline, &complete);
+    if (!complete) {
+        return std::nullopt;
+    }
+    return store;
+}
+
+LinearRowStore::LinearRowStore(const Model& model, double row_tolerance,
+                               const std::chrono::steady_clock::time_point* deadline,
+                               bool* complete)
     : row_tolerance_(row_tolerance) {
+    const auto past = [deadline, complete] {
+        if (deadline == nullptr || complete == nullptr ||
+            std::chrono::steady_clock::now() < *deadline) {
+            return false;
+        }
+        *complete = false;
+        return true;
+    };
     const auto n_vars = static_cast<int32_t>(model.num_vars());
     if (!model.is_closed()) {
         throw std::logic_error("LinearRowStore: the model must be closed and evaluated");
@@ -49,6 +74,9 @@ LinearRowStore::LinearRowStore(const Model& model, double row_tolerance)
     std::vector<size_t> col_count(static_cast<size_t>(n_vars) + 1, 0);
     row_start_.push_back(0);
     for (int32_t c = 0; c < n_cons; ++c) {
+        if ((c & 15) == 15 && past()) {
+            return;
+        }
         if (c == model.objective_constraint_idx()) {
             continue;  // soft: propagating it would make the cutoff hard
         }
@@ -82,8 +110,15 @@ LinearRowStore::LinearRowStore(const Model& model, double row_tolerance)
         }
         row_start_.push_back(cols_.size());
     }
-    // Column index: counting sort of the row entries by variable, so each
-    // variable's entries are in row order.
+    if (past()) {
+        return;
+    }
+    build_column_index(n_vars, col_count);
+}
+
+void LinearRowStore::build_column_index(int32_t n_vars, const std::vector<size_t>& col_count) {
+    // Counting sort of the row entries by variable, so each variable's
+    // entries are in row order.
     col_start_.assign(static_cast<size_t>(n_vars) + 1, 0);
     for (size_t v = 1; v <= static_cast<size_t>(n_vars); ++v) {
         col_start_[v] = col_start_[v - 1] + col_count[v];

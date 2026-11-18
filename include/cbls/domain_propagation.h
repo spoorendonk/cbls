@@ -9,8 +9,10 @@
 
 #include "cbls/bound_propagation.h"
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -52,6 +54,12 @@ public:
     /// point a row only just accepts is not refuted (the LNS repair's, #433).
     explicit LinearRowStore(const Model& model, double row_tolerance = 0.0);
 
+    /// As the constructor, but empty once `deadline` passes: the O(nnz) build
+    /// reads the clock every 16 rows and before its column index, so it
+    /// overruns by at most that much (the LNS repair's first kick, #434).
+    [[nodiscard]] static std::optional<LinearRowStore> build_until(
+        const Model& model, double row_tolerance, std::chrono::steady_clock::time_point deadline);
+
     [[nodiscard]] double row_tolerance() const noexcept { return row_tolerance_; }
 
     [[nodiscard]] int32_t num_rows() const noexcept { return static_cast<int32_t>(row_lo_.size()); }
@@ -79,6 +87,13 @@ public:
     }
 
 private:
+    // The build. With a deadline (and `complete`), it stops once that has
+    // passed and sets `*complete` to false.
+    LinearRowStore(const Model& model, double row_tolerance,
+                   const std::chrono::steady_clock::time_point* deadline, bool* complete);
+    // The column index over the built rows; col_count[v + 1] counts v's entries.
+    void build_column_index(int32_t n_vars, const std::vector<size_t>& col_count);
+
     double row_tolerance_ = 0.0;
     std::vector<ConstantRow> constant_rows_;
     std::vector<int32_t> constraint_;

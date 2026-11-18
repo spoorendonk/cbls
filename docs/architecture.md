@@ -2020,7 +2020,11 @@ runs one fix-propagate-repair dive over the destroyed scalars with the
 allows (no trivial roundings, no cost-preferred Float fill, #433), and writes
 them before that FJ. A conflict on the kept values skips the dive for that
 round, and a root the linear rows refute skips it for good: those rounds are
-plain FJ. Off,
+plain FJ. The repair deadline bounds the setup as well as the dive (#434): a
+round starts no engine construction or kept-value fixing past it, and the
+kept-value loop reads the clock every 16 fixings. The O(nnz) row store, built
+at the first kick, stops at the solve's time limit (`LinearRowStore::build_until`),
+and that kick's repair limit is taken after it. Off,
 no row store is built and the trajectory is unchanged. Runner flag:
 `--lns-repair-fpr` (scalar family, recorded as `lns_repair_fpr` only when on,
 refused with `--no-lns`). Python: `SearchConfig.lns_repair_fpr`.

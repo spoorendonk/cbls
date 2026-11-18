@@ -6,9 +6,11 @@
 #include <catch2/catch_test_macros.hpp>
 #include <cbls/cbls.h>
 #include <cbls/domain_propagation.h>
+#include <chrono>
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <numeric>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -142,22 +144,72 @@ TEST_CASE("a kept value that breaks a linear row skips the dive, and FJ still re
 }
 
 TEST_CASE("the LNS FPR dive stops at the repair deadline", "[lns][fpr][deadline]") {
-    // Every pair destroyed whole is branched, so an unlimited dive pops many
-    // nodes. A deadline already past when the dive starts stops it at its
-    // first clock check (16 nodes).
-    Model m = pair_model(400, 1.0, 0.0);
-    ViolationManager vm(m);
-    LNS lns(0.5);
+    // Every pair destroyed, so nothing is kept and each pair is one branch: an
+    // unlimited dive pops thousands of nodes, far over 50 us. With the engine
+    // built untimed, a deadline 50 us out passes the round's entry check (a
+    // stop there writes nothing either) and the dive's clock check stops it.
+    constexpr int kPairs = 4000;
+    Model m = pair_model(kPairs, 1.0, 0.0);
+    std::vector<int32_t> all(2 * static_cast<size_t>(kPairs));
+    std::iota(all.begin(), all.end(), 0);
+    LnsProbe lns(0.5);
     lns.set_repair_store(std::make_shared<const LinearRowStore>(m));
     RNG rng(7);
+    REQUIRE(lns.fpr_repair(m, all, rng, nullptr));
+    const int64_t full = lns.fpr_repair_stats().nodes;
+    REQUIRE(full >= kPairs);
 
-    lns.destroy_repair(m, vm, rng, /*repair_time_limit=*/1e-9);
-    const int64_t limited = lns.fpr_repair_stats().nodes;
-    CHECK(limited <= 16);
+    const auto soon = std::chrono::steady_clock::now() + std::chrono::microseconds(50);
+    lns.fpr_repair(m, all, rng, &soon);
+    const int64_t limited = lns.fpr_repair_stats().nodes - full;
+    CHECK(limited < full / 2);
     // Limited first: a deadline left over from that round would stop this one.
-    lns.destroy_repair(m, vm, rng, /*repair_time_limit=*/0.0);
-    CHECK(lns.fpr_repair_stats().dives == 2);
-    CHECK(lns.fpr_repair_stats().nodes - limited > 32);
+    REQUIRE(lns.fpr_repair(m, all, rng, nullptr));
+    CHECK(lns.fpr_repair_stats().nodes - full - limited == full);
+}
+
+TEST_CASE("the FPR repair builds and fixes nothing past its deadline", "[lns][fpr][deadline]") {
+    // A consistent incumbent: without the deadline the round dives and writes.
+    Model m = pair_model(400, 1.0, 0.0);
+    std::vector<int32_t> ys;
+    ys.reserve(400);
+    for (int32_t pair = 0; pair < 400; ++pair) {
+        ys.push_back((2 * pair) + 1);
+    }
+    const std::vector<double> incumbent = values(m);
+    LnsProbe lns(0.5);
+    lns.set_repair_store(std::make_shared<const LinearRowStore>(m));
+    RNG rng(7);
+    const auto past = std::chrono::steady_clock::now() - std::chrono::seconds(1);
+
+    CHECK_FALSE(lns.fpr_repair(m, ys, rng, &past));
+    CHECK(lns.fpr_repair_stats().deadline_stops == 1);
+    CHECK(lns.fpr_repair_stats().dives == 0);
+    CHECK(lns.fpr_repair_stats().kept_conflicts == 0);
+    CHECK(values(m) == incumbent);
+}
+
+TEST_CASE("the FPR repair's kept-value loop stops at the deadline", "[lns][fpr][deadline]") {
+    // 40k kept fixings each propagate a row pair: far over 200 us, so the
+    // loop's clock check stops the round whether or not the entry check did.
+    constexpr int kPairs = 40000;
+    Model m = pair_model(kPairs, 1.0, 0.0);
+    std::vector<int32_t> ys;
+    ys.reserve(kPairs);
+    for (int32_t pair = 0; pair < kPairs; ++pair) {
+        ys.push_back((2 * pair) + 1);
+    }
+    LnsProbe lns(0.5);
+    lns.set_repair_store(std::make_shared<const LinearRowStore>(m));
+    RNG rng(7);
+    REQUIRE(lns.fpr_repair(m, {ys.front()}, rng, nullptr));  // the engine, built untimed
+
+    const std::vector<double> incumbent = values(m);
+    const auto soon = std::chrono::steady_clock::now() + std::chrono::microseconds(200);
+    CHECK_FALSE(lns.fpr_repair(m, {ys.front()}, rng, &soon));
+    CHECK(lns.fpr_repair_stats().deadline_stops == 1);
+    CHECK(lns.fpr_repair_stats().dives == 1);
+    CHECK(values(m) == incumbent);
 }
 
 TEST_CASE("the FPR repair writes propagated values and leaves no fixing behind", "[lns][fpr]") {
@@ -356,5 +408,26 @@ TEST_CASE("solve hands the LNS a repair store only with lns_repair_fpr", "[searc
         const LNS::FprRepairStats& s = lns.fpr_repair_stats();
         const int64_t rounds = s.dives + s.kept_conflicts + s.root_refuted;
         CHECK(rounds == (on ? r.lns_repairs : 0));
+    }
+}
+
+TEST_CASE("a solve with a time limit builds its repair store within it", "[search][lns][fpr]") {
+    // The iteration cap ends both solves long before either time limit: the
+    // deadline-bounded build (#434) completes and every repair dives.
+    for (const double time_limit : {1.0, 30.0}) {
+        INFO("time limit " << time_limit);
+        Model m = pair_model(20, 1.0, 1.0, /*minimize_x=*/true);
+        SearchConfig cfg;
+        cfg.batch_iterations = 1;
+        cfg.perturbation_period = 1;
+        cfg.max_iterations = 30;
+        cfg.lns_repair_fpr = true;
+        LNS lns(0.5);
+        const SearchResult r =
+            solve(m, time_limit, 3, nullptr, &lns, /*lns_interval=*/1, nullptr, cfg);
+        REQUIRE(r.lns_repairs > 0);
+        const LNS::FprRepairStats& s = lns.fpr_repair_stats();
+        const int64_t rounds = s.dives + s.kept_conflicts + s.root_refuted + s.deadline_stops;
+        CHECK(rounds == r.lns_repairs);
     }
 }

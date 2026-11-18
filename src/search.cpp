@@ -18,6 +18,7 @@
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -255,6 +256,9 @@ constexpr double kObjStepMin = 1e-6;
 constexpr double kObjStepShrink = 10.0;
 constexpr double kObjStepGrow = 2.0;
 
+// One LNS repair's time cap, seconds (diversify).
+constexpr double kLnsRepairCap = 2.0;
+
 // The ViolationLS outer loop: shared state, and one method per step of
 // docs/architecture.md's "Main Loop".
 class ViolationLSLoop {
@@ -339,7 +343,7 @@ private:
     // On stagnation: restore kick_origin() (#158), then LNS every
     // lns_interval-th time, else perturb. `allow_lns` is false only for #102's
     // unproductive route once feasible: the perturb costs microseconds and helps
-    // (st_e40), while a repair costs up to min(2.0, remaining()) s and its trigger
+    // (st_e40), while a repair costs up to min(kLnsRepairCap, remaining()) s and its trigger
     // is blind after feasibility (ex8_6_1 lost 4.7 s of 10 s to three).
     void diversify(bool allow_lns = true);
     // Hand a new incumbent to the shared pool, if there is one. No-op for a
@@ -1041,10 +1045,6 @@ void ViolationLSLoop::diversify(bool allow_lns) {
             // overriding destroy_repair must not see the two disagree.
             vm_.invalidate_cache();
         }
-        // At most the remaining budget, floored above 0 with a deadline: 0.0
-        // means "no wall-clock limit" in fj_nl_initialize.
-        const double repair_limit =
-            has_deadline_ ? std::max(1e-9, std::min(2.0, remaining())) : 0.0;
         // After the restore, the built-in LNS keeps a repair only if it beats
         // the kick origin. A rejection leaves the search on the origin with
         // nothing perturbed; falling through to a perturb would be a trajectory
@@ -1052,10 +1052,21 @@ void ViolationLSLoop::diversify(bool allow_lns) {
         trace_kick(KickKind::LNS);
         lns_->set_feasibility_tolerance(config_.feasibility_tolerance);
         lns_->set_neighbours(config_.structural_neighbours);
+        // The O(nnz) store, built once, stops at the solve's deadline (#434);
+        // a build cut short leaves this kick, the solve's last, to FJ alone.
         if (config_.lns_repair_fpr && lns_store_ == nullptr) {
-            lns_store_ =
-                std::make_shared<const LinearRowStore>(model_, config_.feasibility_tolerance);
+            if (!has_deadline_) {
+                lns_store_ =
+                    std::make_shared<const LinearRowStore>(model_, config_.feasibility_tolerance);
+            } else if (std::optional<LinearRowStore> built = LinearRowStore::build_until(
+                           model_, config_.feasibility_tolerance, deadline_)) {
+                lns_store_ = std::make_shared<const LinearRowStore>(std::move(*built));
+            }
         }
+        // At most the remaining budget, after any build, floored above 0 with
+        // a deadline: 0.0 means "no wall-clock limit" in fj_nl_initialize.
+        const double repair_limit =
+            has_deadline_ ? std::max(1e-9, std::min(kLnsRepairCap, remaining())) : 0.0;
         lns_->set_repair_store(lns_store_);
         const bool accepted = lns_->destroy_repair(model_, vm_, rng_, repair_limit);
         ++lns_repairs_;

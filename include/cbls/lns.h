@@ -86,12 +86,13 @@ public:
     /// `SearchConfig::lns_repair_fpr` is on, set before each kick and cleared
     /// when the solve ends. Null (default): plain FJ repair, drawing exactly as
     /// before. With a store, each round fixes the kept scalars at their
-    /// incumbent values (clamped to their bounds) under propagation (a conflict skips FPR for the
-    /// round), dives once over the destroyed ones from their randomised values, writes their
-    /// values, then FJ repairs. The propagator and engine are built on the first round with a new
-    /// store; a refuted root skips FPR for good. The store must be built from the model repaired,
-    /// with the feasibility tolerance as its `row_tolerance` (as `solve()` does) so that a kept
-    /// value a row only just accepts holds (#433); one of another width skips FPR.
+    /// incumbent values (clamped to their bounds) under propagation (a conflict, or the repair
+    /// deadline, skips FPR for the round), dives once over the destroyed ones from their randomised
+    /// values, writes their values, then FJ repairs. The propagator and engine are built on the
+    /// first round with a new store; a refuted root skips FPR for good. The store must be built
+    /// from the model repaired, with the feasibility tolerance as its `row_tolerance` (as `solve()`
+    /// does) so that a kept value a row only just accepts holds (#433); one of another width skips
+    /// FPR.
     void set_repair_store(std::shared_ptr<const LinearRowStore> store);
     [[nodiscard]] const std::shared_ptr<const LinearRowStore>& repair_store() const {
         return repair_store_;
@@ -103,12 +104,15 @@ public:
         int64_t kept_conflicts = 0;  ///< rounds whose kept values propagation refuted
         int64_t root_refuted = 0;    ///< rounds skipped: the linear rows refute the root
         int64_t nodes = 0;           ///< dive nodes, summed
+        /// Rounds the repair deadline stopped before the dive, so plain FJ (#434).
+        int64_t deadline_stops = 0;
     };
     [[nodiscard]] const FprRepairStats& fpr_repair_stats() const { return fpr_stats_; }
 
 protected:
     // Holds the kept scalars and writes one dive's values into `destroyed`;
-    // `deadline` (nullable) stops the dive. True when values were written.
+    // `deadline` (nullable) stops the dive, and the setup before it (#434).
+    // True when values were written.
     bool fpr_repair(Model& model, const std::vector<int32_t>& destroyed, RNG& rng,
                     const std::chrono::steady_clock::time_point* deadline);
 
