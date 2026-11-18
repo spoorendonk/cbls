@@ -1132,8 +1132,12 @@ def check_arguments(args: argparse.Namespace) -> int | None:
         return 2
     # A non-default arm may never write a published table (benchmarks/common/README.md),
     # and the scorer stamps only a partial roster as a wiring check.
-    if (args.fpr_prob != 0.0 or args.lns_repair_fpr) and (
-        args.roster == "full" or Path(args.roster).name == FULL_ROSTER_FILENAME
+    # Only when CBLS runs: the flags change nothing else.
+    fpr_arm = args.fpr_prob != 0.0 or args.lns_repair_fpr
+    if (
+        fpr_arm
+        and "cbls" in args.engines
+        and (args.roster == "full" or Path(args.roster).name == FULL_ROSTER_FILENAME)
     ):
         print(
             "--fpr-prob and --lns-repair-fpr are refused on the full roster: a non-default "
@@ -1472,7 +1476,7 @@ def main() -> int:
         f"The table is a scoring OUTPUT, not an artifact to protect: it is "
         f"regenerable from {results_dir} at any time, and the numbers that are "
         f"derived once and pinned are the reference values in "
-        f"{args.inst_dir}/roster.csv, taken from MIPLIB's own solution file. "
+        f"{args.inst_dir}/{FULL_ROSTER_FILENAME}, taken from MIPLIB's own solution file. "
         f"Keep {results_dir}/{RUN_RECORD_FILENAME} and the "
         f"{out_name.removesuffix('.csv')}_report.md beside whatever you quote -- "
         f"the report carries the machine record, and a result without one is an "

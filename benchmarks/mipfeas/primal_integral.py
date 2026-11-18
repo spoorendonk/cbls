@@ -162,7 +162,7 @@ def config_string(result: dict[str, object]) -> str:
     """The `config` cell: every CONFIG_KEYS entry the result carries.
 
     One key is back-filled, the opt-in engine flag (`objective_tie_break`, #218)
-    dropped when off, and #267's tunable knobs (TUNABLE_DEFAULTS) dropped at their
+    dropped when off, and the tunable knobs of #267 and #423 (TUNABLE_DEFAULTS) dropped at their
     defaults. `share_objective_bound` (#179) names no behaviour at one thread -- a
     single `solve()` has no pool -- so a single-threaded row without it IS the
     default configuration and is read as such. A PORTFOLIO row without it is left
@@ -182,7 +182,7 @@ def config_string(result: dict[str, object]) -> str:
     # averaged in.
     if cells.get("objective_tie_break") is False:
         del cells["objective_tie_break"]
-    # #267's tunable knobs, the same rule at their pre-#267 values. The type is
+    # The tunable knobs (#267, #423), the same rule at their pre-flag values. The type is
     # compared too, because `1 == True` in Python: `lns=1` is not the default.
     for key, default in TUNABLE_DEFAULTS.items():
         if key in cells and type(cells[key]) is type(default) and cells[key] == default:

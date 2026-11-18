@@ -339,17 +339,17 @@ def test_each_tuning_flag_reaches_the_search(tmp_path: Path, threads: int) -> No
 
     # Fix-propagate-repair (#423): every batch a dive at probability 1, none by
     # default; the LNS repair dives only when asked, and the row reports its work.
-    plain = run("fpr-off", [*kicks, "--lns-interval", "1"])
+    # The off control runs on `binaries` too: on `tiny` the repair never dives,
+    # so a repair that ignored the flag would still read 0 there.
+    def run_binaries(name: str, flags: list[str]) -> dict[str, object]:
+        return _run_tiny(tmp_path, name, threads, flags, instance="binaries")
+
+    plain = run_binaries("fpr-off", [*kicks, "--lns-interval", "1"])
     dives = run("fpr-batch", ["--fpr-prob", "1"])
-    repair = _run_tiny(
-        tmp_path,
-        "fpr-repair",
-        threads,
-        [*kicks, "--lns-interval", "1", "--lns-repair-fpr"],
-        instance="binaries",
-    )
+    repair = run_binaries("fpr-repair", [*kicks, "--lns-interval", "1", "--lns-repair-fpr"])
     assert plain["fpr_prob"] == 0.0
     assert plain["lns_repair_fpr"] is False
+    assert _count(plain, "lns_repairs") > 0, "the control must repair to show it never dives"
     assert _count(plain, "fpr_batches") == 0 == _count(plain, "lns_fpr_dives")
     assert plain["fpr_setup_seconds"] == 0.0
     assert dives["fpr_prob"] == 1.0
@@ -524,6 +524,11 @@ def _main_with(argv: list[str]) -> int:
             "refused on the full roster",
         ),
         (["--roster", "full", "--budget", "0"], "--budget must be > 0", "full roster"),
+        (
+            ["--roster", "full", "--engines", "cpsat", "--fpr-prob", "0.25", "--budget", "0"],
+            "--budget must be > 0",
+            "full roster",
+        ),
     ],
     ids=[
         "asymmetric-cpu-refused",
@@ -538,6 +543,7 @@ def _main_with(argv: list[str]) -> int:
         "fpr-arm-on-full-roster-by-path-refused",
         "fpr-arm-on-subset-allowed",
         "default-arm-on-full-roster-allowed",
+        "fpr-arm-without-cbls-allowed",
     ],
 )
 def test_the_driver_refuses_a_run_whose_flags_cannot_be_read(

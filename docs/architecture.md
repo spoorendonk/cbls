@@ -1686,7 +1686,8 @@ remain never reach the search trajectory: `solve()` timestamps entry and exit
 for `time_seconds`; a callback's ~1s progress cadence reads once per batch;
 `SearchResult::time_to_first_feasible` costs one read, latched at the first
 feasible point. The `SearchCounters` timings (`inner_solver_seconds`;
-`bound_behind_global_seconds`, portfolio control arm only) read the clock only
+`bound_behind_global_seconds`, portfolio control arm only; `fpr_setup_seconds`,
+two reads per FPR batch built) read the clock only
 on a run with a wall clock, whether or not anyone reads them. A
 `SearchConfig::tracer` is opt-in:
 attached it costs one read per new best and two per inner-solver call.

@@ -62,7 +62,8 @@ struct SearchCounters {
     int64_t fpr_batches = 0;
     /// Seconds building the FPR batch before the search starts (row store,
     /// propagator, root propagation; no deadline bounds it, #423). Filled only
-    /// under a wall-clock budget, else 0.0; summed over workers.
+    /// under a wall-clock budget, else 0.0; summed over workers. The FPR LNS
+    /// repair's own store and propagator, built at its first kick, are not timed.
     double fpr_setup_seconds = 0.0;
 
     /// Totals over `by_generator`, so callers need not sum the vector.
