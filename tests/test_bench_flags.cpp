@@ -213,6 +213,7 @@ TEST_CASE("search flags default to the engine's own configuration", "[bench][fla
     REQUIRE(f.unproductive_iters == engine.unproductive_iterations);
     REQUIRE(f.perturbation_period == engine.perturbation_period);
     REQUIRE(f.max_iterations == engine.max_iterations);
+    REQUIRE(f.fpr_prob == engine.fpr_batch_probability);
     REQUIRE(f.float_hook);
     REQUIRE(f.lns);
     REQUIRE_FALSE(f.no_time_limit);
@@ -227,7 +228,7 @@ TEST_CASE("every search flag sets the field it claims", "[bench][flags]") {
     const ParseOutcome parsed =
         parse({"--no-float-hook", "--lns-interval", "7", "--compound-moves", "--novelty-prob",
                "0.25", "--unproductive-iters", "0", "--perturbation-period", "9",
-               "--max-iterations", "1234", "--no-time-limit"});
+               "--max-iterations", "1234", "--no-time-limit", "--fpr-prob", "0.75"});
     REQUIRE(parsed.unmatched.empty());
     std::string error;
     REQUIRE(
@@ -242,6 +243,7 @@ TEST_CASE("every search flag sets the field it claims", "[bench][flags]") {
     REQUIRE(f.perturbation_period == 9);
     REQUIRE(f.max_iterations == 1234);
     REQUIRE(f.no_time_limit);
+    REQUIRE(f.fpr_prob == 0.75);
 
     // ...and that those land on the objects solve() is actually handed.
     SearchConfig cfg;
@@ -251,6 +253,7 @@ TEST_CASE("every search flag sets the field it claims", "[bench][flags]") {
     REQUIRE(cfg.unproductive_iterations == 0);
     REQUIRE(cfg.perturbation_period == 9);
     REQUIRE(cfg.max_iterations == 1234);
+    REQUIRE(cfg.fpr_batch_probability == 0.75);
 
     cbls::FloatIntensifyHook hook;
     LNS lns(0.3);
@@ -279,7 +282,7 @@ TEST_CASE("a value flag with no value falls through to the unknown-option path",
     // a published table would then carry. It reaches the runner's
     // unknown-option branch, which reports and exits 2.
     for (const char* flag : {"--lns-interval", "--novelty-prob", "--unproductive-iters",
-                             "--perturbation-period", "--max-iterations"}) {
+                             "--perturbation-period", "--max-iterations", "--fpr-prob"}) {
         const ParseOutcome parsed = parse({flag});
         REQUIRE(parsed.unmatched == std::vector<std::string>{flag});
         REQUIRE(cbls::bench::first_non_default_search_flag(parsed.flags) == nullptr);
@@ -376,6 +379,13 @@ TEST_CASE("an opt-in flag is recorded only off its default (#226)", "[bench][fla
     REQUIRE_FALSE(cbls::bench::validate_search_flags(parse({"--no-objective-tie-break"}).flags,
                                                      kStructural, false, error));
     REQUIRE(error.find("--no-objective-tie-break") != std::string::npos);
+    // FPR batches are off by default (#430): recorded only when on.
+    REQUIRE(cbls::bench::search_config_string(parse({"--fpr-prob", "0.25"}).flags, kScalar) ==
+            base + ";fpr_prob=0.25");
+    REQUIRE(cbls::bench::search_config_string(parse({"--fpr-prob", "0"}).flags, kScalar) == base);
+    REQUIRE_FALSE(cbls::bench::validate_search_flags(parse({"--fpr-prob", "0.25"}).flags,
+                                                     kStructural, false, error));
+    REQUIRE(error.find("--fpr-prob") != std::string::npos);
 }
 
 TEST_CASE("a non-default arm is named for the published-table guard", "[bench][flags]") {
@@ -397,6 +407,7 @@ TEST_CASE("a non-default arm is named for the published-table guard", "[bench][f
         {"--structural-sample-size", "4"},
         {"--neighbours", "5"},
         {"--no-objective-tie-break"},
+        {"--fpr-prob", "0.5"},
     };
     REQUIRE(arms.size() == cbls::bench::kSearchFlagCount);
     for (const auto& arm : arms) {
@@ -446,6 +457,9 @@ TEST_CASE("validation rejects values the engine cannot use", "[bench][flags]") {
     REQUIRE(rejected({"--lns-interval", "3000000000"}));  // wider than the engine's int field
     REQUIRE(rejected({"--novelty-prob", "1.5"}));
     REQUIRE(rejected({"--novelty-prob", "-0.1"}));
+    REQUIRE(rejected({"--fpr-prob", "1.5"}));
+    REQUIRE(error.find("--fpr-prob") != std::string::npos);
+    REQUIRE(rejected({"--fpr-prob", "-0.1"}));
     REQUIRE(rejected({"--perturbation-period", "0"}));
     REQUIRE(rejected({"--max-iterations", "-1"}));
     // --no-time-limit without an iteration budget is a run with no budget at
@@ -679,6 +693,22 @@ TEST_CASE("the --novelty-prob flag changes how many batches are compound",
     REQUIRE(never_arm.counters.novelty_batches == 0);
     REQUIRE(always_arm.counters.novelty_batches > 0);
     REQUIRE(always_arm.counters.fj_batches == 0);
+}
+
+TEST_CASE("the --fpr-prob flag runs fix-propagate-repair batches", "[bench][flags][probe]") {
+    // Off (the default) runs none; at 1 every batch is one (#430).
+    const std::vector<std::string> budget = {
+        "--no-lns", "--max-iterations", "300", "--perturbation-period", "5", "--fpr-prob"};
+    std::vector<std::string> always = budget;
+    always.emplace_back("1.0");
+    std::vector<std::string> never = budget;
+    never.emplace_back("0.0");
+
+    const SearchResult always_arm = probe(always, build_stagnant_model, /*batch_iterations=*/10);
+    const SearchResult never_arm = probe(never, build_stagnant_model, /*batch_iterations=*/10);
+    REQUIRE(never_arm.counters.fpr_batches == 0);
+    REQUIRE(always_arm.counters.fpr_batches > 0);
+    REQUIRE(always_arm.counters.fpr_batches == always_arm.counters.batches);
 }
 
 TEST_CASE("the --no-float-hook flag changes where a continuous run lands",

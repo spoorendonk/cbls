@@ -139,6 +139,28 @@ def test_batch_kind_enum_is_bound() -> None:
     assert len(members) == 4, "a duplicated enum value would collapse this set"
 
 
+def test_fpr_batch_config_round_trips_and_runs_fpr_batches() -> None:
+    """The FPR config fields (#430) are bound under their C++ names and read.
+
+    At probability 1 every batch is a fix-propagate-repair batch; outside
+    [0, 1] solve() refuses the config rather than drawing against it.
+    """
+    import pytest
+
+    config = _config()
+    assert config.fpr_batch_probability == 0.0, "off by default"
+    assert config.fpr_worker == 0
+    config.fpr_batch_probability = 1.0
+    config.fpr_worker = 3
+    assert (config.fpr_batch_probability, config.fpr_worker) == (1.0, 3)
+    counters = cbls.solve(_quadratic(), 0.0, 42, config=config).counters
+    assert counters.fpr_batches == counters.batches > 0
+
+    config.fpr_batch_probability = 1.5
+    with pytest.raises(ValueError, match="fpr_batch_probability"):
+        cbls.solve(_quadratic(), 0.0, 42, config=config)
+
+
 def test_counters_are_read_only() -> None:
     """They report a finished run; a writable field would be a way to falsify it."""
     import pytest

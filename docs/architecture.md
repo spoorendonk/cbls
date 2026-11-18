@@ -1458,7 +1458,9 @@ point**; the kick and LNS destroy need the window above.
 
 While time and `max_iterations` remain, each pass:
 
-1. **Pick the batch kind.** With probability `structural_batch_probability`,
+1. **Pick the batch kind.** With probability `fpr_batch_probability` (default
+   0, no draw: off keeps the RNG stream), FIX-PROPAGATE-REPAIR; else with
+   probability `structural_batch_probability`,
    STRUCTURAL; else with probability `novelty_jump_probability` (only when
    `use_compound_moves`), NOVELTY JUMP; else FEASIBILITY JUMP. All drawn afresh
    every batch, where ViolationLS §5 keeps the algorithm until a new best or a
@@ -1466,7 +1468,8 @@ While time and `max_iterations` remain, each pass:
    Structural batches mutate state outside FJ's bookkeeping, so they set a
    `resync` flag; a Novelty batch rebuilds FJ's state itself.
 2. **Run the batch.** `fj.batch(batch_iterations)`, `fj.novelty_batch(batch_iterations)`,
-   or `StructuralBatch::run(...)`. Just before it, **portfolio only**, sync the
+   `StructuralBatch::run(...)`, or one fix-propagate-repair dive (see
+   [Fix-propagate-repair](#fix-propagate-repair)). Just before it, **portfolio only**, sync the
    shared bound: if the pool's best feasible objective earns a tighter
    bound than this worker holds, tighten to it (see
    [Parallel Search](#parallel-search), item 3). A no-op without a pool. Every
@@ -1542,8 +1545,8 @@ where the run *arrived* in the feasible region, latched at the first
 `SearchResult::counters` (a `SearchCounters`, `include/cbls/counters.h`) answers
 the question the fields above cannot: not how much work a run did but **on what**.
 Batches bucketed by `BatchKind` — and
-`fj_batches + novelty_batches + structural_batches == batches` exactly, since
-`pick_batch_kind` returns one of three and every batch is counted once — the
+`fj_batches + novelty_batches + structural_batches + fpr_batches == batches`
+exactly, since `pick_batch_kind` returns one of four and every batch is counted once — the
 structural sweep's candidates tried and committed, one row per generator (keyed
 by `MoveGenerator::name()` plus a `#<index>` suffix wherever one batch built two
 of a kind, since the built-ins name themselves by type), the inner solver's call
@@ -2369,6 +2372,8 @@ solve(model, time_limit, seed, hook, lns, lns_interval, callback, config, coord)
 | `structural_batch_probability` | -1 (auto) | `SearchConfig` | P(structural batch); auto 0.33 when a generator would be built, else 0; auto is 1 when FJ has no movable, row-read variable (#201) |
 | `use_compound_moves` | true | `SearchConfig` | enable Novelty Jump batches (the UC-CHPED runner turns it off) |
 | `novelty_jump_probability` | 0.5 | `SearchConfig` | P(Novelty Jump batch) when enabled |
+| `fpr_batch_probability` | 0 | `SearchConfig` | P(fix-propagate-repair batch), drawn first; 0 draws nothing and builds nothing (#429); in [0, 1] |
+| `fpr_worker` | 0 | `SearchConfig` | keys the FPR portfolio rotation; `ParallelSearch` sets each worker's index |
 | `lns_interval` | 3 | `SearchConfig` / arg | LNS fires every Nth diversification kick |
 | `move_generators` | empty | `SearchConfig` | extra structural move generators, cloned per worker (#165) |
 | `default_structural_generators` | true | `SearchConfig` | also register the built-in List/Set generators |
@@ -2557,7 +2562,7 @@ tightenings.
 
 ### Fix-propagate-repair
 
-**Files:** `include/cbls/fpr.h`, `src/fpr.cpp`
+**Files:** `include/cbls/fpr.h`, `src/fpr.cpp`, `src/fpr_batch.{h,cpp}`
 
 `FprSearch` is the LP-free dive of fix-propagate-repair (Salvagnin, Roberti,
 Fischetti, MPC 2024, Fig. 1; mip-heuristics' `fpr_attempt_step`, #425). One
@@ -2586,6 +2591,26 @@ wants leaf repair; repair itself is the caller's (#426).
   refuted state.
 - `kFprPortfolio` is mip-heuristics' six initial configs less Dive and
   RepairSearch; `fpr_portfolio_config(worker, attempt)` rotates through it.
+
+**As a ViolationLS batch** (`src/fpr_batch.cpp`, #429). With
+`fpr_batch_probability > 0`, each `solve()` builds one `FprBatch`: its own
+`LinearRowStore` over the closed model (the objective row excluded), a
+`DomainPropagator`, and the engine, with the root propagated once. A refuted
+root builds nothing, and every batch is FJ. Each FPR batch runs the next
+portfolio attempt (`SearchConfig::fpr_worker` plus the attempt count;
+`ParallelSearch` sets the worker's index) from the current point:
+
+- A leaf, or any fill of a repairing mode (Diveprop, Dfsrep), replaces the
+  scalars, full-evaluates and resyncs FJ. A repairing mode then runs an FJ
+  batch from that point, over the full model, nonlinear rows included.
+- A Dfs dive that ends without a leaf writes nothing: FJ's point stays, and an
+  FJ batch runs.
+- The dive checks the deadline every 16 nodes. The batch is audited at
+  `AfterFeasibilityJump`, and its FJ work feeds the unproductive kick (#102).
+- Building the batch is O(nnz) and not bounded by the deadline (#423 measures
+  it).
+- Runner flag: `--fpr-prob P` (scalar family, recorded as `fpr_prob` only off
+  its default). Python: `SearchConfig.fpr_batch_probability` and `fpr_worker`.
 
 ### Presolve
 

@@ -40,8 +40,9 @@ namespace cbls::bench {
 //   * common     -- the diversification loop every model runs: LNS, the kick
 //                   cadence, the budgets.
 //   * scalar     -- FJ and its satellites: the float hook (continuous scalars),
-//                   compound/Novelty Jump batches, and FJ's unproductive-batch
-//                   exit (`gfj.unproductive_iterations`, read nowhere else).
+//                   compound/Novelty Jump batches, fix-propagate-repair batches
+//                   (a dive over scalars), and FJ's unproductive-batch exit
+//                   (`gfj.unproductive_iterations`, read nowhere else).
 //   * structural -- the structural batch's probability, selection policy and
 //                   sample size.
 //   * neighbours -- `--neighbours K`. Its own family because the flag carries
@@ -101,6 +102,8 @@ struct SearchFlags {
     // only when off, so a pre-#226 default row (tie-break off) has the same
     // cell as a later one: tell them apart by commit.
     bool objective_tie_break = SearchConfig{}.fj_objective_tie_break;
+    // Fix-propagate-repair batches (#430), off by default; opt-in in the cell.
+    double fpr_prob = SearchConfig{}.fpr_batch_probability;
     // First flag typed per family (indexed by family bit), or nullptr. Set
     // whatever the value, so a flag restated at its default is still refused
     // on a runner that cannot read it.
@@ -123,7 +126,7 @@ struct SearchFlagSpec {
 /// are generated from it, so no flag is documented but unrecorded or reverse.
 /// New flags go at the END: a cell is this table filtered by family, so
 /// appending keeps every existing runner's cell byte-identical.
-inline constexpr std::array<SearchFlagSpec, 14> kSearchFlagSpecs = {{
+inline constexpr std::array<SearchFlagSpec, 15> kSearchFlagSpecs = {{
     {"float_hook", "[--no-float-hook]", kScalarSearchFlags},
     {"lns", "[--no-lns]", kCommonSearchFlags},
     {"lns_interval", "[--lns-interval N]", kCommonSearchFlags},
@@ -140,6 +143,7 @@ inline constexpr std::array<SearchFlagSpec, 14> kSearchFlagSpecs = {{
     {"structural_sample_size", "[--structural-sample-size N]", kStructuralSearchFlags},
     {"neighbours", "[--neighbours K]", kNeighbourSearchFlags},
     {"objective_tie_break", "[--no-objective-tie-break]", kScalarSearchFlags, true},
+    {"fpr_prob", "[--fpr-prob P]", kScalarSearchFlags, true},
 }};
 
 inline constexpr std::size_t kSearchFlagCount = kSearchFlagSpecs.size();
@@ -242,6 +246,10 @@ inline bool match_search_flag(ArgCursor& c, const std::string& s, SearchFlags& f
         f.objective_tie_break = false;
         flag = "--no-objective-tie-break";
         family = kScalarSearchFlags;
+    } else if (c.value_flag("--fpr-prob", v)) {
+        f.fpr_prob = parse_double("--fpr-prob", v) + 0.0;  // -0 onto 0, as --novelty-prob
+        flag = "--fpr-prob";
+        family = kScalarSearchFlags;
     } else {
         return false;
     }
@@ -342,6 +350,10 @@ inline bool validate_search_flags(const SearchFlags& f, unsigned applicable, boo
         error = "--novelty-prob must be in [0, 1]";
         return false;
     }
+    if (std::isnan(f.fpr_prob) || f.fpr_prob < 0.0 || f.fpr_prob > 1.0) {
+        error = "--fpr-prob must be in [0, 1]";
+        return false;
+    }
     // The engine arms the unproductive-batch exit only on `> 0`, so negative
     // and 0 are one run; 0 is that fixed-cadence arm's (#102 control) one
     // spelling, keeping one run, one cell.
@@ -432,6 +444,9 @@ inline const char* first_non_default_search_flag(const SearchFlags& f,
     if (f.objective_tie_break != d.objective_tie_break) {
         return "--no-objective-tie-break";
     }
+    if (f.fpr_prob != d.fpr_prob) {
+        return "--fpr-prob";
+    }
     return nullptr;
 }
 
@@ -466,6 +481,7 @@ inline std::array<std::string, kSearchFlagCount> search_config_values(const Sear
         std::to_string(f.structural_sample_size),
         f.neighbours == 0 ? std::string(off) : std::to_string(f.neighbours),
         f.objective_tie_break ? on : off,
+        search_flag_number(f.fpr_prob),
     }};
 }
 
@@ -525,6 +541,7 @@ inline void apply_search_flags(const SearchFlags& f, SearchConfig& cfg) {
     cfg.structural_selection = f.structural_selection;
     cfg.structural_sample_size = static_cast<int>(f.structural_sample_size);
     cfg.fj_objective_tie_break = f.objective_tie_break;
+    cfg.fpr_batch_probability = f.fpr_prob;
 }
 
 /// `--neighbours` against the instance: `nearest_neighbours` clamps K to

@@ -1405,6 +1405,10 @@ NB_MODULE(_cbls_core, m) {
         // draw, so a bad value cannot reach an unchecked index.
         .def_rw("use_compound_moves", &SearchConfig::use_compound_moves)
         .def_rw("novelty_jump_probability", &SearchConfig::novelty_jump_probability)
+        // Fix-propagate-repair batches (#430): scalars, range-checked by
+        // solve() (validate_search_config), never an index.
+        .def_rw("fpr_batch_probability", &SearchConfig::fpr_batch_probability)
+        .def_rw("fpr_worker", &SearchConfig::fpr_worker)
         .def_rw("structural_selection", &SearchConfig::structural_selection)
         .def_rw("structural_sample_size", &SearchConfig::structural_sample_size)
         // Copied in and out, never the shared_ptr: Python must not alias the
