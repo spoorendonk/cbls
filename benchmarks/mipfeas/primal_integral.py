@@ -2063,15 +2063,14 @@ def non_default_arm_problem(rows: list[Scored], instances: int) -> str | None:
     """
     if instances != FULL_ROSTER_SIZE:
         return None
-    keys = sorted(
-        {key for row in rows for key in TUNABLE_DEFAULTS if _row_config_value(row, key) is not None}
-    )
+    keys = [key for key in TUNABLE_DEFAULTS if _config_value(rows, "cbls", key) is not None]
     if not keys:
         return None
     return (
-        f"the rows carry non-default engine knobs ({', '.join(keys)}) on the full "
+        f"the cbls rows carry non-default engine knobs ({', '.join(keys)}) on the full "
         f"{FULL_ROSTER_SIZE}-instance roster: a non-default arm may not produce the "
-        "published comparison table. Score the arm on a subset roster"
+        "published comparison table. Score the arm on a subset roster, or report a "
+        "tuned arm with --held-out"
     )
 
 

@@ -1131,7 +1131,7 @@ def check_arguments(args: argparse.Namespace) -> int | None:
         print(f"--fpr-prob must be in [0, 1] (got {args.fpr_prob}).", file=sys.stderr)
         return 2
     # A non-default arm may never write a published table (benchmarks/common/README.md),
-    # and the scorer stamps only a partial roster as a wiring check.
+    # so refuse before the budget is spent; the scorer refuses it too (#437).
     # Only when CBLS runs: the flags change nothing else.
     fpr_arm = args.fpr_prob != 0.0 or args.lns_repair_fpr
     if (

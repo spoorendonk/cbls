@@ -929,6 +929,7 @@ def test_scoring_with_held_out_drops_those_instances_from_the_full_roster(
 def test_a_full_roster_table_from_a_non_default_arm_is_refused(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
     size: int,
     knob: dict[str, object],
     refused: bool,
@@ -962,6 +963,7 @@ def test_a_full_roster_table_from_a_non_default_arm_is_refused(
             main()
         assert stop.value.code == 2
         assert not out.exists()
+        assert all(key in capsys.readouterr().err for key in knob)
     else:
         main()
         assert out.exists()
