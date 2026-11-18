@@ -156,6 +156,11 @@ def test_fpr_batch_config_round_trips_and_runs_fpr_batches() -> None:
     counters = cbls.solve(_quadratic(), 0.0, 42, config=config).counters
     assert counters.fpr_batches == counters.batches > 0
 
+    # Unchecked, so a negative worker must still select a portfolio entry.
+    config.fpr_worker = -7
+    counters = cbls.solve(_quadratic(), 0.0, 42, config=config).counters
+    assert counters.fpr_batches == counters.batches > 0
+
     config.fpr_batch_probability = 1.5
     with pytest.raises(ValueError, match="fpr_batch_probability"):
         cbls.solve(_quadratic(), 0.0, 42, config=config)

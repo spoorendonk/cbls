@@ -2306,7 +2306,8 @@ solve(model, time_limit, seed, hook, lns, lns_interval, callback, config, coord)
 └── outer loop (while time && max_iterations remain):
     │
     ├── pick batch kind:
-    │     P(structural_batch_probability)        → STRUCTURAL
+    │     [if fpr_] P(fpr_batch_probability)     → FIX-PROPAGATE-REPAIR
+    │     elif P(structural_batch_probability)   → STRUCTURAL
     │     elif use_compound_moves & P(nj_prob)   → NOVELTY JUMP
     │     else                                   → FEASIBILITY JUMP
     │
@@ -2314,6 +2315,7 @@ solve(model, time_limit, seed, hook, lns, lns_interval, callback, config, coord)
     │     FJ:         fj.batch(batch_iterations)      # GLS: best-of-N jump + weight bump
     │     NOVELTY:    fj.novelty_batch(batch_iters)   # GLS over ApplyNoveltyJump
     │     STRUCTURAL: structural_.run()               # move generators; resync
+    │     FPR:        fpr_->run(); [repair] fj.batch  # one dive written; FJ repairs
     │
     ├── if max_real_violation() <= config.feasibility_tolerance:
     │     ├── record_best()                           # bank it BEFORE polishing
@@ -2596,7 +2598,8 @@ wants leaf repair; repair itself is the caller's (#426).
 `fpr_batch_probability > 0`, each `solve()` builds one `FprBatch`: its own
 `LinearRowStore` over the closed model (the objective row excluded), a
 `DomainPropagator`, and the engine, with the root propagated once. A refuted
-root builds nothing, and every batch is FJ. Each FPR batch runs the next
+root builds nothing: the FPR draw is skipped and the other kinds are drawn as
+at probability 0. Each FPR batch runs the next
 portfolio attempt (`SearchConfig::fpr_worker` plus the attempt count;
 `ParallelSearch` sets the worker's index) from the current point:
 

@@ -489,7 +489,8 @@ private:
     // workers share no mutable generator state (#157, #165).
     StructuralBatch structural_;
     // Built only when fpr_batch_probability > 0 and the root is consistent
-    // (#426, #429), else null: a refuted root's batches are plain FJ ones.
+    // (#426, #429), else null: a refuted root skips the FPR draw, and the
+    // other kinds are drawn as at probability 0.
     std::unique_ptr<FprBatch> fpr_;
     bool fpr_ran_fj_ = false;
 

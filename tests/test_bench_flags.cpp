@@ -460,6 +460,12 @@ TEST_CASE("validation rejects values the engine cannot use", "[bench][flags]") {
     REQUIRE(rejected({"--fpr-prob", "1.5"}));
     REQUIRE(error.find("--fpr-prob") != std::string::npos);
     REQUIRE(rejected({"--fpr-prob", "-0.1"}));
+    // At 1 every batch is FPR: the Novelty draw is never reached.
+    REQUIRE(rejected({"--fpr-prob", "1", "--novelty-prob", "0.25"}));
+    REQUIRE(error.find("--novelty-prob") != std::string::npos);
+    REQUIRE_FALSE(rejected({"--fpr-prob", "1"}));
+    REQUIRE_FALSE(rejected({"--fpr-prob", "1", "--no-compound-moves"}));
+    REQUIRE_FALSE(rejected({"--fpr-prob", "0.5", "--novelty-prob", "0.25"}));
     REQUIRE(rejected({"--perturbation-period", "0"}));
     REQUIRE(rejected({"--max-iterations", "-1"}));
     // --no-time-limit without an iteration budget is a run with no budget at

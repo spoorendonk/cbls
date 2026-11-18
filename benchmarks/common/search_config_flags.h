@@ -382,6 +382,15 @@ inline bool validate_search_flags(const SearchFlags& f, unsigned applicable, boo
         error = "--novelty-prob has no effect without --compound-moves";
         return false;
     }
+    // The picker draws FPR first (#430): at 1 every batch is FPR, whose repair
+    // is an FJ batch, so the Novelty draw is never reached. The compound-moves
+    // switch is not refused: runners pin different defaults for it (uc-chped
+    // off), and its cell value is always written. No runner takes both the
+    // scalar and structural families, so structural flags cannot meet it.
+    if (f.fpr_prob == 1.0 && f.novelty_prob != defaults.novelty_prob) {
+        error = "--novelty-prob has no effect at --fpr-prob 1 (every batch is FPR)";
+        return false;
+    }
     if (f.no_time_limit && time_limit_set) {
         error = "--no-time-limit and --time-limit contradict each other";
         return false;

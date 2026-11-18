@@ -261,16 +261,17 @@ recorded in each row's `search_config` cell (#136):
 --max-iterations N         GLS iteration budget (0 = unlimited)
 --no-time-limit            disable the wall clock; requires --max-iterations
 --no-objective-tie-break   drop the FJ objective tie-break (#218; on since #226)
+--fpr-prob P               P(a batch is fix-propagate-repair), in [0, 1] (#430)
 ```
 
-`--no-objective-tie-break` is recorded only off the engine default, so a
+`--no-objective-tie-break` and `--fpr-prob` are recorded only off the engine default, so a
 default row's cell is the one the committed tables hold (they predate #226 and
 ran the tie-break off; only the commit tells them apart). Compound moves are on by default since
 2026-10-07; the published tables record `compound_moves=off` and so are an
-off-default arm until regenerated. Two pairs are refused, because the engine
+off-default arm until regenerated. Three pairs are refused, because the engine
 never reads the second flag and the row would record an arm the run did not
-have: `--lns-interval` with `--no-lns`, and `--novelty-prob` with
-`--no-compound-moves`.
+have: `--lns-interval` with `--no-lns`, `--novelty-prob` with
+`--no-compound-moves`, and `--novelty-prob` with `--fpr-prob 1`.
 
 Any non-default value refuses to write the published `comparison.csv` (and
 `anytime_trace.csv`). `cbls_uc_chped` carries the same flags against its own
