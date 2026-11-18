@@ -41,7 +41,8 @@ rejected: the GLS ρ, which `solve()` resamples),
 and **a non-default arm may never write a published comparison table**, which is
 why `first_non_default_search_flag` feeds `minlplib`'s and `uc-chped`'s
 `resolve_out_csv` and why `mipfeas`'s scorer refuses a full-roster table whose
-config cell carries one of those seven knobs at a non-default value (#437). Every
+config cell carries one of those seven knobs at a non-default value (#437), or
+any of its own engine flags off its default (#438). Every
 flag has a behavioural probe in `tests/test_bench_flags.cpp`; add one with the
 next flag, and check it fails when the apply step is neutered.
 

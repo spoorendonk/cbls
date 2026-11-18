@@ -921,10 +921,32 @@ def test_scoring_with_held_out_drops_those_instances_from_the_full_roster(
         (FULL_ROSTER_SIZE, {"lns_interval": 1}, True),
         (FULL_ROSTER_SIZE, {"fpr_prob": 0.5}, True),
         (FULL_ROSTER_SIZE, {"lns": False}, True),
+        (FULL_ROSTER_SIZE, {"compound_moves": False}, True),
+        (FULL_ROSTER_SIZE, {"propagate_bounds": False}, True),
+        (FULL_ROSTER_SIZE, {"max_propagation_passes": 3}, True),
+        (FULL_ROSTER_SIZE, {"inf_clamp": 1.0e9}, True),
+        (FULL_ROSTER_SIZE, {"objective_tie_break": False}, True),
+        (FULL_ROSTER_SIZE, {"objective_tie_break": None}, True),
         (FULL_ROSTER_SIZE, {"lns_interval": 3, "fpr_prob": 0.0}, False),
+        (FULL_ROSTER_SIZE, {"inf_clamp": 10000000}, False),
         (FULL_ROSTER_SIZE - 1, {"lns_interval": 1}, False),
+        (FULL_ROSTER_SIZE - 1, {"objective_tie_break": False}, False),
     ],
-    ids=["lns-interval", "fpr-prob", "lns-off", "defaults", "partial-roster"],
+    ids=[
+        "lns-interval",
+        "fpr-prob",
+        "lns-off",
+        "compound-moves-off",
+        "propagate-bounds-off",
+        "propagation-passes",
+        "inf-clamp",
+        "tie-break-off",
+        "tie-break-unrecorded",
+        "defaults",
+        "inf-clamp-as-int",
+        "partial-roster",
+        "partial-roster-tie-break-off",
+    ],
 )
 def test_a_full_roster_table_from_a_non_default_arm_is_refused(
     tmp_path: Path,
@@ -936,12 +958,25 @@ def test_a_full_roster_table_from_a_non_default_arm_is_refused(
 ) -> None:
     # The driver's guard reads only the roster's file name (#437): a copied roster
     # or a direct cbls_mipfeas run reaches the scorer with the knob in its rows.
+    # A row carries cbls_mipfeas's engine flags at their defaults (#438); a knob
+    # of None drops that key from the row.
     roster = tmp_path / "all.csv"
     roster.write_text(
         "instance,reference_value,reference_kind\n"
         + "".join(f"{name},1.0,opt\n" for name in _FULL[:size])
     )
-    _write_result(tmp_path, "cbls", "i0", {"status": "no_solution", "objective": None, **knob})
+    record: dict[str, object] = {"status": "no_solution", "objective": None}
+    record.update(
+        compound_moves=True,
+        objective_tie_break=True,
+        inf_clamp=1.0e7,
+        propagate_bounds=True,
+        max_propagation_passes=10,
+    )
+    record.update(knob)
+    for key in [key for key, value in knob.items() if value is None]:
+        del record[key]
+    _write_result(tmp_path, "cbls", "i0", record)
     out = tmp_path / "comparison.csv"
     monkeypatch.setattr(
         sys,

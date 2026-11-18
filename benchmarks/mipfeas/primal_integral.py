@@ -157,6 +157,18 @@ TUNABLE_DEFAULTS: dict[str, object] = {
     "lns_repair_fpr": False,
 }
 
+#: The other engine flags in CONFIG_KEYS at `cbls_mipfeas`'s defaults (#438). Unlike
+#: TUNABLE_DEFAULTS these stay in the cell at their defaults, so a full-roster table
+#: must carry each at exactly this value; `objective_tie_break` off is dropped from
+#: the cell by `config_string`, so a missing key reads as off.
+ENGINE_FLAG_DEFAULTS: dict[str, bool | float] = {
+    "compound_moves": True,
+    "objective_tie_break": True,
+    "inf_clamp": 1.0e7,
+    "propagate_bounds": True,
+    "max_propagation_passes": 10,
+}
+
 
 def config_string(result: dict[str, object]) -> str:
     """The `config` cell: every CONFIG_KEYS entry the result carries.
@@ -2059,11 +2071,18 @@ def non_default_arm_problem(rows: list[Scored], instances: int) -> str | None:
     the driver refuses one only by the roster's file name, and a direct
     `cbls_mipfeas` run is not checked at all (#437). `config_string` drops every
     TUNABLE_DEFAULTS key at its default, so any such key left in a cell is a
-    non-default arm. A held-out table is exempt: it is where a tuned arm is reported.
+    non-default arm. The ENGINE_FLAG_DEFAULTS flags stay in the cell, so each must
+    read its default; one missing is an arm the cell cannot vouch for (#438). A
+    held-out table is exempt: it is where a tuned arm is reported.
     """
     if instances != FULL_ROSTER_SIZE:
         return None
     keys = [key for key in TUNABLE_DEFAULTS if _config_value(rows, "cbls", key) is not None]
+    keys += [
+        key
+        for key, default in ENGINE_FLAG_DEFAULTS.items()
+        if not _is_cell_default(_config_value(rows, "cbls", key), default)
+    ]
     if not keys:
         return None
     return (
@@ -2072,6 +2091,19 @@ def non_default_arm_problem(rows: list[Scored], instances: int) -> str | None:
         "published comparison table. Score the arm on a subset roster, or report a "
         "tuned arm with --held-out"
     )
+
+
+def _is_cell_default(value: str | None, default: bool | float) -> bool:
+    """Whether a config-cell value is `default`; numbers compare as numbers, so
+    `inf_clamp=1e7` and `inf_clamp=10000000.0` agree."""
+    if value is None:
+        return False
+    if isinstance(default, bool):
+        return value == str(default)
+    try:
+        return float(value) == default
+    except ValueError:
+        return False
 
 
 def _roster_label(
