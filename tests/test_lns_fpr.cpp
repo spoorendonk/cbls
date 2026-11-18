@@ -103,7 +103,9 @@ TEST_CASE("a solve that throws still takes its repair store back from the LNS",
         using LNS::LNS;
         bool destroy_repair(Model& /*model*/, ViolationManager& /*vm*/, RNG& /*rng*/,
                             double /*repair_time_limit*/) override {
-            CHECK(repair_store() != nullptr);  // handed over before the kick
+            REQUIRE(repair_store() != nullptr);  // handed over before the kick
+            // Widened by the solve's tolerance (#433).
+            CHECK(repair_store()->row_tolerance() == 1e-5);
             throw std::runtime_error("repair failed");
         }
     };
@@ -113,6 +115,7 @@ TEST_CASE("a solve that throws still takes its repair store back from the LNS",
     cfg.perturbation_period = 1;
     cfg.max_iterations = 30;
     cfg.lns_repair_fpr = true;
+    cfg.feasibility_tolerance = 1e-5;
     ThrowingLns lns(0.5);
 
     CHECK_THROWS_AS(
@@ -203,7 +206,7 @@ TEST_CASE("the FPR repair writes propagated values and leaves no fixing behind",
 TEST_CASE("kept floats hold within the tolerance, and a non-finite one skips the dive",
           "[lns][fpr]") {
     // a + b <= 1 overshot by 1e-7: feasible at the 1e-6 tolerance, refuted by
-    // an exact fix of both.
+    // an exact fix of both unless the store is widened by it.
     Model m;
     const int32_t a = m.float_var(0.0, 10.0);
     const int32_t b = m.float_var(0.0, 10.0);
@@ -216,7 +219,7 @@ TEST_CASE("kept floats hold within the tolerance, and a non-finite one skips the
     m.var_mut(handle_to_var_id(b)).value = 0.5 + 1e-7;
     full_evaluate(m);
     LnsProbe lns(0.5);
-    lns.set_repair_store(std::make_shared<const LinearRowStore>(m));
+    lns.set_repair_store(std::make_shared<const LinearRowStore>(m, kDefaultFeasibilityTolerance));
     RNG rng(7);
 
     CHECK(lns.fpr_repair(m, destroyed, rng, nullptr));
@@ -244,6 +247,85 @@ TEST_CASE("the FPR repair counts a refuted root and writes nothing", "[lns][fpr]
     CHECK_FALSE(lns.fpr_repair(m, {handle_to_var_id(x)}, rng, nullptr));
     CHECK(lns.fpr_repair_stats().root_refuted == 1);
     CHECK(lns.fpr_repair_stats().dives == 0);
+}
+
+TEST_CASE("the FPR repair keeps a destroyed integer's value though one side of it is unlocked",
+          "[lns][fpr]") {
+    // min sum(c_j x_j) over x_0 + ... + x_5 >= 1: no x has an up-lock, so a
+    // trivial rounding would set every destroyed x to 1 whatever its cost (#433).
+    Model m;
+    std::vector<int32_t> xs;
+    std::vector<int32_t> costed;
+    for (int j = 0; j < 6; ++j) {
+        xs.push_back(m.bool_var());
+        costed.push_back(m.prod(m.constant(1.0 + j), xs.back()));
+    }
+    m.add_constraint(m.geq(m.sum(xs), m.constant(1.0)));
+    m.minimize(m.sum(costed));
+    m.close();
+    const std::vector<double> randomised = {1.0, 0.0, 1.0, 0.0, 1.0, 0.0};
+    std::vector<int32_t> destroyed;
+    for (int j = 0; j < 6; ++j) {
+        const int32_t v = handle_to_var_id(xs[static_cast<size_t>(j)]);
+        m.var_mut(v).value = randomised[static_cast<size_t>(j)];
+        if (j > 0) {
+            destroyed.push_back(v);
+        }
+    }
+    full_evaluate(m);
+    LnsProbe lns(0.5);
+    lns.set_repair_store(std::make_shared<const LinearRowStore>(m));
+    RNG rng(7);
+
+    REQUIRE(lns.fpr_repair(m, destroyed, rng, nullptr));
+    CHECK(values(m) == randomised);
+}
+
+TEST_CASE("the FPR repair keeps a destroyed float's value whatever its objective partial",
+          "[lns][fpr]") {
+    // min (x - 3)^2: the partial is 8 at x = 7, where the engine is built. A
+    // cost-preferred fill would write x's lower bound every round (#433).
+    Model m;
+    const int32_t x = m.float_var(0.0, 10.0);
+    m.minimize(m.pow_expr(m.sum({x, m.constant(-3.0)}), m.constant(2.0)));
+    m.close();
+    const int32_t xv = handle_to_var_id(x);
+    LnsProbe lns(0.5);
+    lns.set_repair_store(std::make_shared<const LinearRowStore>(m));
+    RNG rng(7);
+    // One engine for both rounds: the second runs on the first's costs.
+    for (const double randomised : {7.0, 2.0}) {
+        INFO("x randomised to " << randomised);
+        m.var_mut(xv).value = randomised;
+        full_evaluate(m);
+        REQUIRE(lns.fpr_repair(m, {xv}, rng, nullptr));
+        CHECK(m.var(xv).value == randomised);
+    }
+}
+
+TEST_CASE("a kept integer a row accepts only within the tolerance holds on a widened store",
+          "[lns][fpr]") {
+    // 3.0000005 x <= 3 at x = 1: residual 5e-7, feasible at the 1e-6
+    // tolerance, but fixing x = 1 against the exact row conflicts (#433).
+    Model m;
+    const int32_t x = m.int_var(0, 5);
+    const int32_t z = m.bool_var();
+    m.add_constraint(m.leq(m.prod(m.constant(3.0000005), x), m.constant(3.0)));
+    m.close();
+    m.var_mut(handle_to_var_id(x)).value = 1.0;
+    full_evaluate(m);
+    const std::vector<int32_t> destroyed = {handle_to_var_id(z)};
+    RNG rng(7);
+    for (const bool widened : {false, true}) {
+        INFO("widened " << widened);
+        LnsProbe lns(0.5);
+        lns.set_repair_store(std::make_shared<const LinearRowStore>(
+            m, widened ? kDefaultFeasibilityTolerance : 0.0));
+        CHECK(lns.fpr_repair(m, destroyed, rng, nullptr) == widened);
+        CHECK(lns.fpr_repair_stats().dives == (widened ? 1 : 0));
+        CHECK(lns.fpr_repair_stats().kept_conflicts == (widened ? 0 : 1));
+        CHECK(m.var(handle_to_var_id(x)).value == 1.0);
+    }
 }
 
 TEST_CASE("solve hands the LNS a repair store only with lns_repair_fpr", "[search][lns][fpr]") {

@@ -1053,7 +1053,8 @@ void ViolationLSLoop::diversify(bool allow_lns) {
         lns_->set_feasibility_tolerance(config_.feasibility_tolerance);
         lns_->set_neighbours(config_.structural_neighbours);
         if (config_.lns_repair_fpr && lns_store_ == nullptr) {
-            lns_store_ = std::make_shared<const LinearRowStore>(model_);
+            lns_store_ =
+                std::make_shared<const LinearRowStore>(model_, config_.feasibility_tolerance);
         }
         lns_->set_repair_store(lns_store_);
         const bool accepted = lns_->destroy_repair(model_, vm_, rng_, repair_limit);

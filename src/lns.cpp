@@ -23,10 +23,10 @@ namespace {
 
 // The LNS repair's dive (#422): random order, never backtracking, so every
 // round writes a fill for FJ to repair. A branched integer takes its
-// randomised value clamped to the propagated box. FprSearch's own rules still
-// apply first: an integer locked on one side goes to its free bound, and a
-// float with a nonzero objective partial (read when the engine is built) to
-// its cost-preferred bound. Random is FprSearch's fixed-seed order; the round
+// randomised value clamped to the propagated box, and so does every destroyed
+// float: Incumbent skips the trivial roundings and the cost-preferred fill,
+// which would undo the destroy's randomisation (#433). Random is FprSearch's
+// fixed-seed order; the round
 // count as the attempt shuffles its first 30% anew each round.
 constexpr FprConfig kLnsFprConfig{FprVarOrder::Random, FprValueRule::Incumbent, FprMode::Diveprop};
 
@@ -78,12 +78,10 @@ bool LNS::fpr_repair(Model& model, const std::vector<int32_t>& destroyed, RNG& r
     for (const int32_t v : destroyed) {
         f.destroyed[static_cast<size_t>(v)] = 1;
     }
-    // The kept scalars at their incumbent values; on a conflict the round is
-    // plain FJ. Propagation's margins are tighter than the row tolerance, so
-    // that includes kept values a row only just accepts. A kept float
-    // may sit on a row within the feasibility tolerance, which an exact fix
-    // would refute, so it gets that tolerance as a box. A non-finite value
-    // cannot be held (tighten refuses NaN): the same plain-FJ round.
+    // The kept scalars fixed at their incumbent values; on a conflict the round
+    // is plain FJ. A kept value a row accepts only within the feasibility
+    // tolerance holds on a store widened by it (#433). A non-finite value
+    // cannot be held (fix refuses NaN): the same plain-FJ round.
     const int32_t level = f.prop.checkpoint();
     bool consistent = true;
     for (int32_t v = 0; v < static_cast<int32_t>(model.num_vars()) && consistent; ++v) {
@@ -91,14 +89,7 @@ bool LNS::fpr_repair(Model& model, const std::vector<int32_t>& destroyed, RNG& r
         if (f.destroyed[static_cast<size_t>(v)] != 0 || is_structured(var.type)) {
             continue;
         }
-        if (!std::isfinite(var.value)) {
-            consistent = false;
-        } else if (var.type == VarType::Float) {
-            consistent = f.prop.tighten(v, var.value - feasibility_tolerance_,
-                                        var.value + feasibility_tolerance_);
-        } else {
-            consistent = f.prop.fix(v, var.value);
-        }
+        consistent = std::isfinite(var.value) && f.prop.fix(v, var.value);
     }
     if (consistent) {
         if (deadline != nullptr) {

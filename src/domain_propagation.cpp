@@ -35,10 +35,14 @@ constexpr double kPosInf = std::numeric_limits<double>::infinity();
 // ---------------------------------------------------------------------------
 // LinearRowStore
 
-LinearRowStore::LinearRowStore(const Model& model) {
+LinearRowStore::LinearRowStore(const Model& model, double row_tolerance)
+    : row_tolerance_(row_tolerance) {
     const auto n_vars = static_cast<int32_t>(model.num_vars());
     if (!model.is_closed()) {
         throw std::logic_error("LinearRowStore: the model must be closed and evaluated");
+    }
+    if (!std::isfinite(row_tolerance) || row_tolerance < 0.0) {
+        throw std::invalid_argument("LinearRowStore: row_tolerance must be finite and >= 0");
     }
     const auto n_cons = static_cast<int32_t>(model.constraint_ids().size());
     std::vector<std::pair<int32_t, double>> terms;
@@ -66,10 +70,11 @@ LinearRowStore::LinearRowStore(const Model& model) {
         }
         const int32_t nid = model.constraint_ids()[static_cast<size_t>(c)];
         const bool eq = model.nodes()[static_cast<size_t>(nid)].op == NodeOp::Eq;
-        // residual = sum + constant, and residual <= 0 (= 0 for Eq).
+        // residual = sum + constant, and residual <= 0 (= 0 for Eq), each side
+        // widened by the tolerance.
         constraint_.push_back(c);
-        row_hi_.push_back(-constant);
-        row_lo_.push_back(eq ? -constant : kNegInf);
+        row_hi_.push_back(-constant + row_tolerance);
+        row_lo_.push_back(eq ? -constant - row_tolerance : kNegInf);
         for (const auto& [v, a] : terms) {
             cols_.push_back(v);
             coefs_.push_back(a);
@@ -504,7 +509,7 @@ bool DomainPropagator::propagate_all() {
         // residual = -(row bound); a positive one is a bound below 0, finite
         // on its own side however large.
         const double excess = row.eq ? std::abs(row.residual) : row.residual;
-        if (excess > relaxation(row.residual, b)) {
+        if (excess > relaxation(row.residual, b) + store_.row_tolerance()) {
             return conflict();
         }
     }

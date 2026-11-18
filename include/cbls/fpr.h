@@ -30,12 +30,15 @@ enum class FprVarOrder : std::uint8_t {
 
 /// Value selection (paper Table 2, LP-free), on the variable's current box.
 enum class FprValueRule : std::uint8_t {
-    Up,         ///< the upper bound
-    Random,     ///< uniform in the box, rounded on an integral variable
-    GoodObj,    ///< the bound that lowers the (min-form) objective; lb at zero cost
-    BadObj,     ///< the other one; lb at zero cost
-    LooseDyn,   ///< the direction with fewer dynamic locks; ties as GoodObj
-    Incumbent,  ///< the variable's current value, clamped to the box
+    Up,        ///< the upper bound
+    Random,    ///< uniform in the box, rounded on an integral variable
+    GoodObj,   ///< the bound that lowers the (min-form) objective; lb at zero cost
+    BadObj,    ///< the other one; lb at zero cost
+    LooseDyn,  ///< the direction with fewer dynamic locks; ties as GoodObj
+    /// The variable's current value, clamped to the box. Not a paper rule: it
+    /// keeps a caller's point (the LNS repair's, #431), so it also skips the
+    /// trivial roundings and fills a Float with its current value (#433).
+    Incumbent,
 };
 
 /// Framework modes (paper Section 3). In-tree repair is deferred (#419), so
@@ -88,13 +91,15 @@ struct FprResult {
 ///
 /// Integral variables are branched; Floats are never branched: a Float with a
 /// nonzero cost takes its cost-preferred bound, one without its current value
-/// (the reference's `cont_fallback`), clamped to its final box. An integral
+/// (the reference's `cont_fallback`), clamped to its final box; under
+/// Incumbent every Float takes its current value. An integral
 /// variable in no linear row is fixed by the value rule with nothing to
 /// propagate.
 ///
-/// As the reference, trivial roundings are fixed together and propagated once,
-/// the verdict ignored, and Diveprop carries on in a refuted state: the
-/// propagator keeps the refuted fixing and its partial deductions (#427).
+/// As the reference, trivial roundings (none under Incumbent) are fixed
+/// together and propagated once, the verdict ignored, and Diveprop carries on
+/// in a refuted state: the propagator keeps the refuted fixing and its partial
+/// deductions (#427).
 /// After a refuted root, `run` branches nothing and reports `complete = false`.
 ///
 /// Costs: the constructor is O(vars + nnz) plus one reverse sweep of the

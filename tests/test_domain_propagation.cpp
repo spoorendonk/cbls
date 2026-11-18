@@ -517,6 +517,40 @@ TEST_CASE("tighten rounds an integral variable inward and rejects NaN and empty 
     CHECK_THROWS_AS(LinearRowStore(open), std::logic_error);
 }
 
+TEST_CASE("a row tolerance widens every row and lets a constant row exceed by it",
+          "[domain_propagation]") {
+    Model m;
+    const int32_t f = m.float_var(0.0, 10.0);
+    const int32_t g = m.float_var(0.0, 10.0);
+    m.add_constraint(m.leq(m.sum({f, g}), m.constant(1.0)));
+    m.add_constraint(m.eq_expr(f, m.constant(2.0)));
+    m.close();
+    full_evaluate(m);
+    const LinearRowStore store(m, 1e-6);
+    REQUIRE(store.num_rows() == 2);
+    CHECK(store.row_tolerance() == 1e-6);
+    CHECK(store.row_hi(0) == 1.0 + 1e-6);
+    CHECK(store.row_lo(0) == -std::numeric_limits<double>::infinity());
+    CHECK(store.row_lo(1) == 2.0 - 1e-6);
+    CHECK(store.row_hi(1) == 2.0 + 1e-6);
+    CHECK_THROWS_AS(LinearRowStore(m, -1e-6), std::invalid_argument);
+    CHECK_THROWS_AS(LinearRowStore(m, std::nan("")), std::invalid_argument);
+
+    // h - h <= -5e-7: no terms, residual 5e-7, accepted only within 1e-6.
+    Model c;
+    const int32_t h = c.float_var(0.0, 1.0);
+    c.add_constraint(c.leq(c.sum({h, c.neg(h)}), c.constant(-5e-7)));
+    c.close();
+    full_evaluate(c);
+    for (const double tol : {0.0, 1e-6}) {
+        INFO("tolerance " << tol);
+        const LinearRowStore cs(c, tol);
+        REQUIRE(cs.constant_rows().size() == 1);
+        DomainPropagator p(cs, c);
+        CHECK(p.propagate_all() == (tol > 0.0));
+    }
+}
+
 TEST_CASE("a crossing within the margin collapses inside the current box", "[domain_propagation]") {
     Model m;
     const int32_t f = m.float_var(5.0, 10.0);

@@ -363,10 +363,11 @@ void FprSearch::fill(const FprConfig& cfg, RNG& rng, FprResult& out) const {
         double value = 0.0;
         if (integral_[i] == 0) {
             // The cost-preferred bound, else the reference's cont_fallback (the
-            // current value); either clamped to the boxed domain.
+            // current value); either clamped to the boxed domain. Incumbent
+            // keeps the current value always (#433).
             const Box b = boxed(lo, hi, inf_);
             double want = var.value;
-            if (std::abs(c) > kZeroCost) {
+            if (cfg.value != FprValueRule::Incumbent && std::abs(c) > kZeroCost) {
                 want = c > 0 ? lo : hi;
             }
             value = clamp(want, b.lo, b.hi);
@@ -400,7 +401,11 @@ void FprSearch::run(const FprConfig& cfg, int64_t attempt, RNG& rng, FprResult& 
         std::shuffle(order_.begin(), order_.begin() + static_cast<std::ptrdiff_t>(len),
                      rng.engine());
     }
-    trivial_fixings();
+    // Incumbent's caller set the point to keep (the LNS's randomised destroy):
+    // a trivial rounding would overwrite it with a bound every round (#433).
+    if (cfg.value != FprValueRule::Incumbent) {
+        trivial_fixings();
+    }
     if (dynamic) {
         for (const int32_t v : order_) {
             heap_push(v);

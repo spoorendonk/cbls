@@ -46,7 +46,13 @@ public:
         bool eq;
     };
 
-    explicit LinearRowStore(const Model& model);
+    /// `row_tolerance` (finite, >= 0) widens every row to
+    /// `[lo - tol, hi + tol]` and lets a constant row's residual exceed 0 by
+    /// it: rows read as feasible at the model's feasibility tolerance, so a
+    /// point a row only just accepts is not refuted (the LNS repair's, #433).
+    explicit LinearRowStore(const Model& model, double row_tolerance = 0.0);
+
+    [[nodiscard]] double row_tolerance() const noexcept { return row_tolerance_; }
 
     [[nodiscard]] int32_t num_rows() const noexcept { return static_cast<int32_t>(row_lo_.size()); }
     [[nodiscard]] int32_t num_vars() const noexcept {
@@ -73,6 +79,7 @@ public:
     }
 
 private:
+    double row_tolerance_ = 0.0;
     std::vector<ConstantRow> constant_rows_;
     std::vector<int32_t> constraint_;
     std::vector<double> row_lo_;

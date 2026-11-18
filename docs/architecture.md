@@ -2012,10 +2012,12 @@ GFJ repair (2000 iterations) refining the current (partially destroyed)
 assignment toward feasibility, leaving a clean unit-weight penalty landscape.
 
 With `SearchConfig::lns_repair_fpr` (default off, #431), each round first fixes
-the kept integral scalars at their incumbent values and boxes the kept floats to
-within the feasibility tolerance, under propagation. It then runs one
-fix-propagate-repair dive over the destroyed scalars and writes their values
-before that FJ. A conflict on the kept values skips the dive for that round, and
+the kept scalars at their incumbent values under propagation, over rows widened
+by the feasibility tolerance (`LinearRowStore`'s `row_tolerance`), so a kept
+value a row only just accepts holds (#433). It then runs one
+fix-propagate-repair dive over the destroyed scalars with the `Incumbent` value
+rule, which keeps their randomised values where propagation allows (no trivial
+roundings, no cost-preferred Float fill, #433), and writes them before that FJ. A conflict on the kept values skips the dive for that round, and
 a root the linear rows refute skips it for good: those rounds are plain FJ. Off,
 no row store is built and the trajectory is unchanged. Runner flag:
 `--lns-repair-fpr` (scalar family, recorded as `lns_repair_fpr` only when on,
@@ -2596,7 +2598,9 @@ wants leaf repair; repair itself is the caller's (#426).
   fix or backtrack changed. Attempts after the first shuffle the first 30%.
 - **Values** (Table 2, LP-free): `Up`, `Random`, `GoodObj`/`BadObj` (by the
   min-form objective's partial), `LooseDyn` (fewer locks, counting only rows
-  neither infeasible nor redundant at the current activities), `Incumbent`.
+  neither infeasible nor redundant at the current activities), and
+  `Incumbent` (not a paper rule: the current value, which also skips the
+  trivial roundings and the Float's cost-preferred fill, #433).
 - **Modes**: `Diveprop` never backtracks: a refuted fix and its partial
   deductions stay in the propagator, and the dive goes on (the reference's
   single big dive, #427). `Dfs` backtracks to the next
