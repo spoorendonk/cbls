@@ -2012,13 +2012,15 @@ GFJ repair (2000 iterations) refining the current (partially destroyed)
 assignment toward feasibility, leaving a clean unit-weight penalty landscape.
 
 With `SearchConfig::lns_repair_fpr` (default off, #431), each round first fixes
-the kept scalars at their incumbent values under propagation, over rows widened
-by the feasibility tolerance (`LinearRowStore`'s `row_tolerance`), so a kept
-value a row only just accepts holds (#433). It then runs one
-fix-propagate-repair dive over the destroyed scalars with the `Incumbent` value
-rule, which keeps their randomised values where propagation allows (no trivial
-roundings, no cost-preferred Float fill, #433), and writes them before that FJ. A conflict on the kept values skips the dive for that round, and
-a root the linear rows refute skips it for good: those rounds are plain FJ. Off,
+the kept scalars at their incumbent values (clamped to their bounds) under
+propagation, over rows widened by the feasibility tolerance (`LinearRowStore`'s
+`row_tolerance`), so a kept value a row only just accepts holds (#433). It then
+runs one fix-propagate-repair dive over the destroyed scalars with the
+`Incumbent` value rule, which keeps their randomised values where propagation
+allows (no trivial roundings, no cost-preferred Float fill, #433), and writes
+them before that FJ. A conflict on the kept values skips the dive for that
+round, and a root the linear rows refute skips it for good: those rounds are
+plain FJ. Off,
 no row store is built and the trajectory is unchanged. Runner flag:
 `--lns-repair-fpr` (scalar family, recorded as `lns_repair_fpr` only when on,
 refused with `--no-lns`). Python: `SearchConfig.lns_repair_fpr`.

@@ -211,10 +211,13 @@ TEST_CASE("kept floats hold within the tolerance, and a non-finite one skips the
     const int32_t a = m.float_var(0.0, 10.0);
     const int32_t b = m.float_var(0.0, 10.0);
     const int32_t z = m.bool_var();
+    // Past its upper bound by 5e-7, within the tolerance: held at the bound.
+    const int32_t c = m.float_var(0.0, 1.0);
     m.add_constraint(m.leq(m.sum({a, b}), m.constant(1.0)));
     m.close();
     const int32_t a_id = handle_to_var_id(a);
     const std::vector<int32_t> destroyed = {handle_to_var_id(z)};
+    m.var_mut(handle_to_var_id(c)).value = 1.0 + 5e-7;
     m.var_mut(a_id).value = 0.5;
     m.var_mut(handle_to_var_id(b)).value = 0.5 + 1e-7;
     full_evaluate(m);

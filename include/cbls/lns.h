@@ -86,13 +86,12 @@ public:
     /// `SearchConfig::lns_repair_fpr` is on, set before each kick and cleared
     /// when the solve ends. Null (default): plain FJ repair, drawing exactly as
     /// before. With a store, each round fixes the kept scalars at their
-    /// incumbent values under propagation (a conflict skips FPR for the round),
-    /// dives once over the destroyed ones from their randomised values, writes
-    /// their values, then FJ repairs. The propagator and engine are built on
-    /// the first round with a new store; a refuted root skips FPR for good. The
-    /// store must be built from the model repaired, with the feasibility
-    /// tolerance as its `row_tolerance` (as `solve()` does) so that a kept value
-    /// a row only just accepts holds (#433); one of another width skips FPR.
+    /// incumbent values (clamped to their bounds) under propagation (a conflict skips FPR for the
+    /// round), dives once over the destroyed ones from their randomised values, writes their
+    /// values, then FJ repairs. The propagator and engine are built on the first round with a new
+    /// store; a refuted root skips FPR for good. The store must be built from the model repaired,
+    /// with the feasibility tolerance as its `row_tolerance` (as `solve()` does) so that a kept
+    /// value a row only just accepts holds (#433); one of another width skips FPR.
     void set_repair_store(std::shared_ptr<const LinearRowStore> store);
     [[nodiscard]] const std::shared_ptr<const LinearRowStore>& repair_store() const {
         return repair_store_;

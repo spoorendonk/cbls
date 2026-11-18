@@ -26,8 +26,8 @@ namespace {
 // randomised value clamped to the propagated box, and so does every destroyed
 // float: Incumbent skips the trivial roundings and the cost-preferred fill,
 // which would undo the destroy's randomisation (#433). Random is FprSearch's
-// fixed-seed order; the round
-// count as the attempt shuffles its first 30% anew each round.
+// fixed-seed order; the round count as the attempt shuffles its first 30% anew
+// each round.
 constexpr FprConfig kLnsFprConfig{FprVarOrder::Random, FprValueRule::Incumbent, FprMode::Diveprop};
 
 }  // namespace
@@ -80,8 +80,9 @@ bool LNS::fpr_repair(Model& model, const std::vector<int32_t>& destroyed, RNG& r
     }
     // The kept scalars fixed at their incumbent values; on a conflict the round
     // is plain FJ. A kept value a row accepts only within the feasibility
-    // tolerance holds on a store widened by it (#433). A non-finite value
-    // cannot be held (fix refuses NaN): the same plain-FJ round.
+    // tolerance holds on a store widened by it (#433), and one past its own
+    // bound by the same is held at that bound. A non-finite value cannot be
+    // held (fix refuses NaN): the same plain-FJ round.
     const int32_t level = f.prop.checkpoint();
     bool consistent = true;
     for (int32_t v = 0; v < static_cast<int32_t>(model.num_vars()) && consistent; ++v) {
@@ -89,7 +90,8 @@ bool LNS::fpr_repair(Model& model, const std::vector<int32_t>& destroyed, RNG& r
         if (f.destroyed[static_cast<size_t>(v)] != 0 || is_structured(var.type)) {
             continue;
         }
-        consistent = std::isfinite(var.value) && f.prop.fix(v, var.value);
+        consistent =
+            std::isfinite(var.value) && f.prop.fix(v, std::clamp(var.value, var.lb, var.ub));
     }
     if (consistent) {
         if (deadline != nullptr) {
