@@ -3,6 +3,7 @@
 
 #include "test_helpers.h"
 
+#include <algorithm>
 #include <catch2/catch_test_macros.hpp>
 #include <cbls/cbls.h>
 #include <cbls/domain_propagation.h>
@@ -210,15 +211,20 @@ TEST_CASE("the FPR repair's kept-value loop stops at the deadline", "[lns][fpr][
     lns.set_repair_store(std::make_shared<const LinearRowStore>(m));
     RNG rng(7);
     REQUIRE(lns.fpr_repair(m, {ys.front()}, rng, nullptr));  // the engine, built untimed
-    const auto start = std::chrono::steady_clock::now();
-    REQUIRE(lns.fpr_repair(m, {ys.front()}, rng, nullptr));
-    const auto untimed = std::chrono::steady_clock::now() - start;
+    // The fastest of three untimed rounds: a preempted one would put the
+    // deadline past the kept loop.
+    auto untimed = std::chrono::steady_clock::duration::max();
+    for (int round = 0; round < 3; ++round) {
+        const auto start = std::chrono::steady_clock::now();
+        REQUIRE(lns.fpr_repair(m, {ys.front()}, rng, nullptr));
+        untimed = std::min(untimed, std::chrono::steady_clock::now() - start);
+    }
 
     const std::vector<double> incumbent = values(m);
     const auto soon = std::chrono::steady_clock::now() + (untimed / 4);
     CHECK_FALSE(lns.fpr_repair(m, {ys.front()}, rng, &soon));
     CHECK(lns.fpr_repair_stats().deadline_stops == 1);
-    CHECK(lns.fpr_repair_stats().dives == 2);
+    CHECK(lns.fpr_repair_stats().dives == 4);
     CHECK(values(m) == incumbent);
 }
 
@@ -439,5 +445,6 @@ TEST_CASE("a solve with a time limit builds its repair store within it", "[searc
         const LNS::FprRepairStats& s = lns.fpr_repair_stats();
         const int64_t rounds = s.dives + s.kept_conflicts + s.root_refuted + s.deadline_stops;
         CHECK(rounds == r.lns_repairs);
+        CHECK(s.deadline_stops == 0);
     }
 }

@@ -104,6 +104,10 @@ bool LNS::fpr_repair(Model& model, const std::vector<int32_t>& destroyed, RNG& r
     if (static_cast<size_t>(repair_store_->num_vars()) != model.num_vars()) {
         return false;
     }
+    if (fpr_ != nullptr && !fpr_->root_ok) {
+        ++fpr_stats_.root_refuted;
+        return false;
+    }
     // Every setup step is O(vars + nnz) on a large model (#434): none starts
     // past the deadline.
     if (deadline != nullptr && std::chrono::steady_clock::now() >= *deadline) {
