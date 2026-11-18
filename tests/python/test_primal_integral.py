@@ -1004,6 +1004,82 @@ def test_a_full_roster_table_from_a_non_default_arm_is_refused(
         assert out.exists()
 
 
+_DEFAULT_ARM: dict[str, object] = {
+    "threads": 1,
+    "compound_moves": True,
+    "objective_tie_break": True,
+    "fpr_prob": 0.0,
+    "lns_repair_fpr": False,
+}
+
+
+@pytest.mark.parametrize(
+    ("completed_off", "refused"),
+    [({"objective_tie_break": False}, True), ({"compound_moves": False}, True), (None, False)],
+    ids=["tie-break-off", "compound-moves-off", "only-killed-rows"],
+)
+def test_a_killed_rows_default_arm_does_not_vouch_for_off_default_rows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    completed_off: dict[str, object] | None,
+    refused: bool,
+) -> None:
+    # A killed row sorting first records the default arm; every completed row must
+    # still be checked (#438). A killed row's arm names only some flags, so a table
+    # of killed rows alone is not refused for the ones it leaves out.
+    roster = tmp_path / "all.csv"
+    roster.write_text(
+        "instance,reference_value,reference_kind\n" + "".join(f"{name},1.0,opt\n" for name in _FULL)
+    )
+    _write_result(
+        tmp_path,
+        "cbls",
+        "i0",
+        {"status": "killed", "objective": None, "message": "killed", "driver_arm": _DEFAULT_ARM},
+    )
+    if completed_off is not None:
+        record: dict[str, object] = {
+            "status": "no_solution",
+            "objective": None,
+            "threads": 1,
+            "compound_moves": True,
+            "objective_tie_break": True,
+            "inf_clamp": 1.0e7,
+            "propagate_bounds": True,
+            "max_propagation_passes": 10,
+        }
+        record.update(completed_off)
+        _write_result(tmp_path, "cbls", "i1", record)
+    out = tmp_path / "comparison.csv"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "primal_integral.py",
+            "--results-dir",
+            str(tmp_path),
+            "--roster",
+            str(roster),
+            "--budget",
+            "60",
+            "--out",
+            str(out),
+        ],
+    )
+    if refused:
+        with pytest.raises(SystemExit) as stop:
+            main()
+        assert stop.value.code == 2
+        assert not out.exists()
+        err = capsys.readouterr().err
+        assert "engine knobs" in err
+        assert all(key in err for key in completed_off or {})
+    else:
+        main()
+        assert out.exists()
+
+
 def test_held_out_file_skips_comments_and_refuses_repeats(tmp_path: Path) -> None:
     path = tmp_path / "h.txt"
     path.write_text("# header\nalpha\n\n  beta  # trailing note\n")

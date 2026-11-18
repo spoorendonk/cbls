@@ -2071,9 +2071,9 @@ def non_default_arm_problem(rows: list[Scored], instances: int) -> str | None:
     the driver refuses one only by the roster's file name, and a direct
     `cbls_mipfeas` run is not checked at all (#437). `config_string` drops every
     TUNABLE_DEFAULTS key at its default, so any such key left in a cell is a
-    non-default arm. The ENGINE_FLAG_DEFAULTS flags stay in the cell, so each must
-    read its default; one missing is an arm the cell cannot vouch for (#438). A
-    held-out table is exempt: it is where a tuned arm is reported.
+    non-default arm. The ENGINE_FLAG_DEFAULTS flags stay in the cell, so every
+    cbls row must read its default (#438).
+    A held-out table is exempt: it is where a tuned arm is reported.
     """
     if instances != FULL_ROSTER_SIZE:
         return None
@@ -2081,16 +2081,31 @@ def non_default_arm_problem(rows: list[Scored], instances: int) -> str | None:
     keys += [
         key
         for key, default in ENGINE_FLAG_DEFAULTS.items()
-        if not _is_cell_default(_config_value(rows, "cbls", key), default)
+        if any(_row_off_default(row, key, default) for row in rows if row.engine == "cbls")
     ]
     if not keys:
         return None
     return (
-        f"the cbls rows carry non-default engine knobs ({', '.join(keys)}) on the full "
-        f"{FULL_ROSTER_SIZE}-instance roster: a non-default arm may not produce the "
+        f"the cbls rows carry non-default or unrecorded engine knobs ({', '.join(keys)}) "
+        f"on the full {FULL_ROSTER_SIZE}-instance roster: a non-default arm may not produce the "
         "published comparison table. Score the arm on a subset roster, or report a "
         "tuned arm with --held-out"
     )
+
+
+def _row_off_default(row: Scored, key: str, default: bool | float) -> bool:
+    """Whether one cbls row ran `key` off its default, or cannot say so.
+
+    Every row is checked, not the first that states the key: a killed row's default
+    arm must not vouch for completed rows that ran another. A completed row's cell
+    must carry the key (a missing `objective_tie_break` is off); a killed row's arm
+    records only some flags (`run_benchmark.py`'s `arm_keys`), so it counts only for
+    a key it states. A row with neither cell nor arm (no result) says nothing.
+    """
+    if row.config:
+        return not _is_cell_default(_row_config_value(row, key), default)
+    value = _row_config_value(row, key) if row.arm_config else None
+    return value is not None and not _is_cell_default(value, default)
 
 
 def _is_cell_default(value: str | None, default: bool | float) -> bool:
