@@ -950,7 +950,10 @@ The ViolationLS outer loop owns the iteration clock and calls:
   GLS iterations; returns whether all active constraints are satisfied.
 - `reset_weights()` — `W <- 1`, rebuild `V`/`Q` (called on a new best).
 - `resync()` — rebuild `V`/`Q` from current state, keep weights (called after a
-  hook/structural mutation outside the engine's bookkeeping).
+  hook/structural mutation outside the engine's bookkeeping, and after an FPR
+  batch writes its dive's scalars: full-evaluate, then `resync()`; a repairing
+  mode, or a Dfs dive that wrote nothing, then runs `batch()`;
+  [Fix-propagate-repair](#fix-propagate-repair), #426).
 - `perturb(probability)` — randomise each scalar var w.p. `probability` and
   apply `max(1, round(probability * |elements|))` random structural moves to
   each List/Set var, full-evaluate, reset weights. OR-Tools' no-restart kick

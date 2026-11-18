@@ -271,7 +271,8 @@ ran the tie-break off; only the commit tells them apart). Compound moves are on 
 off-default arm until regenerated. Three pairs are refused, because the engine
 never reads the second flag and the row would record an arm the run did not
 have: `--lns-interval` with `--no-lns`, `--novelty-prob` with
-`--no-compound-moves`, and `--novelty-prob` with `--fpr-prob 1`.
+`--no-compound-moves`, and `--novelty-prob` with `--fpr-prob 1` (every batch is
+FPR then, unless root propagation refutes the model's linear rows).
 
 Any non-default value refuses to write the published `comparison.csv` (and
 `anytime_trace.csv`). `cbls_uc_chped` carries the same flags against its own

@@ -383,12 +383,16 @@ inline bool validate_search_flags(const SearchFlags& f, unsigned applicable, boo
         return false;
     }
     // The picker draws FPR first (#430): at 1 every batch is FPR, whose repair
-    // is an FJ batch, so the Novelty draw is never reached. The compound-moves
+    // is an FJ batch, so the Novelty draw is never reached -- unless root
+    // propagation refutes the model, which builds no FPR batch and draws as
+    // at 0: a model-dependent edge, accepted as for any flag. The compound-moves
     // switch is not refused: runners pin different defaults for it (uc-chped
     // off), and its cell value is always written. No runner takes both the
     // scalar and structural families, so structural flags cannot meet it.
     if (f.fpr_prob == 1.0 && f.novelty_prob != defaults.novelty_prob) {
-        error = "--novelty-prob has no effect at --fpr-prob 1 (every batch is FPR)";
+        error =
+            "--novelty-prob has no effect at --fpr-prob 1 (every batch is FPR unless the "
+            "root is refuted)";
         return false;
     }
     if (f.no_time_limit && time_limit_set) {
