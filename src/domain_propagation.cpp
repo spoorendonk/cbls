@@ -416,16 +416,62 @@ bool DomainPropagator::fix(int32_t var, double value) {
 }
 
 bool DomainPropagator::tighten(int32_t var, double lo, double hi) {
+    switch (narrow(var, lo, hi, "tighten")) {
+        case Narrowed::kConflict:
+            return conflict();
+        case Narrowed::kUnchanged:
+            return true;
+        case Narrowed::kChanged:
+            break;
+    }
+    begin_call();
+    enqueue_rows_of(var);
+    return run_queue();
+}
+
+bool DomainPropagator::fix_all(const std::vector<std::pair<int32_t, double>>& fixings) {
+    // Validate first, so a throw leaves the state untouched.
+    for (const auto& [var, value] : fixings) {
+        check_request(var, value, value, "fix_all");
+    }
+    bool ok = true;
+    begin_call();
+    for (const auto& [var, value] : fixings) {
+        switch (narrow(var, value, value, "fix_all")) {
+            case Narrowed::kConflict:
+                ok = conflict();
+                break;
+            case Narrowed::kUnchanged:
+                break;
+            case Narrowed::kChanged:
+                enqueue_rows_of(var);
+                break;
+        }
+    }
+    // Propagated even after a crossing fixing, as the reference does.
+    return run_queue() && ok;
+}
+
+void DomainPropagator::check_request(int32_t var, double lo, double hi, const char* caller) const {
     if (var < 0 || var >= store_.num_vars()) {
-        throw std::out_of_range("DomainPropagator::tighten: variable " + std::to_string(var));
+        throw std::out_of_range(std::string("DomainPropagator::") + caller + ": variable " +
+                                std::to_string(var));
     }
     if (std::isnan(lo) || std::isnan(hi)) {
-        throw std::invalid_argument("DomainPropagator::tighten: NaN bound on variable " +
-                                    std::to_string(var));
+        throw std::invalid_argument(std::string("DomainPropagator::") + caller +
+                                    ": NaN bound on variable " + std::to_string(var));
     }
+}
+
+// Intersects `var`'s domain with `[lo, hi]` (inward on an integral variable),
+// without propagating. A crossing beyond the margin changes nothing.
+DomainPropagator::Narrowed DomainPropagator::narrow(int32_t var, double lo, double hi,
+                                                    const char* caller) {
+    check_request(var, lo, hi, caller);
     ++stats_.calls;
     if (lo == kPosInf || hi == kNegInf) {
-        return conflict();  // no point satisfies it; the margins below would read inf - inf
+        // No point satisfies it; the margins below would read inf - inf.
+        return Narrowed::kConflict;
     }
     const auto j = static_cast<size_t>(var);
     const BoundPropagationOptions& b = opts_.bounds;
@@ -438,19 +484,17 @@ bool DomainPropagator::tighten(int32_t var, double lo, double hi) {
     double new_hi = std::min(hi, hi_[j]);
     if (new_lo > new_hi) {
         if (new_lo > new_hi + relaxation(new_lo, b)) {
-            return conflict();
+            return Narrowed::kConflict;
         }
         // A crossing within the margin: a point, inside the current box.
         const double point = (lo_[j] == new_lo) ? new_lo : new_hi;
         new_lo = new_hi = std::min(std::max(point, lo_[j]), hi_[j]);
     }
     if (new_lo == lo_[j] && new_hi == hi_[j]) {
-        return true;
+        return Narrowed::kUnchanged;
     }
     set_bounds(var, new_lo, new_hi);
-    begin_call();
-    enqueue_rows_of(var);
-    return run_queue();
+    return Narrowed::kChanged;
 }
 
 bool DomainPropagator::propagate_all() {

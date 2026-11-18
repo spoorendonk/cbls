@@ -64,7 +64,7 @@ TEST_CASE("diveprop solves a chain that fixing without propagation breaks", "[fp
     }
 }
 
-TEST_CASE("dfs backtracks out of a conflict to a feasible leaf; diveprop keeps the fixing",
+TEST_CASE("dfs backtracks out of a conflict to a feasible leaf; diveprop keeps the conflict",
           "[fpr]") {
     // a = 1 forces b = c = 0 against b + c >= 1: refuted only by the cascade,
     // so the root pass leaves a free.
@@ -91,11 +91,21 @@ TEST_CASE("dfs backtracks out of a conflict to a feasible leaf; diveprop keeps t
     CHECK(val(r, c) == 1.0);
     CHECK(rig.prop.depth() == depth);
 
+    // The refuted a = 1 and its partial deductions b = c = 0 stay in the
+    // propagator, as in the reference (#427): the dive ends there, and the
+    // fill agrees with the propagator on a. Undone and kept outside, a later
+    // b = 1 would derive a = 0 while the fill emitted a = 1.
     rig.fpr.run({FprVarOrder::LR, FprValueRule::Up, FprMode::Diveprop}, 0, rng, r);
     CHECK(r.complete);
     CHECK(r.conflicts == 1);
-    CHECK(val(r, a) == 1.0);  // kept outside the propagator; repair's job now
+    CHECK(r.nodes == 1);
+    CHECK(val(r, a) == 1.0);  // repair's job now
+    CHECK(val(r, b) == 0.0);
+    CHECK(val(r, c) == 0.0);
     CHECK(rig.prop.depth() == depth);
+    CHECK(rig.prop.hi(vid(a)) == 1.0);  // all undone at exit
+    CHECK(rig.prop.lo(vid(b)) == 0.0);
+    CHECK(rig.prop.hi(vid(b)) == 1.0);
 
     rig.fpr.run({FprVarOrder::LR, FprValueRule::Up, FprMode::Dfsrep}, 0, rng, r);
     CHECK(r.complete);

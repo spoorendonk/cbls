@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <limits>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 using namespace cbls;
@@ -76,10 +77,27 @@ void build_random(Model& m, RNG& rng) {
     full_evaluate(m);
 }
 
-// One random operation: checkpoint, fix, tighten or backtrack. Returns the
-// tighten/fix result, true otherwise. `levels` mirrors the checkpoint stack.
+// A value inside variable `v`'s current domain, integral on an Int.
+double random_value(const DomainPropagator& p, const Model& m, RNG& rng, int32_t v) {
+    const double a = rng.uniform(p.lo(v), p.hi(v));
+    return m.var(v).type == VarType::Int ? std::round(a) : a;
+}
+
+// One random operation: checkpoint, fix, tighten, fix_all or backtrack.
+// Returns the propagating call's result, true otherwise. `levels` mirrors the
+// checkpoint stack.
 bool random_op(DomainPropagator& p, const Model& m, RNG& rng, std::vector<int32_t>& levels) {
-    const int64_t op = rng.integers(0, 4);
+    const int64_t op = rng.integers(0, 5);
+    if (op == 4) {
+        std::vector<std::pair<int32_t, double>> fixings;
+        const int64_t n = rng.integers(1, 4);
+        for (int64_t k = 0; k < n; ++k) {
+            const auto v =
+                static_cast<int32_t>(rng.integers(0, static_cast<int64_t>(m.num_vars())));
+            fixings.emplace_back(v, random_value(p, m, rng, v));
+        }
+        return p.fix_all(fixings);
+    }
     if (op == 0) {
         levels.push_back(p.checkpoint());
         return true;
@@ -96,11 +114,7 @@ bool random_op(DomainPropagator& p, const Model& m, RNG& rng, std::vector<int32_
     const auto v = static_cast<int32_t>(rng.integers(0, static_cast<int64_t>(m.num_vars())));
     const double lo = p.lo(v);
     const double hi = p.hi(v);
-    const bool integral = m.var(v).type == VarType::Int;
-    double a = rng.uniform(lo, hi);
-    if (integral) {
-        a = std::round(a);
-    }
+    const double a = random_value(p, m, rng, v);
     if (op == 1) {
         return p.fix(v, a);
     }
@@ -211,8 +225,11 @@ TEST_CASE("an empty implied domain is a conflict", "[domain_propagation]") {
     CHECK_FALSE(p.fix(vid(y), 0.0));
 }
 
+// Ops go on after a conflict without a backtrack (#427): the state stays
+// consistent, and a later backtrack still restores it bit for bit.
 TEST_CASE("random fix and backtrack restore bounds and activities bit for bit",
           "[domain_propagation]") {
+    int64_t continued = 0;  // ops run from a conflicted, unbacktracked state
     for (uint64_t seed = 1; seed <= 20; ++seed) {
         RNG rng(seed);
         Model m;
@@ -225,9 +242,15 @@ TEST_CASE("random fix and backtrack restore bounds and activities bit for bit",
         const int32_t root = p.checkpoint();
         std::vector<int32_t> levels;
         std::vector<Snapshot> at_level;
+        bool conflicted = false;
         for (int step = 0; step < 300; ++step) {
             const size_t before = levels.size();
-            random_op(p, m, rng, levels);
+            continued += conflicted ? 1 : 0;
+            const bool ok = random_op(p, m, rng, levels);
+            conflicted = (conflicted || !ok) && levels.size() >= before;
+            for (int32_t v = 0; v < store.num_vars(); ++v) {
+                REQUIRE(p.lo(v) <= p.hi(v));  // never an empty domain
+            }
             if (levels.size() > before) {
                 at_level.push_back(snapshot(p, store));
             } else if (levels.size() < before) {
@@ -242,6 +265,57 @@ TEST_CASE("random fix and backtrack restore bounds and activities bit for bit",
         REQUIRE(snapshot(p, store) == fresh);
         REQUIRE(snapshot(p, store) == snapshot(scratch, store));
     }
+    CHECK(continued > 0);
+}
+
+TEST_CASE("fix_all propagates its fixings together and keeps them on a conflict",
+          "[domain_propagation]") {
+    Model m;
+    const int32_t x = m.bool_var();
+    const int32_t y = m.bool_var();
+    const int32_t z = m.bool_var();
+    const int32_t u = m.bool_var();
+    const int32_t w = m.bool_var();
+    m.add_constraint(m.eq_expr(m.sum({x, y, z}), m.constant(1.0)));
+    m.add_constraint(m.leq(m.sum({u, w}), m.constant(1.0)));
+    m.close();
+    full_evaluate(m);
+    const LinearRowStore store(m);
+    DomainPropagator p(store, m);
+    const int32_t base = p.checkpoint();
+    const Snapshot fresh = snapshot(p, store);
+
+    // z = 1 follows from x = 0 and y = 0 together only.
+    REQUIRE(p.fix_all({{vid(x), 0.0}, {vid(y), 0.0}}));
+    CHECK(p.lo(vid(z)) == 1.0);
+    p.backtrack(base);
+    REQUIRE(snapshot(p, store) == fresh);
+
+    // A propagation conflict keeps both fixings, and the state goes on.
+    p.checkpoint();
+    CHECK_FALSE(p.fix_all({{vid(x), 1.0}, {vid(y), 1.0}}));
+    CHECK(p.lo(vid(x)) == 1.0);
+    CHECK(p.lo(vid(y)) == 1.0);
+    REQUIRE(p.fix(vid(u), 1.0));
+    CHECK(p.hi(vid(w)) == 0.0);
+    p.backtrack(base);
+    REQUIRE(snapshot(p, store) == fresh);
+
+    // A crossing fixing is skipped; the others are still fixed and propagated.
+    p.checkpoint();
+    REQUIRE(p.fix(vid(x), 1.0));
+    const int64_t conflicts = p.stats().conflicts;
+    CHECK_FALSE(p.fix_all({{vid(y), 1.0}, {vid(u), 1.0}}));
+    CHECK(p.stats().conflicts == conflicts + 1);
+    CHECK(p.hi(vid(y)) == 0.0);
+    CHECK(p.hi(vid(w)) == 0.0);
+
+    // A bad request throws before any change.
+    const Snapshot before = snapshot(p, store);
+    CHECK_THROWS_AS(p.fix_all({{vid(w), 0.0}, {store.num_vars(), 0.0}}), std::out_of_range);
+    CHECK(snapshot(p, store) == before);
+    p.backtrack(base);
+    REQUIRE(snapshot(p, store) == fresh);
 }
 
 TEST_CASE("the slack filter skips no row a full scan would tighten", "[domain_propagation]") {

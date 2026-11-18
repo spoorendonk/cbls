@@ -11,6 +11,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <utility>
 #include <vector>
 
 namespace cbls {
@@ -178,13 +179,22 @@ public:
     bool fix(int32_t var, double value);
     /// Intersects `var`'s bounds with `[lo, hi]` (rounded inward on an
     /// integral variable) and propagates. False on a conflict (an empty domain
-    /// beyond the safety margin); the state is then partial, and the caller
-    /// backtracks. Throws `std::invalid_argument` on a NaN bound.
+    /// beyond the safety margin). No domain is ever left empty: a crossing
+    /// bound is refused, not written, and every change under a checkpoint is
+    /// trailed. So after a conflict the state is partial but consistent, and
+    /// the caller may backtrack or keep fixing and propagating from it (#427).
+    /// Throws `std::invalid_argument` on a NaN bound.
     bool tighten(int32_t var, double lo, double hi);
+    /// Fixes every `(var, value)` without propagating, then propagates the rows
+    /// of every changed variable together: the reference FPR's trivial round
+    /// (#427). A fixing that crosses its domain is a conflict and is skipped;
+    /// the rest are kept and propagated. False on any conflict; the state is
+    /// then as after `tighten`'s. Throws before any change on a bad request.
+    bool fix_all(const std::vector<std::pair<int32_t, double>>& fixings);
     /// Scans every row, cascading as `tighten` does: with cascade on, to a
     /// fixpoint under the work valve. The root propagation (#420). False on a
-    /// conflict, a violated constant row included; the state is then partial,
-    /// and the caller backtracks.
+    /// conflict, a violated constant row included; the state is then as after
+    /// `tighten`'s.
     bool propagate_all();
 
     [[nodiscard]] double lo(int32_t var) const { return lo_[static_cast<size_t>(var)]; }
@@ -205,7 +215,10 @@ public:
 
 private:
     struct RowEntry;  // a trailed row: its index and both old activities
+    enum class Narrowed : uint8_t { kConflict, kUnchanged, kChanged };
 
+    void check_request(int32_t var, double lo, double hi, const char* caller) const;
+    Narrowed narrow(int32_t var, double lo, double hi, const char* caller);
     void set_bounds(int32_t var, double lo, double hi);
     bool apply(int32_t var, double value, bool upper, double roundoff);
     void rebuild_activities(int32_t r, activity_detail::Activity& min_act,

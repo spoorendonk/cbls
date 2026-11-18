@@ -2573,6 +2573,9 @@ fixing variables one at a time under propagation (fix-propagate-repair, #421):
 - **`checkpoint`/`backtrack`** trail old values, never differences, so a
   backtrack restores bounds and activities bit for bit. With no checkpoint
   held nothing is trailed, so the root pass leaves no trail behind.
+- **After a conflict** the state is partial but consistent: a crossing bound
+  is refused, never written, so the caller may backtrack or keep fixing and
+  propagating (#427). `fix_all` fixes a batch, then propagates their rows once.
 
 It never writes the model's domains: the adapters already tighten at load.
 `DomainPropagationStats::propagate_all_bounds_derived` counts the root's
@@ -2594,8 +2597,9 @@ wants leaf repair; repair itself is the caller's (#426).
 - **Values** (Table 2, LP-free): `Up`, `Random`, `GoodObj`/`BadObj` (by the
   min-form objective's partial), `LooseDyn` (fewer locks, counting only rows
   neither infeasible nor redundant at the current activities), `Incumbent`.
-- **Modes**: `Diveprop` never backtracks: a refuted fix is undone and kept
-  outside the propagator, and the dive goes on. `Dfs` backtracks to the next
+- **Modes**: `Diveprop` never backtracks: a refuted fix and its partial
+  deductions stay in the propagator, and the dive goes on (the reference's
+  single big dive, #427). `Dfs` backtracks to the next
   sibling value on a conflict, at most `num_vars + 1` nodes. `Dfsrep` searches
   as `Dfs` and asks for leaf repair (in-tree repair is deferred, #419).
 - **Fill**: a Float with a cost takes its cost-preferred bound, one without
@@ -2603,10 +2607,9 @@ wants leaf repair; repair itself is the caller's (#426).
   box; an infinite bound is boxed to width 1e5 from the finite one, or to
   ±1e5 (paper Section 6). A Dfs conflict is undone at once, so an exhausted
   stack fills from the last consistent state.
-- **Deviations**, both forced by `DomainPropagator`'s rule that a conflict is
-  backtracked: a refuted trivial rounding is skipped, and a refuted Diveprop
-  fixing is kept outside the propagator; the reference carries on in the
-  refuted state.
+- **Trivial roundings** (paper Section 6) are fixed together with
+  `DomainPropagator::fix_all` and propagated once, the verdict ignored, as the
+  reference does.
 - `kFprPortfolio` is mip-heuristics' six initial configs less Dive and
   RepairSearch; `fpr_portfolio_config(worker, attempt)` rotates through it.
 

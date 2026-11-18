@@ -118,8 +118,6 @@ FprSearch::FprSearch(const Model& model, const LinearRowStore& store, DomainProp
     binary_.assign(n, 0);
     linear_only_.assign(n, 0);
     cost_.assign(n, 0.0);
-    forced_.assign(n, 0);
-    forced_value_.assign(n, 0.0);
     for (size_t v = 0; v < n; ++v) {
         const Variable& var = model.var(static_cast<int32_t>(v));
         if (is_structured(var.type)) {
@@ -274,15 +272,15 @@ double FprSearch::alternative(int32_t var, double preferred) const {
 }
 
 bool FprSearch::fixed(int32_t var) const {
-    return forced_[static_cast<size_t>(var)] != 0 || prop_.lo(var) >= prop_.hi(var);
+    return prop_.lo(var) >= prop_.hi(var);
 }
 
 void FprSearch::trivial_fixings() {
     // Paper Sect. 6: a variable with locks on one side only goes to its other
     // bound. Only where every row of it is linear (the store's): a nonlinear
     // row could lock it unseen. Every value is read off the root box first, as
-    // the reference fixes them all before one propagation; a refuted one is
-    // skipped (a deviation, see the header; #427).
+    // the reference fixes them all, propagates once and ignores the verdict
+    // (#427): a conflict here is left for the dive and the repair.
     trivial_.clear();
     for (const int32_t v : scalars_) {
         const auto i = static_cast<size_t>(v);
@@ -297,13 +295,7 @@ void FprSearch::trivial_fixings() {
         const Box b = boxed(prop_.lo(v), prop_.hi(v), inf_);
         trivial_.emplace_back(v, up_free ? b.hi : b.lo);
     }
-    for (const auto& [v, value] : trivial_) {
-        const int32_t level = prop_.checkpoint();
-        if (prop_.fix(v, value)) {
-            continue;  // the checkpoint stays held: `run` unwinds it at exit
-        }
-        prop_.backtrack(level);
-    }
+    prop_.fix_all(trivial_);  // under `run`'s entry checkpoint, which unwinds it
 }
 
 void FprSearch::heap_push(int32_t var) {
@@ -369,9 +361,7 @@ void FprSearch::fill(const FprConfig& cfg, RNG& rng, FprResult& out) const {
         }
         const double c = cost_[i];
         double value = 0.0;
-        if (forced_[i] != 0) {
-            value = forced_value_[i];
-        } else if (integral_[i] == 0) {
+        if (integral_[i] == 0) {
             // The cost-preferred bound, else the reference's cont_fallback (the
             // current value); either clamped to the boxed domain.
             const Box b = boxed(lo, hi, inf_);
@@ -395,7 +385,6 @@ void FprSearch::run(const FprConfig& cfg, int64_t attempt, RNG& rng, FprResult& 
     const bool backtracks = cfg.mode != FprMode::Diveprop;
     const bool dynamic = cfg.order == FprVarOrder::DomainSize;
     const int32_t entry = prop_.checkpoint();
-    std::fill(forced_.begin(), forced_.end(), 0);
     stack_.clear();
     heap_.clear();
 
@@ -464,14 +453,12 @@ void FprSearch::dive(const FprConfig& cfg, RNG& rng, FprResult& out) {
                 prop_.checkpoint();  // the sibling's pop backtracks to it
                 continue;
             }
-            // Diveprop does not stop (the paper's single big dive); the fixing
-            // is kept outside the propagator (a deviation, see the header; #427).
-            prop_.backtrack(node.level);
-            prop_.checkpoint();
-            forced_[static_cast<size_t>(node.var)] = 1;
-            forced_value_[static_cast<size_t>(node.var)] = node.value;
+            // Diveprop does not stop (the paper's single big dive): the refuted
+            // fixing and its partial deductions stay in the propagator, whose
+            // state is consistent after a conflict (#427). The value came from
+            // the node's own box, so the fixing itself was applied.
         }
-        if (dynamic && !infeas) {
+        if (dynamic) {
             heap_push_changed(node.level);
         }
         const int32_t next = next_var(dynamic, cursor);

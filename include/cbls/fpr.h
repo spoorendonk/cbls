@@ -92,11 +92,10 @@ struct FprResult {
 /// variable in no linear row is fixed by the value rule with nothing to
 /// propagate.
 ///
-/// Two deviations, both forced by `DomainPropagator`'s rule that a conflict is
-/// backtracked: a trivial rounding propagation refutes is skipped, and a
-/// Diveprop fixing propagation refutes is undone there and kept outside it
-/// (the reference carries on in the refuted state; #427). After a refuted
-/// root, `run` branches nothing and reports `complete = false`.
+/// As the reference, trivial roundings are fixed together and propagated once,
+/// the verdict ignored, and Diveprop carries on in a refuted state: the
+/// propagator keeps the refuted fixing and its partial deductions (#427).
+/// After a refuted root, `run` branches nothing and reports `complete = false`.
 ///
 /// Costs: the constructor is O(vars + nnz) plus one reverse sweep of the
 /// objective. `run` is at most `num_vars + 1` nodes, each a `fix` plus
@@ -189,8 +188,6 @@ private:
     std::vector<Node> stack_;
     std::vector<std::pair<double, int32_t>> heap_;  // (domain size, var), min-heap
     std::vector<int32_t> changed_;
-    std::vector<uint8_t> forced_;  // Diveprop: fixed outside the propagator
-    std::vector<double> forced_value_;
     int64_t node_cap_ = 0;
 };
 
