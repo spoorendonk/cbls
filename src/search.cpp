@@ -501,7 +501,10 @@ private:
     StructuralBatch structural_;
     // Built only when fpr_batch_probability > 0 and the root is consistent
     // (#426, #429), else null: a refuted root skips the FPR draw, and the
-    // other kinds are drawn as at probability 0.
+    // other kinds are drawn as at probability 0. The seconds are declared first:
+    // building `fpr_` writes them, and the constructor body copies them to
+    // `counters_`, which is declared later.
+    double fpr_setup_seconds_ = 0.0;
     std::unique_ptr<FprBatch> fpr_;
     // The LNS repair's rows (#431), built at the first LNS kick with
     // `lns_repair_fpr`, else null: the LNS then repairs with FJ alone.
@@ -550,13 +553,22 @@ private:
 };
 
 // Null at probability 0 (nothing built) and on a refuted root (#429).
+// `setup_seconds` is written only under a wall-clock budget (SearchCounters).
 std::unique_ptr<FprBatch> make_fpr_batch(Model& model, const SearchConfig& config,
-                                         const Budget& budget) {
+                                         const Budget& budget, double& setup_seconds) {
     if (!(config.fpr_batch_probability > 0.0)) {
         return nullptr;
     }
+    std::chrono::steady_clock::time_point start;
+    if (budget.has_deadline) {
+        start = std::chrono::steady_clock::now();
+    }
     auto batch =
         std::make_unique<FprBatch>(model, config.fpr_worker, budget.has_deadline, budget.deadline);
+    if (budget.has_deadline) {
+        setup_seconds =
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    }
     return batch->root_ok() ? std::move(batch) : nullptr;
 }
 
@@ -589,11 +601,12 @@ ViolationLSLoop::ViolationLSLoop(Model& model, ViolationManager& vm, RNG& rng, F
       unproductive_arm_stagnation_(
           std::max(1, config.perturbation_period / kUnproductiveArmDivisor)),
       structural_(model, config, structural_probability_ > 0.0),
-      fpr_(make_fpr_batch(model, config, budget)),
+      fpr_(make_fpr_batch(model, config, budget, fpr_setup_seconds_)),
       best_state_(model.copy_state()),
       closest_state_(best_state_),
       last_callback_(budget.start),
       last_improvement_(budget.start) {
+    counters_.fpr_setup_seconds = fpr_setup_seconds_;
     sample_rho();
 }
 

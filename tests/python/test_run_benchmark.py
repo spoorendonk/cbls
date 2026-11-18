@@ -242,26 +242,40 @@ def test_the_runner_refuses_a_tuning_flag_it_cannot_run(
     assert not out_dir.exists()
 
 
-def _run_tiny(tmp_path: Path, name: str, threads: int, flags: list[str]) -> dict[str, object]:
-    """One 0.3 s run of the tiny MPS; its result row."""
+def _binaries_mps(count: int) -> str:
+    """`count` binaries between two loose rows, so an FPR repair dive opens nodes:
+    each is locked both ways, as a one-side lock is fixed before the dive starts."""
+    columns = "".join(f"    b{i}  COST  -1.0  R1  1.0\n    b{i}  R2  1.0\n" for i in range(count))
+    bounds = "".join(f" BV BND  b{i}\n" for i in range(count))
+    return (
+        f"NAME BINARIES\nROWS\n N  COST\n L  R1\n G  R2\nCOLUMNS\n{columns}"
+        f"RHS\n    RHS  R1  {count - 1}.0  R2  1.0\nBOUNDS\n{bounds}ENDATA\n"
+    )
+
+
+def _run_tiny(
+    tmp_path: Path, name: str, threads: int, flags: list[str], instance: str = "tiny"
+) -> dict[str, object]:
+    """One 0.3 s run of a small MPS (`tiny` or `binaries`); its result row."""
     from test_verify_solution import TINY_MPS
 
     inst_dir = tmp_path / "instances"
     if not inst_dir.exists():
         inst_dir.mkdir()
         (inst_dir / "tiny.mps.gz").write_bytes(gzip.compress(TINY_MPS.encode()))
+        (inst_dir / "binaries.mps.gz").write_bytes(gzip.compress(_binaries_mps(12).encode()))
     out_dir = tmp_path / name
     completed = subprocess.run(
         [
             str(_binary()),
-            *("--instance", "tiny", "--inst-dir", str(inst_dir), "--out-dir", str(out_dir)),
+            *("--instance", instance, "--inst-dir", str(inst_dir), "--out-dir", str(out_dir)),
             *("--budget", "0.3", "--threads", str(threads), *flags),
         ],
         capture_output=True,
         text=True,
     )
     assert completed.returncode == 0, completed.stdout + completed.stderr
-    row: dict[str, object] = json.loads((out_dir / "tiny.json").read_text())
+    row: dict[str, object] = json.loads((out_dir / f"{instance}.json").read_text())
     return row
 
 
@@ -323,6 +337,27 @@ def test_each_tuning_flag_reaches_the_search(tmp_path: Path, threads: int) -> No
     assert fixed["unproductive_iters"] == 0
     assert _count(eager, "perturbations") > 3 * max(_count(fixed, "perturbations"), 1)
 
+    # Fix-propagate-repair (#423): every batch a dive at probability 1, none by
+    # default; the LNS repair dives only when asked, and the row reports its work.
+    plain = run("fpr-off", [*kicks, "--lns-interval", "1"])
+    dives = run("fpr-batch", ["--fpr-prob", "1"])
+    repair = _run_tiny(
+        tmp_path,
+        "fpr-repair",
+        threads,
+        [*kicks, "--lns-interval", "1", "--lns-repair-fpr"],
+        instance="binaries",
+    )
+    assert plain["fpr_prob"] == 0.0
+    assert plain["lns_repair_fpr"] is False
+    assert _count(plain, "fpr_batches") == 0 == _count(plain, "lns_fpr_dives")
+    assert plain["fpr_setup_seconds"] == 0.0
+    assert dives["fpr_prob"] == 1.0
+    assert _count(dives, "fpr_batches") > 0
+    assert isinstance(dives["fpr_setup_seconds"], float) and dives["fpr_setup_seconds"] > 0.0
+    assert repair["lns_repair_fpr"] is True
+    assert _count(repair, "lns_fpr_dives") > 0 and _count(repair, "lns_fpr_nodes") > 0
+
 
 def test_a_default_row_records_the_tuning_flags_at_the_pre_267_values(tmp_path: Path) -> None:
     """The default arm's row carries #267's keys at the values every older row
@@ -348,6 +383,8 @@ def _driver_args(**overrides: object) -> argparse.Namespace:
         "inf_clamp": 1.0e7,
         "compound_moves": True,
         "objective_tie_break": True,
+        "fpr_prob": 0.0,
+        "lns_repair_fpr": False,
         "propagate_bounds": True,
         "cpsat_workers": 1,
         "cbls_threads": 1,
@@ -415,6 +452,14 @@ def test_build_command_states_the_configuration(
             assert command[command.index(flag) + 1] == value
     for flag in absent:
         assert flag not in command
+    # The FPR arms (#423) are opt-in: stated only when asked for.
+    if not overrides:
+        assert "--fpr-prob" not in command and "--lns-repair-fpr" not in command
+    if engine == "cbls":
+        arm = _driver_args(**{**overrides, "fpr_prob": 0.25, "lns_repair_fpr": True})
+        armed = build_command(Job(engine, "inst"), arm, Path("/results"))
+        assert armed[armed.index("--fpr-prob") + 1] == "0.25"
+        assert "--lns-repair-fpr" in armed
 
 
 def _main_with(argv: list[str]) -> int:
@@ -461,12 +506,38 @@ def _main_with(argv: list[str]) -> int:
             "!= --cpsat-workers",
         ),
         (["--cpsat-workers", "-1"], "--cpsat-workers >= 0", None),
+        (["--fpr-prob", "1.5"], "--fpr-prob must be in [0, 1]", None),
+        (["--fpr-prob", "-0.5"], "--fpr-prob must be in [0, 1]", None),
+        (["--fpr-prob", "nan"], "--fpr-prob must be in [0, 1]", None),
+        # A non-default arm may not produce the published table, however the
+        # full roster is named; on a subset the next guard fires instead.
+        (["--roster", "full", "--fpr-prob", "0.25"], "refused on the full roster", None),
+        (["--roster", "full", "--lns-repair-fpr"], "refused on the full roster", None),
+        (
+            ["--roster", "elsewhere/roster.csv", "--lns-repair-fpr"],
+            "refused on the full roster",
+            None,
+        ),
+        (
+            ["--roster", "smoke", "--fpr-prob", "0.25", "--lns-repair-fpr", "--budget", "0"],
+            "--budget must be > 0",
+            "refused on the full roster",
+        ),
+        (["--roster", "full", "--budget", "0"], "--budget must be > 0", "full roster"),
     ],
     ids=[
         "asymmetric-cpu-refused",
         "asymmetric-cpu-opted-into",
         "cpsat-defaults-not-asymmetric",
         "negative-workers-refused",
+        "fpr-prob-above-one-refused",
+        "fpr-prob-negative-refused",
+        "fpr-prob-nan-refused",
+        "fpr-batch-arm-on-full-roster-refused",
+        "fpr-repair-arm-on-full-roster-refused",
+        "fpr-arm-on-full-roster-by-path-refused",
+        "fpr-arm-on-subset-allowed",
+        "default-arm-on-full-roster-allowed",
     ],
 )
 def test_the_driver_refuses_a_run_whose_flags_cannot_be_read(
@@ -538,6 +609,13 @@ def test_resuming_under_a_different_search_arm_is_refused(tmp_path: Path) -> Non
     result.write_text(json.dumps({"instance": "a", "threads": 1, "compound_moves": True, **tie}))
     assert check() is None
     assert check(compound_moves=False) == 2
+    # The FPR arms (#423): a row without the keys ran them off.
+    assert check(fpr_prob=0.25) == 2
+    assert check(lns_repair_fpr=True) == 2
+    armed = {"fpr_prob": 0.25, "lns_repair_fpr": True}
+    result.write_text(json.dumps({"instance": "a", "threads": 1, **tie, **armed}))
+    assert check(**armed) is None
+    assert check() == 2
 
 
 def test_a_default_run_resumes_over_a_job_it_killed(tmp_path: Path) -> None:

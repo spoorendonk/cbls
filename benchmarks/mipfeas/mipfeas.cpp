@@ -37,6 +37,7 @@
 #include <iomanip>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <nlohmann/json.hpp>
 #include <string>
 #include <utility>
@@ -54,9 +55,13 @@ constexpr double kLnsFraction = 0.3;
 // (--compound-moves, --no-objective-tie-break: own JSON keys) or misfit its
 // protocol (--no-time-limit, --max-iterations against a wall-budget Primal
 // Integral; --no-float-hook, unasked). Unlisted ones hit "Unknown argument".
-constexpr std::array<const char*, 5> kSharedSearchFlags = {"--no-lns", "--lns-interval",
-                                                           "--novelty-prob", "--unproductive-iters",
-                                                           "--perturbation-period"};
+constexpr std::array<const char*, 7> kSharedSearchFlags = {"--no-lns",
+                                                           "--lns-interval",
+                                                           "--novelty-prob",
+                                                           "--unproductive-iters",
+                                                           "--perturbation-period",
+                                                           "--fpr-prob",
+                                                           "--lns-repair-fpr"};
 
 /// The families the flags above belong to, for validate_search_flags().
 constexpr unsigned kSharedSearchFamilies = cbls::bench::kScalarRunnerSearchFlags;
@@ -114,6 +119,7 @@ void print_usage() {
         "                    [--no-objective-tie-break]\n"
         "                    [--no-lns] [--lns-interval N] [--novelty-prob P]\n"
         "                    [--unproductive-iters N] [--perturbation-period N]\n"
+        "                    [--fpr-prob P] [--lns-repair-fpr]\n"
         "                    [--threads N]\n"
         "                    [--share-bound | --no-share-bound]\n"
         "                    [--solution-dir DIR]\n"
@@ -356,6 +362,8 @@ void write_result(const Args& args, const nlohmann::json& extra) {
     j["novelty_prob"] = args.search.novelty_prob;
     j["unproductive_iters"] = args.search.unproductive_iters;
     j["perturbation_period"] = args.search.perturbation_period;
+    j["fpr_prob"] = args.search.fpr_prob;
+    j["lns_repair_fpr"] = args.search.lns_repair_fpr;
     j["commit_sha"] = args.commit_sha;
 
     // Atomic: the driver resumes on file existence without revalidating, so a
@@ -481,12 +489,22 @@ cbls::mipfeas::OriginalCheck check_against_file(const Args& args, const cbls::Mp
     return check;
 }
 
+void add_fpr_repair_stats(cbls::LNS::FprRepairStats& total, const cbls::LNS::FprRepairStats& s) {
+    total.dives += s.dives;
+    total.kept_conflicts += s.kept_conflicts;
+    total.root_refuted += s.root_refuted;
+    total.nodes += s.nodes;
+}
+
 /// The portfolio arm of the solve: N workers over one shared structure, plus
-/// the reconciliation the single-threaded path gets for free.
+/// the reconciliation the single-threaded path gets for free. `fpr_repair`
+/// receives the FPR repair's work summed over every LNS the workers built. It
+/// includes an attempt whose solve threw, whose other counters `run_worker` drops.
 cbls::SearchResult solve_portfolio(const Args& args, cbls::MpsToModelResult& built,
                                    const cbls::SearchConfig& cfg,
                                    std::vector<cbls::Model>& replicas,
-                                   cbls::SolveCallback* recorder) {
+                                   cbls::SolveCallback* recorder,
+                                   cbls::LNS::FprRepairStats& fpr_repair) {
     std::atomic<size_t> next_replica{0};
     // Called once per worker on its own thread, hence atomic. Hands over a
     // pre-built replica by move; the copy past the end is unreachable under
@@ -506,9 +524,16 @@ cbls::SearchResult solve_portfolio(const Args& args, cbls::MpsToModelResult& bui
     // Empty under --no-lns: ParallelSearch then gives no worker an LNS, as
     // lns_argument() gives the single-threaded solve() a null one.
     std::function<std::shared_ptr<cbls::LNS>()> lns_factory;
+    // Kept for the FPR repair's stats. `run_worker` calls the factory once per
+    // worker, on the worker's thread, so this holds one LNS per thread.
+    std::mutex built_lns_mutex;
+    std::vector<std::shared_ptr<cbls::LNS>> built_lns;
     if (args.search.lns) {
-        lns_factory = []() -> std::shared_ptr<cbls::LNS> {
-            return std::make_shared<cbls::LNS>(kLnsFraction);
+        lns_factory = [&built_lns_mutex, &built_lns]() -> std::shared_ptr<cbls::LNS> {
+            auto lns = std::make_shared<cbls::LNS>(kLnsFraction);
+            const std::scoped_lock lock(built_lns_mutex);
+            built_lns.push_back(lns);
+            return lns;
         };
     }
     cbls::ParallelConfig par_config;
@@ -520,6 +545,9 @@ cbls::SearchResult solve_portfolio(const Args& args, cbls::MpsToModelResult& bui
     // (#157).
     cbls::SearchResult result = ps.solve(model_factory, args.budget, args.seed, cfg, hook_factory,
                                          lns_factory, recorder, par_config);
+    for (const std::shared_ptr<cbls::LNS>& lns : built_lns) {
+        add_fpr_repair_stats(fpr_repair, lns->fpr_repair_stats());
+    }
     // The master still holds its initial point: restore the returned one and
     // re-evaluate, as a single-threaded solve() leaves it. No
     // `set_objective_bound` (unlike ViolationLSLoop::finish()): no search ran on
@@ -624,6 +652,8 @@ int run_benchmark(int argc, char** argv) {
     cfg.novelty_jump_probability = args.search.novelty_prob;
     cfg.unproductive_iterations = args.search.unproductive_iters;
     cfg.perturbation_period = static_cast<int>(args.search.perturbation_period);
+    cfg.fpr_batch_probability = args.search.fpr_prob;
+    cfg.lns_repair_fpr = args.search.lns_repair_fpr;
 
     // One model per portfolio worker, replicated before the solve bracket
     // (replicas share the immutable structure, #157), because:
@@ -662,16 +692,18 @@ int run_benchmark(int argc, char** argv) {
     const auto t0 = std::chrono::steady_clock::now();
     cbls::SearchResult result;
     long trace_points = 0;
+    cbls::LNS::FprRepairStats fpr_repair;
     try {
         TraceRecorder recorder(trace);
         if (args.threads > 1) {
-            result = solve_portfolio(args, built, cfg, replicas, &recorder);
+            result = solve_portfolio(args, built, cfg, replicas, &recorder, fpr_repair);
         } else {
             cbls::FloatIntensifyHook hook;
             cbls::LNS lns(kLnsFraction);
             result = cbls::solve(built.model, args.budget, args.seed, &hook,
                                  cbls::bench::lns_argument(args.search, lns), cfg.lns_interval,
                                  &recorder, cfg);
+            fpr_repair = lns.fpr_repair_stats();
         }
         trace_points = recorder.n_points();
     } catch (const std::exception& e) {
@@ -727,6 +759,14 @@ int run_benchmark(int argc, char** argv) {
         {"novelty_moves", result.counters.novelty_moves},
         {"novelty_commits", result.counters.novelty_commits},
         {"novelty_weight_bumps", result.counters.novelty_weight_bumps},
+        // Fix-propagate-repair (#423), summed over workers: the batch's count and
+        // its setup, which no deadline bounds, and the LNS repair's work.
+        {"fpr_batches", result.counters.fpr_batches},
+        {"fpr_setup_seconds", result.counters.fpr_setup_seconds},
+        {"lns_fpr_dives", fpr_repair.dives},
+        {"lns_fpr_kept_conflicts", fpr_repair.kept_conflicts},
+        {"lns_fpr_root_refuted", fpr_repair.root_refuted},
+        {"lns_fpr_nodes", fpr_repair.nodes},
         // Shared-bound engagement (#179), summed over workers: a null A/B vs a
         // mechanism that never fired. Zero at --threads 1. With sharing off,
         // `bound_behind_global_*` is the opportunity it would take.

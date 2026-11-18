@@ -775,6 +775,7 @@ NB_MODULE(_cbls_core, m) {
         .def_ro("novelty_weight_bumps", &SearchCounters::novelty_weight_bumps)
         .def_ro("structural_batches", &SearchCounters::structural_batches)
         .def_ro("fpr_batches", &SearchCounters::fpr_batches)
+        .def_ro("fpr_setup_seconds", &SearchCounters::fpr_setup_seconds)
         .def_ro("structural_moves_tried", &SearchCounters::structural_moves_tried)
         .def_ro("structural_moves_accepted", &SearchCounters::structural_moves_accepted)
         .def_ro("by_generator", &SearchCounters::by_generator)

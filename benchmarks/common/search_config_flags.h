@@ -55,7 +55,7 @@ inline constexpr unsigned kStructuralSearchFlags = 1U << 2U;
 inline constexpr unsigned kNeighbourSearchFlags = 1U << 3U;
 inline constexpr std::size_t kSearchFlagFamilyCount = 4;
 /// What a runner over scalar models (minlplib, uc-chped, and mipfeas for the
-/// five shared flags it takes, #267) declares.
+/// seven shared flags it takes, #267 and #423) declares.
 inline constexpr unsigned kScalarRunnerSearchFlags = kCommonSearchFlags | kScalarSearchFlags;
 
 /// The family's spelling in a refusal.

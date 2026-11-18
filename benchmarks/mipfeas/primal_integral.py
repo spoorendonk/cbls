@@ -136,21 +136,25 @@ CONFIG_KEYS = (
     "novelty_prob",
     "unproductive_iters",
     "perturbation_period",
+    "fpr_prob",
+    "lns_repair_fpr",
     "workers",
     "parameters",
 )
 
-#: The engine knobs `cbls_mipfeas` takes as flags (#267), at the values rows
-#: written before #267 ran: LNS on at interval 3 and the engine's defaults for
-#: the other three. A key at this value is dropped from the config cell, so a row
-#: without the key and a default row share one cell and every table scored
-#: before #267 stays byte-identical.
+#: The engine knobs `cbls_mipfeas` takes as flags (#267, #423), at the values rows
+#: written before those flags ran: LNS on at interval 3, the engine's defaults for
+#: the other three of #267, and both FPR arms off. A key at this value is dropped
+#: from the config cell, so a row without the key and a default row share one cell
+#: and every table scored before the flags stays byte-identical.
 TUNABLE_DEFAULTS: dict[str, object] = {
     "lns": True,
     "lns_interval": 3,
     "novelty_prob": 0.5,
     "unproductive_iters": 300,
     "perturbation_period": 100,
+    "fpr_prob": 0.0,
+    "lns_repair_fpr": False,
 }
 
 

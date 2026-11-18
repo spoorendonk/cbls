@@ -30,6 +30,7 @@ void SearchCounters::merge(const SearchCounters& other) {
     novelty_weight_bumps += other.novelty_weight_bumps;
     structural_batches += other.structural_batches;
     fpr_batches += other.fpr_batches;
+    fpr_setup_seconds += other.fpr_setup_seconds;
     structural_moves_tried += other.structural_moves_tried;
     structural_moves_accepted += other.structural_moves_accepted;
     inner_solver_calls += other.inner_solver_calls;

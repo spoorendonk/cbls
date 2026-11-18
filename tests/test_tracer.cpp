@@ -396,22 +396,34 @@ TEST_CASE("a null tracer changes nothing", "[tracer]") {
     REQUIRE(with.first.escape_probe_armed == without.first.escape_probe_armed);
     REQUIRE(with.first.first_feasible_objective == without.first.first_feasible_objective);
 
-    // EVERY counter, not a representative one. `inner_solver_seconds` is the only
-    // field excluded and it has to be: this run has no wall clock, so both arms
-    // read 0.0 and comparing it would assert nothing -- while on a timed run it is
-    // a duration and would differ between any two runs at all.
+    // EVERY counter, not a representative one. The three durations are pinned to
+    // 0.0 instead of compared: this run has no wall clock, and on a timed run a
+    // duration would differ between any two runs at all.
     const SearchCounters& a = with.first.counters;
     const SearchCounters& b = without.first.counters;
     REQUIRE(a.batches == b.batches);
     REQUIRE(a.fj_batches == b.fj_batches);
     REQUIRE(a.novelty_batches == b.novelty_batches);
+    REQUIRE(a.novelty_moves == b.novelty_moves);
+    REQUIRE(a.novelty_commits == b.novelty_commits);
+    REQUIRE(a.novelty_weight_bumps == b.novelty_weight_bumps);
     REQUIRE(a.structural_batches == b.structural_batches);
+    REQUIRE(a.fpr_batches == b.fpr_batches);
+    REQUIRE(a.fpr_setup_seconds == 0.0);
+    REQUIRE(b.fpr_setup_seconds == 0.0);
     REQUIRE(a.structural_moves_tried == b.structural_moves_tried);
     REQUIRE(a.structural_moves_accepted == b.structural_moves_accepted);
     REQUIRE(a.inner_solver_calls == b.inner_solver_calls);
     REQUIRE(a.inner_solver_seconds == 0.0);
     REQUIRE(b.inner_solver_seconds == 0.0);
     REQUIRE(a.portfolio_restarts == b.portfolio_restarts);
+    REQUIRE(a.cone_cache_walks == b.cone_cache_walks);
+    REQUIRE(a.cone_fallback_walks == b.cone_fallback_walks);
+    REQUIRE(a.shared_bound_tightenings == b.shared_bound_tightenings);
+    REQUIRE(a.own_best_behind_global == b.own_best_behind_global);
+    REQUIRE(a.bound_behind_global_batches == b.bound_behind_global_batches);
+    REQUIRE(a.bound_behind_global_seconds == 0.0);
+    REQUIRE(b.bound_behind_global_seconds == 0.0);
     REQUIRE(a.by_generator.size() == b.by_generator.size());
     for (size_t i = 0; i < a.by_generator.size(); ++i) {
         REQUIRE(a.by_generator[i].name == b.by_generator[i].name);

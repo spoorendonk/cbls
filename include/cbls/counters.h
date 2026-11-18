@@ -60,6 +60,10 @@ struct SearchCounters {
     int64_t structural_batches = 0;
     /// Fix-propagate-repair batches (#426), its leaf-repair FJ work included.
     int64_t fpr_batches = 0;
+    /// Seconds building the FPR batch before the search starts (row store,
+    /// propagator, root propagation; no deadline bounds it, #423). Filled only
+    /// under a wall-clock budget, else 0.0; summed over workers.
+    double fpr_setup_seconds = 0.0;
 
     /// Totals over `by_generator`, so callers need not sum the vector.
     int64_t structural_moves_tried = 0;

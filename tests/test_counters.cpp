@@ -264,6 +264,8 @@ TEST_CASE("merge sums scalars and merges generator rows by name", "[counters]") 
     b.batches = 6;
     b.novelty_batches = 4;
     b.fpr_batches = 2;
+    a.fpr_setup_seconds = 0.5;
+    b.fpr_setup_seconds = 0.25;
     b.inner_solver_calls = 2;
     b.inner_solver_seconds = 0.5;
     b.portfolio_restarts = 2;
@@ -282,6 +284,7 @@ TEST_CASE("merge sums scalars and merges generator rows by name", "[counters]") 
     REQUIRE(a.novelty_batches == 4);
     REQUIRE(a.structural_batches == 1);
     REQUIRE(a.fpr_batches == 2);
+    REQUIRE(a.fpr_setup_seconds == 0.75);
     REQUIRE(a.inner_solver_calls == 3);
     REQUIRE(a.inner_solver_seconds == 0.75);
     REQUIRE(a.portfolio_restarts == 3);

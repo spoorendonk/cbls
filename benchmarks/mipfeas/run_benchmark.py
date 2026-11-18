@@ -114,6 +114,8 @@ PREFLIGHT_TIMEOUT_SECONDS = 120.0
 #: `benchmarks/instances/mipfeas/download.py`.
 MANIFEST_FILENAME = "manifest.csv"
 REFERENCES_FILENAME = "references.csv"
+#: The roster whose table is the published comparison.
+FULL_ROSTER_FILENAME = "roster.csv"
 
 
 @dataclass(frozen=True)
@@ -144,7 +146,7 @@ def read_sizes(manifest: Path) -> dict[str, int]:
 
 
 def resolve_roster(value: str, inst_dir: Path) -> Path:
-    named = {"smoke": inst_dir / "smoke.csv", "full": inst_dir / "roster.csv"}
+    named = {"smoke": inst_dir / "smoke.csv", "full": inst_dir / FULL_ROSTER_FILENAME}
     return named.get(value, Path(value))
 
 
@@ -306,6 +308,8 @@ def build_run_record(
             # that, and stderr does not survive to whoever reads the table.
             "preconditions_checked": not args.skip_preconditions,
             "force": args.force,
+            "fpr_prob": args.fpr_prob,
+            "lns_repair_fpr": args.lns_repair_fpr,
             "inf_clamp": args.inf_clamp,
             "compound_moves": args.compound_moves,
             "objective_tie_break": args.objective_tie_break,
@@ -428,6 +432,8 @@ def build_command(job: Job, args: argparse.Namespace, results_dir: Path) -> list
             "--threads",
             str(args.cbls_threads),
             *([] if args.propagate_bounds else ["--no-propagate-bounds"]),
+            *(["--fpr-prob", str(args.fpr_prob)] if args.fpr_prob != 0.0 else []),
+            *(["--lns-repair-fpr"] if args.lns_repair_fpr else []),
             *solution_flags,
             "--commit",
             args.commit,
@@ -466,6 +472,8 @@ def arm_keys(engine: str, args: argparse.Namespace) -> dict[str, object]:
         "threads": args.cbls_threads,
         "compound_moves": args.compound_moves,
         "objective_tie_break": args.objective_tie_break,
+        "fpr_prob": args.fpr_prob,
+        "lns_repair_fpr": args.lns_repair_fpr,
     }
     return keys
 
@@ -948,11 +956,13 @@ def check_resume_configuration(
 
     Returns the exit code to fail with, or None to proceed.
     """
-    # What a row without a key ran: `objective_tie_break` is back-read as off,
-    # since every row from before the flag ran its off arm; any other missing
-    # key is unknown and left alone.
-    back_read_off = {
-        "objective_tie_break",
+    # What a row without a key ran: these are back-read as off, since every row
+    # from before the flag ran its off arm; any other missing key is unknown and
+    # left alone.
+    back_read_off: dict[str, object] = {
+        "objective_tie_break": False,
+        "fpr_prob": 0.0,
+        "lns_repair_fpr": False,
     }
     for job in jobs:
         result = read_json_object(job.result_path(results_dir))
@@ -976,7 +986,7 @@ def check_resume_configuration(
         if isinstance(nested, dict):
             result = nested
         for key, asked in arm_keys(job.engine, args).items():
-            recorded = result.get(key, False if key in back_read_off else None)
+            recorded = result.get(key, back_read_off.get(key))
             if recorded is None:
                 continue  # predates the key; nothing to contradict
             if recorded != asked:
@@ -1112,6 +1122,23 @@ def check_arguments(args: argparse.Namespace) -> int | None:
             f"instance, and the anytime comparison would read that difference as an "
             f"implementation gap. Match them, or pass --allow-asymmetric-cpu if the "
             f"asymmetry is the measurement.",
+            file=sys.stderr,
+        )
+        return 2
+    # Written so NaN fails too. Left to the runner, a bad value costs a `killed`
+    # row per cbls job while CP-SAT spends its budget, and resume then refuses the fix.
+    if not 0.0 <= args.fpr_prob <= 1.0:
+        print(f"--fpr-prob must be in [0, 1] (got {args.fpr_prob}).", file=sys.stderr)
+        return 2
+    # A non-default arm may never write a published table (benchmarks/common/README.md),
+    # and the scorer stamps only a partial roster as a wiring check.
+    if (args.fpr_prob != 0.0 or args.lns_repair_fpr) and (
+        args.roster == "full" or Path(args.roster).name == FULL_ROSTER_FILENAME
+    ):
+        print(
+            "--fpr-prob and --lns-repair-fpr are refused on the full roster: a non-default "
+            "arm may not produce the published comparison table. Measure the arm on a "
+            "subset roster.",
             file=sys.stderr,
         )
         return 2
@@ -1305,6 +1332,18 @@ def main() -> int:
         help="turn off CBLS FJ's objective tie-break and objective-improving scan "
         "(#218), which is on by default since #226, as in the engine",
     )
+    parser.add_argument(
+        "--fpr-prob",
+        type=float,
+        default=0.0,
+        help="share of CBLS batches run as fix-propagate-repair dives (#423); the "
+        "runner refuses a value outside [0, 1]",
+    )
+    parser.add_argument(
+        "--lns-repair-fpr",
+        action="store_true",
+        help="run a fix-propagate-repair dive in each CBLS LNS repair (#423)",
+    )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--engines", nargs="+", choices=ENGINES, default=list(ENGINES))
     parser.add_argument("--large-bytes", type=int, default=DEFAULT_LARGE_BYTES)
@@ -1422,7 +1461,9 @@ def main() -> int:
     # comparison.csv and smoke_comparison.csv there are committed, README-cited
     # artifacts, and following a printed command must not be able to overwrite one
     # with a half-finished run (issue #103).
-    out_name = "comparison.csv" if roster_path.name == "roster.csv" else "smoke_comparison.csv"
+    out_name = (
+        "comparison.csv" if roster_path.name == FULL_ROSTER_FILENAME else "smoke_comparison.csv"
+    )
     print(
         "Score it with:\n"
         f"  python {Path(__file__).parent}/primal_integral.py "

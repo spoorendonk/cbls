@@ -1556,7 +1556,8 @@ of a kind, since the built-ins name themselves by type), the inner solver's call
 count, and a portfolio's restart count. LNS stays on `lns_repairs` /
 `lns_repairs_accepted` rather than being duplicated here.
 
-Observational only. `inner_solver_seconds` reads **0.0** on a run without a
+Observational only. `inner_solver_seconds` and `fpr_setup_seconds` (building
+the FPR batch, which no deadline bounds) read **0.0** on a run without a
 wall-clock budget, which reads no clock at all (see
 [Wall-clock budget](#wall-clock-budget)); the call count is always filled.
 
@@ -2872,8 +2873,10 @@ A null tracer changes nothing: `tests/test_tracer.cpp` compares objective,
 feasibility, residual, iteration count, perturbation and LNS counters,
 termination reason, escape-probe latch, every `SearchCounters` field
 (per-generator rows included) and the **full final assignment** between a
-traced and an untraced run of the same seed, except `inner_solver_seconds`, a
-duration, which reads 0.0 in both arms of that clockless run.
+traced and an untraced run of the same seed, except `inner_solver_seconds`,
+`fpr_setup_seconds` and `bound_behind_global_seconds`, durations, which read 0.0
+in both arms of that clockless
+run.
 
 ---
 

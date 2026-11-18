@@ -155,6 +155,7 @@ def test_fpr_batch_config_round_trips_and_runs_fpr_batches() -> None:
     assert (config.fpr_batch_probability, config.fpr_worker) == (1.0, 3)
     counters = cbls.solve(_quadratic(), 0.0, 42, config=config).counters
     assert counters.fpr_batches == counters.batches > 0
+    assert counters.fpr_setup_seconds == 0.0, "a clockless run reads no clock"
 
     # Unchecked, so a negative worker must still select a portfolio entry.
     config.fpr_worker = -7

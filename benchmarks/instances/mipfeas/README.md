@@ -174,6 +174,10 @@ benchmarks/instances/mipfeas/
   tuned.txt            the 22 roster instances settings were tuned on (the tune
                        study's screen + intermediate sets); scoring roster.csv
                        with --held-out tuned.txt reports the other 211 (#255)
+  cpsat_only.csv       the 45 instances only CP-SAT solved in #255's full stage;
+                       held out for #423, reported and never tuned on
+  propagation_control.csv  #423's control: #255's 5 cbls-only instances and 15 of
+                       its 130 both-feasible ones, evenly spaced by sorted name
   manifest.csv         sha256 + byte size per instance      (committed)
   smoke_comparison.csv the wiring check's output            (committed)
   comparison.csv       scored results                       (committed once a run is published)
