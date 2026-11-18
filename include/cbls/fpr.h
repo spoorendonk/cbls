@@ -123,6 +123,8 @@ public:
         has_deadline_ = true;
         deadline_ = deadline;
     }
+    /// Back to no deadline (the LNS repair's rounds without a limit, #431).
+    void clear_deadline() { has_deadline_ = false; }
 
     /// The min-form objective's partial per variable at construction, 0 without
     /// an objective: a linear objective's costs.

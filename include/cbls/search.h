@@ -104,6 +104,10 @@ struct SearchConfig {
     // Keys the FPR portfolio rotation (`fpr_portfolio_config(worker,
     // attempt)`); ParallelSearch sets each worker's index.
     int fpr_worker = 0;
+    // LNS repair runs one fix-propagate-repair dive over the destroyed scalars,
+    // the kept ones fixed, before its FJ (#431; LNS::set_repair_store). Off by
+    // default: no store is built and the trajectory is unchanged.
+    bool lns_repair_fpr = false;
 
     // A constraint is satisfied when its violation is <= this: absolute, on the
     // constraint node's value (|lhs - rhs| for an equality). See

@@ -4,11 +4,15 @@
 #include "rng.h"
 #include "violation.h"
 
+#include <chrono>
+#include <cstdint>
 #include <memory>
 #include <utility>
+#include <vector>
 
 namespace cbls {
 
+class LinearRowStore;
 class NeighbourList;
 
 /// The key the built-in LNS accepts a repair on, compared lexicographically:
@@ -41,6 +45,9 @@ class LNS {
 public:
     explicit LNS(double destroy_fraction = 0.3);
     virtual ~LNS();
+    // Move-only: the FPR repair's engine is bound to one store (#431).
+    LNS(LNS&&) noexcept;
+    LNS& operator=(LNS&&) noexcept;
 
     // `repair_time_limit` seconds bound the FJ repair; <= 0 leaves only its
     // iteration budget, which makes it deterministic. `solve()` passes
@@ -74,10 +81,46 @@ public:
         return neighbours_;
     }
 
+    /// Fix-propagate-repair before the scalar repair's FJ (#431): the linear
+    /// rows of the model being repaired, built by `solve()` when
+    /// `SearchConfig::lns_repair_fpr` is on, set before each kick and cleared
+    /// when the solve ends. Null (default): plain FJ repair, drawing exactly as
+    /// before. With a store, each round fixes the kept integral scalars at their
+    /// incumbent values and boxes the kept floats to within the feasibility
+    /// tolerance, under propagation (a conflict skips FPR for the round), dives
+    /// once over the destroyed ones, writes their values, then FJ repairs. The
+    /// propagator and engine are built on the first round with a new store; a
+    /// refuted root skips FPR for good. The store must be built from the model
+    /// repaired; one of another width skips FPR.
+    void set_repair_store(std::shared_ptr<const LinearRowStore> store);
+    [[nodiscard]] const std::shared_ptr<const LinearRowStore>& repair_store() const {
+        return repair_store_;
+    }
+
+    /// What the FPR repair did, summed over this LNS's rounds (#431).
+    struct FprRepairStats {
+        int64_t dives = 0;           ///< rounds that ran a dive and wrote its values
+        int64_t kept_conflicts = 0;  ///< rounds whose kept values propagation refuted
+        int64_t root_refuted = 0;    ///< rounds skipped: the linear rows refute the root
+        int64_t nodes = 0;           ///< dive nodes, summed
+    };
+    [[nodiscard]] const FprRepairStats& fpr_repair_stats() const { return fpr_stats_; }
+
+protected:
+    // Holds the kept scalars and writes one dive's values into `destroyed`;
+    // `deadline` (nullable) stops the dive. True when values were written.
+    bool fpr_repair(Model& model, const std::vector<int32_t>& destroyed, RNG& rng,
+                    const std::chrono::steady_clock::time_point* deadline);
+
 private:
+    struct FprRepair;
+
     double destroy_fraction_;
     double feasibility_tolerance_ = kDefaultFeasibilityTolerance;
     std::shared_ptr<const NeighbourList> neighbours_;
+    std::shared_ptr<const LinearRowStore> repair_store_;
+    std::unique_ptr<FprRepair> fpr_;  // over `repair_store_`, built lazily
+    FprRepairStats fpr_stats_;
 };
 
 }  // namespace cbls

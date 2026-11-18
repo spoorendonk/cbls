@@ -1,6 +1,9 @@
 #include "cbls/lns.h"
 
+#include "cbls/dag.h"
 #include "cbls/dag_ops.h"
+#include "cbls/domain_propagation.h"
+#include "cbls/fpr.h"
 #include "cbls/move_generator.h"
 #include "cbls/randomize.h"
 #include "cbls/search.h"
@@ -8,6 +11,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstddef>
 #include <limits>
 #include <numeric>
 #include <utility>
@@ -15,10 +19,108 @@
 
 namespace cbls {
 
+namespace {
+
+// The LNS repair's dive (#422): random order, never backtracking, so every
+// round writes a fill for FJ to repair. A branched integer takes its
+// randomised value clamped to the propagated box. FprSearch's own rules still
+// apply first: an integer locked on one side goes to its free bound, and a
+// float with a nonzero objective partial (read when the engine is built) to
+// its cost-preferred bound. Random is FprSearch's fixed-seed order; the round
+// count as the attempt shuffles its first 30% anew each round.
+constexpr FprConfig kLnsFprConfig{FprVarOrder::Random, FprValueRule::Incumbent, FprMode::Diveprop};
+
+}  // namespace
+
+// The FPR repair's engine over `repair_store_` (#431), root propagated once.
+// Cost: built once per store, O(vars + nnz) plus the root pass.
+struct LNS::FprRepair {
+    FprRepair(const Model& model, const LinearRowStore& store)
+        : prop(store, model), search(model, store, prop), root_ok(search.propagate_root()) {}
+
+    DomainPropagator prop;
+    FprSearch search;
+    bool root_ok;
+    int64_t attempt = 0;
+    FprResult result;
+    std::vector<char> destroyed;  // per variable, refilled each round
+};
+
 LNS::LNS(double destroy_fraction) : destroy_fraction_(destroy_fraction) {}
 
-// Out of line so the vtable has a single translation unit to live in.
+// Out of line so the vtable has a single translation unit to live in, and
+// FprRepair is complete here.
 LNS::~LNS() = default;
+LNS::LNS(LNS&&) noexcept = default;
+LNS& LNS::operator=(LNS&&) noexcept = default;
+
+void LNS::set_repair_store(std::shared_ptr<const LinearRowStore> store) {
+    if (store != repair_store_) {
+        fpr_.reset();  // the engine reads the old store: rebuilt on next use
+        repair_store_ = std::move(store);
+    }
+}
+
+bool LNS::fpr_repair(Model& model, const std::vector<int32_t>& destroyed, RNG& rng,
+                     const std::chrono::steady_clock::time_point* deadline) {
+    if (static_cast<size_t>(repair_store_->num_vars()) != model.num_vars()) {
+        return false;
+    }
+    if (fpr_ == nullptr) {
+        fpr_ = std::make_unique<FprRepair>(model, *repair_store_);
+    }
+    FprRepair& f = *fpr_;
+    if (!f.root_ok) {
+        ++fpr_stats_.root_refuted;
+        return false;
+    }
+    f.destroyed.assign(model.num_vars(), 0);
+    for (const int32_t v : destroyed) {
+        f.destroyed[static_cast<size_t>(v)] = 1;
+    }
+    // The kept scalars at their incumbent values; on a conflict the round is
+    // plain FJ. Propagation's margins are tighter than the row tolerance, so
+    // that includes kept values a row only just accepts. A kept float
+    // may sit on a row within the feasibility tolerance, which an exact fix
+    // would refute, so it gets that tolerance as a box. A non-finite value
+    // cannot be held (tighten refuses NaN): the same plain-FJ round.
+    const int32_t level = f.prop.checkpoint();
+    bool consistent = true;
+    for (int32_t v = 0; v < static_cast<int32_t>(model.num_vars()) && consistent; ++v) {
+        const Variable& var = model.var(v);
+        if (f.destroyed[static_cast<size_t>(v)] != 0 || is_structured(var.type)) {
+            continue;
+        }
+        if (!std::isfinite(var.value)) {
+            consistent = false;
+        } else if (var.type == VarType::Float) {
+            consistent = f.prop.tighten(v, var.value - feasibility_tolerance_,
+                                        var.value + feasibility_tolerance_);
+        } else {
+            consistent = f.prop.fix(v, var.value);
+        }
+    }
+    if (consistent) {
+        if (deadline != nullptr) {
+            f.search.set_deadline(*deadline);
+        } else {
+            f.search.clear_deadline();
+        }
+        f.search.run(kLnsFprConfig, f.attempt++, rng, f.result);
+        ++fpr_stats_.dives;
+        fpr_stats_.nodes += f.result.nodes;
+        for (const int32_t v : destroyed) {
+            Variable& var = model.var_mut(v);
+            if (!is_structured(var.type)) {
+                var.value = f.result.values[static_cast<size_t>(v)];
+            }
+        }
+    } else {
+        ++fpr_stats_.kept_conflicts;
+    }
+    f.prop.backtrack(level);
+    return consistent;
+}
 
 // Lexicographic key (real violation, objective), as solve()'s record_best. Real
 // violation excludes the `obj <= bound` row so the objective is not counted
@@ -412,11 +514,18 @@ bool LNS::destroy_repair(Model& model, ViolationManager& vm, RNG& rng, double re
         }
 
         full_evaluate(model);
+        // Evaluated first: the engine's construction reads the objective's
+        // partials. Its writes are then evaluated again for FJ.
+        if (repair_store_ != nullptr &&
+            fpr_repair(model, var_indices, rng, repair_time_limit > 0.0 ? &deadline : nullptr)) {
+            full_evaluate(model);
+        }
 
-        // Repair via FJ-NL on what the partitions left of the limit. Floored
-        // above 0 while a limit exists: 0 means "no limit" to fj_nl_initialize.
+        // Repair via FJ-NL on what the partitions and the FPR dive left of the
+        // limit. Floored above 0 while a limit exists: 0 means "no limit" to
+        // fj_nl_initialize.
         const double fj_limit =
-            repair_time_limit > 0.0 && !partitions.empty()
+            repair_time_limit > 0.0 && (!partitions.empty() || repair_store_ != nullptr)
                 ? std::max(1e-9, std::chrono::duration<double>(deadline - Clock::now()).count())
                 : repair_time_limit;
         fj_nl_initialize(model, vm, 2000, &rng, fj_limit, feasibility_tolerance_);

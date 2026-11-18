@@ -262,6 +262,17 @@ public:
     ViolationLSLoop(Model& model, ViolationManager& vm, RNG& rng, FeasibilityJump& fj,
                     const SearchConfig& config, const Budget& budget, InnerSolverHook* hook,
                     LNS* lns, int lns_interval, SolveCallback* callback, SearchCoordination* coord);
+    // The LNS outlives this solve, a throwing one included; its FPR engine
+    // reads the model and must not (#431).
+    ~ViolationLSLoop() {
+        if (lns_store_ != nullptr) {
+            lns_->set_repair_store(nullptr);
+        }
+    }
+    ViolationLSLoop(const ViolationLSLoop&) = delete;
+    ViolationLSLoop& operator=(const ViolationLSLoop&) = delete;
+    ViolationLSLoop(ViolationLSLoop&&) = delete;
+    ViolationLSLoop& operator=(ViolationLSLoop&&) = delete;
 
     SearchResult run();
 
@@ -492,6 +503,9 @@ private:
     // (#426, #429), else null: a refuted root skips the FPR draw, and the
     // other kinds are drawn as at probability 0.
     std::unique_ptr<FprBatch> fpr_;
+    // The LNS repair's rows (#431), built at the first LNS kick with
+    // `lns_repair_fpr`, else null: the LNS then repairs with FJ alone.
+    std::shared_ptr<const LinearRowStore> lns_store_;
     bool fpr_ran_fj_ = false;
 
     double best_feasible_obj_ = std::numeric_limits<double>::infinity();
@@ -1025,6 +1039,10 @@ void ViolationLSLoop::diversify(bool allow_lns) {
         trace_kick(KickKind::LNS);
         lns_->set_feasibility_tolerance(config_.feasibility_tolerance);
         lns_->set_neighbours(config_.structural_neighbours);
+        if (config_.lns_repair_fpr && lns_store_ == nullptr) {
+            lns_store_ = std::make_shared<const LinearRowStore>(model_);
+        }
+        lns_->set_repair_store(lns_store_);
         const bool accepted = lns_->destroy_repair(model_, vm_, rng_, repair_limit);
         ++lns_repairs_;
         lns_repairs_accepted_ += accepted ? 1 : 0;

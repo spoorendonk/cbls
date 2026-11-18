@@ -35,6 +35,7 @@ add_executable(cbls_tests
     test_bound_propagation.cpp
     test_domain_propagation.cpp
     test_fpr.cpp
+    test_lns_fpr.cpp
     test_mipfeas.cpp
     test_bench_flags.cpp
     test_minlplib.cpp
@@ -70,7 +71,7 @@ include(Catch)
 # slow solves into one serial invocation would make the full suite far slower
 # than it is.
 #
-# The 4 [slow]-tagged tests are the UC-CHPED benchmark solves. The remaining 821 (814 discovered, plus the
+# The 4 [slow]-tagged tests are the UC-CHPED benchmark solves. The remaining 830 (823 discovered, plus the
 # seven hand-registered tests that carry no slow label --
 # timing_structural_batch_deadline, hang_guard_iteration_only_portfolio,
 # hang_guard_novelty_zero_move_batch, hang_guard_nonpositive_batch_iterations
@@ -84,9 +85,9 @@ include(Catch)
 # the tag -- "measure both ways before tagging" applies to KEEPING a tag as
 # much as to adding one.
 #
-# The roster is therefore 829 ctest tests: 818 discovered here, the 9
+# The roster is therefore 838 ctest tests: 827 discovered here, the 9
 # hand-registered ones below, and the 2 non-Catch2 shell gate tests the root
-# CMakeLists.txt registers. The 827 Catch2 ones are four more than the 823
+# CMakeLists.txt registers. The 836 Catch2 ones are four more than the 832
 # TEST_CASEs in tests/*.cpp, because the four hang_guard_* tests are both
 # discovered and hand-registered -- see their notes below. `ctest -N -L slow` reports 8, not 4 --
 # the three #125 throughput floors and #191's hook deadline carry the slow
