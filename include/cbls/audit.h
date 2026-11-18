@@ -14,7 +14,8 @@ enum class AuditPoint : std::uint8_t {
     /// the shared-bound sync have all been applied. Every incremental structure
     /// the next batch reads must agree with the assignment here.
     BeforeBatch,
-    /// Straight after a Feasibility-Jump batch returns.
+    /// Straight after a Feasibility-Jump batch returns, or a fix-propagate-repair
+    /// batch (its dive, then any FJ batch it ran; #429).
     AfterFeasibilityJump,
     /// Straight after a Novelty-Jump batch returns.
     AfterNoveltyJump,

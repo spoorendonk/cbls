@@ -1,11 +1,13 @@
 // Fix-propagate-repair's dive engine (#425): orders, value rules, modes.
 
+#include "src/fpr_batch.h"
 #include "test_helpers.h"
 
 #include <catch2/catch_test_macros.hpp>
 #include <cbls/cbls.h>
 #include <cbls/domain_propagation.h>
 #include <cbls/fpr.h>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -144,6 +146,30 @@ TEST_CASE("an infeasible pigeonhole ends incomplete: siblings run out, or the no
         CHECK(rig.prop.depth() == depth);
         for (const double v : r.values) {
             CHECK((v == 0.0 || v == 1.0));
+        }
+        // A past deadline stops the dive at its first clock read, node 16 (#429).
+        rig.fpr.set_deadline(std::chrono::steady_clock::now());
+        rig.fpr.run({FprVarOrder::LR, FprValueRule::Up, FprMode::Dfs}, 0, rng, r);
+        CHECK_FALSE(r.complete);
+        CHECK(r.nodes == 15);
+        CHECK(rig.prop.depth() == depth);
+    }
+    {
+        // A failed Dfs attempt (portfolio entry 0) writes nothing into the
+        // model: FJ's point stays (#429).
+        Model m;
+        pigeonhole(m, 3, 2);
+        for (size_t v = 0; v < m.num_vars(); ++v) {
+            m.var_mut(static_cast<int32_t>(v)).value = 1.0;
+        }
+        full_evaluate(m);
+        FprBatch batch(m, 0, false, {});
+        REQUIRE(batch.root_ok());
+        REQUIRE(fpr_portfolio_config(0, 0).mode == FprMode::Dfs);
+        const FprBatch::Outcome out = batch.run(rng);
+        CHECK_FALSE(out.written);
+        for (size_t v = 0; v < m.num_vars(); ++v) {
+            CHECK(m.var(static_cast<int32_t>(v)).value == 1.0);
         }
     }
     {

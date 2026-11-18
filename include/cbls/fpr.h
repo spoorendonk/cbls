@@ -175,7 +175,7 @@ private:
     double inf_;           // the propagator's infinity: a bound at or past it is infinite
     bool root_ok_ = true;  // `propagate_root`'s verdict
     bool has_deadline_ = false;
-    std::chrono::steady_clock::time_point deadline_{};
+    std::chrono::steady_clock::time_point deadline_;
     /// Each static order by `FprVarOrder`, built once at construction from a
     /// fixed-seed RNG, as mip-heuristics precomputes one per strategy before
     /// any attempt, so an attempt does not depend on what ran before it.
