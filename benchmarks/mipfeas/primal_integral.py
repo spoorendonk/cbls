@@ -2100,12 +2100,17 @@ def _row_off_default(row: Scored, key: str, default: bool | float) -> bool:
     arm must not vouch for completed rows that ran another. A completed row's cell
     must carry the key (a missing `objective_tie_break` is off); a killed row's arm
     records only some flags (`run_benchmark.py`'s `arm_keys`), so it counts only for
-    a key it states. A row with neither cell nor arm (no result) says nothing.
+    a key it states, and for `objective_tie_break`, which `arm_keys` always states
+    and `config_string` drops when off. A row with neither cell nor arm says nothing.
     """
     if row.config:
         return not _is_cell_default(_row_config_value(row, key), default)
-    value = _row_config_value(row, key) if row.arm_config else None
-    return value is not None and not _is_cell_default(value, default)
+    if not row.arm_config:
+        return False
+    value = _row_config_value(row, key)
+    if value is None:
+        return key == "objective_tie_break"
+    return not _is_cell_default(value, default)
 
 
 def _is_cell_default(value: str | None, default: bool | float) -> bool:

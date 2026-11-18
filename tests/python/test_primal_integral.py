@@ -1014,20 +1014,27 @@ _DEFAULT_ARM: dict[str, object] = {
 
 
 @pytest.mark.parametrize(
-    ("completed_off", "refused"),
-    [({"objective_tie_break": False}, True), ({"compound_moves": False}, True), (None, False)],
-    ids=["tie-break-off", "compound-moves-off", "only-killed-rows"],
+    ("arm_tie_break", "completed_off", "refused"),
+    [
+        (True, {"objective_tie_break": False}, True),
+        (True, {"compound_moves": False}, True),
+        (True, None, False),
+        (False, None, True),
+    ],
+    ids=["tie-break-off", "compound-moves-off", "only-killed-rows", "only-killed-tie-break-off"],
 )
 def test_a_killed_rows_default_arm_does_not_vouch_for_off_default_rows(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
+    arm_tie_break: bool,
     completed_off: dict[str, object] | None,
     refused: bool,
 ) -> None:
     # A killed row sorting first records the default arm; every completed row must
     # still be checked (#438). A killed row's arm names only some flags, so a table
-    # of killed rows alone is not refused for the ones it leaves out.
+    # of killed rows alone is not refused for the ones it leaves out, but its
+    # tie-break, always recorded and dropped from the arm's cell when off, counts.
     roster = tmp_path / "all.csv"
     roster.write_text(
         "instance,reference_value,reference_kind\n" + "".join(f"{name},1.0,opt\n" for name in _FULL)
@@ -1036,7 +1043,12 @@ def test_a_killed_rows_default_arm_does_not_vouch_for_off_default_rows(
         tmp_path,
         "cbls",
         "i0",
-        {"status": "killed", "objective": None, "message": "killed", "driver_arm": _DEFAULT_ARM},
+        {
+            "status": "killed",
+            "objective": None,
+            "message": "killed",
+            "driver_arm": {**_DEFAULT_ARM, "objective_tie_break": arm_tie_break},
+        },
     )
     if completed_off is not None:
         record: dict[str, object] = {
