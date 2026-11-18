@@ -915,6 +915,58 @@ def test_scoring_with_held_out_drops_those_instances_from_the_full_roster(
     assert "WIRING CHECK" not in text
 
 
+@pytest.mark.parametrize(
+    ("size", "knob", "refused"),
+    [
+        (FULL_ROSTER_SIZE, {"lns_interval": 1}, True),
+        (FULL_ROSTER_SIZE, {"fpr_prob": 0.5}, True),
+        (FULL_ROSTER_SIZE, {"lns": False}, True),
+        (FULL_ROSTER_SIZE, {"lns_interval": 3, "fpr_prob": 0.0}, False),
+        (FULL_ROSTER_SIZE - 1, {"lns_interval": 1}, False),
+    ],
+    ids=["lns-interval", "fpr-prob", "lns-off", "defaults", "partial-roster"],
+)
+def test_a_full_roster_table_from_a_non_default_arm_is_refused(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    size: int,
+    knob: dict[str, object],
+    refused: bool,
+) -> None:
+    # The driver's guard reads only the roster's file name (#437): a copied roster
+    # or a direct cbls_mipfeas run reaches the scorer with the knob in its rows.
+    roster = tmp_path / "all.csv"
+    roster.write_text(
+        "instance,reference_value,reference_kind\n"
+        + "".join(f"{name},1.0,opt\n" for name in _FULL[:size])
+    )
+    _write_result(tmp_path, "cbls", "i0", {"status": "no_solution", "objective": None, **knob})
+    out = tmp_path / "comparison.csv"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "primal_integral.py",
+            "--results-dir",
+            str(tmp_path),
+            "--roster",
+            str(roster),
+            "--budget",
+            "60",
+            "--out",
+            str(out),
+        ],
+    )
+    if refused:
+        with pytest.raises(SystemExit) as stop:
+            main()
+        assert stop.value.code == 2
+        assert not out.exists()
+    else:
+        main()
+        assert out.exists()
+
+
 def test_held_out_file_skips_comments_and_refuses_repeats(tmp_path: Path) -> None:
     path = tmp_path / "h.txt"
     path.write_text("# header\nalpha\n\n  beta  # trailing note\n")

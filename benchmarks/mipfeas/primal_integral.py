@@ -2052,6 +2052,29 @@ def _is_held_out_table(rows: list[Scored], instances: int, held_out: HeldOut | N
     )
 
 
+def non_default_arm_problem(rows: list[Scored], instances: int) -> str | None:
+    """Why a full-roster table may not be scored from these rows, or None.
+
+    A non-default arm may never write the published table (benchmarks/common/README.md);
+    the driver refuses one only by the roster's file name, and a direct
+    `cbls_mipfeas` run is not checked at all (#437). `config_string` drops every
+    TUNABLE_DEFAULTS key at its default, so any such key left in a cell is a
+    non-default arm. A held-out table is exempt: it is where a tuned arm is reported.
+    """
+    if instances != FULL_ROSTER_SIZE:
+        return None
+    keys = sorted(
+        {key for row in rows for key in TUNABLE_DEFAULTS if _row_config_value(row, key) is not None}
+    )
+    if not keys:
+        return None
+    return (
+        f"the rows carry non-default engine knobs ({', '.join(keys)}) on the full "
+        f"{FULL_ROSTER_SIZE}-instance roster: a non-default arm may not produce the "
+        "published comparison table. Score the arm on a subset roster"
+    )
+
+
 def _roster_label(
     roster_path: Path,
     rows: list[Scored],
@@ -2774,6 +2797,9 @@ def main() -> int:
     ]
     summaries = [summarize(rows, engine) for engine in ENGINES]
     check_uniform_configuration(rows)
+    arm_problem = non_default_arm_problem(rows, len(roster))
+    if arm_problem:
+        parser.error(arm_problem)
 
     three_arm_rows = three_arm_rows_or_refuse(args, parser, rows, roster)
 
