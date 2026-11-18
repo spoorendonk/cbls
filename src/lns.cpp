@@ -30,6 +30,18 @@ namespace {
 // each round.
 constexpr FprConfig kLnsFprConfig{FprVarOrder::Random, FprValueRule::Incumbent, FprMode::Diveprop};
 
+// A kept value past its bound by at most `tol` is held at that bound; one
+// further out is returned as is, so its fix stays a kept conflict (#433).
+double held_at_bound(double value, double lb, double ub, double tol) {
+    if (value > ub && value <= ub + tol) {
+        return ub;
+    }
+    if (value < lb && value >= lb - tol) {
+        return lb;
+    }
+    return value;
+}
+
 }  // namespace
 
 // The FPR repair's engine over `repair_store_` (#431), root propagated once.
@@ -91,7 +103,8 @@ bool LNS::fpr_repair(Model& model, const std::vector<int32_t>& destroyed, RNG& r
             continue;
         }
         consistent =
-            std::isfinite(var.value) && f.prop.fix(v, std::clamp(var.value, var.lb, var.ub));
+            std::isfinite(var.value) &&
+            f.prop.fix(v, held_at_bound(var.value, var.lb, var.ub, feasibility_tolerance_));
     }
     if (consistent) {
         if (deadline != nullptr) {

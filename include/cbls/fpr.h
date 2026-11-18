@@ -91,8 +91,9 @@ struct FprResult {
 ///
 /// Integral variables are branched; Floats are never branched: a Float with a
 /// nonzero cost takes its cost-preferred bound, one without its current value
-/// (the reference's `cont_fallback`), clamped to its final box; under
-/// Incumbent every Float takes its current value. An integral
+/// (the reference's `cont_fallback`), clamped to its final box. Under
+/// Incumbent every Float, costed or not, takes its current value clamped to
+/// its final box, so a destroyed Float keeps the destroy's draw. An integral
 /// variable in no linear row is fixed by the value rule with nothing to
 /// propagate.
 ///

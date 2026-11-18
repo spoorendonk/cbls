@@ -229,10 +229,16 @@ TEST_CASE("kept floats hold within the tolerance, and a non-finite one skips the
     CHECK(lns.fpr_repair_stats().dives == 1);
     CHECK(lns.fpr_repair_stats().kept_conflicts == 0);
 
+    // Past its bound by more than the tolerance: not held, a kept conflict.
+    m.var_mut(handle_to_var_id(c)).value = 1.3;
+    CHECK_FALSE(lns.fpr_repair(m, destroyed, rng, nullptr));
+    CHECK(lns.fpr_repair_stats().kept_conflicts == 1);
+    m.var_mut(handle_to_var_id(c)).value = 1.0;
+
     m.var_mut(a_id).value = std::numeric_limits<double>::quiet_NaN();
     CHECK_FALSE(lns.fpr_repair(m, destroyed, rng, nullptr));
     CHECK(lns.fpr_repair_stats().dives == 1);
-    CHECK(lns.fpr_repair_stats().kept_conflicts == 1);
+    CHECK(lns.fpr_repair_stats().kept_conflicts == 2);
 }
 
 TEST_CASE("the FPR repair counts a refuted root and writes nothing", "[lns][fpr]") {
