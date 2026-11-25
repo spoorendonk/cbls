@@ -440,9 +440,7 @@ def _relative_gap(lb: float | None, ub: float | None) -> float | None:
 
 
 def _base_params(m: Any, cpu_left: float) -> None:
-    # Wall time, as Gurobi's TimeLimit in ucp_valve.py. SCIP's CPU clock is a times() syscall
-    # it makes ~10^6 times a second: a third of the process's CPU, uncounted by it (#441).
-    m.setIntParam("timing/clocktype", 2)
+    m.setIntParam("timing/clocktype", 2)  # wall, as ucp_valve.py's Gurobi; README item 4 (#441)
     m.setIntParam("parallel/maxnthreads", 1)
     m.setRealParam("limits/time", max(cpu_left, 0.0))
 
@@ -634,7 +632,13 @@ def main() -> None:
     ap.add_argument("--instance", required=True, choices=sorted(BASES))
     ap.add_argument("--periods", type=int, required=True)
     ap.add_argument("--method", required=True, choices=["pwl", "exact"])
-    ap.add_argument("--cpu", type=float, default=3600.0, help="CPU seconds (default 3600)")
+    ap.add_argument(
+        "--cpu",
+        type=float,
+        default=3600.0,
+        help="process CPU budget in seconds; each SCIP solve gets what is left as a wall limit "
+        "(default 3600)",
+    )
     ap.add_argument(
         "--exact-gap",
         type=float,

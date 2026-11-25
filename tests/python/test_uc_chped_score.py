@@ -459,7 +459,13 @@ def test_scip_table_gives_each_methods_bounds_and_cbls_gaps_to_the_best(tmp_path
         "| 87.50 [25.00, 150.00] | 66.67 [11.11, 122.22] |"
     ) in lines
     assert "| ucp13 | 3 | 200.0 | - | - | - | - | - | - | - | - |" in lines
-    assert "- SCIP 10.0.0; CPU limit (s): pwl 3600; exact 3600 (ucp_valve_scip.py records)" in lines
+    assert any(
+        line.startswith(
+            "- SCIP 10.0.0; budget (process CPU s): pwl 3600; exact 3600 (ucp_valve_scip.py "
+            "records). Each SCIP solve is limited in wall time"
+        )
+        for line in lines
+    )
     assert "- no SCIP record: 3" in lines
     assert "  - ucp100-48p T=48 exact" in lines
     assert "- cbls below the best SCIP LB, to check before reading the gap: 0" in lines

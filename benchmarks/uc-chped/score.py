@@ -586,7 +586,10 @@ def render_scip(campaign: Campaign, scip: Scip, pairs: Sequence[Pair]) -> list[s
     limits = "; ".join(f"{m} {scip.cpu_limits[m]:g}" for m in SCIP_METHODS if m in scip.cpu_limits)
     lines += [
         "",
-        f"- SCIP {scip.version}; CPU limit (s): {limits} (ucp_valve_scip.py records)",
+        f"- SCIP {scip.version}; budget (process CPU s): {limits} (ucp_valve_scip.py records). "
+        "Each SCIP solve is limited in wall time to what is left, as ucp_valve.py limited "
+        "Gurobi: SCIP's CPU clock is a times() syscall costly enough to overrun the budget "
+        "by a third (#441).",
         "- rule: SCIP gap = 100 * (UB - LB) / LB per method; cbls's gaps as above, against "
         "the highest LB that is a bound and the lowest UB over the methods. `pwl` is Pedroso "
         "et al.'s Algorithm 1 ported to SCIP, `exact` SCIP's MINLP with the true valve-point "
