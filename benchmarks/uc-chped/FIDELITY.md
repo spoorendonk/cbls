@@ -163,6 +163,11 @@ Detection: `su = max(0, y[t] − y_prev)`. Correct (rolling-window
 startup indicator). The hot/cold dispatch logic walks `[t − t_cold, t−1]`
 and flags `was_on = max(y[τ] for τ in window) > 0.5`.
 
+> The "SCIP reference" in this section is the removed `reference_solve.py`
+> (see §4). The SCIP references that replace it, in `pedroso/`, use the
+> source's own startup logic and price a `t_cold = 0` startup cold, as our
+> model does.
+
 **Deviation #1 — `t_cold = 0` semantics.**
 - Our model (line 102–104): empty window ⇒ always cold cost.
 - SCIP reference (`reference_solve.py`'s `_add_startup_cost_constraints`): empty window ⇒ always
@@ -281,8 +286,8 @@ column in comparison output.
 
 > **Removed.** `reference_solve.py` was replaced by the SCIP references in
 > `benchmarks/uc-chped/pedroso/` (Pedroso's method ported to SCIP, and the exact
-> MINLP). This section and the mentions of it below record what the old
-> reference solved; the file is in git history.
+> MINLP). This section and the mentions of it above (§1, §2.3) and below
+> record what the old reference solved; the file is in git history.
 
 Source: `benchmarks/uc-chped/reference_solve.py` (`solve_uc_scip`).
 

@@ -43,20 +43,28 @@ Source: <http://www.dcc.fc.up.pt/~jpp/code/valve/ucp_valve.py>, 2013-12-09,
    has no separate integrality tolerance).
 3. **Warm start.** The paper passes each solution on as the next MIP's start.
    `ucp_valve.py` saves `.start` rather than `.x` after the solve, so its start is
-   never a solution. The port passes the solution (as a SCIP partial solution of
-   `y, hot, cold, on, off`); `--no-warm-start` turns it off.
-4. **Clock.** CPU time for both the loop's budget and SCIP's limit
-   (`timing/clocktype 1`), as `time.clock()` was in Python 2. One thread.
+   never a solution. The port passes the solution as a SCIP partial solution of
+   `y, hot, cold, on, off`, and raises `heuristics/completesol/maxunknownrate` to
+   1, because every other variable is unknown and SCIP's default (0.85) would
+   drop the start silently. `--no-warm-start` turns it off.
+4. **Clock.** `ucp_valve.py` budgets the loop in CPU time (`time.clock()`, from
+   process start) and gives Gurobi the remainder as its TimeLimit, which is wall
+   time. The port budgets from the start of the solve and sets SCIP's limit in
+   CPU time too (`timing/clocktype 1`). One thread, so the two clocks barely
+   differ.
 5. **Data.** From cbls's `data.py`, not `ucp_data.py`; identical for `ucp13` and
    `ucp40` (FIDELITY.md §7). Off-horizon indices are clipped where `ucp_valve.py`
    would raise; no instance here reaches them.
 6. **Reporting.** `ucp_valve.py` prints each iteration's LB and UB. The port
-   records every iteration, reports the last one as `lb`/`ub` (what the script
-   ends on) and also `best_lb`/`best_ub` over the iterations (the paper notes the
-   UB can rise between iterations), and re-checks demand, reserve and dispatch
-   limits outside SCIP.
+   records every iteration, and reports `lb`/`ub` as the best over them (each
+   bounds the true optimum; the paper notes the UB can rise between iterations),
+   with the last iteration's as `last_lb`/`last_ub`. `status` is `converged` or
+   `time limit reached`, as the script prints. It re-checks demand, reserve and
+   dispatch limits outside SCIP.
 7. **Python 3**, typed; `lower_brkpts` and `upper_brkpts` are not ported
-   (`ucp_valve.py` uses neither in its loop).
+   (`ucp_valve.py` uses neither in its loop). A unit without a valve term
+   (`e` or `f` zero) is refused: the script substitutes `f` in its breakpoint
+   builders but `has_added_p` would divide by zero, and no instance has one.
 
 ## Not validated yet
 
