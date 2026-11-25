@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import csv
 import io
+import json
+import math
 import re
 import subprocess
 import sys
@@ -403,3 +405,125 @@ def test_a_torn_row_is_refused(tmp_path: Path) -> None:
 
 def test_a_missing_table_is_refused(tmp_path: Path) -> None:
     assert "refused" in refusal([tmp_path / "absent.csv"])
+
+
+def scip_record(
+    instance: str, periods: int, method: str, lb: float | None, ub: float | None, **cells: object
+) -> dict[str, object]:
+    """One `ucp_valve_scip.py --out` line, with the fields the scorer reads."""
+    return {
+        "instance": instance,
+        "periods": periods,
+        "method": method,
+        "cpu_limit_s": 3600.0,
+        "lb": lb,
+        "ub": ub,
+        "status": "converged" if method == "pwl" else "optimal",
+        "concavity_violated_units": [],
+        "scip": "10.0.0",
+        "check": [],
+        **cells,
+    }
+
+
+def write_jsonl(path: Path, records: list[dict[str, object]]) -> Path:
+    path.write_text("".join(json.dumps(r) + "\n" for r in records))
+    return path
+
+
+def scip_lines(tmp_path: Path, records: list[dict[str, object]]) -> list[str]:
+    result = run_score(
+        *two_seeds(tmp_path), *ROSTER, "--scip", write_jsonl(tmp_path / "s", records)
+    )
+    assert result.returncode == 0, result.stderr
+    return result.stdout.splitlines()
+
+
+def test_scip_table_gives_each_methods_bounds_and_cbls_gaps_to_the_best(tmp_path: Path) -> None:
+    lines = scip_lines(
+        tmp_path,
+        [
+            scip_record("ucp13", 1, "pwl", 100.0, 101.0),
+            scip_record("ucp13", 1, "exact", 99.0, 100.5),
+            # The port names the base instance; the roster names the extension.
+            scip_record("ucp100", 48, "pwl", 4000.0, 4500.0),
+        ],
+    )
+    # cbls 102 and 104: against the best LB 100 (pwl) and the best UB 100.5 (exact).
+    assert (
+        "| ucp13 | 1 | 103.0 | 100.00 | 101.00 | 1.00 | 99.00 | 100.50 | 1.52 "
+        "| 3.00 [2.00, 4.00] | 2.49 [1.49, 3.48] |"
+    ) in lines
+    assert (
+        "| ucp100-48p | 48 | 7500.0 | 4000.00 | 4500.00 | 12.50 | - | - | - "
+        "| 87.50 [25.00, 150.00] | 66.67 [11.11, 122.22] |"
+    ) in lines
+    assert "| ucp13 | 3 | 200.0 | - | - | - | - | - | - | - | - |" in lines
+    assert "- SCIP 10.0.0; CPU limit (s): pwl 3600; exact 3600 (ucp_valve_scip.py records)" in lines
+    assert "- no SCIP record: 3" in lines
+    assert "  - ucp100-48p T=48 exact" in lines
+    assert "- cbls below the best SCIP LB, to check before reading the gap: 0" in lines
+
+
+def test_without_scip_there_is_no_scip_table(tmp_path: Path) -> None:
+    result = run_score(*two_seeds(tmp_path), *ROSTER)
+    assert "SCIP references" not in result.stdout
+
+
+def test_a_pwl_lb_that_is_no_bound_is_starred_and_not_used(tmp_path: Path) -> None:
+    record = scip_record("ucp13", 1, "pwl", 103.0, 105.0, concavity_violated_units=[2])
+    lines = scip_lines(tmp_path, [record])
+    starred = "| ucp13 | 1 | 103.0 | 103.00* | 105.00 | - | - | - | - | - | -1.90 [-2.86, -0.95] |"
+    assert starred in lines
+    assert "- pwl LB not a bound (some unit breaks c <= e*f^2/2), starred: 1" in lines
+
+
+def test_cbls_below_the_best_scip_lb_is_named(tmp_path: Path) -> None:
+    lines = scip_lines(tmp_path, [scip_record("ucp13", 1, "exact", 103.0, 103.0)])
+    assert "- cbls below the best SCIP LB, to check before reading the gap: 1" in lines
+    assert "  - ucp13 T=1 seed 1: 102.00 against 103.00" in lines
+
+
+def test_a_scip_run_with_no_solution_is_named(tmp_path: Path) -> None:
+    record = scip_record("ucp13", 3, "pwl", None, None, status="infeasible")
+    lines = scip_lines(tmp_path, [record])
+    assert "- no SCIP solution: 1" in lines
+    assert "  - ucp13 T=3 pwl: infeasible" in lines
+
+
+@pytest.mark.parametrize(
+    ("records", "reason"),
+    [
+        ([scip_record("ucp13", 1, "pwl", 1.0, 2.0, check=["demand t=1"])], "re-check"),
+        ([scip_record("ucp13", 1, "milp", 1.0, 2.0)], "unknown method"),
+        ([scip_record("ucp40", 1, "pwl", 1.0, 2.0)], "not in the roster"),
+        ([scip_record("ucp13", 1, "pwl", 1.0, 2.0)] * 2, "twice"),
+        ([scip_record("ucp13", 1, "pwl", math.nan, 2.0)], "finite"),
+        ([{"instance": "ucp13", "periods": 1}], "not a ucp_valve_scip.py record"),
+        (
+            [
+                scip_record("ucp13", 1, "pwl", 1.0, 2.0),
+                scip_record("ucp13", 1, "exact", 1.0, 2.0, scip="9.2.0"),
+            ],
+            "mixed SCIP versions",
+        ),
+        ([], "no records"),
+    ],
+)
+def test_a_scip_record_that_cannot_be_read_honestly_is_refused(
+    tmp_path: Path, records: list[dict[str, object]], reason: str
+) -> None:
+    scip = write_jsonl(tmp_path / "s.jsonl", records)
+    assert reason in refusal(two_seeds(tmp_path), *ROSTER, "--scip", str(scip))
+
+
+def test_a_scip_line_that_is_no_json_is_refused(tmp_path: Path) -> None:
+    scip = tmp_path / "s.jsonl"
+    scip.write_text("{torn\n")
+    assert "not JSON" in refusal(two_seeds(tmp_path), *ROSTER, "--scip", str(scip))
+
+
+def test_an_out_over_a_scip_file_is_refused(tmp_path: Path) -> None:
+    scip = write_jsonl(tmp_path / "s.jsonl", [scip_record("ucp13", 1, "pwl", 1.0, 2.0)])
+    refused = refusal(two_seeds(tmp_path), *ROSTER, "--scip", str(scip), "--out", str(scip))
+    assert "overwrite" in refused

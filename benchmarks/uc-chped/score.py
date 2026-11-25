@@ -8,7 +8,7 @@ solves nothing.
 Usage, from any directory:
 
     .venv/bin/python benchmarks/uc-chped/score.py RESULTS/seed*/comparison.csv \\
-        [--out table.md] [--roster NAME:T,T ...]
+        [--out table.md] [--roster NAME:T,T ...] [--scip pwl.jsonl exact.jsonl]
 
 THE MEASURE, one line per (instance, horizon):
 
@@ -17,8 +17,13 @@ THE MEASURE, one line per (instance, horizon):
   Gap to UB is the same against Pedroso's one-hour incumbent; below 0 is better
   than it. Each is the median over the seeds that solved it, with [min, max].
 * The baseline is Pedroso's own gap on the row, a cited result and not a
-  measurement. The SCIP references (`benchmarks/uc-chped/pedroso/`) write JSON
-  lines this scorer does not read yet, so there is no SCIP column.
+  measurement.
+* `--scip FILE.jsonl ...` adds a second table from the SCIP references'
+  JSON lines (`benchmarks/uc-chped/pedroso/ucp_valve_scip.py`, read as data): each
+  method's LB, UB and gap, and cbls's gap to the best SCIP LB and UB, median
+  [min, max] over the seeds that solved it. A `pwl` LB from a run where some unit
+  breaks `c <= e*f^2/2` is no bound: it is starred and left out of the best LB. A
+  pair with no record for a method shows `-` and is named under the table.
 * The instances Pedroso did not publish (ucp100, ucp200 and their extensions) have
   objectives and no gaps: `-`, never an invented bound.
 * A seed whose row is infeasible, or feasible with no finite objective, has no gap.
@@ -43,7 +48,10 @@ REFUSALS (exit 2, naming what is wrong; nothing is written):
 * two tables at one seed, or one table at two;
 * Pedroso's cited numbers differing between tables, or from a measured row's bounds;
 * a table whose columns are not `COLUMNS`: an older published table, or a torn file;
-* an `--out` that is one of the tables, or the runner's published `comparison.csv`.
+* an `--out` that is one of the tables, or the runner's published `comparison.csv`;
+* with `--scip`: a line that is no JSON object of the port's fields, an unknown
+  method, a pair outside the roster, a (pair, method) twice, a record whose
+  solution failed the port's re-check (`check`), or two SCIP versions.
 
 `--roster` replaces the published `ROSTER` for a smoke, and every output says so on
 its first line.
@@ -53,6 +61,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import math
 import statistics
 import sys
@@ -154,6 +163,29 @@ class Campaign:
     search_config: str
     feas_tol: str
     budgets: dict[int, float]
+
+
+#: `ucp_valve_scip.py --method`, in column order.
+SCIP_METHODS = ("pwl", "exact")
+
+
+@dataclass(frozen=True)
+class ScipResult:
+    """One `ucp_valve_scip.py` JSON line. `lb`/`ub` are None where it has none."""
+
+    lb: float | None
+    ub: float | None
+    status: str
+    cpu_limit_s: float
+    #: `pwl` only: a unit breaks `c <= e*f^2/2`, so the LB is not a bound.
+    lb_not_a_bound: bool
+
+
+@dataclass(frozen=True)
+class Scip:
+    results: dict[Pair, dict[str, ScipResult]]
+    version: str
+    cpu_limits: dict[str, set[float]]
 
 
 def read_rows(path: Path) -> list[dict[str, str]]:
@@ -337,6 +369,86 @@ def load_campaign(tables: Sequence[Path], roster: dict[str, tuple[int, ...]]) ->
     )
 
 
+def roster_pair(instance: str, periods: int, roster: dict[str, tuple[int, ...]]) -> Pair:
+    """The port names a base instance and a horizon; the roster names `ucp100-48p` for T=48."""
+    extended = f"{instance}-{periods}p"
+    return (extended if periods in roster.get(extended, ()) else instance, periods)
+
+
+def scip_bound(where: str, record: dict[str, object], key: str) -> float | None:
+    value = record.get(key)
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        raise RefusedError(f"{where}: {key} {value!r} is not a finite number or null")
+    return float(value)
+
+
+def parse_scip_record(where: str, record: object) -> tuple[str, int, str, str, ScipResult]:
+    """(instance, periods, method, SCIP version, result) from one JSON line."""
+    if not isinstance(record, dict):
+        raise RefusedError(f"{where}: not a JSON object")
+    instance, periods, method = record.get("instance"), record.get("periods"), record.get("method")
+    status, version = record.get("status"), record.get("scip")
+    limit, check = record.get("cpu_limit_s"), record.get("check", [])
+    violated = record.get("concavity_violated_units")
+    if not (
+        isinstance(instance, str)
+        and isinstance(periods, int)
+        and not isinstance(periods, bool)
+        and isinstance(method, str)
+        and isinstance(status, str)
+        and isinstance(version, str)
+        and isinstance(limit, (int, float))
+        and not isinstance(limit, bool)
+        and isinstance(check, list)
+        and isinstance(violated, list)
+    ):
+        raise RefusedError(f"{where}: not a ucp_valve_scip.py record")
+    if method not in SCIP_METHODS:
+        raise RefusedError(f"{where}: unknown method {method!r}")
+    if check:
+        raise RefusedError(f"{where}: its solution failed the port's re-check: {check[:3]}")
+    result = ScipResult(
+        lb=scip_bound(where, record, "lb"),
+        ub=scip_bound(where, record, "ub"),
+        status=status,
+        cpu_limit_s=float(limit),
+        lb_not_a_bound=method == "pwl" and bool(violated),
+    )
+    return instance, periods, method, version, result
+
+
+def load_scip(paths: Sequence[Path], roster: dict[str, tuple[int, ...]]) -> Scip:
+    results: dict[Pair, dict[str, ScipResult]] = {}
+    versions: set[str] = set()
+    cpu_limits: dict[str, set[float]] = {}
+    for path in paths:
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if not line.strip():
+                continue
+            where = f"{path}:{number}"
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError as err:
+                raise RefusedError(f"{where}: not JSON ({err.msg})") from err
+            instance, periods, method, version, result = parse_scip_record(where, record)
+            pair = roster_pair(instance, periods, roster)
+            if pair[1] not in roster.get(pair[0], ()):
+                raise RefusedError(f"{where}: {instance} T={periods} is not in the roster")
+            by_method = results.setdefault(pair, {})
+            if method in by_method:
+                raise RefusedError(f"{where}: {pair[0]} T={periods} {method} is twice")
+            by_method[method] = result
+            versions.add(version)
+            cpu_limits.setdefault(method, set()).add(result.cpu_limit_s)
+    if not results:
+        raise RefusedError(f"--scip {' '.join(map(str, paths))}: no records")
+    return Scip(
+        results=results, version=one_value(versions, "SCIP versions"), cpu_limits=cpu_limits
+    )
+
+
 def config_threads(search_config: str) -> str:
     """The portfolio's size: the runner records `threads=N` only off its default of 1."""
     for item in search_config.split(";"):
@@ -372,8 +484,109 @@ def table_line(pair: Pair, campaign: Campaign) -> str:
     )
 
 
+def number(value: float | None, star: bool = False) -> str:
+    return "-" if value is None else f"{value:.2f}{'*' if star else ''}"
+
+
+def scip_cells(result: ScipResult | None) -> list[str]:
+    """LB, UB and gap % of one method's record, `-` where it has none."""
+    if result is None:
+        return ["-", "-", "-"]
+    gap = (
+        None
+        if result.lb is None or result.ub is None or result.lb_not_a_bound
+        else gap_pct(result.ub, result.lb)
+    )
+    return [number(result.lb, result.lb_not_a_bound), number(result.ub), number(gap)]
+
+
+def best_scip_bounds(by_method: dict[str, ScipResult]) -> tuple[float | None, float | None]:
+    """The highest LB that is a bound, and the lowest UB, over the methods."""
+    lbs = [r.lb for r in by_method.values() if r.lb is not None and not r.lb_not_a_bound]
+    ubs = [r.ub for r in by_method.values() if r.ub is not None]
+    return (max(lbs) if lbs else None, min(ubs) if ubs else None)
+
+
+def scip_line(pair: Pair, campaign: Campaign, scip: Scip) -> tuple[str, float | None]:
+    """The pair's line, and its best SCIP LB for the below-LB check."""
+    solved = [row for row in campaign.measured[pair].values() if row.solved]
+    by_method = scip.results.get(pair, {})
+    best_lb, best_ub = best_scip_bounds(by_method)
+    objective = f"{statistics.median(r.objective for r in solved):.1f}" if solved else "-"
+    cells = [cell for method in SCIP_METHODS for cell in scip_cells(by_method.get(method))]
+    to_lb = "-" if best_lb is None else spread([gap_pct(r.objective, best_lb) for r in solved])
+    to_ub = "-" if best_ub is None else spread([gap_pct(r.objective, best_ub) for r in solved])
+    line = f"| {pair[0]} | {pair[1]} | {objective} | {' | '.join(cells)} | {to_lb} | {to_ub} |"
+    return line, best_lb
+
+
+def render_scip(campaign: Campaign, scip: Scip, pairs: Sequence[Pair]) -> list[str]:
+    heads = [f"{m} {what}" for m in SCIP_METHODS for what in ("LB", "UB", "gap %")]
+    lines = [
+        "",
+        "## UC-CHPED: SCIP references",
+        "",
+        f"| instance | T | cbls objective (median) | {' | '.join(heads)} "
+        "| cbls gap to best SCIP LB %: median [min, max] "
+        "| cbls gap to best SCIP UB %: median [min, max] |",
+        "|---|---|---|" + "---|" * len(heads) + "---|---|",
+    ]
+    below: list[str] = []
+    for pair in pairs:
+        line, best_lb = scip_line(pair, campaign, scip)
+        lines.append(line)
+        below += [
+            f"{pair[0]} T={pair[1]} seed {seed}: {row.objective:.2f} against {best_lb:.2f}"
+            for seed, row in sorted(campaign.measured[pair].items(), key=lambda kv: int(kv[0]))
+            if best_lb is not None and row.solved and row.objective < best_lb
+        ]
+    missing = [
+        f"{pair[0]} T={pair[1]} {method}"
+        for pair in pairs
+        for method in SCIP_METHODS
+        if method not in scip.results.get(pair, {})
+    ]
+    unproven = [
+        f"{pair[0]} T={pair[1]} {method}: {result.status}"
+        for pair in pairs
+        for method, result in sorted(scip.results.get(pair, {}).items())
+        if result.ub is None
+    ]
+    no_bound = [
+        f"{pair[0]} T={pair[1]}"
+        for pair in pairs
+        if (r := scip.results.get(pair, {}).get("pwl")) is not None and r.lb_not_a_bound
+    ]
+    limits = "; ".join(
+        f"{m} {', '.join(f'{s:g}' for s in sorted(scip.cpu_limits[m]))}"
+        for m in SCIP_METHODS
+        if m in scip.cpu_limits
+    )
+    lines += [
+        "",
+        f"- SCIP {scip.version}; CPU limit (s): {limits} (ucp_valve_scip.py records)",
+        "- rule: SCIP gap = 100 * (UB - LB) / LB per method; cbls's gaps as above, against "
+        "the highest LB that is a bound and the lowest UB over the methods. `pwl` is Pedroso "
+        "et al.'s Algorithm 1 ported to SCIP, `exact` SCIP's MINLP with the true valve-point "
+        "term. Both solve the source's model (demand =); cbls's has demand >= "
+        "(FIDELITY.md section 1.4).",
+        f"- pwl LB not a bound (some unit breaks c <= e*f^2/2), starred: {len(no_bound)}",
+        *[f"  - {line}" for line in no_bound],
+        f"- no SCIP record: {len(missing)}",
+        *[f"  - {line}" for line in missing],
+        f"- no SCIP solution: {len(unproven)}",
+        *[f"  - {line}" for line in unproven],
+        f"- cbls below the best SCIP LB, to check before reading the gap: {len(below)}",
+        *[f"  - {line}" for line in below],
+    ]
+    return lines
+
+
 def render_markdown(
-    campaign: Campaign, roster: dict[str, tuple[int, ...]], published_roster: bool
+    campaign: Campaign,
+    roster: dict[str, tuple[int, ...]],
+    published_roster: bool,
+    scip: Scip | None = None,
 ) -> str:
     lines = [] if published_roster else ["NOT THE PUBLISHED ROSTER (--roster): no result.", ""]
     lines += [
@@ -413,6 +626,8 @@ def render_markdown(
         f"- below Pedroso's LB, to check before reading the gap: {len(below_lb)}",
         *[f"  - {line}" for line in below_lb],
     ]
+    if scip is not None:
+        lines += render_scip(campaign, scip, pairs)
     return "\n".join(lines) + "\n"
 
 
@@ -438,6 +653,14 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--roster", nargs="+", default=[], metavar="NAME:T,T", help="a smoke's roster"
     )
+    parser.add_argument(
+        "--scip",
+        type=Path,
+        nargs="+",
+        default=[],
+        metavar="JSONL",
+        help="ucp_valve_scip.py --out files: adds the SCIP references' table",
+    )
     return parser.parse_args(argv)
 
 
@@ -453,13 +676,14 @@ def check_out(out: Path | None, tables: Sequence[Path]) -> None:
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     try:
-        check_out(args.out, args.tables)
+        check_out(args.out, [*args.tables, *args.scip])
         roster = parse_roster(args.roster) if args.roster else ROSTER
         campaign = load_campaign(args.tables, roster)
+        scip = load_scip(args.scip, roster) if args.scip else None
     except (RefusedError, OSError, UnicodeDecodeError, csv.Error) as err:
         print(f"refused: {err}", file=sys.stderr)
         return EXIT_REFUSED
-    text = render_markdown(campaign, roster, published_roster=not args.roster)
+    text = render_markdown(campaign, roster, published_roster=not args.roster, scip=scip)
     # Printed first: an --out that cannot be written must not lose the table.
     print(text, end="")
     if args.out is not None:
