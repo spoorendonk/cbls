@@ -57,14 +57,15 @@ Source: <http://www.dcc.fc.up.pt/~jpp/code/valve/ucp_valve.py>, 2013-12-09,
    would raise; no instance here reaches them.
 6. **Reporting.** `ucp_valve.py` prints each iteration's LB and UB. The port
    records every iteration, and reports `lb`/`ub` as the best over them (each
-   bounds the true optimum; the paper notes the UB can rise between iterations),
-   with the last iteration's as `last_lb`/`last_ub`. `status` is `converged` or
-   `time limit reached`, as the script prints. It re-checks demand, reserve and
-   dispatch limits outside SCIP.
+   bounds the true optimum while every unit meets the concavity condition; the
+   paper notes the UB can rise between iterations), with the last iteration's as
+   `last_lb`/`last_ub`. `status` is `converged` or `time limit reached`, as the
+   script prints, or `infeasible`. Every iteration's solution is re-checked
+   outside SCIP (demand, reserve, dispatch limits); `check` is the reported UB's.
 7. **Python 3**, typed; `lower_brkpts` and `upper_brkpts` are not ported
-   (`ucp_valve.py` uses neither in its loop). A unit without a valve term
-   (`e` or `f` zero) is refused: the script substitutes `f` in its breakpoint
-   builders but `has_added_p` would divide by zero, and no instance has one.
+   (`ucp_valve.py` uses neither in its loop). A unit with valve frequency
+   `f <= 0` is refused: the script substitutes `f` in its breakpoint builders
+   but `has_added_p` would divide by zero, and no instance has one.
 
 ## Not validated yet
 
