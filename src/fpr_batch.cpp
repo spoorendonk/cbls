@@ -4,14 +4,16 @@
 #include "cbls/model.h"
 
 #include <cstddef>
+#include <memory>
 
 namespace cbls {
 
 FprBatch::FprBatch(Model& model, int64_t worker, bool has_deadline,
-                   std::chrono::steady_clock::time_point deadline)
+                   std::chrono::steady_clock::time_point deadline, bool dag_propagation)
     : model_(model),
       store_(model),
-      prop_(store_, model),
+      dag_(dag_propagation ? std::make_unique<DagRowStore>(model) : nullptr),
+      prop_(store_, model, {}, dag_.get()),
       search_(model, store_, prop_),
       root_ok_(search_.propagate_root()),
       worker_(worker) {

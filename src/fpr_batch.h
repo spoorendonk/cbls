@@ -1,10 +1,12 @@
 #pragma once
 
+#include "cbls/dag_propagation.h"
 #include "cbls/domain_propagation.h"
 #include "cbls/fpr.h"
 
 #include <chrono>
 #include <cstdint>
+#include <memory>
 
 namespace cbls {
 
@@ -17,13 +19,16 @@ class RNG;
 /// `SearchConfig::fpr_batch_probability > 0`, so off costs nothing.
 ///
 /// Cost: construction is the store (O(nnz), ~24 B per nonzero), the
-/// propagator and the engine's O(vars + nnz); each `run` is one dive.
+/// propagator and the engine's O(vars + nnz); each `run` is one dive. With
+/// `dag_propagation` (#424) also a `DagRowStore`: O(the nonlinear rows'
+/// subtrees), each revised on every scan.
 class FprBatch {
 public:
     /// `worker` keys the portfolio rotation (`fpr_portfolio_config`); a dive
-    /// stops past `deadline` when `has_deadline`.
+    /// stops past `deadline` when `has_deadline`. `dag_propagation` adds the
+    /// nonlinear monotone rows to the propagator (#424).
     FprBatch(Model& model, int64_t worker, bool has_deadline,
-             std::chrono::steady_clock::time_point deadline);
+             std::chrono::steady_clock::time_point deadline, bool dag_propagation = false);
 
     /// Whether root propagation left the linear rows consistent. When false,
     /// no attempt can branch; the caller builds no batch (#429).
@@ -46,6 +51,7 @@ public:
 private:
     Model& model_;
     LinearRowStore store_;
+    std::unique_ptr<DagRowStore> dag_;  // null unless dag_propagation
     DomainPropagator prop_;
     FprSearch search_;
     FprResult result_;

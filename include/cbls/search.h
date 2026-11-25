@@ -101,6 +101,11 @@ struct SearchConfig {
     // attempt without a leaf keeps FJ's point and runs an FJ batch. Dives stop
     // at the deadline. In [0, 1].
     double fpr_batch_probability = 0.0;
+    // The FPR batch's propagator also revises the nonlinear rows over
+    // monotone ops (Sum, Neg, Prod, Min, Max, Exp, Log), HC4-style (#424;
+    // `DagRowStore`). Off by default: no store is built. Only the FPR batch;
+    // the LNS repair's dive propagates linear rows alone.
+    bool fpr_dag_propagation = false;
     // Keys the FPR portfolio rotation (`fpr_portfolio_config(worker,
     // attempt)`); ParallelSearch sets each worker's index.
     int fpr_worker = 0;

@@ -87,7 +87,7 @@ A one-screen map of the pipeline, its files, the extension points, build targets
 7. **LNS** (`src/lns.cpp`) — every N-th diversification kick: SISR ruin-and-recreate on each `ListPartition`, destroy 30% and repair by FJ elsewhere; accepted on a lexicographic (real violation, objective) key.
 8. **Violation & penalty** (`src/violation.cpp`) — `total_violation = Σ W[c]·max(0, viol_c)`; `weighted_violation_delta` is the no-commit counterfactual δ_G; `augmented_objective()` is the inner solver's descent metric.
 9. **Parallel search** (`src/pool.cpp`) — `SolutionPool` + `ParallelSearch`, a cooperative portfolio that shares incumbents and the objective bound. Workers share the frozen model's immutable structure (#157) and copy only what a search writes. Nondeterministic; `--threads 1` is the reproducible run. See [Solution Pool & Parallel Search](#solution-pool--parallel-search); the benchmark driver's CPU policy is in `benchmarks/instances/mipfeas/README.md`.
-10. **I/O** (`src/io.cpp`, `src/io/`) — JSONL `.cbls` format; the MPS reader (`mps_reader.cpp` + `mps_to_model.cpp`, gzip, optional bzip2), the AMPL `.nl` reader (`nl_reader.cpp` + `nl_to_model.cpp`) and the MIPLIB `.solu` reader (`solu_reader.cpp`). CLI in `src/cli.cpp`. Load-time reduction for the adapters: implied bounds (`src/bound_propagation.cpp`); see [Implied variable bounds](#implied-variable-bounds). Its search-time, undoable form is `src/domain_propagation.cpp` ([Search-time propagation](#search-time-propagation)), which the fix-propagate-repair dive (`src/fpr.cpp`) fixes over ([Fix-propagate-repair](#fix-propagate-repair)). Presolve was removed ([Presolve](#presolve)).
+10. **I/O** (`src/io.cpp`, `src/io/`) — JSONL `.cbls` format; the MPS reader (`mps_reader.cpp` + `mps_to_model.cpp`, gzip, optional bzip2), the AMPL `.nl` reader (`nl_reader.cpp` + `nl_to_model.cpp`) and the MIPLIB `.solu` reader (`solu_reader.cpp`). CLI in `src/cli.cpp`. Load-time reduction for the adapters: implied bounds (`src/bound_propagation.cpp`); see [Implied variable bounds](#implied-variable-bounds). Its search-time, undoable form is `src/domain_propagation.cpp` ([Search-time propagation](#search-time-propagation)), with opt-in HC4 revision of nonlinear monotone rows in `src/dag_propagation.cpp`, which the fix-propagate-repair dive (`src/fpr.cpp`) fixes over ([Fix-propagate-repair](#fix-propagate-repair)). Presolve was removed ([Presolve](#presolve)).
 
 ### Key extension points
 
@@ -2399,6 +2399,7 @@ solve(model, time_limit, seed, hook, lns, lns_interval, callback, config, coord)
 | `novelty_jump_probability` | 0.5 | `SearchConfig` | P(Novelty Jump batch) when enabled |
 | `fpr_batch_probability` | 0 | `SearchConfig` | P(fix-propagate-repair batch), drawn first; 0 draws nothing and builds nothing (#429); in [0, 1] |
 | `fpr_worker` | 0 | `SearchConfig` | keys the FPR portfolio rotation; `ParallelSearch` sets each worker's index |
+| `fpr_dag_propagation` | false | `SearchConfig` | the FPR batch's propagator also revises nonlinear rows over `Sum, Neg, Prod, Min, Max, Exp, Log` (HC4, `DagRowStore`); off builds no store (#424) |
 | `lns_repair_fpr` | false | `SearchConfig` | LNS repair tries one fix-propagate-repair dive over the destroyed scalars before its FJ; a conflict on the kept values or a refuted root skips it (#431) |
 | `lns_interval` | 3 | `SearchConfig` / arg | LNS fires every Nth diversification kick |
 | `move_generators` | empty | `SearchConfig` | extra structural move generators, cloned per worker (#165) |
@@ -2584,6 +2585,20 @@ fixing variables one at a time under propagation (fix-propagate-repair, #421):
 - **After a conflict** the state is partial but consistent: a crossing bound
   is refused, never written, so the caller may backtrack or keep fixing and
   propagating (#427). `fix_all` fixes a batch, then propagates their rows once.
+- **DAG rows** (`include/cbls/dag_propagation.h`, `src/dag_propagation.cpp`,
+  #424, opt-in): a `DagRowStore` handed to the propagator adds every
+  non-affine row whose subtree uses only `Const, Neg, Sum, Prod, Min, Max,
+  Exp, Log` over scalar variables (same skips as above, plus a row reading
+  the objective bound's Const). They join the queue after the linear rows.
+  A scan is one HC4 revise: forward intervals in topological order, the
+  row's bounds on `p - q`, then a backward pass that meets each node with
+  every parent's projection (shared subexpressions stay sound) and applies
+  each variable's meet once. `Prod` projects only through a factor whose
+  interval excludes 0; a `Log` nowhere positive derives nothing. Outward
+  margins as `propagate_bounds`, plus Sum roundoff (#211). Nothing is
+  trailed: intervals are recomputed from the bounds. The valve counts DAG
+  nodes plus children with the nonzeros. Stats: `dag_rows_scanned`,
+  `dag_bounds_derived`.
 
 It never writes the model's domains: the adapters already tighten at load.
 `DomainPropagationStats::propagate_all_bounds_derived` counts the root's
@@ -2642,8 +2657,14 @@ portfolio attempt (`SearchConfig::fpr_worker` plus the attempt count;
   `AfterFeasibilityJump`, and its FJ work feeds the unproductive kick (#102).
 - Building the batch is O(nnz) and not bounded by the deadline (#423 measures
   it).
-- Runner flag: `--fpr-prob P` (scalar family, recorded as `fpr_prob` only off
-  its default). Python: `SearchConfig.fpr_batch_probability` and `fpr_worker`.
+- With `fpr_dag_propagation` (#424) the batch also builds a `DagRowStore`
+  and its propagator revises the nonlinear monotone rows, the root included:
+  a root only they refute builds no batch. The LNS repair's dive stays
+  linear-only.
+- Runner flags: `--fpr-prob P` (scalar family, recorded as `fpr_prob` only off
+  its default) and `--fpr-dag-prop` (scalar, recorded as `fpr_dag_prop` only
+  when on, refused without `--fpr-prob`). Python:
+  `SearchConfig.fpr_batch_probability`, `fpr_worker` and `fpr_dag_propagation`.
 
 ### Presolve
 

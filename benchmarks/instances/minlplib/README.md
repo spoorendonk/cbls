@@ -263,15 +263,17 @@ recorded in each row's `search_config` cell (#136):
 --no-objective-tie-break   drop the FJ objective tie-break (#218; on since #226)
 --fpr-prob P               P(a batch is fix-propagate-repair), in [0, 1] (#430)
 --lns-repair-fpr           run a fix-propagate-repair dive in the LNS repair (#432)
+--fpr-dag-prop             FPR batches also propagate monotone nonlinear rows (#424)
 ```
 
-`--no-objective-tie-break`, `--fpr-prob` and `--lns-repair-fpr` are recorded only off the engine default, so a
+`--no-objective-tie-break`, `--fpr-prob`, `--lns-repair-fpr` and `--fpr-dag-prop` are recorded only off the engine default, so a
 default row's cell is the one the committed tables hold (they predate #226 and
 ran the tie-break off; only the commit tells them apart). Compound moves are on by default since
 2026-10-07; the published tables record `compound_moves=off` and so are an
-off-default arm until regenerated. Four pairs are refused, because the engine
+off-default arm until regenerated. Five pairs are refused, because the engine
 never reads the second flag and the row would record an arm the run did not
-have: `--lns-interval` with `--no-lns`, `--lns-repair-fpr` with `--no-lns`, `--novelty-prob` with
+have: `--lns-interval` with `--no-lns`, `--lns-repair-fpr` with `--no-lns`, `--fpr-dag-prop`
+without `--fpr-prob`, `--novelty-prob` with
 `--no-compound-moves`, and `--novelty-prob` with `--fpr-prob 1` (every batch is
 FPR then, unless root propagation refutes the model's linear rows).
 

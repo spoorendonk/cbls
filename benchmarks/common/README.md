@@ -32,7 +32,8 @@ pinned by `tests/python/test_cli.py`. `runner_io.h` is `file_exists`,
 `search_config_flags.h` is the per-arm search configuration (#136): the flag
 table, its parse, its validation, its application onto `cbls::SearchConfig` and
 `solve()`'s arguments, and the canonical `search_config` cell every row carries.
-`minlplib`, `uc-chped` and `cvrp` share it; `mipfeas` takes seven of its flags (#267, #423:
+`minlplib`, `uc-chped` and `cvrp` share it (`--fpr-dag-prop`, #424, is
+scalar-only and needs `--fpr-prob`); `mipfeas` takes seven of its flags (#267, #423:
 `--no-lns`, `--lns-interval`, `--novelty-prob`, `--unproductive-iters`,
 `--perturbation-period`, `--fpr-prob`, `--lns-repair-fpr`), parsed and validated
 here but recorded under its own JSON keys. Two rules it exists to enforce: **a flag

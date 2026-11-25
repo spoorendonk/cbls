@@ -1413,6 +1413,7 @@ NB_MODULE(_cbls_core, m) {
         .def_rw("fpr_batch_probability", &SearchConfig::fpr_batch_probability)
         .def_rw("fpr_worker", &SearchConfig::fpr_worker)
         .def_rw("lns_repair_fpr", &SearchConfig::lns_repair_fpr)
+        .def_rw("fpr_dag_propagation", &SearchConfig::fpr_dag_propagation)
         .def_rw("structural_selection", &SearchConfig::structural_selection)
         .def_rw("structural_sample_size", &SearchConfig::structural_sample_size)
         // Copied in and out, never the shared_ptr: Python must not alias the

@@ -177,6 +177,16 @@ def test_lns_repair_fpr_config_round_trips() -> None:
     assert config.lns_repair_fpr is False
 
 
+def test_fpr_dag_propagation_config_round_trips() -> None:
+    """The FPR batch's DAG-row propagation (#424) is bound under its C++ name, off by default."""
+    config = _config()
+    assert config.fpr_dag_propagation is False
+    config.fpr_dag_propagation = True
+    assert config.fpr_dag_propagation is True
+    config.fpr_dag_propagation = False
+    assert config.fpr_dag_propagation is False
+
+
 def test_counters_are_read_only() -> None:
     """They report a finished run; a writable field would be a way to falsify it."""
     import pytest

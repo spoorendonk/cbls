@@ -18,6 +18,8 @@
 
 namespace cbls {
 
+class DagRowStore;
+struct DagInterval;
 class Model;
 
 namespace activity_detail {
@@ -139,6 +141,10 @@ struct DomainPropagationStats {
     int64_t propagate_all_calls = 0;
     /// Bounds `propagate_all` derived: at depth 0, the root tightenings.
     int64_t propagate_all_bounds_derived = 0;
+    /// DAG rows (#424) revised, and the bounds they derived (also counted in
+    /// `bounds_derived`).
+    int64_t dag_rows_scanned = 0;
+    int64_t dag_bounds_derived = 0;
 };
 
 /// Bounds of a model's scalar variables under `fix`/`tighten`, propagated over
@@ -178,12 +184,15 @@ class DomainPropagator {
 
 public:
     /// Starts from the model's variable bounds. The store must be built from
-    /// the same model, and outlive this.
+    /// the same model, and outlive this. A non-null `dag` (same model, also
+    /// outliving this) adds its nonlinear rows (#424): queued after the
+    /// linear ones, revised HC4-style afresh from the bounds on each scan, so
+    /// they trail nothing; the valve counts their nodes and children as terms.
     DomainPropagator(const LinearRowStore& store, const Model& model,
-                     DomainPropagationOptions opts = {});
+                     DomainPropagationOptions opts = {}, const DagRowStore* dag = nullptr);
     /// A temporary store would dangle.
-    DomainPropagator(LinearRowStore&& store, const Model& model,
-                     DomainPropagationOptions opts = {}) = delete;
+    DomainPropagator(LinearRowStore&& store, const Model& model, DomainPropagationOptions opts = {},
+                     const DagRowStore* dag = nullptr) = delete;
     ~DomainPropagator();  // out of line: Activity is incomplete here
     DomainPropagator(const DomainPropagator&) = delete;
     DomainPropagator& operator=(const DomainPropagator&) = delete;
@@ -250,12 +259,14 @@ private:
                             activity_detail::Activity& max_act) const;
     [[nodiscard]] bool filtered(int32_t r) const;
     bool scan_row(int32_t r);
+    bool scan_dag_row(int32_t k);  // src/dag_propagation.cpp
     void enqueue_rows_of(int32_t var);
     void begin_call();
     bool run_queue();
     [[nodiscard]] bool conflict();
 
     const LinearRowStore& store_;
+    const DagRowStore* dag_;  // null: linear rows only
     DomainPropagationOptions opts_;
     std::vector<uint8_t> integral_;
     std::vector<double> lo_;
@@ -284,6 +295,14 @@ private:
     bool enqueue_derived_ = false;
     int64_t call_terms_ = 0;
     int64_t cascade_limit_ = 0;  // max_cascade_terms, resolved
+
+    // DAG scan scratch, sized to the store's largest row.
+    std::vector<DagInterval> dag_node_fwd_;
+    std::vector<DagInterval> dag_node_bwd_;
+    std::vector<DagInterval> dag_var_fwd_;
+    std::vector<DagInterval> dag_var_bwd_;
+    std::vector<DagInterval> dag_kids_;
+    std::vector<DagInterval> dag_proj_;
 
     DomainPropagationStats stats_;
 };

@@ -107,6 +107,9 @@ struct SearchFlags {
     // Fix-propagate-repair in the LNS repair (#432), off by default; opt-in in
     // the cell.
     bool lns_repair_fpr = SearchConfig{}.lns_repair_fpr;
+    // DAG-row propagation in the FPR batch (#424), off by default; opt-in in
+    // the cell.
+    bool fpr_dag_prop = SearchConfig{}.fpr_dag_propagation;
     // First flag typed per family (indexed by family bit), or nullptr. Set
     // whatever the value, so a flag restated at its default is still refused
     // on a runner that cannot read it.
@@ -129,7 +132,7 @@ struct SearchFlagSpec {
 /// are generated from it, so no flag is documented but unrecorded or reverse.
 /// New flags go at the END: a cell is this table filtered by family, so
 /// appending keeps every existing runner's cell byte-identical.
-inline constexpr std::array<SearchFlagSpec, 16> kSearchFlagSpecs = {{
+inline constexpr std::array<SearchFlagSpec, 17> kSearchFlagSpecs = {{
     {"float_hook", "[--no-float-hook]", kScalarSearchFlags},
     {"lns", "[--no-lns]", kCommonSearchFlags},
     {"lns_interval", "[--lns-interval N]", kCommonSearchFlags},
@@ -148,6 +151,7 @@ inline constexpr std::array<SearchFlagSpec, 16> kSearchFlagSpecs = {{
     {"objective_tie_break", "[--no-objective-tie-break]", kScalarSearchFlags, true},
     {"fpr_prob", "[--fpr-prob P]", kScalarSearchFlags, true},
     {"lns_repair_fpr", "[--lns-repair-fpr]", kScalarSearchFlags, true},
+    {"fpr_dag_prop", "[--fpr-dag-prop]", kScalarSearchFlags, true},
 }};
 
 inline constexpr std::size_t kSearchFlagCount = kSearchFlagSpecs.size();
@@ -258,6 +262,10 @@ inline bool match_search_flag(ArgCursor& c, const std::string& s, SearchFlags& f
         f.lns_repair_fpr = true;
         flag = "--lns-repair-fpr";
         family = kScalarSearchFlags;
+    } else if (s == "--fpr-dag-prop") {
+        f.fpr_dag_prop = true;
+        flag = "--fpr-dag-prop";
+        family = kScalarSearchFlags;
     } else {
         return false;
     }
@@ -341,6 +349,10 @@ inline bool validate_search_flags_have_effect(const SearchFlags& f, std::string&
     }
     if (!f.lns && f.lns_repair_fpr != defaults.lns_repair_fpr) {
         error = "--lns-repair-fpr has no effect with --no-lns";
+        return false;
+    }
+    if (f.fpr_prob == 0.0 && f.fpr_dag_prop != defaults.fpr_dag_prop) {
+        error = "--fpr-dag-prop has no effect without --fpr-prob";
         return false;
     }
     if (!f.compound_moves && f.novelty_prob != defaults.novelty_prob) {
@@ -482,6 +494,9 @@ inline const char* first_non_default_search_flag(const SearchFlags& f,
     if (f.lns_repair_fpr != d.lns_repair_fpr) {
         return "--lns-repair-fpr";
     }
+    if (f.fpr_dag_prop != d.fpr_dag_prop) {
+        return "--fpr-dag-prop";
+    }
     return nullptr;
 }
 
@@ -518,6 +533,7 @@ inline std::array<std::string, kSearchFlagCount> search_config_values(const Sear
         f.objective_tie_break ? on : off,
         search_flag_number(f.fpr_prob),
         f.lns_repair_fpr ? on : off,
+        f.fpr_dag_prop ? on : off,
     }};
 }
 
@@ -579,6 +595,7 @@ inline void apply_search_flags(const SearchFlags& f, SearchConfig& cfg) {
     cfg.fj_objective_tie_break = f.objective_tie_break;
     cfg.fpr_batch_probability = f.fpr_prob;
     cfg.lns_repair_fpr = f.lns_repair_fpr;
+    cfg.fpr_dag_propagation = f.fpr_dag_prop;
 }
 
 /// `--neighbours` against the instance: `nearest_neighbours` clamps K to

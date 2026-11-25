@@ -567,8 +567,8 @@ std::unique_ptr<FprBatch> make_fpr_batch(Model& model, const SearchConfig& confi
     if (budget.has_deadline) {
         start = std::chrono::steady_clock::now();
     }
-    auto batch =
-        std::make_unique<FprBatch>(model, config.fpr_worker, budget.has_deadline, budget.deadline);
+    auto batch = std::make_unique<FprBatch>(model, config.fpr_worker, budget.has_deadline,
+                                            budget.deadline, config.fpr_dag_propagation);
     if (budget.has_deadline) {
         setup_seconds =
             std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();

@@ -4,6 +4,7 @@
 #include "cbls/domain_propagation.h"
 
 #include "activity_bounds.h"
+#include "cbls/dag_propagation.h"
 #include "cbls/linear_jump.h"
 #include "cbls/model.h"
 
@@ -147,12 +148,17 @@ struct DomainPropagator::RowEntry {
 DomainPropagator::~DomainPropagator() = default;
 
 DomainPropagator::DomainPropagator(const LinearRowStore& store, const Model& model,
-                                   DomainPropagationOptions opts)
-    : store_(store), opts_(opts) {
+                                   DomainPropagationOptions opts, const DagRowStore* dag)
+    : store_(store), dag_(dag), opts_(opts) {
     const auto n_vars = static_cast<size_t>(store.num_vars());
     if (model.num_vars() != n_vars) {
         throw std::invalid_argument("DomainPropagator: the store has " + std::to_string(n_vars) +
                                     " variables, the model " + std::to_string(model.num_vars()));
+    }
+    if (dag != nullptr && static_cast<size_t>(dag->num_vars()) != n_vars) {
+        throw std::invalid_argument("DomainPropagator: the DAG store has " +
+                                    std::to_string(dag->num_vars()) + " variables, the model " +
+                                    std::to_string(n_vars));
     }
     integral_.resize(n_vars);
     lo_.resize(n_vars);
@@ -186,10 +192,20 @@ DomainPropagator::DomainPropagator(const LinearRowStore& store, const Model& mod
             drift_scale_[ri] += std::abs(a) * std::max(std::abs(lo), std::abs(hi));
         }
     }
-    queued_stamp_.assign(n_rows, 0);
+    int64_t work = store.nnz();
+    size_t n_dag = 0;
+    if (dag != nullptr) {
+        n_dag = static_cast<size_t>(dag->num_rows());
+        work += dag->size();
+        dag_node_fwd_.resize(dag->max_row_nodes());
+        dag_node_bwd_.resize(dag->max_row_nodes());
+        dag_var_fwd_.resize(dag->max_row_vars());
+        dag_var_bwd_.resize(dag->max_row_vars());
+    }
+    queued_stamp_.assign(n_rows + n_dag, 0);
     constexpr int64_t kValvePerNonzero = 100;
     cascade_limit_ =
-        opts_.max_cascade_terms >= 0 ? opts_.max_cascade_terms : kValvePerNonzero * store.nnz();
+        opts_.max_cascade_terms >= 0 ? opts_.max_cascade_terms : kValvePerNonzero * work;
 }
 
 int32_t DomainPropagator::checkpoint() {
@@ -298,6 +314,16 @@ void DomainPropagator::enqueue_rows_of(int32_t var) {
             queue_.push_back(r);
         }
     }
+    if (dag_ == nullptr) {
+        return;
+    }
+    for (size_t e = dag_->var_row_start(var); e < dag_->var_row_start(var + 1); ++e) {
+        const int32_t id = store_.num_rows() + dag_->var_rows()[e];
+        if (queued_stamp_[static_cast<size_t>(id)] != stamp_) {
+            queued_stamp_[static_cast<size_t>(id)] = stamp_;
+            queue_.push_back(id);
+        }
+    }
 }
 
 bool DomainPropagator::conflict() {
@@ -403,6 +429,9 @@ bool DomainPropagator::filtered(int32_t r) const {
 // the stale copy is sound, merely weaker. O(1) when the filter skips the row, else O(nnz) plus the
 // derived bounds' set_bounds.
 bool DomainPropagator::scan_row(int32_t r) {
+    if (r >= store_.num_rows()) {
+        return scan_dag_row(r - store_.num_rows());
+    }
     if (opts_.filter && filtered(r)) {
         ++stats_.rows_filtered;
         return true;
@@ -550,7 +579,9 @@ bool DomainPropagator::propagate_all() {
     }
     const int64_t derived_before = stats_.bounds_derived;
     begin_call();
-    for (int32_t r = 0; r < store_.num_rows(); ++r) {
+    const int32_t n_queued =
+        store_.num_rows() + (dag_ != nullptr ? dag_->num_rows() : 0);  // DAG rows after
+    for (int32_t r = 0; r < n_queued; ++r) {
         queued_stamp_[static_cast<size_t>(r)] = stamp_;
         queue_.push_back(r);
     }

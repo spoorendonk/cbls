@@ -105,6 +105,14 @@ void build_continuous_model(Model& m) {
     m.close();
 }
 
+/// `exp(x) <= 0.5` over an integer `x` in [0, 3]: no row is affine, so only the
+/// DAG rows (#424) see that the root box is empty.
+void build_exp_refuted_model(Model& m) {
+    const int32_t x = m.int_var(0, 3);
+    m.add_constraint(m.leq(m.exp_expr(x), m.constant(0.5)));
+    m.close();
+}
+
 /// Runs one arm exactly as a runner runs it: the flags are applied onto the
 /// config and onto solve()'s arguments through the shared header, and nothing
 /// else differs between two calls. `batch_iterations` is a test knob rather than
@@ -219,6 +227,7 @@ TEST_CASE("search flags default to the engine's own configuration", "[bench][fla
     REQUIRE(f.max_iterations == engine.max_iterations);
     REQUIRE(f.fpr_prob == engine.fpr_batch_probability);
     REQUIRE(f.lns_repair_fpr == engine.lns_repair_fpr);
+    REQUIRE(f.fpr_dag_prop == engine.fpr_dag_propagation);
     REQUIRE(f.float_hook);
     REQUIRE(f.lns);
     REQUIRE_FALSE(f.no_time_limit);
@@ -234,7 +243,7 @@ TEST_CASE("every search flag sets the field it claims", "[bench][flags]") {
     const ParseOutcome parsed = parse(
         {"--no-float-hook", "--lns-interval", "7", "--compound-moves", "--novelty-prob", "0.25",
          "--unproductive-iters", "0", "--perturbation-period", "9", "--max-iterations", "1234",
-         "--no-time-limit", "--fpr-prob", "0.75", "--lns-repair-fpr"});
+         "--no-time-limit", "--fpr-prob", "0.75", "--lns-repair-fpr", "--fpr-dag-prop"});
     REQUIRE(parsed.unmatched.empty());
     std::string error;
     REQUIRE(
@@ -251,6 +260,7 @@ TEST_CASE("every search flag sets the field it claims", "[bench][flags]") {
     REQUIRE(f.no_time_limit);
     REQUIRE(f.fpr_prob == 0.75);
     REQUIRE(f.lns_repair_fpr);
+    REQUIRE(f.fpr_dag_prop);
 
     // ...and that those land on the objects solve() is actually handed.
     SearchConfig cfg;
@@ -262,6 +272,7 @@ TEST_CASE("every search flag sets the field it claims", "[bench][flags]") {
     REQUIRE(cfg.max_iterations == 1234);
     REQUIRE(cfg.fpr_batch_probability == 0.75);
     REQUIRE(cfg.lns_repair_fpr);
+    REQUIRE(cfg.fpr_dag_propagation);
 
     cbls::FloatIntensifyHook hook;
     LNS lns(0.3);
@@ -400,6 +411,12 @@ TEST_CASE("an opt-in flag is recorded only off its default (#226)", "[bench][fla
     REQUIRE_FALSE(cbls::bench::validate_search_flags(parse({"--lns-repair-fpr"}).flags, kStructural,
                                                      false, error));
     REQUIRE(error.find("--lns-repair-fpr") != std::string::npos);
+    // DAG-row propagation in the FPR batch is off by default (#424): recorded
+    // only when on, and only beside the --fpr-prob that makes it run.
+    const SearchFlags dag = parse({"--fpr-prob", "0.25", "--fpr-dag-prop"}).flags;
+    REQUIRE(cbls::bench::search_config_string(dag, kScalar) ==
+            base + ";fpr_prob=0.25;fpr_dag_prop=on");
+    REQUIRE_FALSE(cbls::bench::validate_search_flags(dag, kStructural, false, error));
 }
 
 TEST_CASE("a non-default arm is named for the published-table guard", "[bench][flags]") {
@@ -423,6 +440,7 @@ TEST_CASE("a non-default arm is named for the published-table guard", "[bench][f
         {"--no-objective-tie-break"},
         {"--fpr-prob", "0.5"},
         {"--lns-repair-fpr"},
+        {"--fpr-dag-prop"},
     };
     REQUIRE(arms.size() == cbls::bench::kSearchFlagCount);
     for (const auto& arm : arms) {
@@ -485,6 +503,10 @@ TEST_CASE("validation rejects values the engine cannot use", "[bench][flags]") {
     REQUIRE(rejected({"--no-lns", "--lns-repair-fpr"}));
     REQUIRE(error.find("--lns-repair-fpr") != std::string::npos);
     REQUIRE_FALSE(rejected({"--lns-repair-fpr"}));
+    // Without FPR batches no propagator runs the DAG rows.
+    REQUIRE(rejected({"--fpr-dag-prop"}));
+    REQUIRE(error.find("--fpr-dag-prop") != std::string::npos);
+    REQUIRE_FALSE(rejected({"--fpr-prob", "0.5", "--fpr-dag-prop"}));
     REQUIRE(rejected({"--perturbation-period", "0"}));
     REQUIRE(rejected({"--max-iterations", "-1"}));
     // --no-time-limit without an iteration budget is a run with no budget at
@@ -734,6 +756,21 @@ TEST_CASE("the --fpr-prob flag runs fix-propagate-repair batches", "[bench][flag
     REQUIRE(never_arm.counters.fpr_batches == 0);
     REQUIRE(always_arm.counters.fpr_batches > 0);
     REQUIRE(always_arm.counters.fpr_batches == always_arm.counters.batches);
+}
+
+TEST_CASE("the --fpr-dag-prop flag propagates the nonlinear rows", "[bench][flags][probe]") {
+    // Only the DAG rows refute the root, and a refuted root builds no FPR batch
+    // (#429), so every batch of the off arm is FPR and none of the on arm's.
+    const std::vector<std::string> base = {"--no-lns", "--max-iterations", "50", "--fpr-prob",
+                                           "1.0"};
+    std::vector<std::string> with_dag = base;
+    with_dag.emplace_back("--fpr-dag-prop");
+
+    const SearchResult off = probe(base, build_exp_refuted_model, /*batch_iterations=*/10);
+    const SearchResult on = probe(with_dag, build_exp_refuted_model, /*batch_iterations=*/10);
+    REQUIRE(off.counters.fpr_batches > 0);
+    REQUIRE(on.counters.fpr_batches == 0);
+    REQUIRE(on.counters.batches > 0);
 }
 
 TEST_CASE("the --lns-repair-fpr flag runs the dive in the LNS repair", "[bench][flags][probe]") {
