@@ -138,6 +138,11 @@ def load_problem(instance: str, periods: int) -> Problem:
         )
         for u in range(int(inst["n_units"]))
     ]
+    flat = [i for i, unit in enumerate(units) if unit.f <= 0 or unit.e <= 0]
+    if flat:
+        # ucp_valve.py substitutes f = pi/(p_max - p_min) in its breakpoint builders
+        # but not in has_added_p, which divides by f; no instance here needs it.
+        raise SystemExit(f"{instance}: units {flat} have no valve-point term")
     return Problem(
         name=str(inst["name"]),
         units=units,
@@ -156,10 +161,6 @@ def cost(u: Unit, p: float) -> float:
     return u.a + u.b * p + u.c * p * p + abs(u.e * math.sin(u.f * (u.p_min - p)))
 
 
-def _valve_f(u: Unit) -> float:
-    return u.f if u.f != 0 else math.pi / (u.p_max - u.p_min)
-
-
 def concave_between_valves(u: Unit) -> bool:
     """Pedroso's Appendix B condition for the interpolation to under-estimate."""
     return u.c <= u.e * u.f * u.f / 2.0
@@ -167,7 +168,7 @@ def concave_between_valves(u: Unit) -> bool:
 
 def expand_brkpts(u: Unit, p_list: list[float], n: int) -> list[tuple[float, float]]:
     """Breakpoints: every valve point, and `n` per valve interval holding a past dispatch."""
-    f = _valve_f(u)
+    f = u.f
     brk: list[tuple[float, float]] = []
     nvalve = math.ceil(f * (u.p_max - u.p_min) / math.pi)
     k = 0
@@ -425,6 +426,12 @@ def check_solution(m: Any, v: UcpVars, pr: Problem, tol: float = 1.0e-6) -> list
 SOLVED = ("optimal", "gaplimit")
 
 
+def _finite_bound(m: Any) -> float | None:
+    """SCIP's dual bound, or None while it is still -infinity (no root LP yet)."""
+    lb = float(m.getDualbound())
+    return None if m.isInfinity(-lb) else lb
+
+
 def _base_params(m: Any, cpu_left: float) -> None:
     m.setIntParam("timing/clocktype", 1)  # CPU time, as ucp_valve.py's time.clock()
     m.setIntParam("parallel/maxnthreads", 1)
@@ -456,6 +463,10 @@ def _pwl_model(
             for key, val in values.items():
                 m.setSolVal(sol, getattr(v, name)[key], val)
         m.addSol(sol)
+        # The start fixes y, hot, cold, on and off only; every breakpoint weight,
+        # p, fuel and startup is unknown, which is far past completesol's default
+        # 0.85 unknown rate, so SCIP would drop the start without a word.
+        m.setRealParam("heuristics/completesol/maxunknownrate", 1.0)
     return m, v, n_brk
 
 
@@ -479,6 +490,9 @@ def _refine(m: Any, v: UcpVars, pr: Problem, prev: dict[tuple[int, int], list[fl
                 continue
             pt = float(m.getVal(v.p[u, t]))
             if has_added_p(unit, prev[u, t], pt):
+                if any(abs(pp - pt) <= 1.0e-6 for pp in prev[u, t]):
+                    # ucp_valve.py asserts this before appending.
+                    raise RuntimeError(f"unit {u} period {t}: dispatch {pt} repeats a point")
                 new = True
                 prev[u, t].append(pt)
                 prev[u, t].sort()
@@ -496,20 +510,26 @@ def solve_pwl(pr: Problem, cpu: float, warm_start: bool = True) -> dict[str, Any
     incumbent: Incumbent | None = None
     iterations: list[dict[str, Any]] = []
     last: dict[str, Any] = {}
+    converged = False
+    out_of_budget = False
     while True:
         m, v, n_brk = _pwl_model(pr, prev, n, incumbent if warm_start else None)
         cpu_left = cpu - (time.process_time() - start)
         if cpu_left < 0:
+            out_of_budget = True
             break
         _pwl_params(m, strict, cpu_left)
         m.optimize()
         status = str(m.getStatus())
         if m.getNSols() == 0:
-            iterations.append({"n": n, "breakpoints": n_brk, "status": status, "lb": None})
+            iterations.append(
+                {"n": n, "breakpoints": n_brk, "status": status, "lb": _finite_bound(m)}
+            )
+            out_of_budget = True
             break
-        lb = float(m.getDualbound())
+        lb = _finite_bound(m)
         ub = true_cost(m, v, pr)
-        error = (ub - lb) / lb
+        error = (ub - lb) / lb if lb is not None else math.inf
         last = {"m": m, "v": v}
         iterations.append(
             {
@@ -524,16 +544,18 @@ def solve_pwl(pr: Problem, cpu: float, warm_start: bool = True) -> dict[str, Any
             }
         )
         print(
-            f"  n={n} brk={n_brk} {status} LB={lb:.4f} UB={ub:.4f} err={error:.3e} "
+            f"  n={n} brk={n_brk} {status} LB={lb} UB={ub:.4f} err={error:.3e} "
             f"cpu={time.process_time() - start:.1f}s",
             file=sys.stderr,
         )
         if strict and error < EPS:
+            converged = True
             break
         gap_param = 1.0e-12 if strict else GUROBI_MIPGAP
         if error < EPS or error < gap_param:
             strict = True
         if status not in SOLVED:
+            out_of_budget = True
             break
         incumbent = {
             name: {key: float(m.getVal(var)) for key, var in getattr(v, name).items()}
@@ -543,15 +565,21 @@ def solve_pwl(pr: Problem, cpu: float, warm_start: bool = True) -> dict[str, Any
             n *= 2
             strict = True
 
-    solved = [it for it in iterations if it.get("lb") is not None]
+    with_lb = [it for it in iterations if it.get("lb") is not None]
+    with_ub = [it for it in iterations if it.get("ub") is not None]
     result: dict[str, Any] = {
         "iterations": iterations,
         "cpu_s": time.process_time() - start,
-        "lb": solved[-1]["lb"] if solved else None,
-        "ub": solved[-1]["ub"] if solved else None,
-        "best_lb": max((it["lb"] for it in solved), default=None),
-        "best_ub": min((it["ub"] for it in solved), default=None),
-        "status": iterations[-1]["status"] if iterations else "no-iteration",
+        "converged": converged,
+        "out_of_budget": out_of_budget,
+        "last_lb": iterations[-1].get("lb") if iterations else None,
+        "last_ub": iterations[-1].get("ub") if iterations else None,
+        # Every iteration's LB and UB bound the true optimum, so the best of each
+        # is the result; the last iteration may have had too little CPU to say much.
+        "lb": max((it["lb"] for it in with_lb), default=None),
+        "ub": min((it["ub"] for it in with_ub), default=None),
+        "status": "converged" if converged else "time limit reached",
+        "last_scip_status": iterations[-1]["status"] if iterations else None,
     }
     if last:
         result["check"] = check_solution(last["m"], last["v"], pr)
@@ -569,10 +597,10 @@ def solve_exact(pr: Problem, cpu: float, gap: float) -> dict[str, Any]:
     status = str(m.getStatus())
     result: dict[str, Any] = {"status": status, "cpu_s": time.process_time() - start}
     if m.getNSols() == 0:
-        result.update(lb=float(m.getDualbound()), ub=None)
+        result.update(lb=_finite_bound(m), ub=None)
         return result
     result.update(
-        lb=float(m.getDualbound()),
+        lb=_finite_bound(m),
         ub=true_cost(m, v, pr),
         scip_objective=float(m.getObjVal()),
         check=check_solution(m, v, pr),
@@ -616,7 +644,7 @@ def main() -> None:
         "cpu_limit_s": args.cpu,
         "lb": lb,
         "ub": ub,
-        "gap_pct": (100.0 * (ub - lb) / lb) if lb and ub is not None else None,
+        "gap_pct": (100.0 * (ub - lb) / lb) if lb is not None and ub is not None else None,
         "concavity_violated_units": bad,
         "pyscipopt": importlib.metadata.version("pyscipopt"),
         "scip": str(pyscipopt.Model().version()),

@@ -314,7 +314,8 @@ per (instance, horizon): the budget, the seeds that solved it, and the gap to
 Pedroso's lower bound and one-hour incumbent as median [min, max] over those
 seeds, beside Pedroso's own gap. Instances Pedroso did not publish show their
 objective and no gap. There is no SCIP column yet: the SCIP references in
-`benchmarks/uc-chped/pedroso/` write JSON lines the scorer does not read. The scorer refuses an incomplete roster, a row failing
+`benchmarks/uc-chped/pedroso/` write JSON lines the scorer does not read. The
+scorer refuses an incomplete roster, a row failing
 verification or never verified, mixed commits, search configurations (thread count
 included) or tolerances, and one horizon at two budgets; the module's docstring
 has the full list. `--roster NAME:T,T ...` scores a smoke's subset and says so on
