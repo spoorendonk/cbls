@@ -279,6 +279,11 @@ column in comparison output.
 
 ## 4. SCIP reference — what it actually solves
 
+> **Removed.** `reference_solve.py` was replaced by the SCIP references in
+> `benchmarks/uc-chped/pedroso/` (Pedroso's method ported to SCIP, and the exact
+> MINLP). This section and the mentions of it below record what the old
+> reference solved; the file is in git history.
+
 Source: `benchmarks/uc-chped/reference_solve.py` (`solve_uc_scip`).
 
 ### 4.1 Approximation level

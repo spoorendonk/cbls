@@ -212,18 +212,22 @@ measurement, on the pre-#193 instances, is on #190.
 
 ## Reference Solver
 
-The reference solver (`benchmarks/uc-chped/reference_solve.py`) uses PySCIPOpt to solve a MIP formulation:
+Two SCIP references, in [`benchmarks/uc-chped/pedroso/`](../../../benchmarks/uc-chped/pedroso/README.md),
+a **GPL-3.0-or-later** directory (the rest of cbls is MIT):
 
-- Binary variables for commitment ($y$), startup ($su$), and shutdown ($sd$)
-- **Piecewise-linear approximation** of the valve-point cost function using 50 segments per unit with an incremental (SOS2-like) formulation
-- Hot/cold startup cost modeled via auxiliary binary indicator variables
-- Standard min uptime/downtime constraints
+- `--method pwl`: Pedroso et al.'s own method (arXiv:1404.4944, Algorithm 1), ported
+  from their GPL `ucp_valve.py` from Gurobi to SCIP. It interpolates the fuel cost
+  through the valve points (a lower bound while `c <= e*f^2/2` per unit), prices
+  the MIP's dispatch at the true cost (an upper bound), and refines until they meet.
+- `--method exact`: the same model with the true `|sin|` term, by SCIP's spatial
+  branch-and-bound.
 
-The PWL approximation is what makes the reference a MIP: a MIP cannot carry the `|sin(...)|` term (SCIP's MINLP mode can, which is what the exact check below uses). It is **not** negligible at 50 segments: uniformly spaced breakpoints straddle the valve-point cusps, which are exactly where optimal dispatch sits, and the chord over a cusp overestimates the cost by up to about `d·e·Δ/2` per unit. Summed over units, the worst case for one period of `ucp13` is 213 at 50 segments and 47 at 200 (1.8% and 0.4% of the optimum); the realised error is smaller. Two further differences from the source: demand is `>=` where the source has `=`, and a startup of a `t_cold = 0` unit is priced hot, where the source and our model price every startup on these instances cold (§7 of `FIDELITY.md`).
+Both solve the source's problem (demand as an equality, its startup logic). The
+deviations from `ucp_valve.py` are listed in that directory's README. Neither is
+validated against Table 2 yet.
 
-For an exact check, #148's `instance_identity.py` (in git history at `047f2d4c`; FIDELITY.md §7) solves the proven-optimum cases as a SCIP MINLP with the true `sin` term (no linearisation) and compares the instance data against the authors' code.
-
-See [`benchmarks/uc-chped/reference_solve.py`](../../../benchmarks/uc-chped/reference_solve.py) for the full implementation.
+They replace `reference_solve.py`, a 50-segment piecewise-linear MIP that was not
+a bound in either direction (FIDELITY.md §4; in git history).
 
 ## Results
 
@@ -309,8 +313,8 @@ RESULTS/seed<N>/comparison.csv --seed N --commit SHA --verify`, and gives one li
 per (instance, horizon): the budget, the seeds that solved it, and the gap to
 Pedroso's lower bound and one-hour incumbent as median [min, max] over those
 seeds, beside Pedroso's own gap. Instances Pedroso did not publish show their
-objective and no gap. There is no SCIP column, because `reference_solve.py`
-writes no table. The scorer refuses an incomplete roster, a row failing
+objective and no gap. There is no SCIP column yet: the SCIP references in
+`benchmarks/uc-chped/pedroso/` write JSON lines the scorer does not read. The scorer refuses an incomplete roster, a row failing
 verification or never verified, mixed commits, search configurations (thread count
 included) or tolerances, and one horizon at two budgets; the module's docstring
 has the full list. `--roster NAME:T,T ...` scores a smoke's subset and says so on
@@ -466,6 +470,6 @@ The per-horizon table, the 600 s probe and the smoke objectives are on
 | [`benchmarks/uc-chped/data.h`](../../../benchmarks/uc-chped/data.h) | C++ data structures and JSONL loader |
 | [`benchmarks/uc-chped/uc_model.h`](../../../benchmarks/uc-chped/uc_model.h) | CBLS model builder |
 | [`benchmarks/uc-chped/uc_chped.cpp`](../../../benchmarks/uc-chped/uc_chped.cpp) | Benchmark runner executable |
-| [`benchmarks/uc-chped/reference_solve.py`](../../../benchmarks/uc-chped/reference_solve.py) | Reference solver (SCIP MIP) |
+| [`benchmarks/uc-chped/pedroso/`](../../../benchmarks/uc-chped/pedroso/README.md) | SCIP references: Pedroso's method and the exact MINLP (GPL-3.0-or-later) |
 | [`benchmarks/uc-chped/chped_data.py`](../../../benchmarks/uc-chped/chped_data.py) | 13- and 40-unit cost and limit data |
 | [`tests/test_uc_chped.cpp`](../../../tests/test_uc_chped.cpp) | Catch2 unit tests |

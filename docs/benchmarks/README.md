@@ -10,7 +10,7 @@ Each benchmark follows the same pattern:
 - `*.cpp` — runner executable
 - a reference solver script, per benchmark:
   - `minlplib`: `reference_solve.py` (SCIP/PySCIPOpt)
-  - `uc-chped`: `reference_solve.py` (SCIP/PySCIPOpt)
+  - `uc-chped`: `pedroso/ucp_valve_scip.py` (SCIP/PySCIPOpt; a GPL-3.0-or-later directory)
   - `mipfeas`: `cpsat_solve.py` (CP-SAT)
   - `cvrp`: `reference_solve.py` (PyVRP) and `ortools_solve.py` (OR-Tools)
   - `setcover`: none; its optima are proven and pinned
@@ -156,7 +156,7 @@ loop, review and pushing. The steps specific to a benchmark:
 
 2. **Find a reference solver.** Implement it in `benchmarks/{name}/`, using SCIP
    (PySCIPOpt), or another open-source solver if SCIP can't handle the
-   formulation. Follow `benchmarks/uc-chped/reference_solve.py`.
+   formulation. Follow `benchmarks/minlplib/reference_solve.py`.
 
 3. **Collect best-known results** from papers and competitions, and pin them per
    `docs/measuring.md`.
