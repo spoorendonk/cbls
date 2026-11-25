@@ -409,9 +409,11 @@ void backward(NodeOp op, const DagInterval& z, const std::vector<DagInterval>& k
     } else if (op == NodeOp::Min || op == NodeOp::Max) {
         min_max_backward(op == NodeOp::Max, z, kids, proj);
     } else if (op == NodeOp::Exp) {
-        // exp(x) > 0 for every finite x; a z.hi <= 0 leaves x only -inf.
+        // exp underflows to 0 below about -745, so z.hi == 0 still admits
+        // x <= log(denorm_min); only z.hi < 0 leaves x nothing finite.
+        const double hi_arg = z.hi == 0.0 ? std::numeric_limits<double>::denorm_min() : z.hi;
         proj[0] = {z.lo > 0.0 ? down(std::log(z.lo), o) : kNegInf,
-                   z.hi > 0.0 ? up(std::log(z.hi), o) : kNegInf};
+                   hi_arg > 0.0 ? up(std::log(hi_arg), o) : kNegInf};
     } else {  // Log
         proj[0] = {down(std::exp(z.lo), o), up(std::exp(z.hi), o)};
     }
