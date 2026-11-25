@@ -138,11 +138,11 @@ def load_problem(instance: str, periods: int) -> Problem:
         )
         for u in range(int(inst["n_units"]))
     ]
-    flat = [i for i, unit in enumerate(units) if unit.f <= 0 or unit.e <= 0]
+    flat = [i for i, unit in enumerate(units) if unit.f <= 0]
     if flat:
         # ucp_valve.py substitutes f = pi/(p_max - p_min) in its breakpoint builders
         # but not in has_added_p, which divides by f; no instance here needs it.
-        raise SystemExit(f"{instance}: units {flat} have no valve-point term")
+        raise SystemExit(f"{instance}: units {flat} have valve frequency f <= 0")
     return Problem(
         name=str(inst["name"]),
         units=units,
@@ -427,9 +427,16 @@ SOLVED = ("optimal", "gaplimit")
 
 
 def _finite_bound(m: Any) -> float | None:
-    """SCIP's dual bound, or None while it is still -infinity (no root LP yet)."""
+    """SCIP's dual bound, or None while it is infinite (no root LP yet, or infeasible)."""
     lb = float(m.getDualbound())
-    return None if m.isInfinity(-lb) else lb
+    return None if m.isInfinity(abs(lb)) else lb
+
+
+def _relative_gap(lb: float | None, ub: float | None) -> float | None:
+    """(ub - lb) / lb, or None unless both exist and lb is positive."""
+    if lb is None or ub is None or lb <= 0:
+        return None
+    return (ub - lb) / lb
 
 
 def _base_params(m: Any, cpu_left: float) -> None:
@@ -509,7 +516,7 @@ def solve_pwl(pr: Problem, cpu: float, warm_start: bool = True) -> dict[str, Any
     strict = False
     incumbent: Incumbent | None = None
     iterations: list[dict[str, Any]] = []
-    last: dict[str, Any] = {}
+    checked: dict[int, list[str]] = {}
     converged = False
     out_of_budget = False
     while True:
@@ -529,8 +536,9 @@ def solve_pwl(pr: Problem, cpu: float, warm_start: bool = True) -> dict[str, Any
             break
         lb = _finite_bound(m)
         ub = true_cost(m, v, pr)
-        error = (ub - lb) / lb if lb is not None else math.inf
-        last = {"m": m, "v": v}
+        gap = _relative_gap(lb, ub)
+        error = gap if gap is not None else math.inf
+        checked[len(iterations)] = check_solution(m, v, pr)
         iterations.append(
             {
                 "n": n,
@@ -566,7 +574,9 @@ def solve_pwl(pr: Problem, cpu: float, warm_start: bool = True) -> dict[str, Any
             strict = True
 
     with_lb = [it for it in iterations if it.get("lb") is not None]
-    with_ub = [it for it in iterations if it.get("ub") is not None]
+    with_ub = [i for i, it in enumerate(iterations) if it.get("ub") is not None]
+    best = min(with_ub, key=lambda i: iterations[i]["ub"]) if with_ub else None
+    last_status = iterations[-1]["status"] if iterations else None
     result: dict[str, Any] = {
         "iterations": iterations,
         "cpu_s": time.process_time() - start,
@@ -574,15 +584,22 @@ def solve_pwl(pr: Problem, cpu: float, warm_start: bool = True) -> dict[str, Any
         "out_of_budget": out_of_budget,
         "last_lb": iterations[-1].get("lb") if iterations else None,
         "last_ub": iterations[-1].get("ub") if iterations else None,
-        # Every iteration's LB and UB bound the true optimum, so the best of each
-        # is the result; the last iteration may have had too little CPU to say much.
+        # While every unit has c <= e*f^2/2, each iteration's LB and UB bound the
+        # true optimum, so the best of each is the result; the last iteration may
+        # have had too little CPU to say much. `check` is the best UB's solution's.
         "lb": max((it["lb"] for it in with_lb), default=None),
-        "ub": min((it["ub"] for it in with_ub), default=None),
-        "status": "converged" if converged else "time limit reached",
-        "last_scip_status": iterations[-1]["status"] if iterations else None,
+        "ub": iterations[best]["ub"] if best is not None else None,
+        "status": (
+            "converged"
+            if converged
+            else "infeasible"
+            if last_status == "infeasible"
+            else "time limit reached"
+        ),
+        "last_scip_status": last_status,
     }
-    if last:
-        result["check"] = check_solution(last["m"], last["v"], pr)
+    if best is not None:
+        result["check"] = checked[best]
     return result
 
 
@@ -644,7 +661,7 @@ def main() -> None:
         "cpu_limit_s": args.cpu,
         "lb": lb,
         "ub": ub,
-        "gap_pct": (100.0 * (ub - lb) / lb) if lb is not None and ub is not None else None,
+        "gap_pct": (100.0 * g) if (g := _relative_gap(lb, ub)) is not None else None,
         "concavity_violated_units": bad,
         "pyscipopt": importlib.metadata.version("pyscipopt"),
         "scip": str(pyscipopt.Model().version()),
