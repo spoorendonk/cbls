@@ -150,4 +150,6 @@ See [docs/architecture.md](docs/architecture.md) for solver internals: expressio
 
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE), except [`benchmarks/uc-chped/pedroso/`](benchmarks/uc-chped/pedroso/README.md),
+which is GPL-3.0-or-later as a port of Pedroso et al.'s GPL code. Nothing outside
+that directory imports it.

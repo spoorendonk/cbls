@@ -17,8 +17,8 @@ THE MEASURE, one line per (instance, horizon):
   Gap to UB is the same against Pedroso's one-hour incumbent; below 0 is better
   than it. Each is the median over the seeds that solved it, with [min, max].
 * The baseline is Pedroso's own gap on the row, a cited result and not a
-  measurement. `benchmarks/uc-chped/reference_solve.py` prints its results and
-  writes no table, so there is no SCIP column.
+  measurement. The SCIP references (`benchmarks/uc-chped/pedroso/`) write JSON
+  lines this scorer does not read yet, so there is no SCIP column.
 * The instances Pedroso did not publish (ucp100, ucp200 and their extensions) have
   objectives and no gaps: `-`, never an invented bound.
 * A seed whose row is infeasible, or feasible with no finite objective, has no gap.

@@ -2,7 +2,7 @@
 
 The 13- and 40-unit systems' costs and limits. `benchmarks/instances/uc-chped/data.py`
 loads them by path to build `ucp13` and `ucp40` (and to cycle `ucp100`/`ucp200`),
-which is how `reference_solve.py` and `gen_jsonl.py` reach them.
+which is how `pedroso/ucp_valve_scip.py` and `gen_jsonl.py` reach them.
 Cost function: F_i(P_i) = a_i + b_i*P_i + c_i*P_i^2 + |d_i*sin(e_i*(P_min_i - P_i))|
 """
 
