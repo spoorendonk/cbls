@@ -49,9 +49,13 @@ Source: <http://www.dcc.fc.up.pt/~jpp/code/valve/ucp_valve.py>, 2013-12-09,
    drop the start silently. `--no-warm-start` turns it off.
 4. **Clock.** `ucp_valve.py` budgets the loop in CPU time (`time.clock()`, from
    process start) and gives Gurobi the remainder as its TimeLimit, which is wall
-   time. The port budgets from the start of the solve and sets SCIP's limit in
-   CPU time too (`timing/clocktype 1`). One thread, so the two clocks barely
-   differ.
+   time. The port budgets from the start of the solve in process CPU time and
+   gives SCIP the remainder in wall time too (`timing/clocktype 2`). One thread
+   on its own core, so the two clocks barely differ. SCIP's CPU clock is not an
+   option: it reads `times()`, a syscall SCIP made ~775k times a second here.
+   That system time is a third of the process's CPU and its user-time clock
+   never sees it: an `exact` solve at a 60 s limit took 93 CPU-s, and at
+   3600 s none stopped before a 3900 s wall stop (#441).
 5. **Data.** From cbls's `data.py`, not `ucp_data.py`; identical for `ucp13` and
    `ucp40` (FIDELITY.md §7). Off-horizon indices are clipped where `ucp_valve.py`
    would raise; no instance here reaches them.

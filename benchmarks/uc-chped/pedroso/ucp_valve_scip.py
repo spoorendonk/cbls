@@ -440,7 +440,9 @@ def _relative_gap(lb: float | None, ub: float | None) -> float | None:
 
 
 def _base_params(m: Any, cpu_left: float) -> None:
-    m.setIntParam("timing/clocktype", 1)  # CPU time, as ucp_valve.py's time.clock()
+    # Wall time, as Gurobi's TimeLimit in ucp_valve.py. SCIP's CPU clock is a times() syscall
+    # it makes ~10^6 times a second: a third of the process's CPU, uncounted by it (#441).
+    m.setIntParam("timing/clocktype", 2)
     m.setIntParam("parallel/maxnthreads", 1)
     m.setRealParam("limits/time", max(cpu_left, 0.0))
 
@@ -610,7 +612,7 @@ def solve_exact(pr: Problem, cpu: float, gap: float) -> dict[str, Any]:
     start = time.process_time()
     m, v = ucp_base(pr)
     ucp_exact_obj(m, v, pr)
-    _base_params(m, cpu)
+    _base_params(m, cpu - (time.process_time() - start))
     m.setRealParam("limits/gap", gap)
     m.optimize()
     status = str(m.getStatus())
