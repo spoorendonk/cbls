@@ -589,10 +589,12 @@ def solve_pwl(pr: Problem, cpu: float, warm_start: bool = True) -> dict[str, Any
         # have had too little CPU to say much. `check` is the best UB's solution's.
         "lb": max((it["lb"] for it in with_lb), default=None),
         "ub": iterations[best]["ub"] if best is not None else None,
+        # `infeasible` only when no iteration found a UB: a later infeasible MIP
+        # after one did (numerics in strict mode) is a stop, not an infeasible run.
         "status": (
             "converged"
             if converged
-            else "infeasible"
+            else ("infeasible" if best is None else "stopped: infeasible MIP after a UB")
             if last_status == "infeasible"
             else "time limit reached"
         ),

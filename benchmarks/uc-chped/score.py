@@ -8,7 +8,7 @@ solves nothing.
 Usage, from any directory:
 
     .venv/bin/python benchmarks/uc-chped/score.py RESULTS/seed*/comparison.csv \\
-        [--out table.md] [--roster NAME:T,T ...] [--scip pwl.jsonl exact.jsonl]
+        [--out table.md] [--roster NAME:T,T ...] [--scip pwl.jsonl --scip exact.jsonl]
 
 THE MEASURE, one line per (instance, horizon):
 
@@ -18,7 +18,7 @@ THE MEASURE, one line per (instance, horizon):
   than it. Each is the median over the seeds that solved it, with [min, max].
 * The baseline is Pedroso's own gap on the row, a cited result and not a
   measurement.
-* `--scip FILE.jsonl ...` adds a second table from the SCIP references'
+* `--scip FILE.jsonl` (once per file) adds a second table from the SCIP references'
   JSON lines (`benchmarks/uc-chped/pedroso/ucp_valve_scip.py`, read as data): each
   method's LB, UB and gap, and cbls's gap to the best SCIP LB and UB, median
   [min, max] over the seeds that solved it. A `pwl` LB from a run where some unit
@@ -51,7 +51,9 @@ REFUSALS (exit 2, naming what is wrong; nothing is written):
 * an `--out` that is one of the tables, or the runner's published `comparison.csv`;
 * with `--scip`: a line that is no JSON object of the port's fields, an unknown
   method, a pair outside the roster, a (pair, method) twice, a record whose
-  solution failed the port's re-check (`check`), or two SCIP versions.
+  solution failed the port's re-check (`check`), two SCIP versions, two CPU limits
+  for one method, or a pair whose best SCIP LB is above its best SCIP UB. An LB
+  that is not positive gives no gap.
 
 `--roster` replaces the published `ROSTER` for a smoke, and every output says so on
 its first line.
@@ -180,12 +182,23 @@ class ScipResult:
     #: `pwl` only: a unit breaks `c <= e*f^2/2`, so the LB is not a bound.
     lb_not_a_bound: bool
 
+    @property
+    def bound_lb(self) -> float | None:
+        """The LB as a bound to take a gap to: none when it is not one or is not positive."""
+        if self.lb is None or self.lb <= 0 or self.lb_not_a_bound:
+            return None
+        return self.lb
+
 
 @dataclass(frozen=True)
 class Scip:
     results: dict[Pair, dict[str, ScipResult]]
     version: str
-    cpu_limits: dict[str, set[float]]
+    cpu_limits: dict[str, float]
+
+
+#: Relative slack before a best SCIP LB above the best SCIP UB is a contradiction.
+SCIP_BOUND_TOL = 1.0e-6
 
 
 def read_rows(path: Path) -> list[dict[str, str]]:
@@ -379,9 +392,15 @@ def scip_bound(where: str, record: dict[str, object], key: str) -> float | None:
     value = record.get(key)
     if value is None:
         return None
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+    number = math.nan
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        try:
+            number = float(value)
+        except OverflowError:  # an integer literal past float's range
+            number = math.inf
+    if not math.isfinite(number):
         raise RefusedError(f"{where}: {key} {value!r} is not a finite number or null")
-    return float(value)
+    return number
 
 
 def parse_scip_record(where: str, record: object) -> tuple[str, int, str, str, ScipResult]:
@@ -399,8 +418,6 @@ def parse_scip_record(where: str, record: object) -> tuple[str, int, str, str, S
         and isinstance(method, str)
         and isinstance(status, str)
         and isinstance(version, str)
-        and isinstance(limit, (int, float))
-        and not isinstance(limit, bool)
         and isinstance(check, list)
         and isinstance(violated, list)
     ):
@@ -409,11 +426,14 @@ def parse_scip_record(where: str, record: object) -> tuple[str, int, str, str, S
         raise RefusedError(f"{where}: unknown method {method!r}")
     if check:
         raise RefusedError(f"{where}: its solution failed the port's re-check: {check[:3]}")
+    cpu_limit = scip_bound(where, record, "cpu_limit_s")
+    if cpu_limit is None or cpu_limit <= 0:
+        raise RefusedError(f"{where}: cpu_limit_s {limit!r} is not a positive number")
     result = ScipResult(
         lb=scip_bound(where, record, "lb"),
         ub=scip_bound(where, record, "ub"),
         status=status,
-        cpu_limit_s=float(limit),
+        cpu_limit_s=cpu_limit,
         lb_not_a_bound=method == "pwl" and bool(violated),
     )
     return instance, periods, method, version, result
@@ -422,7 +442,7 @@ def parse_scip_record(where: str, record: object) -> tuple[str, int, str, str, S
 def load_scip(paths: Sequence[Path], roster: dict[str, tuple[int, ...]]) -> Scip:
     results: dict[Pair, dict[str, ScipResult]] = {}
     versions: set[str] = set()
-    cpu_limits: dict[str, set[float]] = {}
+    limits: dict[str, set[str]] = {}
     for path in paths:
         for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
             if not line.strip():
@@ -430,8 +450,8 @@ def load_scip(paths: Sequence[Path], roster: dict[str, tuple[int, ...]]) -> Scip
             where = f"{path}:{number}"
             try:
                 record = json.loads(line)
-            except json.JSONDecodeError as err:
-                raise RefusedError(f"{where}: not JSON ({err.msg})") from err
+            except ValueError as err:  # JSONDecodeError, or an integer past Python's digit limit
+                raise RefusedError(f"{where}: not JSON ({err})") from err
             instance, periods, method, version, result = parse_scip_record(where, record)
             pair = roster_pair(instance, periods, roster)
             if pair[1] not in roster.get(pair[0], ()):
@@ -441,11 +461,20 @@ def load_scip(paths: Sequence[Path], roster: dict[str, tuple[int, ...]]) -> Scip
                 raise RefusedError(f"{where}: {pair[0]} T={periods} {method} is twice")
             by_method[method] = result
             versions.add(version)
-            cpu_limits.setdefault(method, set()).add(result.cpu_limit_s)
+            limits.setdefault(method, set()).add(f"{result.cpu_limit_s:g}")
     if not results:
         raise RefusedError(f"--scip {' '.join(map(str, paths))}: no records")
+    for pair, by_method in results.items():
+        best_lb, best_ub = best_scip_bounds(by_method)
+        if best_lb is not None and best_ub is not None and best_lb > best_ub * (1 + SCIP_BOUND_TOL):
+            raise RefusedError(
+                f"{pair[0]} T={pair[1]}: the best SCIP LB {best_lb:g} "
+                f"is above the best UB {best_ub:g}"
+            )
     return Scip(
-        results=results, version=one_value(versions, "SCIP versions"), cpu_limits=cpu_limits
+        results=results,
+        version=one_value(versions, "SCIP versions"),
+        cpu_limits={m: float(one_value(v, f"{m} CPU limits")) for m, v in limits.items()},
     )
 
 
@@ -492,17 +521,14 @@ def scip_cells(result: ScipResult | None) -> list[str]:
     """LB, UB and gap % of one method's record, `-` where it has none."""
     if result is None:
         return ["-", "-", "-"]
-    gap = (
-        None
-        if result.lb is None or result.ub is None or result.lb_not_a_bound
-        else gap_pct(result.ub, result.lb)
-    )
+    lb = result.bound_lb
+    gap = None if lb is None or result.ub is None else gap_pct(result.ub, lb)
     return [number(result.lb, result.lb_not_a_bound), number(result.ub), number(gap)]
 
 
 def best_scip_bounds(by_method: dict[str, ScipResult]) -> tuple[float | None, float | None]:
     """The highest LB that is a bound, and the lowest UB, over the methods."""
-    lbs = [r.lb for r in by_method.values() if r.lb is not None and not r.lb_not_a_bound]
+    lbs = [r.bound_lb for r in by_method.values() if r.bound_lb is not None]
     ubs = [r.ub for r in by_method.values() if r.ub is not None]
     return (max(lbs) if lbs else None, min(ubs) if ubs else None)
 
@@ -549,19 +575,15 @@ def render_scip(campaign: Campaign, scip: Scip, pairs: Sequence[Pair]) -> list[s
     unproven = [
         f"{pair[0]} T={pair[1]} {method}: {result.status}"
         for pair in pairs
-        for method, result in sorted(scip.results.get(pair, {}).items())
-        if result.ub is None
+        for method in SCIP_METHODS
+        if (result := scip.results.get(pair, {}).get(method)) is not None and result.ub is None
     ]
     no_bound = [
         f"{pair[0]} T={pair[1]}"
         for pair in pairs
         if (r := scip.results.get(pair, {}).get("pwl")) is not None and r.lb_not_a_bound
     ]
-    limits = "; ".join(
-        f"{m} {', '.join(f'{s:g}' for s in sorted(scip.cpu_limits[m]))}"
-        for m in SCIP_METHODS
-        if m in scip.cpu_limits
-    )
+    limits = "; ".join(f"{m} {scip.cpu_limits[m]:g}" for m in SCIP_METHODS if m in scip.cpu_limits)
     lines += [
         "",
         f"- SCIP {scip.version}; CPU limit (s): {limits} (ucp_valve_scip.py records)",
@@ -656,10 +678,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--scip",
         type=Path,
-        nargs="+",
+        action="append",
         default=[],
         metavar="JSONL",
-        help="ucp_valve_scip.py --out files: adds the SCIP references' table",
+        help="a ucp_valve_scip.py --out file, once per flag: adds the SCIP references' table",
     )
     return parser.parse_args(argv)
 

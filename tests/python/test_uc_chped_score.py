@@ -507,6 +507,22 @@ def test_a_scip_run_with_no_solution_is_named(tmp_path: Path) -> None:
             ],
             "mixed SCIP versions",
         ),
+        (
+            [
+                scip_record("ucp13", 1, "pwl", 1.0, 2.0),
+                scip_record("ucp13", 3, "pwl", 1.0, 2.0, cpu_limit_s=60.0),
+            ],
+            "mixed pwl CPU limits",
+        ),
+        (
+            [
+                scip_record("ucp13", 1, "pwl", 110.0, 120.0),
+                scip_record("ucp13", 1, "exact", 90.0, 100.0),
+            ],
+            "above the best UB",
+        ),
+        ([scip_record("ucp13", 1, "pwl", 1.0, 2.0, cpu_limit_s=-1.0)], "positive number"),
+        ([scip_record("ucp13", 1, "pwl", 10**400, 2.0)], "finite"),
         ([], "no records"),
     ],
 )
@@ -527,3 +543,21 @@ def test_an_out_over_a_scip_file_is_refused(tmp_path: Path) -> None:
     scip = write_jsonl(tmp_path / "s.jsonl", [scip_record("ucp13", 1, "pwl", 1.0, 2.0)])
     refused = refusal(two_seeds(tmp_path), *ROSTER, "--scip", str(scip), "--out", str(scip))
     assert "overwrite" in refused
+
+
+def test_an_lb_that_is_not_positive_gives_no_gap(tmp_path: Path) -> None:
+    lines = scip_lines(tmp_path, [scip_record("ucp13", 1, "exact", -50.0, 100.0)])
+    assert (
+        "| ucp13 | 1 | 103.0 | - | - | - | -50.00 | 100.00 | - | - | 3.00 [2.00, 4.00] |" in lines
+    )
+
+
+def test_scip_files_come_one_per_flag_and_leave_the_tables_alone(tmp_path: Path) -> None:
+    pwl = write_jsonl(tmp_path / "pwl.jsonl", [scip_record("ucp13", 1, "pwl", 100.0, 101.0)])
+    exact = write_jsonl(tmp_path / "exact.jsonl", [scip_record("ucp13", 1, "exact", 99.0, 100.5)])
+    result = run_score("--scip", pwl, "--scip", exact, *two_seeds(tmp_path), *ROSTER)
+    assert result.returncode == 0, result.stderr
+    assert (
+        "| ucp13 | 1 | 103.0 | 100.00 | 101.00 | 1.00 | 99.00 | 100.50 | 1.52 "
+        "| 3.00 [2.00, 4.00] | 2.49 [1.49, 3.48] |"
+    ) in result.stdout.splitlines()

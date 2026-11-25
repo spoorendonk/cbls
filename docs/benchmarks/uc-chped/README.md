@@ -313,7 +313,7 @@ RESULTS/seed<N>/comparison.csv --seed N --commit SHA --verify`, and gives one li
 per (instance, horizon): the budget, the seeds that solved it, and the gap to
 Pedroso's lower bound and one-hour incumbent as median [min, max] over those
 seeds, beside Pedroso's own gap. Instances Pedroso did not publish show their
-objective and no gap. `--scip pwl.jsonl exact.jsonl` adds a second table from the
+objective and no gap. `--scip pwl.jsonl --scip exact.jsonl` adds a second table from the
 SCIP references' JSON lines (`benchmarks/uc-chped/pedroso/`, read as data): each
 method's LB, UB and gap, and cbls's gap to the best SCIP LB and UB. A `pwl` LB
 from a run that breaks the concavity condition is starred and not used as a

@@ -60,7 +60,8 @@ Source: <http://www.dcc.fc.up.pt/~jpp/code/valve/ucp_valve.py>, 2013-12-09,
    bounds the true optimum while every unit meets the concavity condition; the
    paper notes the UB can rise between iterations), with the last iteration's as
    `last_lb`/`last_ub`. `status` is `converged` or `time limit reached`, as the
-   script prints, or `infeasible`. Every iteration's solution is re-checked
+   script prints, `infeasible` (no iteration found a UB), or `stopped: infeasible
+   MIP after a UB`. Every iteration's solution is re-checked
    outside SCIP (demand, reserve, dispatch limits) into its iteration's `check`;
    the top-level `check` is the reported UB's. `out_of_budget` is false on a
    proven-infeasible MIP.
