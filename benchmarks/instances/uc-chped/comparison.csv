@@ -1,8 +1,8 @@
 # UC-CHPED comparison table.
 #
-# Model fidelity: our CBLS model and the SCIP reference (reference_solve.py)
-# both solve a ramp-free unit commitment -- no |P[t]-P[t-1]| constraints -- and
-# so does the source. Pedroso, Kubo & Viana 2014 states power balance, spinning
+# Model fidelity: our CBLS model and the SCIP references (benchmarks/uc-chped/
+# pedroso/) solve a ramp-free unit commitment -- no |P[t]-P[t-1]| constraints --
+# and so does the source. Pedroso, Kubo & Viana 2014 states power balance, spinning
 # reserve, unit initial conditions and minimum up/down times only, with no
 # ramp-rate constraints
 # (https://web.fc.up.pt/dcc/Pubs/TReports/TR14/dcc-2014-05.pdf), and their
@@ -16,9 +16,9 @@
 # for the instance this repository builds. (#148 found ucp40's units 19-20 at
 # Pmax 500 instead of 550 and relabelled its rows; #193 corrected the data and
 # removed the relabel.) Our demand row is >= where the source has ==; that
-# leaves the proven optima unchanged. The SCIP reference's
-# piecewise-linear valve-point term is not the ~0.1% approximation once
-# claimed: uniform breakpoints straddle the valve-point cusps. See
+# leaves the proven optima unchanged. The SCIP references (Pedroso's method
+# ported to SCIP, and SCIP's exact MINLP) solve the source's model, demand ==,
+# and write their own JSON lines, not rows here. See
 # benchmarks/uc-chped/FIDELITY.md.
 #
 # State of this file. The 22 CBLS rows it used to carry were removed: they were
