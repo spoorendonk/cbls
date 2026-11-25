@@ -28,6 +28,7 @@ namespace {
 constexpr double kNegInf = -std::numeric_limits<double>::infinity();
 constexpr double kPosInf = std::numeric_limits<double>::infinity();
 constexpr double kEps = std::numeric_limits<double>::epsilon();
+constexpr double kMaxDouble = std::numeric_limits<double>::max();
 
 // The ops a row may use; any other op skips the whole row.
 bool supported_op(NodeOp op) {
@@ -258,16 +259,24 @@ void DagRowStore::index_rows_by_variable(int32_t n_vars) {
 namespace {
 
 // Interval endpoints, widened outward by the safety margin plus `extra`. A NaN
-// endpoint (inf - inf, inf / inf) bounds nothing on its side.
+// endpoint (inf - inf, inf / inf) bounds nothing on its side. A lower end of
+// +inf (upper of -inf) is an overflow, which the model evaluates to inf and a
+// row may accept: it bounds no tighter than the largest double (#424 review).
 double down(double v, const BoundPropagationOptions& b, double extra = 0.0) {
     if (std::isnan(v)) {
         return kNegInf;
+    }
+    if (v == kPosInf) {
+        return kMaxDouble;
     }
     return std::isfinite(v) ? v - relaxation(v, b) - extra : v;
 }
 double up(double v, const BoundPropagationOptions& b, double extra = 0.0) {
     if (std::isnan(v)) {
         return kPosInf;
+    }
+    if (v == kNegInf) {
+        return -kMaxDouble;
     }
     return std::isfinite(v) ? v + relaxation(v, b) + extra : v;
 }
@@ -414,9 +423,11 @@ void meet(DagInterval& into, const DagInterval& with) {
 }
 
 // Empty beyond the margin; a crossing within it is widened back to its ends.
+// An infinite end has no margin to cross within: relaxation(inf) is inf.
 bool settle(DagInterval& iv, const BoundPropagationOptions& o) {
     if (iv.lo > iv.hi) {
-        if (iv.lo > iv.hi + relaxation(iv.lo, o)) {
+        if (!std::isfinite(iv.lo) || !std::isfinite(iv.hi) ||
+            iv.lo > iv.hi + relaxation(iv.lo, o)) {
             return false;
         }
         std::swap(iv.lo, iv.hi);

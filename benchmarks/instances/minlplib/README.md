@@ -275,7 +275,8 @@ never reads the second flag and the row would record an arm the run did not
 have: `--lns-interval` with `--no-lns`, `--lns-repair-fpr` with `--no-lns`, `--fpr-dag-prop`
 without `--fpr-prob`, `--novelty-prob` with
 `--no-compound-moves`, and `--novelty-prob` with `--fpr-prob 1` (every batch is
-FPR then, unless root propagation refutes the model's linear rows).
+FPR then, unless root propagation refutes the model's linear rows, or with
+`--fpr-dag-prop` its monotone nonlinear rows).
 
 Any non-default value refuses to write the published `comparison.csv` (and
 `anytime_trace.csv`). `cbls_uc_chped` carries the same flags against its own

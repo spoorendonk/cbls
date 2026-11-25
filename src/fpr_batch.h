@@ -30,7 +30,8 @@ public:
     FprBatch(Model& model, int64_t worker, bool has_deadline,
              std::chrono::steady_clock::time_point deadline, bool dag_propagation = false);
 
-    /// Whether root propagation left the linear rows consistent. When false,
+    /// Whether root propagation left the linear rows (and, with
+    /// `dag_propagation`, the monotone nonlinear rows) consistent. When false,
     /// no attempt can branch; the caller builds no batch (#429).
     [[nodiscard]] bool root_ok() const { return root_ok_; }
 

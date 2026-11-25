@@ -66,8 +66,8 @@ public:
     };
 
     /// `row_tolerance` (finite, >= 0) widens every row as `LinearRowStore`'s
-    /// does. The model must be closed and evaluated (`full_evaluate`): the
-    /// affine test reads node values. Throws `std::logic_error` otherwise.
+    /// does. The model must be closed (else `std::logic_error`) and evaluated
+    /// (`full_evaluate`, unchecked): the affine test reads node values.
     explicit DagRowStore(const Model& model, double row_tolerance = 0.0);
 
     [[nodiscard]] int32_t num_rows() const noexcept { return static_cast<int32_t>(rows_.size()); }

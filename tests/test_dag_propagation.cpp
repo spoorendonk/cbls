@@ -263,6 +263,24 @@ TEST_CASE("DAG propagation removes no point that satisfies the row", "[dag_propa
     }
 }
 
+TEST_CASE("an overflowed DAG interval removes no feasible point", "[dag_propagation]") {
+    // exp overflows to +inf, which satisfies a >= row: the overflowed end is
+    // read as DBL_MAX, never projected back as an exact +inf.
+    Model m;
+    const int32_t x = m.float_var(400.0, 500.0);
+    const int32_t y = m.float_var(400.0, 500.0);
+    const int32_t w = m.float_var(710.0, 720.0);
+    m.add_constraint(m.geq(m.prod(m.exp_expr(x), m.exp_expr(y)), m.constant(1.0)));
+    m.add_constraint(m.geq(m.exp_expr(w), m.constant(1.0)));
+    close(m);
+    Rig r(m);
+    REQUIRE(r.dag.num_rows() == 2);
+    REQUIRE(r.prop.propagate_all());
+    CHECK(r.prop.lo(vid(x)) <= 400.0);
+    CHECK(r.prop.lo(vid(y)) <= 400.0);
+    CHECK(r.prop.lo(vid(w)) <= 710.0);
+}
+
 TEST_CASE("an empty DAG store changes no linear propagation", "[dag_propagation]") {
     Model m;
     const int32_t x = m.int_var(0, 10);

@@ -429,6 +429,8 @@ bool DomainPropagator::filtered(int32_t r) const {
 // the stale copy is sound, merely weaker. O(1) when the filter skips the row, else O(nnz) plus the
 // derived bounds' set_bounds.
 bool DomainPropagator::scan_row(int32_t r) {
+    // A DAG row has no slack filter: every bound change re-revises its whole
+    // subtree, O(row nodes + children). Paid only with a store (opt-in, #424).
     if (r >= store_.num_rows()) {
         return scan_dag_row(r - store_.num_rows());
     }
