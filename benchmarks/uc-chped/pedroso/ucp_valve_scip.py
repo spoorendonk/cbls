@@ -516,7 +516,6 @@ def solve_pwl(pr: Problem, cpu: float, warm_start: bool = True) -> dict[str, Any
     strict = False
     incumbent: Incumbent | None = None
     iterations: list[dict[str, Any]] = []
-    checked: dict[int, list[str]] = {}
     converged = False
     out_of_budget = False
     while True:
@@ -532,13 +531,13 @@ def solve_pwl(pr: Problem, cpu: float, warm_start: bool = True) -> dict[str, Any
             iterations.append(
                 {"n": n, "breakpoints": n_brk, "status": status, "lb": _finite_bound(m)}
             )
-            out_of_budget = True
+            # A proven-infeasible MIP did not run out of CPU.
+            out_of_budget = status != "infeasible"
             break
         lb = _finite_bound(m)
         ub = true_cost(m, v, pr)
         gap = _relative_gap(lb, ub)
         error = gap if gap is not None else math.inf
-        checked[len(iterations)] = check_solution(m, v, pr)
         iterations.append(
             {
                 "n": n,
@@ -548,6 +547,7 @@ def solve_pwl(pr: Problem, cpu: float, warm_start: bool = True) -> dict[str, Any
                 "lb": lb,
                 "ub": ub,
                 "error": error,
+                "check": check_solution(m, v, pr),
                 "cpu_s": time.process_time() - start,
             }
         )
@@ -599,7 +599,7 @@ def solve_pwl(pr: Problem, cpu: float, warm_start: bool = True) -> dict[str, Any
         "last_scip_status": last_status,
     }
     if best is not None:
-        result["check"] = checked[best]
+        result["check"] = iterations[best]["check"]
     return result
 
 

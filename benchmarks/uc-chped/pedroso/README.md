@@ -61,7 +61,9 @@ Source: <http://www.dcc.fc.up.pt/~jpp/code/valve/ucp_valve.py>, 2013-12-09,
    paper notes the UB can rise between iterations), with the last iteration's as
    `last_lb`/`last_ub`. `status` is `converged` or `time limit reached`, as the
    script prints, or `infeasible`. Every iteration's solution is re-checked
-   outside SCIP (demand, reserve, dispatch limits); `check` is the reported UB's.
+   outside SCIP (demand, reserve, dispatch limits) into its iteration's `check`;
+   the top-level `check` is the reported UB's. `out_of_budget` is false on a
+   proven-infeasible MIP.
 7. **Python 3**, typed; `lower_brkpts` and `upper_brkpts` are not ported
    (`ucp_valve.py` uses neither in its loop). A unit with valve frequency
    `f <= 0` is refused: the script substitutes `f` in its breakpoint builders
