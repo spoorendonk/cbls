@@ -145,9 +145,9 @@ def test_the_real_smoke_scores_into_the_table() -> None:
     assert printed[0].startswith("NOT THE PUBLISHED ROSTER")
     for line in (
         "| ucp13 | 1 | 3 | 2/2 | 11701.3 | 0.00 [0.00, 0.00] | 0.00 [0.00, 0.00] | 0.00 |",
-        "| ucp13 | 3 | 3 | 2/2 | 39104.4 | 0.65 [0.51, 0.79] | 0.65 [0.51, 0.79] | 0.00 |",
-        "| ucp100-48p | 48 | 3 | 2/2 | 11905181.3 | - | - | - |",
-        "- engine commit: 9a62529 (commit_sha column)",
+        "| ucp13 | 3 | 3 | 2/2 | 39025.1 | 0.45 [0.01, 0.89] | 0.45 [0.01, 0.89] | 0.00 |",
+        "| ucp100-48p | 48 | 3 | 2/2 | 11841399.1 | - | - | - |",
+        "- engine commit: 7c398e9 (commit_sha column)",
         "- seeds: 1, 2 (seed column)",
         "- cbls threads: 4 (search_config column)",
         "- no solution: 0",

@@ -3,9 +3,9 @@
 # the full command is in docs/benchmarks/uc-chped/README.md).
 # Do not hand-edit the rows; re-run the generator.
 #
-# Model fidelity: our CBLS model and the SCIP reference (reference_solve.py)
-# both solve a ramp-free unit commitment -- no |P[t]-P[t-1]| constraints -- and
-# so does the source. Pedroso, Kubo & Viana 2014 states power balance, spinning
+# Model fidelity: our CBLS model and the SCIP references (benchmarks/uc-chped/
+# pedroso/) solve a ramp-free unit commitment -- no |P[t]-P[t-1]| constraints --
+# and so does the source. Pedroso, Kubo & Viana 2014 states power balance, spinning
 # reserve, unit initial conditions and minimum up/down times only, with no
 # ramp-rate constraints
 # (https://web.fc.up.pt/dcc/Pubs/TReports/TR14/dcc-2014-05.pdf), and their
@@ -16,9 +16,9 @@
 # authors' instances (their GPL ucp_data.py) and the three proven optima are
 # reproduced by an exact solve, so gap_pct is against bounds for these
 # instances. Our demand row is >= where the source has ==, which does not
-# move the proven optima. The SCIP reference's piecewise-linear valve-point
-# term is not the ~0.1% approximation once claimed -- uniform breakpoints
-# straddle the valve-point cusps. See benchmarks/uc-chped/FIDELITY.md section 7.
+# move the proven optima. The SCIP references (Pedroso's method ported to SCIP,
+# and SCIP's exact MINLP) solve the source's model, demand ==, and write their
+# own JSON lines, not rows here. See benchmarks/uc-chped/FIDELITY.md section 7.
 #
 # Two tolerances, not one: `feasible` is the engine's own verdict at the
 # `feas_tol` recorded on the row, while `verified` is an independent re-check
@@ -41,10 +41,10 @@
 # cited rows for the instances it names and no others, which is why such a
 # run also refuses the published path.
 #
-# Run: commit 9a62529, seed 1, feas-tol 1e-06, time limit 3s (uniform override), verify on, search config float_hook=on;lns=on;lns_interval=3;compound_moves=off;novelty_prob=0.5;unproductive_iters=300;perturbation_period=100;max_iterations=0;time_limit=on;threads=4, roster filtered to ucp13 ucp100-48p.
+# Run: commit 7c398e9, seed 1, feas-tol 1e-06, time limit 3s (uniform override), verify on, search config float_hook=on;lns=on;lns_interval=3;compound_moves=off;novelty_prob=0.5;unproductive_iters=300;perturbation_period=100;max_iterations=0;time_limit=on;threads=4, roster filtered to ucp13 ucp100-48p.
 instance,periods,method,objective,lb,gap_pct,time_s,source,note,ub,time_limit_s,seed,feasible,verified,max_violation,feas_tol,commit_sha,search_config
 ucp13,1,Pedroso MIP (1hr),11701,11701,0.00,,Pedroso et al. 2014 Table 2,cited reference; ramp-free (see header),11701,,,,,,,,
 ucp13,3,Pedroso MIP (1hr),38850,38850,0.00,,Pedroso et al. 2014 Table 2,cited reference; ramp-free (see header),38850,,,,,,,,
-ucp13,1,CBLS ViolationLS,11701.28426,11701,0.00,3,this work,,11701,3,1,true,true,9.504e-07,1e-06,9a62529,float_hook=on;lns=on;lns_interval=3;compound_moves=off;novelty_prob=0.5;unproductive_iters=300;perturbation_period=100;max_iterations=0;time_limit=on;threads=4
-ucp13,3,CBLS ViolationLS,39158.84042,38850,0.79,3,this work,,38850,3,1,true,true,0,1e-06,9a62529,float_hook=on;lns=on;lns_interval=3;compound_moves=off;novelty_prob=0.5;unproductive_iters=300;perturbation_period=100;max_iterations=0;time_limit=on;threads=4
-ucp100-48p,48,CBLS ViolationLS,11925107.81,,,3.023,this work,,,3,1,true,true,0,1e-06,9a62529,float_hook=on;lns=on;lns_interval=3;compound_moves=off;novelty_prob=0.5;unproductive_iters=300;perturbation_period=100;max_iterations=0;time_limit=on;threads=4
+ucp13,1,CBLS ViolationLS,11701.28628,11701,0.00,3,this work,,11701,3,1,true,true,9.633e-07,1e-06,7c398e9,float_hook=on;lns=on;lns_interval=3;compound_moves=off;novelty_prob=0.5;unproductive_iters=300;perturbation_period=100;max_iterations=0;time_limit=on;threads=4
+ucp13,3,CBLS ViolationLS,38855.36629,38850,0.01,3,this work,,38850,3,1,true,true,9.522e-07,1e-06,7c398e9,float_hook=on;lns=on;lns_interval=3;compound_moves=off;novelty_prob=0.5;unproductive_iters=300;perturbation_period=100;max_iterations=0;time_limit=on;threads=4
+ucp100-48p,48,CBLS ViolationLS,11883879.82,,,3.02,this work,,,3,1,true,true,0,1e-06,7c398e9,float_hook=on;lns=on;lns_interval=3;compound_moves=off;novelty_prob=0.5;unproductive_iters=300;perturbation_period=100;max_iterations=0;time_limit=on;threads=4
