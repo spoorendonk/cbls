@@ -512,14 +512,7 @@ def test_a_scip_run_with_no_solution_is_named(tmp_path: Path) -> None:
                 scip_record("ucp13", 1, "pwl", 1.0, 2.0),
                 scip_record("ucp13", 3, "pwl", 1.0, 2.0, cpu_limit_s=60.0),
             ],
-            "mixed pwl CPU limits",
-        ),
-        (
-            [
-                scip_record("ucp13", 1, "pwl", 110.0, 120.0),
-                scip_record("ucp13", 1, "exact", 90.0, 100.0),
-            ],
-            "above the best UB",
+            "mixed CPU limits",
         ),
         ([scip_record("ucp13", 1, "pwl", 1.0, 2.0, cpu_limit_s=-1.0)], "positive number"),
         ([scip_record("ucp13", 1, "pwl", 10**400, 2.0)], "finite"),
@@ -561,3 +554,13 @@ def test_scip_files_come_one_per_flag_and_leave_the_tables_alone(tmp_path: Path)
         "| ucp13 | 1 | 103.0 | 100.00 | 101.00 | 1.00 | 99.00 | 100.50 | 1.52 "
         "| 3.00 [2.00, 4.00] | 2.49 [1.49, 3.48] |"
     ) in result.stdout.splitlines()
+
+
+def test_a_best_scip_lb_above_the_best_ub_is_named_not_refused(tmp_path: Path) -> None:
+    records = [
+        scip_record("ucp13", 1, "pwl", 110.0, 120.0),
+        scip_record("ucp13", 1, "exact", 90.0, 100.0),
+    ]
+    lines = scip_lines(tmp_path, records)
+    assert "- best SCIP LB above the best SCIP UB, to check: 1" in lines
+    assert "  - ucp13 T=1: LB 110.00 above UB 100.00" in lines

@@ -93,7 +93,8 @@ Demand is an **equality** in the source (paper §2; `ucp_valve.py`'s
 `reference_solve.py`): a relaxation, since a non-monotone valve-point cost can
 make overproduction cheaper. It leaves the 1- and 3-period proven optima
 unchanged (§7.4). The SCIP references in `pedroso/` keep the source's `=`, so
-their LB bounds our model only where the two optima coincide.
+their LB bounds our model where the two optima are equal, as on the proven
+rows above.
 
 The reserve constraint is *committed-capacity-based*, not
 dispatch-based: it counts every committed unit's full capacity, not its

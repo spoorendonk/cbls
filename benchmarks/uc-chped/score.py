@@ -52,8 +52,8 @@ REFUSALS (exit 2, naming what is wrong; nothing is written):
 * with `--scip`: a line that is no JSON object of the port's fields, an unknown
   method, a pair outside the roster, a (pair, method) twice, a record whose
   solution failed the port's re-check (`check`), two SCIP versions, two CPU limits
-  for one method, or a pair whose best SCIP LB is above its best SCIP UB. An LB
-  that is not positive gives no gap.
+  for one method. A pair whose best SCIP LB is above its best SCIP UB is named
+  under the table, not refused. An LB that is not positive gives no gap.
 
 `--roster` replaces the published `ROSTER` for a smoke, and every output says so on
 its first line.
@@ -195,10 +195,6 @@ class Scip:
     results: dict[Pair, dict[str, ScipResult]]
     version: str
     cpu_limits: dict[str, float]
-
-
-#: Relative slack before a best SCIP LB above the best SCIP UB is a contradiction.
-SCIP_BOUND_TOL = 1.0e-6
 
 
 def read_rows(path: Path) -> list[dict[str, str]]:
@@ -442,7 +438,7 @@ def parse_scip_record(where: str, record: object) -> tuple[str, int, str, str, S
 def load_scip(paths: Sequence[Path], roster: dict[str, tuple[int, ...]]) -> Scip:
     results: dict[Pair, dict[str, ScipResult]] = {}
     versions: set[str] = set()
-    limits: dict[str, set[str]] = {}
+    limits: dict[str, set[float]] = {}
     for path in paths:
         for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
             if not line.strip():
@@ -461,20 +457,16 @@ def load_scip(paths: Sequence[Path], roster: dict[str, tuple[int, ...]]) -> Scip
                 raise RefusedError(f"{where}: {pair[0]} T={periods} {method} is twice")
             by_method[method] = result
             versions.add(version)
-            limits.setdefault(method, set()).add(f"{result.cpu_limit_s:g}")
+            limits.setdefault(method, set()).add(result.cpu_limit_s)
     if not results:
         raise RefusedError(f"--scip {' '.join(map(str, paths))}: no records")
-    for pair, by_method in results.items():
-        best_lb, best_ub = best_scip_bounds(by_method)
-        if best_lb is not None and best_ub is not None and best_lb > best_ub * (1 + SCIP_BOUND_TOL):
-            raise RefusedError(
-                f"{pair[0]} T={pair[1]}: the best SCIP LB {best_lb:g} "
-                f"is above the best UB {best_ub:g}"
-            )
+    mixed = {m: sorted(v) for m, v in limits.items() if len(v) != 1}
+    if mixed:
+        raise RefusedError(f"mixed CPU limits: {mixed}")
     return Scip(
         results=results,
         version=one_value(versions, "SCIP versions"),
-        cpu_limits={m: float(one_value(v, f"{m} CPU limits")) for m, v in limits.items()},
+        cpu_limits={m: next(iter(v)) for m, v in limits.items()},
     )
 
 
@@ -578,6 +570,14 @@ def render_scip(campaign: Campaign, scip: Scip, pairs: Sequence[Pair]) -> list[s
         for method in SCIP_METHODS
         if (result := scip.results.get(pair, {}).get(method)) is not None and result.ub is None
     ]
+    # A best LB above the best UB is named, not refused: the port's re-check lets a
+    # dispatch fall 1e-6 * demand short, which can price a UB just under the optimum.
+    crossed = [
+        f"{pair[0]} T={pair[1]}: LB {lb:.2f} above UB {ub:.2f}"
+        for pair in pairs
+        for lb, ub in [best_scip_bounds(scip.results.get(pair, {}))]
+        if lb is not None and ub is not None and lb > ub
+    ]
     no_bound = [
         f"{pair[0]} T={pair[1]}"
         for pair in pairs
@@ -598,6 +598,8 @@ def render_scip(campaign: Campaign, scip: Scip, pairs: Sequence[Pair]) -> list[s
         *[f"  - {line}" for line in missing],
         f"- no SCIP solution: {len(unproven)}",
         *[f"  - {line}" for line in unproven],
+        f"- best SCIP LB above the best SCIP UB, to check: {len(crossed)}",
+        *[f"  - {line}" for line in crossed],
         f"- cbls below the best SCIP LB, to check before reading the gap: {len(below)}",
         *[f"  - {line}" for line in below],
     ]
