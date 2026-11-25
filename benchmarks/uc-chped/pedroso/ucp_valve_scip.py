@@ -667,6 +667,7 @@ def main() -> None:
         "periods": args.periods,
         "method": args.method,
         "cpu_limit_s": args.cpu,
+        "scip_clock": "wall",  # timing/clocktype 2; score.py refuses any other (#441)
         "lb": lb,
         "ub": ub,
         "gap_pct": (100.0 * g) if (g := _relative_gap(lb, ub)) is not None else None,

@@ -420,6 +420,9 @@ def parse_scip_record(where: str, record: object) -> tuple[str, int, str, str, S
         raise RefusedError(f"{where}: not a ucp_valve_scip.py record")
     if method not in SCIP_METHODS:
         raise RefusedError(f"{where}: unknown method {method!r}")
+    if record.get("scip_clock") != "wall":
+        # The table text says wall-limited; older records ran on SCIP's CPU clock (#441).
+        raise RefusedError(f"{where}: scip_clock is not 'wall': a record from before #441's fix")
     if check:
         raise RefusedError(f"{where}: its solution failed the port's re-check: {check[:3]}")
     cpu_limit = scip_bound(where, record, "cpu_limit_s")
