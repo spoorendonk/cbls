@@ -12,6 +12,9 @@ struct UCModel {
     Model model;
     std::vector<std::vector<int32_t>> y;  // [unit][period] commitment (bool var handles)
     std::vector<std::vector<int32_t>> p;  // [unit][period] dispatch (float var handles)
+    // Demand as Pedroso's `=` instead of the default `>=` (#442); the verifier
+    // reads it from here so the two cannot disagree.
+    bool demand_equality = false;
 };
 
 // The model builder is split along the parts of the formulation, not into
@@ -250,10 +253,29 @@ inline void add_initial_conditions(UCModel& result, const Literals& lit, const U
     }
 }
 
+/// The `<=` half of `=` demand: sum(p[u][t]) - demand[t] <= 0 per period.
+/// Called after every other constraint, so its nodes and rows come last and the
+/// default (`>=`) model, and with it the default trajectory, is unchanged (#442).
+inline void add_demand_upper(UCModel& result, const Literals& lit, const UCInstance& inst) {
+    Model& m = result.model;
+    for (int t = 0; t < inst.n_periods; ++t) {
+        std::vector<int32_t> terms;
+        terms.reserve(static_cast<size_t>(inst.n_units) + 1);
+        for (int u = 0; u < inst.n_units; ++u) {
+            terms.push_back(result.p[u][t]);
+        }
+        terms.push_back(m.prod(lit.neg1, m.constant(inst.demand[t])));
+        m.add_constraint(m.sum(terms));
+    }
+}
+
 }  // namespace model_detail
 
-inline UCModel build_uc_model(const UCInstance& inst) {
+/// `demand_equality` posts demand as `=` (Pedroso 2014) rather than `>=`; off
+/// by default, which is the model #257's table was measured on.
+inline UCModel build_uc_model(const UCInstance& inst, bool demand_equality = false) {
     UCModel result;
+    result.demand_equality = demand_equality;
     Model& m = result.model;
 
     model_detail::make_variables(result, inst);
@@ -268,6 +290,9 @@ inline UCModel build_uc_model(const UCInstance& inst) {
         model_detail::add_min_uptime(result, lit, k, inst, u);
         model_detail::add_min_downtime(result, lit, k, inst, u);
         model_detail::add_initial_conditions(result, lit, inst, u);
+    }
+    if (demand_equality) {
+        model_detail::add_demand_upper(result, lit, inst);
     }
 
     // Register commitment var sequences for block moves

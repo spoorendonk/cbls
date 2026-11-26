@@ -83,9 +83,10 @@ inline void check_dispatch_bounds(VerifyResult& result, const Assignment& a, con
     }
 }
 
-/// 3. Demand balance: sum_u(p[u][t]) >= demand[t].
+/// 3. Demand balance: sum_u(p[u][t]) >= demand[t], and <= demand[t] too under
+/// `equality` (the `=` model, #442).
 inline void check_demand(VerifyResult& result, const Assignment& a, const UCInstance& inst,
-                         double tol) {
+                         double tol, bool equality) {
     for (int t = 0; t < inst.n_periods; ++t) {
         double supply = 0.0;
         for (int u = 0; u < inst.n_units; ++u) {
@@ -94,6 +95,9 @@ inline void check_demand(VerifyResult& result, const Assignment& a, const UCInst
         if (supply < inst.demand[t] - tol) {
             result.add_error({VerifyError::Kind::Custom, "demand[" + std::to_string(t) + "]",
                               inst.demand[t], supply, "supply does not meet demand"});
+        } else if (equality && supply > inst.demand[t] + tol) {
+            result.add_error({VerifyError::Kind::Custom, "demand[" + std::to_string(t) + "]",
+                              inst.demand[t], supply, "supply exceeds demand under '='"});
         }
     }
 }
@@ -216,7 +220,7 @@ inline VerifyResult verify_uc_chped(const UCModel& ucm, const UCInstance& inst, 
 
     verify_detail::check_integrality(result, a, inst);
     verify_detail::check_dispatch_bounds(result, a, inst, tol);
-    verify_detail::check_demand(result, a, inst, tol);
+    verify_detail::check_demand(result, a, inst, tol, ucm.demand_equality);
     verify_detail::check_reserve(result, a, inst, tol);
     verify_detail::check_min_run(result, a, inst, /*on_block=*/true);
     verify_detail::check_min_run(result, a, inst, /*on_block=*/false);

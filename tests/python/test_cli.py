@@ -210,18 +210,20 @@ def _uc_chped_scratch(tmp_path: Path) -> Path:
 
 
 @pytest.mark.parametrize(
-    ("flag", "value"),
+    "flag_args",
     [
-        ("--time-limit", "0.2"),
-        ("--instance", "ucp13"),
+        ["--time-limit", "0.2"],
+        ["--instance", "ucp13"],
         # One horizon per run and the portfolio are tuning shapes (#262), not
         # the single-threaded full-roster protocol the table publishes.
-        ("--periods", "3"),
-        ("--threads", "2"),
+        ["--periods", "3"],
+        ["--threads", "2"],
+        # `=` demand is another model than the published `>=` one (#442).
+        ["--demand-equality"],
     ],
 )
 def test_uc_chped_refuses_a_partial_run_onto_the_published_table(
-    flag: str, value: str, tmp_path: Path
+    flag_args: list[str], tmp_path: Path
 ) -> None:
     if not UC_CHPED_BINARY.exists():
         pytest.skip("cbls_uc_chped not built")
@@ -231,7 +233,7 @@ def test_uc_chped_refuses_a_partial_run_onto_the_published_table(
 
     # --out spelled out, which is the shape the README documents.
     result = subprocess.run(
-        [str(UC_CHPED_BINARY), str(inst_dir), flag, value, "--out", str(published)],
+        [str(UC_CHPED_BINARY), str(inst_dir), *flag_args, "--out", str(published)],
         capture_output=True,
         text=True,
         timeout=300,
@@ -701,6 +703,30 @@ def test_uc_chped_runs_one_horizon_on_the_portfolio(tmp_path: Path) -> None:
     assert float(measured[0]["objective"]) == pytest.approx(
         min(float(p["objective"]) for p in incumbents if p["objective"]), rel=1e-6
     )
+
+
+def test_uc_chped_records_equality_demand_on_a_verified_row(tmp_path: Path) -> None:
+    """`--demand-equality` (#442) solves and verifies the `=` model and names it in
+    `search_config`, which score.py requires to be one value per campaign."""
+    if not UC_CHPED_BINARY.exists():
+        pytest.skip("cbls_uc_chped not built")
+    inst_dir = _uc_chped_scratch(tmp_path)
+    out = tmp_path / "o.csv"
+
+    result = subprocess.run(
+        [str(UC_CHPED_BINARY), str(inst_dir), "--instance", "ucp13", "--periods", "3"]
+        + ["--demand-equality", "--time-limit", "1", "--verify", "--out", str(out)],
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    assert result.returncode == 0, result.stderr
+
+    lines = [ln for ln in out.read_text().splitlines() if not ln.startswith("#")]
+    measured = [r for r in csv.DictReader(lines) if r["method"] == "CBLS ViolationLS"]
+    assert len(measured) == 1
+    assert measured[0]["verified"] == "true", measured[0]
+    assert "demand=eq" in measured[0]["search_config"].split(";"), measured[0]
 
 
 # The same two properties on the MINLPLib runner. Its rows are cheap to provoke:

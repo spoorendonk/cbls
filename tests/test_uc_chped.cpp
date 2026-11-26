@@ -47,6 +47,42 @@ TEST_CASE("UC-CHPED 13-unit 1-period feasibility", "[uc-chped]") {
            static_cast<long>(result.iterations), result.time_seconds);
 }
 
+// #442: `=` demand appends one `<=` row per period after every default row, and
+// the verifier holds a solution of that model to it.
+TEST_CASE("UC-CHPED demand equality appends one row per period and verifies as '='", "[uc-chped]") {
+    auto ucp13 = load_jsonl("benchmarks/instances/uc-chped/ucp13.jsonl");
+    auto inst = make_subinstance(ucp13, 2);
+    const auto ge = build_uc_model(inst);
+    auto eq = build_uc_model(inst, /*demand_equality=*/true);
+    REQUIRE_FALSE(ge.demand_equality);
+    REQUIRE(eq.demand_equality);
+    REQUIRE(eq.model.num_vars() == ge.model.num_vars());
+    REQUIRE(eq.model.num_user_constraints() ==
+            ge.model.num_user_constraints() + static_cast<size_t>(inst.n_periods));
+    // The default rows keep their places and nodes (GLS weights are per row
+    // index, evaluation order per node id).
+    for (size_t i = 0; i < ge.model.num_user_constraints(); ++i) {
+        REQUIRE(eq.model.constraint_ids()[i] == ge.model.constraint_ids()[i]);
+    }
+
+    FloatIntensifyHook hook;
+    LNS lns(0.3);
+    auto result =
+        solve_deterministic(eq.model, 180000, 42, &hook, &lns, 3, nullptr, uc_chped_config());
+    REQUIRE(result.feasible);
+    REQUIRE(verify_uc_chped(eq, inst).ok);
+
+    // Surplus in period 0: still `>=`-feasible, but not `=`-feasible.
+    verify_detail::Assignment a = verify_detail::extract_assignment(eq, inst);
+    a.p[0][0] += 1.0;
+    VerifyResult ge_check;
+    verify_detail::check_demand(ge_check, a, inst, 1e-4, /*equality=*/false);
+    REQUIRE(ge_check.ok);
+    VerifyResult eq_check;
+    verify_detail::check_demand(eq_check, a, inst, 1e-4, /*equality=*/true);
+    REQUIRE_FALSE(eq_check.ok);
+}
+
 TEST_CASE("UC-CHPED 13-unit 1-period quality", "[uc-chped][slow]") {
     auto ucp13 = load_jsonl("benchmarks/instances/uc-chped/ucp13.jsonl");
     auto inst = make_subinstance(ucp13, 1);

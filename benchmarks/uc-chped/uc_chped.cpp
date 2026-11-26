@@ -97,6 +97,9 @@ struct Args {
     // Portfolio workers: 1 is the single-threaded `solve()` the table measures;
     // >1 runs `ParallelSearch`, a different run, so not the published protocol.
     int threads = 1;
+    // Demand as `=` (Pedroso 2014) instead of the published `>=` (#442): a
+    // different model, so not the published protocol.
+    bool demand_equality = false;
     bool commit_set = false;
     std::string commit_sha = "unknown";
     std::string out_csv;    // default: <inst_dir>/comparison.csv
@@ -142,6 +145,12 @@ void check_numeric_flags(Args& a) {
         a.search_config += (a.search_config.empty() ? "" : ";");
         a.search_config += "threads=" + std::to_string(a.threads);
     }
+    // The demand model too, so score.py's one-configuration rule refuses a
+    // campaign mixing `>=` and `=` rows (#442); off it the cell is unchanged.
+    if (a.demand_equality) {
+        a.search_config += (a.search_config.empty() ? "" : ";");
+        a.search_config += "demand=eq";
+    }
     // NaN, 0 or negative fails: solve() would return having searched nothing,
     // a full-looking table of empty results; isfinite too, as "inf" would never
     // terminate. The wall-clock-free arm (#136) is the one way past: solve()
@@ -179,6 +188,9 @@ const char* non_published_protocol(const Args& a) {
     }
     if (a.threads != 1) {
         return "--threads";
+    }
+    if (a.demand_equality) {
+        return "--demand-equality";
     }
     const char* arm =
         cbls::bench::first_non_default_search_flag(a.search, published_search_flags());
@@ -266,6 +278,8 @@ Args parse_args(int argc, char** argv) {
         const std::string s = c.arg();
         if (s == "--verify") {
             a.do_verify = true;
+        } else if (s == "--demand-equality") {
+            a.demand_equality = true;
         } else if (c.value_flag("--time-limit", v)) {
             a.time_limit = parse_double("--time-limit", v);
             a.time_limit_set = true;
@@ -304,7 +318,7 @@ Args parse_args(int argc, char** argv) {
             std::printf(
                 "Usage: cbls_uc_chped [inst-dir] [--verify] [--time-limit S] [--seed N]"
                 " [--feas-tol T] [--instance NAME ...] [--periods N ...] [--threads N]"
-                " [--commit SHA] [--out CSV] [--trace CSV]\n"
+                " [--demand-equality] [--commit SHA] [--out CSV] [--trace CSV]\n"
                 "       %s\n",
                 cbls::bench::search_flags_usage(kSearchFlagFamilies).c_str());
             std::exit(0);
@@ -684,7 +698,7 @@ bool verification_withholds(const Args& args, const cbls::uc_chped::UCModel& ucm
 void run_one(std::ostream& csv, std::ofstream& trace, const Args& args,
              const cbls::uc_chped::UCInstance& inst, const std::string& instance_name, double tlim,
              Tally& tally) {
-    auto ucm = cbls::uc_chped::build_uc_model(inst);
+    auto ucm = cbls::uc_chped::build_uc_model(inst, args.demand_equality);
     const int horizon = inst.n_periods;
 
     std::printf("%-20s %6d %6d ", inst.name.c_str(), inst.n_units, horizon);

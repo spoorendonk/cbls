@@ -94,7 +94,8 @@ Demand is an **equality** in the source (paper §2; `ucp_valve.py`'s
 make overproduction cheaper. It leaves the 1- and 3-period proven optima
 unchanged (§7.4). The SCIP references in `pedroso/` keep the source's `=`, so
 their LB bounds our model where the two optima are equal, as on the proven
-rows above.
+rows above. `cbls_uc_chped --demand-equality` (#442) solves and verifies the
+source's `=` instead (§2.4); the published table stays on `≥`.
 
 The reserve constraint is *committed-capacity-based*, not
 dispatch-based: it counts every committed unit's full capacity, not its
@@ -209,6 +210,12 @@ demand[t] − Σ_u p[u][t] ≤ 0
 `≥`, rewritten as `≤`. The source has `=` (§1.4). This is a
 relaxation, and it leaves the proven 1- and 3-period optima unchanged (§7.3).
 
+Opt-in `=` (`build_uc_model(inst, true)`, the runner's `--demand-equality`,
+#442) adds `Σ_u p[u][t] − demand[t] ≤ 0` per period after every other row, so
+the default model's rows, nodes and trajectory are unchanged. The verifier then
+also rejects supply above demand by more than its tolerance, and the row's
+`search_config` carries `demand=eq`, so `score.py` refuses to mix the two models.
+
 ### 2.5 Spinning reserve (`uc_model.h:131–141`)
 
 ```cpp
@@ -271,7 +278,7 @@ Source: `benchmarks/uc-chped/verify_uc_chped.h`. Defaults `tol = 1e-4`.
 |---|-------|------------|-----------|
 | 1 | `y ∈ {0,1}` | §1.1 | yes |
 | 2 | `P_min·y ≤ p ≤ P_max·y` | §1.6 | yes |
-| 3 | `Σ_u p[u,t] ≥ demand[t]` | §1.4 | yes |
+| 3 | `Σ_u p[u,t] ≥ demand[t]`; `=` under `--demand-equality` (§2.4) | §1.4 | yes |
 | 4 | `Σ_u P_max_u · y[u,t] ≥ demand[t] + reserve[t]` | §1.4 | yes |
 | 5 | min up rolling window | §1.5 | yes |
 | 6 | min down rolling window | §1.5 | yes |
