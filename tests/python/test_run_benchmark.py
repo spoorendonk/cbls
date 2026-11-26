@@ -23,11 +23,11 @@ from typing import TYPE_CHECKING
 import pytest
 
 from benchmarks.common.jobs import Outcome
+from benchmarks.common.primal_integral import NO_SOLUTION_GAP
 from benchmarks.instances.mipfeas.download import PINNED_REFERENCE_FILES
 from benchmarks.mipfeas import run_benchmark
 from benchmarks.mipfeas.primal_integral import (
     MAX_WORKER_LOSS_ATTEMPTS,
-    NO_SOLUTION_GAP,
     TUNABLE_DEFAULTS,
     check_uniform_configuration,
     config_string,

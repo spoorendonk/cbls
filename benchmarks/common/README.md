@@ -75,7 +75,9 @@ where each benchmark's record schema is declared; `provenance.py` is the commit,
 the build-dir refusals and the machine record; `pins.py` hashes downloaded files
 against a committed pin table (the `mipfeas` and `cvrp` downloaders); `fetch.py`
 is the downloaders' HTTP fetch and HTML-page sniff; `stats.py` is the Student t
-quantile and the exact sign test the score and ablation reports use. What it deliberately does **not**
+quantile and the exact sign test the score and ablation reports use;
+`primal_integral.py` is the MIPfeas primal gap, primal integral and shifted
+geometric mean, which mipfeas, MINLPLib and UC-CHPED (#442) score with. What it deliberately does **not**
 hold is any benchmark's resume rule or record shape — `mipfeas`, the MINLPLib
 re-run and the ablation campaign resume on three different keys for reasons of
 measurement, and a single loop with per-benchmark hooks would only relocate

@@ -68,6 +68,12 @@ from typing import TYPE_CHECKING
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from benchmarks.common.primal_integral import (  # noqa: E402
+    NO_SOLUTION_GAP,
+    primal_gap,
+    primal_integral,
+    shifted_geometric_mean,
+)
 from benchmarks.common.records import read_json_object  # noqa: E402
 from benchmarks.minlplib.reference_solve import (  # noqa: E402
     SAFE_GAP_ABSOLUTE_BELOW,
@@ -80,12 +86,6 @@ from benchmarks.minlplib.runner import (  # noqa: E402
     CLAIM_EXCLUDED,
     COVERAGE_GAP_NOTES,
     completed_search,
-)
-from benchmarks.mipfeas.primal_integral import (  # noqa: E402
-    NO_SOLUTION_GAP,
-    primal_gap,
-    primal_integral,
-    shifted_geometric_mean,
 )
 
 if TYPE_CHECKING:
@@ -2206,7 +2206,7 @@ def _readme_anytime(r: CampaignReport) -> str:
     excluded = _and_list(_tick(r.results.counts.documented_failures)) or "none"
     text = (
         "**Anytime score.** The MIPfeas Primal Integral "
-        "(`benchmarks/mipfeas/primal_integral.py`) of the committed trace against BKS over "
+        "(`benchmarks/common/primal_integral.py`) of the committed trace against BKS over "
         f'the {at.budget_seconds:g}s budget — 0 is "at BKS from the first instant", '
         f'{NO_SOLUTION_GAP:g} is "never feasible" — over the {at.denominator} instances '
         f"outside the documented failures ({excluded}): **mean {at.mean:.3f}, median "

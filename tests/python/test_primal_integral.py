@@ -11,25 +11,27 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from benchmarks.common.primal_integral import (
+    NO_SOLUTION_GAP,
+    SIGN_FLIP_GAP,
+    primal_gap,
+    primal_integral,
+    shifted_geometric_mean,
+)
 from benchmarks.mipfeas.primal_integral import (
     ENGINES,
     FULL_ROSTER_SIZE,
-    NO_SOLUTION_GAP,
-    SIGN_FLIP_GAP,
     HeldOut,
     Scored,
     check_uniform_configuration,
     cpsat_at_defaults,
     held_out_problems,
     main,
-    primal_gap,
-    primal_integral,
     read_held_out,
     read_roster,
     render_report,
     run_record_section,
     score_instance,
-    shifted_geometric_mean,
     summarize,
     versions_line,
     write_comparison,

@@ -55,30 +55,22 @@ from typing import TYPE_CHECKING, NamedTuple
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from benchmarks.common.primal_integral import (  # noqa: E402
+    ZERO_TOLERANCE,
+    primal_gap,
+    primal_integral,
+    shifted_geometric_mean,
+)
 from benchmarks.common.records import atomic_write, csv_text, read_json_object  # noqa: E402
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-
-#: Below this magnitude an objective counts as zero, so that 0 vs 1e-12 does not
-#: score as a 100% gap.
-ZERO_TOLERANCE = 1e-6
-
-#: Penalty for a run that never found a feasible solution.
-NO_SOLUTION_GAP = 2.0
-
-#: Penalty when incumbent and reference have opposite signs; the relative formula
-#: is not meaningful across a sign change.
-SIGN_FLIP_GAP = 1.0
 
 #: An incumbent below a *proven* optimum is not a good result, it is a bug — a
 #: violated constraint, a wrong objective, a mis-transcribed row. `primal_gap` takes
 #: an absolute value, so it scores as an ordinary positive gap and would publish
 #: silently. 232 of the 233 references are proven optima.
 BELOW_REFERENCE_TOLERANCE = 1e-6
-
-#: Shift for the geometric mean, so that a PI of exactly 0 does not collapse it.
-GEOMETRIC_MEAN_SHIFT = 0.001
 
 ENGINES = ("cbls", "cpsat")
 
@@ -404,54 +396,6 @@ class Scored(NamedTuple):
     #: read only where the table names its mode, so a table whose CP-SAT rows
     #: were all killed still says which baseline it ran.
     arm_config: str = ""
-
-
-def primal_gap(incumbent: float | None, reference: float) -> float:
-    """MIPfeas primal gap of one incumbent against the reference value."""
-    if incumbent is None:
-        return NO_SOLUTION_GAP
-    if abs(incumbent) < ZERO_TOLERANCE and abs(reference) < ZERO_TOLERANCE:
-        return 0.0
-    if incumbent * reference < 0:
-        return SIGN_FLIP_GAP
-    denominator = max(abs(incumbent), abs(reference))
-    if denominator == 0.0:
-        return 0.0
-    return abs(incumbent - reference) / denominator
-
-
-def primal_integral(trace: list[tuple[float, float]], reference: float, budget: float) -> float:
-    """Time-average the primal gap over [0, budget].
-
-    `trace` is the incumbent step function as (seconds, objective) pairs. Before the
-    first entry the gap is NO_SOLUTION_GAP; each entry holds until the next one, and
-    the last holds to the budget.
-    """
-    if budget <= 0:
-        raise ValueError("budget must be positive")
-
-    area = 0.0
-    previous_time = 0.0
-    current_gap = NO_SOLUTION_GAP
-    # Sorted by time, then objective descending: CP-SAT logs to 0.01s and routinely
-    # reports several improvements inside one tick. Plain tuple ordering would apply
-    # the *worst* of a tied group last and hold it until the next distinct time — a
-    # small, one-directional penalty against whichever engine has the denser trace,
-    # which is systematically CP-SAT.
-    for raw_time, objective in sorted(trace, key=lambda entry: (entry[0], -entry[1])):
-        time = min(max(raw_time, 0.0), budget)
-        if time > previous_time:
-            area += current_gap * (time - previous_time)
-            previous_time = time
-        current_gap = primal_gap(objective, reference)
-    area += current_gap * (budget - previous_time)
-    return area / budget
-
-
-def shifted_geometric_mean(values: list[float], shift: float = GEOMETRIC_MEAN_SHIFT) -> float:
-    if not values:
-        return math.nan
-    return math.exp(statistics.fmean(math.log(v + shift) for v in values)) - shift
 
 
 def load_trace(path: Path) -> list[tuple[float, float]]:
