@@ -596,8 +596,12 @@ def render_scip(campaign: Campaign, scip: Scip, pairs: Sequence[Pair]) -> list[s
         "- rule: SCIP gap = 100 * (UB - LB) / LB per method; cbls's gaps as above, against "
         "the highest LB that is a bound and the lowest UB over the methods. `pwl` is Pedroso "
         "et al.'s Algorithm 1 ported to SCIP, `exact` SCIP's MINLP with the true valve-point "
-        "term. Both solve the source's model (demand =); cbls's has demand >= "
-        "(FIDELITY.md section 1.4).",
+        "term. Both solve the source's model (demand =); "
+        + (
+            "so does cbls (--demand-equality, search config demand=eq)."
+            if "demand=eq" in campaign.search_config.split(";")
+            else "cbls's has demand >= (FIDELITY.md section 1.4)."
+        ),
         f"- pwl LB not a bound (some unit breaks c <= e*f^2/2), starred: {len(no_bound)}",
         *[f"  - {line}" for line in no_bound],
         f"- no SCIP record: {len(missing)}",

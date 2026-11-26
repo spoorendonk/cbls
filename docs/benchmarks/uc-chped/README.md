@@ -291,7 +291,9 @@ roster and `--periods N` its horizons (one (file, horizon) per run is the shape 
 tuning study scores, #262; a horizon no selected file has is refused).
 `--threads N` runs the `ParallelSearch` portfolio instead of the single-threaded
 `solve()` the table measures, and the row records it in `search_config` as
-`threads=N` (at 1 the cell stays as published). `--instance`, `--periods`, `--threads` and
+`threads=N` (at 1 the cell stays as published). `--demand-equality` solves and
+verifies demand as the source's `=` instead of `>=` (#442) and records
+`demand=eq` there. `--instance`, `--periods`, `--threads`, `--demand-equality` and
 `--time-limit` are refused outright when the resolved `--out` path *is*
 the published table above — a partial roster or a shortened budget cannot become
 the published result, whether the path was defaulted or spelled out. Writing

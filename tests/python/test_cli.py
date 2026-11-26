@@ -715,7 +715,9 @@ def test_uc_chped_records_equality_demand_on_a_verified_row(tmp_path: Path) -> N
 
     result = subprocess.run(
         [str(UC_CHPED_BINARY), str(inst_dir), "--instance", "ucp13", "--periods", "3"]
-        + ["--demand-equality", "--time-limit", "1", "--verify", "--out", str(out)],
+        # An iteration budget, not a clock: the verdict must not depend on load.
+        + ["--demand-equality", "--no-time-limit", "--max-iterations", "20000"]
+        + ["--verify", "--out", str(out)],
         capture_output=True,
         text=True,
         timeout=300,

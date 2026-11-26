@@ -472,6 +472,27 @@ def test_scip_table_gives_each_methods_bounds_and_cbls_gaps_to_the_best(tmp_path
     assert "- cbls below the best SCIP LB, to check before reading the gap: 0" in lines
 
 
+@pytest.mark.parametrize(
+    ("config", "sentence"),
+    [
+        (CONFIG, "cbls's has demand >= (FIDELITY.md section 1.4)."),
+        (CONFIG + ";demand=eq", "so does cbls (--demand-equality, search config demand=eq)."),
+    ],
+)
+def test_scip_table_names_the_demand_model_cbls_solved(
+    config: str, sentence: str, tmp_path: Path
+) -> None:
+    """A `--demand-equality` campaign (#442) is on SCIP's `=` model, not `>=`."""
+    tables = [
+        write_table(tmp_path / f"seed{s}" / "c.csv", seed_rows(s, search_config=config))
+        for s in (1, 2)
+    ]
+    records = write_jsonl(tmp_path / "s", [scip_record("ucp13", 1, "pwl", 100.0, 101.0)])
+    result = run_score(*tables, *ROSTER, "--scip", records)
+    assert result.returncode == 0, result.stderr
+    assert sentence in result.stdout
+
+
 def test_without_scip_there_is_no_scip_table(tmp_path: Path) -> None:
     result = run_score(*two_seeds(tmp_path), *ROSTER)
     assert "SCIP references" not in result.stdout

@@ -201,7 +201,7 @@ In the published instances, `n_init` for off units always equals their
 (5/5/4/4/4/2/2/0/0/0) for every unit, so this divergence is **vacuous
 on our shipped instances**. Documenting it for completeness.
 
-### 2.4 Demand (`uc_model.h:121–129`)
+### 2.4 Demand (`uc_model.h` `add_market_constraints`, `add_demand_upper`)
 
 ```cpp
 demand[t] − Σ_u p[u][t] ≤ 0

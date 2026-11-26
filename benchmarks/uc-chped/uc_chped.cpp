@@ -107,7 +107,8 @@ struct Args {
     // The ablation arm (#136); its canonical spelling is recorded on every
     // measured row, so a results file states its own configuration.
     cbls::bench::SearchFlags search = published_search_flags();
-    // search_config_string(search), plus threads=N off 1; filled in by parse_args
+    // search_config_string(search), plus threads=N off 1 and demand=eq under
+    // --demand-equality; filled in by parse_args
     std::string search_config;
 };
 
@@ -459,8 +460,13 @@ void write_header_comment(std::ostream& csv, const Args& args) {
            "# Instance identity (#148, #193): ucp13 and ucp40 are field-for-field the\n"
            "# authors' instances (their GPL ucp_data.py) and the three proven optima are\n"
            "# reproduced by an exact solve, so gap_pct is against bounds for these\n"
-           "# instances. Our demand row is >= where the source has ==, which does not\n"
-           "# move the proven optima. The SCIP references (Pedroso's method ported to SCIP,\n"
+           "# instances. "
+        << (args.demand_equality
+                ? "This run's demand row is == as in the source (--demand-equality,\n"
+                  "# #442). "
+                : "Our demand row is >= where the source has ==, which does not\n"
+                  "# move the proven optima. ")
+        << "The SCIP references (Pedroso's method ported to SCIP,\n"
            "# and SCIP's exact MINLP) solve the source's model, demand ==, and write their\n"
            "# own JSON lines, not rows here. See benchmarks/uc-chped/FIDELITY.md section 7.\n"
            "#\n"
