@@ -1,6 +1,6 @@
 """The MIPfeas primal gap and primal integral, shared by every benchmark that
-scores an anytime trace against a reference value (mipfeas, MINLPLib, and
-UC-CHPED's equal-time comparison, #442)."""
+scores an anytime trace against a reference value (mipfeas and MINLPLib; shared
+for UC-CHPED's equal-time comparison, #442)."""
 
 from __future__ import annotations
 

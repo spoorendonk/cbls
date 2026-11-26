@@ -848,7 +848,7 @@ class AnytimeScores:
 
     Normalisation: the trace objective is internally minimised, so the reference
     is BKS on a minimize row and -BKS on a maximize row. The gap at time t is
-    `benchmarks.mipfeas.primal_integral.primal_gap` (|x - x*| / max(|x|, |x*|),
+    `benchmarks.common.primal_integral.primal_gap` (|x - x*| / max(|x|, |x*|),
     2 before the first incumbent, 1 across a sign change, 0 when both are below
     1e-6), and the score is its time average over [0, budget]. 0 is "at BKS
     immediately", 2 is "never feasible". Two consequences to read the mean with:
