@@ -408,6 +408,8 @@ if(CBLS_BUILD_BENCHMARKS)
     if(CBLS_SCIP_DIR)
         find_package(SCIP CONFIG REQUIRED PATHS "${CBLS_SCIP_DIR}" NO_DEFAULT_PATH)
         file(STRINGS benchmarks/common/scip_driver/SCIP_COMMIT CBLS_SCIP_PINNED_COMMIT LIMIT_COUNT 1)
+        set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+            ${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/common/scip_driver/SCIP_COMMIT)
         add_executable(cbls_scip_traj benchmarks/common/scip_driver/cbls_scip_traj.cpp)
         target_link_libraries(cbls_scip_traj PRIVATE SCIP::SCIP)
         cbls_enable_warnings(cbls_scip_traj)

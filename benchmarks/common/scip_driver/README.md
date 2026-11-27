@@ -28,12 +28,15 @@ The binary refuses to run unless libscip's git hash is a prefix of
 ## Build
 
 ```sh
-nice -n 19 taskset -c 16-31 benchmarks/common/scip_driver/build_scip.sh ~/data/<session>/scip-442
-cmake -B build -DCBLS_SCIP_DIR=$HOME/data/<session>/scip-442 && cmake --build build --target cbls_scip_traj
+xk lock -- nice -n 19 taskset -c 0-3 benchmarks/common/scip_driver/build_scip.sh ~/data/<session>/scip-442
+cmake -B build -DCBLS_SCIP_DIR=$HOME/data/<session>/scip-442
+xk lock -- taskset -c 0-3 cmake --build build --target cbls_scip_traj -j4
 ```
 
-About 10 min at `JOBS=4`, 0.5 GB. `CBLS_SCIP_DIR` is empty by default, so the
-gate builds no driver and needs no SCIP.
+About 10 min at `JOBS=4`, 0.5 GB; the script checks each archive's sha256.
+`CBLS_SCIP_DIR` is empty by default, so the gate builds no driver and needs no
+SCIP. CMake caches `SCIP_DIR` on first configure: a build directory links the
+first prefix it was given, so a new prefix needs a fresh build directory.
 
 ## Use
 
@@ -44,20 +47,30 @@ cbls_scip_traj PROBLEM --threads N --time-limit S --traj-out TRAJ.jsonl \
 
 - `--threads N`: `parallel/maxnthreads` N and `SCIPsolveConcurrent` at N > 1
   (opportunistic, master's 10-setting portfolio); `SCIPsolve` at N = 1.
-- `--time-limit S`: wall seconds from the driver's start, completion included.
+- `--time-limit S`: wall seconds from the driver's start, completion included,
+  set as `limits/time` to what is left before the solve. At N > 1 each
+  concurrent solver gets that value and counts it from its own start, after the
+  main's transform and the N copies, so a run can overrun by that setup time:
+  a caller scoring to a deadline clips the records there.
 - `--partial-sol`: a `.sol` file; variables it does not list are unknown. At
   N = 1 it goes to the main SCIP as a partial solution. At N > 1 a concurrent
   solver gets only a complete solution (`concsolver_scip.c:636`), so an
   auxiliary single-thread SCIP completes it first with SCIP's `completesol`
-  (`presolving/maxrounds` 0: only the before-presolve heuristics run) and the
-  completed solution goes to the main by variable name.
+  (`presolving/maxrounds` 0: only the before-presolve heuristics run) and
+  completesol's own best solution goes to the main by variable name. If
+  completesol finds none (it skips a start past
+  `heuristics/completesol/maxunknownrate`), nothing goes to the main and
+  `start_completed` is false.
 - `TRAJ.jsonl`: one `{"mono_s", "solver", "objective"}` per incumbent of the
-  main SCIP (`solver` 0) or a concurrent solver (1..N), all at sub-SCIP depth 0
-  (`concurrent.c:91`). `mono_s` is absolute `CLOCK_MONOTONIC`, Python's
-  `time.monotonic()` on Linux, so a caller subtracts its own start. Objectives
-  are in the original space; take the running minimum (records from different
-  solvers interleave, and a shared solution is logged once per solver).
-- `RESULT.json`: `status` (PySCIPOpt's names), `primal_bound`, `dual_bound`,
-  `n_sols`, `wall_s`, `start_mono_s`, `start_completed`, `scip_version`,
-  `scip_git_hash`, `ok`.
+  main SCIP (`solver` 0) or a concurrent solver (1..N, numbered as they start
+  logging), all at sub-SCIP depth 0 (`concurrent.c:91`), in `mono_s` order.
+  `mono_s` is absolute `CLOCK_MONOTONIC`, Python's `time.monotonic()` on Linux,
+  so a caller subtracts its own start. Objectives are in the original space
+  (`null` if not finite); take the running best in the result's `sense`
+  (solvers interleave, and a shared solution is logged once per solver).
+- `RESULT.json`: `ok`, `scip_retcode`, `status` (PySCIPOpt's names), `sense`,
+  `primal_bound`, `dual_bound` (`null` while infinite), `n_sols`, `records`,
+  `problem`, `threads`, `time_limit_s`, `wall_s`, `solving_time_s`,
+  `start_mono_s`, `start_completed` (`null` without `--partial-sol`),
+  `completion_s` (N > 1 with a start), `scip_version`, `scip_git_hash`.
 - `BEST.sol`: the best solution with zeros printed, read by variable name.

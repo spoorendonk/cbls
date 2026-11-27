@@ -35,9 +35,19 @@ with_metis_lflags="-L$PREFIX/lib -lmetis -lGKlib -lm"
 with_lapack_lflags="-llapack -lblas -lgfortran -lm"
 EOF
 
+# fetch URL FILE SHA256 DIR: download and unpack once; refuse an archive whose
+# hash is not the one the verified build fetched (2026-11-27).
+fetch() {
+  [ -f "$2" ] || wget -q "$1" -O "$2"
+  echo "$3  $2" | sha256sum -c --quiet - || { echo "$2: sha256 mismatch" >&2; exit 1; }
+  [ -d "$4" ] || tar -xf "$2"
+}
+
 if [ ! -f "$PREFIX/lib/libmetis.a" ]; then
-  [ -d GKlib-$GKLIB_COMMIT ] || { wget -q https://github.com/KarypisLab/GKlib/archive/$GKLIB_COMMIT.tar.gz; tar -xf $GKLIB_COMMIT.tar.gz; }
-  [ -d METIS-$METIS_VERSION ] || { wget -q https://github.com/KarypisLab/METIS/archive/refs/tags/v$METIS_VERSION.tar.gz; tar -xf v$METIS_VERSION.tar.gz; }
+  fetch https://github.com/KarypisLab/GKlib/archive/$GKLIB_COMMIT.tar.gz $GKLIB_COMMIT.tar.gz \
+    e1d59de12336731e6dde8465f05de7b907fae5d72c921cffcde217a89eaab654 GKlib-$GKLIB_COMMIT
+  fetch https://github.com/KarypisLab/METIS/archive/refs/tags/v$METIS_VERSION.tar.gz v$METIS_VERSION.tar.gz \
+    1a4665b2cd07edc2f734e30d7460afb19c1217c2547c2ac7bf6e1848d50aff7a METIS-$METIS_VERSION
   (cd GKlib-$GKLIB_COMMIT
    sed -i 's/^CONFIG_FLAGS =/CONFIG_FLAGS = -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_POSITION_INDEPENDENT_CODE=ON/' Makefile
    sed -i 's/-march=native//' GKlibSystem.cmake
@@ -57,13 +67,15 @@ if [ ! -f "$PREFIX/lib/pkgconfig/coinmumps.pc" ]; then
 fi
 
 if [ ! -f "$PREFIX/lib/pkgconfig/ipopt.pc" ]; then
-  [ -d Ipopt-releases-$IPOPT_VERSION ] || { wget -q https://github.com/coin-or/Ipopt/archive/refs/tags/releases/$IPOPT_VERSION.tar.gz -O ipopt-$IPOPT_VERSION.tar.gz; tar -xf ipopt-$IPOPT_VERSION.tar.gz; }
+  fetch https://github.com/coin-or/Ipopt/archive/refs/tags/releases/$IPOPT_VERSION.tar.gz ipopt-$IPOPT_VERSION.tar.gz \
+    b3eb84a23812b53a3325bcd2c599de2b0f5df45a18ed251f9e3c1cd893136287 Ipopt-releases-$IPOPT_VERSION
   mkdir -p Ipopt-releases-$IPOPT_VERSION/build
   (cd Ipopt-releases-$IPOPT_VERSION/build && ../configure --prefix="$PREFIX" && make -j"$JOBS" && make install)
 fi
 
 if [ ! -d "$PREFIX/lib/cmake/soplex" ]; then
-  [ -d soplex-$SOPLEX_VERSION ] || { wget -q https://github.com/scipopt/soplex/archive/refs/tags/v$SOPLEX_VERSION.tar.gz -O soplex-$SOPLEX_VERSION.tar.gz; tar -xf soplex-$SOPLEX_VERSION.tar.gz; }
+  fetch https://github.com/scipopt/soplex/archive/refs/tags/v$SOPLEX_VERSION.tar.gz soplex-$SOPLEX_VERSION.tar.gz \
+    5aad34f158d251549e2aadbfbef706629f38652fcd027c12b0a8b2d3c8ff0719 soplex-$SOPLEX_VERSION
   cmake -S soplex-$SOPLEX_VERSION -B soplex-$SOPLEX_VERSION/build -DCMAKE_INSTALL_PREFIX="$PREFIX" \
     -DCMAKE_BUILD_TYPE=Release -DGMP=false -DPAPILO=false -DBOOST=false -DMPFR=false
   cmake --build soplex-$SOPLEX_VERSION/build -j"$JOBS"
@@ -79,4 +91,4 @@ cmake -S scip -B scip/build --preset interface -DCMAKE_INSTALL_PREFIX="$PREFIX" 
   -DTPI=tny -DCMAKE_POLICY_VERSION_MINIMUM=3.5
 cmake --build scip/build -j"$JOBS"
 cmake --install scip/build
-"$PREFIX/bin/scip" -c quit | head -n1
+"$PREFIX/bin/scip" -c quit | sed -n 1p   # sed reads it all: head would SIGPIPE under pipefail

@@ -108,6 +108,7 @@ A one-screen map of the pipeline, its files, the extension points, build targets
 | `cbls_minlplib_nl_check` | `benchmarks/minlplib/nl_check.cpp` | reads and models NL files, no solve; per-instance status for `status.py` (#283) |
 | `cbls_setcover` | `benchmarks/setcover/` | OR-Library set-covering runner (the `Set`-variable example) |
 | `cbls_cvrp` | `benchmarks/cvrp/` | CVRPLIB X-set CVRP runner (the `List`-variable example, one instance per process) |
+| `cbls_scip_traj` | `benchmarks/common/scip_driver/` | SCIP incumbent trajectory on a pinned SCIP 11 (#442); only with `-DCBLS_SCIP_DIR` |
 
 Examples, tests, benchmarks and bindings are each behind an option:
 `CBLS_BUILD_EXAMPLES`/`CBLS_BUILD_TESTS`/`CBLS_BUILD_BENCHMARKS` default ON,

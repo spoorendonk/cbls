@@ -54,9 +54,11 @@ struct TrajLog {
     int records = 0;
 };
 
+constexpr int kUnassigned = -1;
+
 struct HandlerData {
     TrajLog* log = nullptr;
-    int solver = 0;  // 0: the main SCIP; k >= 1: the k-th copy made
+    int solver = kUnassigned;  // 0: the main SCIP; k >= 1: the k-th copy to log
 };
 
 HandlerData* handler_data(SCIP_EVENTHDLR* eventhdlr) {
@@ -72,11 +74,18 @@ bool logs_depth(SCIP* scip) {
 }
 
 // Called from SCIP's C frames, which no exception may cross: printf, not json.
-SCIP_RETCODE write_record(TrajLog& log, double mono_s, int solver, double objective) {
+// Stamped under the lock, so the file is in time order across threads.
+SCIP_RETCODE write_record(TrajLog& log, int solver, double objective) {
     try {
         const std::scoped_lock lock(log.mu);
-        std::fprintf(log.out, "{\"mono_s\":%.17g,\"solver\":%d,\"objective\":%.17g}\n", mono_s,
-                     solver, objective);
+        const double mono_s = monotonic_seconds();
+        if (std::isfinite(objective)) {
+            std::fprintf(log.out, "{\"mono_s\":%.17g,\"solver\":%d,\"objective\":%.17g}\n", mono_s,
+                         solver, objective);
+        } else {  // %.17g would print inf or nan, which is not JSON
+            std::fprintf(log.out, "{\"mono_s\":%.17g,\"solver\":%d,\"objective\":null}\n", mono_s,
+                         solver);
+        }
         std::fflush(log.out);
         ++log.records;
     } catch (...) {
@@ -88,15 +97,7 @@ SCIP_RETCODE write_record(TrajLog& log, double mono_s, int solver, double object
 SCIP_RETCODE include_traj_handler(SCIP* scip, TrajLog* log, int solver);
 
 SCIP_DECL_EVENTCOPY(event_copy_traj) {
-    TrajLog* log = handler_data(eventhdlr)->log;
-    int solver = 0;
-    try {
-        const std::scoped_lock lock(log->mu);
-        solver = log->next_solver++;
-    } catch (...) {
-        return SCIP_ERROR;
-    }
-    SCIP_CALL(include_traj_handler(scip, log, solver));
+    SCIP_CALL(include_traj_handler(scip, handler_data(eventhdlr)->log, kUnassigned));
     return SCIP_OKAY;
 }
 
@@ -108,8 +109,19 @@ SCIP_DECL_EVENTFREE(event_free_traj) {
 }
 
 // Caught at INIT, not INITSOL, so solutions found while presolving count too.
+// Numbered here, not at copy time, so only the copies that log take an id: with
+// presolving first, heuristic sub-SCIPs are copied before the concurrent solvers.
 SCIP_DECL_EVENTINIT(event_init_traj) {
     if (logs_depth(scip)) {
+        HandlerData* data = handler_data(eventhdlr);
+        if (data->solver == kUnassigned) {
+            try {
+                const std::scoped_lock lock(data->log->mu);
+                data->solver = data->log->next_solver++;
+            } catch (...) {
+                return SCIP_ERROR;
+            }
+        }
         SCIP_CALL(SCIPcatchEvent(scip, SCIP_EVENTTYPE_BESTSOLFOUND, eventhdlr, nullptr, nullptr));
     }
     return SCIP_OKAY;
@@ -124,7 +136,6 @@ SCIP_DECL_EVENTEXIT(event_exit_traj) {
 
 SCIP_DECL_EVENTEXEC(event_exec_traj) {
     (void)eventdata;
-    const double now = monotonic_seconds();
     const HandlerData* data = handler_data(eventhdlr);
     SCIP_SOL* sol = SCIPeventGetSol(event);
     // A copy's original space is the main's transformed space (the concurrent
@@ -133,7 +144,7 @@ SCIP_DECL_EVENTEXEC(event_exec_traj) {
     if (scip != data->log->main) {
         objective = SCIPretransformObj(data->log->main, objective);
     }
-    return write_record(*data->log, now, data->solver, objective);
+    return write_record(*data->log, data->solver, objective);
 }
 
 SCIP_RETCODE include_traj_handler(SCIP* scip, TrajLog* log, int solver) {
@@ -217,11 +228,11 @@ int parse_threads(const std::string& s) {
     return (*end == '\0' && n >= 1 && n <= 1024) ? static_cast<int>(n) : 0;
 }
 
-// -1 (refused by parse_args) unless the whole string is a finite number.
+// -1 (refused by parse_args) unless the whole, non-empty string is a finite number.
 double parse_seconds(const std::string& s) {
     char* end = nullptr;
     const double v = std::strtod(s.c_str(), &end);
-    return (*end == '\0' && std::isfinite(v)) ? v : -1.0;
+    return (end != s.c_str() && *end == '\0' && std::isfinite(v)) ? v : -1.0;
 }
 
 std::optional<Args> parse_args(int argc, char** argv) {
@@ -286,11 +297,11 @@ SCIP_RETCODE add_partial_sol(SCIP* scip, const std::string& path) {
     SCIP_CALL(SCIPcreatePartialSol(scip, &sol, nullptr));
     SCIP_Bool partial = FALSE;
     SCIP_Bool error = FALSE;
-    SCIP_CALL(SCIPreadSolFile(scip, path.c_str(), sol, FALSE, &partial, &error));
-    if (error != FALSE) {
+    const SCIP_RETCODE rc = SCIPreadSolFile(scip, path.c_str(), sol, FALSE, &partial, &error);
+    if (rc != SCIP_OKAY || error != FALSE) {
         SCIP_CALL(SCIPfreeSol(scip, &sol));
         std::cerr << "cannot read partial solution " << path << "\n";
-        return SCIP_READERROR;
+        return rc != SCIP_OKAY ? rc : SCIP_READERROR;
     }
     SCIP_Bool stored = FALSE;
     SCIP_CALL(SCIPaddSolFree(scip, &sol, &stored));
@@ -301,8 +312,23 @@ SCIP_RETCODE add_partial_sol(SCIP* scip, const std::string& path) {
 // (concsolver_scip.c:636), never a partial one, and the main never runs
 // completesol at N > 1. So the start is completed first by SCIP's own
 // completesol: an auxiliary single-thread SCIP runs only its before-presolve
-// heuristics (presolving/maxrounds 0), and its best solution, matched by
-// variable name, goes to the main as a complete solution (#442).
+// heuristics (presolving/maxrounds 0), and completesol's best solution, matched
+// by variable name, goes to the main as a complete solution (#442). Only
+// completesol's: trivial, feasjump and the like run there too, and completesol
+// skips a start past maxunknownrate with only a warning, so "a solution exists"
+// does not mean "the start was completed".
+SCIP_SOL* completesol_best(SCIP* aux) {
+    const SCIP_HEUR* completesol = SCIPfindHeur(aux, "completesol");
+    SCIP_SOL** sols = SCIPgetSols(aux);  // best first
+    const int nsols = SCIPgetNSols(aux);
+    for (int i = 0; completesol != nullptr && i < nsols; ++i) {
+        if (SCIPsolGetHeur(sols[i]) == completesol) {
+            return sols[i];
+        }
+    }
+    return nullptr;
+}
+
 SCIP_RETCODE complete_start(SCIP* main, const Args& a, double deadline, bool* completed) {
     *completed = false;
     SCIP* aux = nullptr;
@@ -323,8 +349,8 @@ SCIP_RETCODE complete_start(SCIP* main, const Args& a, double deadline, bool* co
     if (rc == SCIP_OKAY) {
         rc = SCIPpresolve(aux);
     }
-    if (rc == SCIP_OKAY && SCIPgetNSols(aux) > 0) {
-        SCIP_SOL* best = SCIPgetBestSol(aux);
+    SCIP_SOL* best = rc == SCIP_OKAY ? completesol_best(aux) : nullptr;
+    if (best != nullptr) {
         SCIP_SOL* sol = nullptr;
         rc = SCIPcreateOrigSol(main, &sol, nullptr);
         SCIP_VAR** vars = SCIPgetOrigVars(aux);
@@ -387,6 +413,7 @@ SCIP_RETCODE run(SCIP* scip, const Args& a, TrajLog& log, double start, nlohmann
     const double end = monotonic_seconds();
     const bool has_sol = SCIPgetNSols(scip) > 0;
     result["status"] = status_name(SCIPgetStatus(scip));
+    result["sense"] = SCIPgetObjsense(scip) == SCIP_OBJSENSE_MAXIMIZE ? "maximize" : "minimize";
     result["n_sols"] = SCIPgetNSols(scip);
     result["primal_bound"] = has_sol ? nlohmann::json(SCIPgetPrimalbound(scip)) : nullptr;
     result["dual_bound"] = opt_json(finite(scip, SCIPgetDualbound(scip)));
