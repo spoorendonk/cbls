@@ -48,6 +48,7 @@ which cbls's data calls `|d*sin(e*(P_min-P))|`.
 from __future__ import annotations
 
 import argparse
+import glob
 import importlib.metadata
 import importlib.util
 import json
@@ -588,7 +589,10 @@ class Driver:
                 cmd, capture_output=True, text=True, check=False, timeout=time_left + DRIVER_GRACE_S
             )
         except subprocess.TimeoutExpired as e:
-            raise RuntimeError(f"cbls_scip_traj ran {e.timeout:.0f} s, killed: {base}.*") from e
+            raise RuntimeError(
+                f"cbls_scip_traj ran {e.timeout:.0f} s, killed: {base}.*\n"
+                f"stdout: {_tail(e.stdout)}\nstderr: {_tail(e.stderr)}"
+            ) from e
         if proc.returncode != 0:
             raise RuntimeError(
                 f"cbls_scip_traj exited {proc.returncode} ({base}.*)\n"
@@ -604,7 +608,7 @@ class Driver:
         with open(base + ".jsonl") as fh:
             records = [json.loads(line) for line in fh if line.strip()]
         n_sols = int(res["n_sols"])
-        return Solve(
+        solve = Solve(
             status=str(res["status"]),
             n_sols=n_sols,
             lb=res["dual_bound"],
@@ -617,6 +621,17 @@ class Driver:
             ],
             start_completed=res.get("start_completed"),
         )
+        # Parsed: free the files now, so a long run's model copies do not pile up.
+        for path in glob.glob(glob.escape(base) + ".*"):
+            os.remove(path)
+        return solve
+
+
+def _tail(out: str | bytes | None) -> str:
+    """The last 2000 characters of a killed child's captured output."""
+    if isinstance(out, bytes):
+        out = out.decode(errors="replace")
+    return (out or "")[-2000:]
 
 
 @dataclass
@@ -693,15 +708,13 @@ def _refine(x: Values, v: UcpVars, pr: Problem, prev: dict[tuple[int, int], list
     return new
 
 
-def _driver_step(
-    iteration: dict[str, Any],
-    trajectory: list[list[float]],
-    solve: Solve,
-    elapsed: float,
-    ub: float,
-) -> None:
-    """The driver's extras: the start's fate, and a step of the running best if `ub` is one."""
-    iteration["start_completed"] = solve.start_completed
+def _start_fate(backend: Backend, solve: Solve) -> dict[str, Any]:
+    """Whether SCIP completed the warm start: the driver reports it, the wheel cannot."""
+    return {} if backend.driver is None else {"start_completed": solve.start_completed}
+
+
+def _trajectory_step(trajectory: list[list[float]], elapsed: float, ub: float) -> None:
+    """A step of the running best, if `ub` improves on it."""
     if not trajectory or ub < trajectory[-1][1]:
         trajectory.append([elapsed, ub])
 
@@ -732,7 +745,10 @@ def solve_pwl(
         solve = backend.solve(m, _pwl_params(strict, warm is not None), warm, deadline)
         status = solve.status
         if solve.x is None:
-            iterations.append({"n": n, "breakpoints": n_brk, "status": status, "lb": solve.lb})
+            iterations.append(
+                {"n": n, "breakpoints": n_brk, "status": status, "lb": solve.lb}
+                | _start_fate(backend, solve)
+            )
             # A proven-infeasible MIP did not run out of CPU.
             out_of_budget = status != "infeasible"
             break
@@ -755,9 +771,10 @@ def solve_pwl(
                 "check": check,
                 time_key: elapsed,
             }
+            | _start_fate(backend, solve)
         )
         if backend.driver is not None:
-            _driver_step(iterations[-1], trajectory, solve, elapsed, ub)
+            _trajectory_step(trajectory, elapsed, ub)
         print(
             f"  n={n} brk={n_brk} {status} LB={lb} UB={ub:.4f} err={error:.3e} "
             f"{time_key}={elapsed:.1f}",
@@ -917,12 +934,12 @@ def main() -> None:
 
     pr = load_problem(args.instance, args.periods)
     bad = [i for i, u in enumerate(pr.units) if not concave_between_valves(u)]
-    # Removed only after a clean run: a failed one leaves its files to inspect.
-    workdir = tempfile.mkdtemp(prefix="ucp_valve_scip_")
     backend, driver = IN_PROCESS, None
     if args.backend == "driver":
         with open(SCIP_COMMIT_FILE) as fh:
-            driver = Driver(args.driver, threads, workdir, pinned=fh.read().strip())
+            pinned = fh.read().strip()
+        # Removed only after a clean run: a failed one leaves its files to inspect.
+        driver = Driver(args.driver, threads, tempfile.mkdtemp(prefix="ucp_valve_scip_"), pinned)
         backend = Backend("driver", driver.solve, time.monotonic, "wall_s", threads, driver)
     try:
         if args.method == "pwl":
@@ -930,9 +947,11 @@ def main() -> None:
         else:
             res = solve_exact(pr, budget, args.exact_gap, backend)
     except BaseException:
-        print(f"kept {workdir}", file=sys.stderr)
+        if driver is not None:
+            print(f"kept {driver.workdir}", file=sys.stderr)
         raise
-    shutil.rmtree(workdir)
+    if driver is not None:
+        shutil.rmtree(driver.workdir)
     lb, ub = res.get("lb"), res.get("ub")
     record = {
         "instance": args.instance,
@@ -949,6 +968,8 @@ def main() -> None:
         "pyscipopt": importlib.metadata.version("pyscipopt"),
         "scip": str(pyscipopt.Model().version()) if driver is None else driver.scip_version,
         "scip_git_hash": None if driver is None else driver.scip_git_hash,
+        # 0 when the budget ran out before the first solve: scip/scip_git_hash are null then.
+        **({} if driver is None else {"driver_solves": driver.calls}),
         **{k: val for k, val in res.items() if k not in ("lb", "ub")},
     }
     shown = ("instance", "periods", "method", "lb", "ub", "gap_pct", "status", backend.time_key)
