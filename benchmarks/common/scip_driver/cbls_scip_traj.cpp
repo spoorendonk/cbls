@@ -462,6 +462,28 @@ SCIP_RETCODE run(SCIP* scip, const Args& a, TrajLog& log, double start, nlohmann
     return SCIP_OKAY;
 }
 
+// Replaced by rename, so a reader never sees half a file, even of a killed driver.
+bool write_result(const Args& a, nlohmann::json& result, SCIP_RETCODE rc, bool freed) {
+    result["ok"] = rc == SCIP_OKAY;
+    result["scip_retcode"] = static_cast<int>(rc);
+    result["freed"] = freed;
+    const std::string tmp = a.result_out + ".tmp";
+    {
+        std::ofstream out(tmp);
+        out << result.dump(2) << "\n";
+        out.close();
+        if (!out) {
+            std::cerr << "cannot write " << tmp << "\n";
+            return false;
+        }
+    }
+    if (std::rename(tmp.c_str(), a.result_out.c_str()) != 0) {
+        std::cerr << "cannot rename " << tmp << ": " << std::strerror(errno) << "\n";
+        return false;
+    }
+    return true;
+}
+
 int run_main(int argc, char** argv) {
     const double start = monotonic_seconds();
     const std::optional<Args> args = parse_args(argc, argv);
@@ -497,6 +519,12 @@ int run_main(int argc, char** argv) {
         log.concurrent = args->threads > 1;
         rc = run(scip, *args, log, start, result);
     }
+    // Written before SCIPfree too, which can outlast the caller's kill grace on a
+    // large model: a killed driver leaves this result, "freed": false (#442).
+    result["records"] = log.records;
+    if (!write_result(*args, result, rc, false)) {
+        return 2;
+    }
     if (scip != nullptr) {
         const SCIP_RETCODE free_rc = SCIPfree(&scip);
         if (rc == SCIP_OKAY) {
@@ -504,13 +532,7 @@ int run_main(int argc, char** argv) {
         }
     }
     std::fclose(log.out);
-    result["records"] = log.records;
-    result["ok"] = rc == SCIP_OKAY;
-    result["scip_retcode"] = static_cast<int>(rc);
-    std::ofstream out(args->result_out);
-    out << result.dump(2) << "\n";
-    if (!out) {
-        std::cerr << "cannot write " << args->result_out << "\n";
+    if (!write_result(*args, result, rc, true)) {
         return 2;
     }
     return rc == SCIP_OKAY ? 0 : 1;

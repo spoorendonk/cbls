@@ -75,5 +75,7 @@ cbls_scip_traj PROBLEM --threads N --time-limit S --traj-out TRAJ.jsonl \
   `problem`, `threads`, `time_limit_s`, `wall_s`, `solving_time_s`,
   `start_mono_s`, `start_completed` (`null` without `--partial-sol` or at
   N = 1, where SCIP's own completesol takes the partial solution),
-  `completion_s` (N > 1 with a start), `scip_version`, `scip_git_hash`.
+  `completion_s` (N > 1 with a start), `scip_version`, `scip_git_hash`,
+  `freed`. It is written (by rename) before `SCIPfree`, `freed: false`, and
+  again after it, so a driver killed in a long free still leaves its result.
 - `BEST.sol`: the best solution with zeros printed, read by variable name.

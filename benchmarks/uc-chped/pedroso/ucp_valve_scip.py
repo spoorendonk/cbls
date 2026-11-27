@@ -563,6 +563,11 @@ class Driver:
     scip_version: str | None = None
     scip_git_hash: str | None = None
     calls: int = 0
+    #: Opt-in (#442): a driver killed after it wrote its result, so in SCIPfree, counts
+    #: as finished; off, any kill is an error.
+    salvage_killed: bool = False
+    killed_in_free: int = 0
+    grace_s: float = DRIVER_GRACE_S
 
     def solve(self, m: Any, params: Params, start: Values | None, deadline: float) -> Solve:
         self.calls += 1
@@ -586,18 +591,23 @@ class Driver:
         cmd += ["--time-limit", repr(time_left)]
         try:
             proc = subprocess.run(
-                cmd, capture_output=True, text=True, check=False, timeout=time_left + DRIVER_GRACE_S
+                cmd, capture_output=True, text=True, check=False, timeout=time_left + self.grace_s
             )
         except subprocess.TimeoutExpired as e:
-            raise RuntimeError(
-                f"cbls_scip_traj ran {e.timeout:.0f} s, killed: {base}.*\n"
-                f"stdout: {_tail(e.stdout)}\nstderr: {_tail(e.stderr)}"
-            ) from e
-        if proc.returncode != 0:
-            raise RuntimeError(
-                f"cbls_scip_traj exited {proc.returncode} ({base}.*)\n"
-                f"stdout: {proc.stdout[-2000:]}\nstderr: {proc.stderr[-2000:]}"
-            )
+            # The driver renames its result into place before SCIPfree.
+            if not (self.salvage_killed and os.path.exists(base + ".json")):
+                raise RuntimeError(
+                    f"cbls_scip_traj ran {e.timeout:.0f} s, killed: {base}.*\n"
+                    f"stdout: {_tail(e.stdout)}\nstderr: {_tail(e.stderr)}"
+                ) from e
+            self.killed_in_free += 1
+            print(f"cbls_scip_traj killed in SCIPfree, result kept: {base}.json", file=sys.stderr)
+        else:
+            if proc.returncode != 0:
+                raise RuntimeError(
+                    f"cbls_scip_traj exited {proc.returncode} ({base}.*)\n"
+                    f"stdout: {proc.stdout[-2000:]}\nstderr: {proc.stderr[-2000:]}"
+                )
         with open(base + ".json") as fh:
             res = json.load(fh)
         # The driver refuses another libscip itself; this catches a stale binary.
@@ -719,6 +729,20 @@ def _trajectory_step(trajectory: list[list[float]], elapsed: float, ub: float) -
         trajectory.append([elapsed, ub])
 
 
+def _wall_step(
+    trajectory: list[list[float]],
+    iteration: dict[str, Any],
+    elapsed: float,
+    budget: float,
+    ub: float,
+) -> None:
+    """On the wall budget, a UB known only after it (the last solve's overshoot) is
+    not the run's (#442); the wheel's CPU budget is #441's and unchanged."""
+    iteration["in_budget"] = elapsed <= budget
+    if elapsed <= budget:
+        _trajectory_step(trajectory, elapsed, ub)
+
+
 def solve_pwl(
     pr: Problem, budget: float, warm_start: bool = True, backend: Backend = IN_PROCESS
 ) -> dict[str, Any]:
@@ -774,7 +798,7 @@ def solve_pwl(
             | _start_fate(backend, solve)
         )
         if backend.driver is not None:
-            _trajectory_step(trajectory, elapsed, ub)
+            _wall_step(trajectory, iterations[-1], elapsed, budget, ub)
         print(
             f"  n={n} brk={n_brk} {status} LB={lb} UB={ub:.4f} err={error:.3e} "
             f"{time_key}={elapsed:.1f}",
@@ -808,13 +832,21 @@ def _pwl_result(
 ) -> dict[str, Any]:
     """The run's bounds and status from its iterations."""
     with_lb = [it for it in iterations if it.get("lb") is not None]
-    with_ub = [i for i, it in enumerate(iterations) if it.get("ub") is not None]
+    with_ub = [
+        i
+        for i, it in enumerate(iterations)
+        if it.get("ub") is not None and it.get("in_budget", True)
+    ]
     best = min(with_ub, key=lambda i: iterations[i]["ub"]) if with_ub else None
+    any_ub = any(it.get("ub") is not None for it in iterations)
     last_status = iterations[-1]["status"] if iterations else None
+    # Converging after the wall budget is running out of it (#442).
+    late = bool(iterations) and not iterations[-1].get("in_budget", True)
+    converged = converged and not late
     result: dict[str, Any] = {
         "iterations": iterations,
         "converged": converged,
-        "out_of_budget": out_of_budget,
+        "out_of_budget": out_of_budget or late,
         "last_lb": iterations[-1].get("lb") if iterations else None,
         "last_ub": iterations[-1].get("ub") if iterations else None,
         # While every unit has c <= e*f^2/2, each iteration's LB and UB bound the
@@ -827,7 +859,7 @@ def _pwl_result(
         "status": (
             "converged"
             if converged
-            else ("infeasible" if best is None else "stopped: infeasible MIP after a UB")
+            else ("stopped: infeasible MIP after a UB" if any_ub else "infeasible")
             if last_status == "infeasible"
             else "time limit reached"
         ),
@@ -850,17 +882,26 @@ def solve_exact(
     params["limits/gap"] = gap
     solve = backend.solve(m, params, None, start + budget)
     result: dict[str, Any] = {"status": solve.status, backend.time_key: clock() - start}
+    steps = improving(solve.trajectory)
     if backend.driver is not None:
         # SCIP's objective per incumbent: fuel and valve are >= relaxations, so it
         # bounds that incumbent's true cost from above, and the final `ub` (the
-        # best solution's true cost) may sit below the last point.
-        result["trajectory"] = improving(solve.trajectory)
+        # best solution's true cost) may sit below the last point. Only points
+        # within the wall budget count; later ones (SCIP's overshoot) are kept apart.
+        result["trajectory"] = [p for p in steps if p[0] <= budget]
+        result["trajectory_after_budget"] = [p for p in steps if p[0] > budget]
     if solve.x is None:
         result.update(lb=solve.lb, ub=None)
         return result
+    ub: float | None = true_cost(solve.x, v, pr)
+    if result.get("trajectory_after_budget"):
+        # The best solution came after the budget (#442): its true cost is kept
+        # apart, and `ub` is the last in-budget incumbent's SCIP objective.
+        result["ub_after_budget"] = ub
+        ub = result["trajectory"][-1][1] if result["trajectory"] else None
     result.update(
         lb=solve.lb,
-        ub=true_cost(solve.x, v, pr),
+        ub=ub,
         scip_objective=solve.objective,
         check=check_solution(solve.x, v, pr),
     )
@@ -870,8 +911,12 @@ def solve_exact(
 def _budget_and_threads(ap: argparse.ArgumentParser, args: argparse.Namespace) -> tuple[float, int]:
     """The backend's budget and threads; each refuses the other's flags."""
     if args.backend == "pyscipopt":
-        if args.time_limit is not None or args.threads is not None:
-            ap.error("--time-limit and --threads are the driver's; pyscipopt takes --cpu")
+        driver_only = (args.time_limit, args.threads, args.driver_grace)
+        if any(a is not None for a in driver_only) or args.salvage_killed:
+            ap.error(
+                "--time-limit, --threads, --driver-grace and --salvage-killed are the driver's; "
+                "pyscipopt takes --cpu"
+            )
         return (3600.0 if args.cpu is None else args.cpu), 1
     if args.cpu is not None:
         ap.error("--cpu is pyscipopt's; the driver takes --time-limit, a wall budget")
@@ -881,6 +926,10 @@ def _budget_and_threads(ap: argparse.ArgumentParser, args: argparse.Namespace) -
     budget = 3600.0 if args.time_limit is None else args.time_limit
     if not (math.isfinite(budget) and budget > 0):
         ap.error(f"--time-limit {budget} is not a positive number")
+    if args.driver_grace is not None and not (
+        math.isfinite(args.driver_grace) and args.driver_grace >= 0
+    ):
+        ap.error(f"--driver-grace {args.driver_grace} is not a non-negative number")
     if not os.access(args.driver, os.X_OK):
         ap.error(f"no cbls_scip_traj at {args.driver}: benchmarks/common/scip_driver/README.md")
     return budget, threads
@@ -926,6 +975,17 @@ def main() -> None:
         action="store_true",
         help="pwl: do not pass the last solution on (ucp_valve.py's own start is inert)",
     )
+    ap.add_argument(
+        "--salvage-killed",
+        action="store_true",
+        help="driver: a driver killed past its limit and grace after writing its result "
+        "(so in SCIPfree) counts as finished; default: an error",
+    )
+    ap.add_argument(
+        "--driver-grace",
+        type=float,
+        help=f"driver: seconds past its limit before it is killed (default {DRIVER_GRACE_S:g})",
+    )
     ap.add_argument("--out", help="append the result as one JSON line")
     args = ap.parse_args()
     budget, threads = _budget_and_threads(ap, args)
@@ -940,6 +1000,9 @@ def main() -> None:
             pinned = fh.read().strip()
         # Removed only after a clean run: a failed one leaves its files to inspect.
         driver = Driver(args.driver, threads, tempfile.mkdtemp(prefix="ucp_valve_scip_"), pinned)
+        driver.salvage_killed = args.salvage_killed
+        if args.driver_grace is not None:
+            driver.grace_s = args.driver_grace
         backend = Backend("driver", driver.solve, time.monotonic, "wall_s", threads, driver)
     try:
         if args.method == "pwl":
@@ -969,7 +1032,11 @@ def main() -> None:
         "scip": str(pyscipopt.Model().version()) if driver is None else driver.scip_version,
         "scip_git_hash": None if driver is None else driver.scip_git_hash,
         # 0 when the budget ran out before the first solve: scip/scip_git_hash are null then.
-        **({} if driver is None else {"driver_solves": driver.calls}),
+        **(
+            {}
+            if driver is None
+            else {"driver_solves": driver.calls, "driver_killed_in_free": driver.killed_in_free}
+        ),
         **{k: val for k, val in res.items() if k not in ("lb", "ub")},
     }
     shown = ("instance", "periods", "method", "lb", "ub", "gap_pct", "status", backend.time_key)
