@@ -65,13 +65,14 @@ REFUSALS (exit 2, naming what is wrong; nothing is written):
   with a falling objective. A pair whose
   best SCIP LB is above its best SCIP UB is named under the table, not refused. An
   LB that is not positive gives no gap;
-* with `--trace`: a file not in the trace's columns, a seed no table has or a seed
-  twice, a row no table of that seed has, a commit or budget other than the tables',
-  a table row with no trace, a solve whose rows are apart, fall in time or go on
-  past an empty closing row, and one whose last row is no closing row (`new_best` 0)
-  with the table's objective; with `--scip` too, records that are not the driver's,
-  miss a roster row or method, or whose threads or per-horizon budget (at the
-  table's four digits) differ from cbls's, and a cbls run without `demand=eq`.
+* with `--trace`: a cbls run without `demand=eq` (the references solve `=`), a file
+  not in the trace's columns, a seed no table has or a seed twice, a row no table of
+  that seed has, a commit or budget other than the tables', a table row with no
+  trace, a solve whose rows are apart, whose progress rows fall in time or lack an
+  objective, and one whose last row is no closing row (`new_best` 0) with the
+  table's objective; with `--scip` too, records that are not the driver's, miss a
+  roster row or method, or whose threads or per-horizon budget (at the table's four
+  digits) differ from cbls's.
 
 `--roster` replaces the published `ROSTER` for a smoke, and every output says so on
 its first line.
@@ -650,33 +651,54 @@ def check_closing(last: TraceRow, measured: Measured) -> None:
         )
 
 
+def check_solve_rows(rows: Sequence[TraceRow]) -> None:
+    """A solve's progress rows never fall in time and have an objective; only its last row,
+    the closing one, may be empty or fall in time: with threads it is the slowest worker's
+    own clock, which starts after the portfolio's (`solve_portfolio`, src/pool.cpp)."""
+    for before, row in zip(rows[:-2], rows[1:-1], strict=True):
+        if row.t < before.t:
+            raise RefusedError(
+                f"{row.name}: a row at {row.t:g} s after one at {before.t:g} s: one solve twice?"
+            )
+    for row in rows[:-1]:
+        if math.isnan(row.objective):
+            raise RefusedError(f"{row.name}: an empty objective before the last row")
+
+
 def add_trace_rows(path: Path, seed: str, campaign: Campaign, traces: Traces) -> None:
-    """One seed's trace rows into `traces`. One solve's rows are contiguous, never fall in
-    time, and end on its closing row, so a solve twice in one trace is refused (#446)."""
-    last: dict[Pair, TraceRow] = {}
+    """One seed's trace rows into `traces`. One solve's rows are contiguous, in time order and
+    end on its closing row, so a solve twice in one trace is refused (#446)."""
+    solves: dict[Pair, list[TraceRow]] = {}
     current: Pair | None = None
     for row in read_trace(path):
         parsed = trace_row(path, seed, campaign, row)
         pair = (row["instance"], int(row["periods"]))
-        before = last.get(pair)
-        if before is not None and (
-            pair != current or parsed.t < before.t or math.isnan(before.objective)
-        ):
+        if pair != current and pair in solves:
             raise RefusedError(
-                f"{parsed.name}: a row at {parsed.t:g} s after the solve's closing row, before "
-                f"its last at {before.t:g} s, or apart from its other rows: one solve twice?"
+                f"{parsed.name}: apart from its solve's other rows: one solve twice?"
             )
         current = pair
-        last[pair] = parsed
-        points = traces.setdefault(pair, {}).setdefault(seed, [])
-        if not math.isnan(parsed.objective):
-            points.append((parsed.t, parsed.objective))
-    for pair, closing in last.items():
-        check_closing(closing, campaign.measured[pair][seed])
+        solves.setdefault(pair, []).append(parsed)
+    for pair, rows in solves.items():
+        check_solve_rows(rows)
+        check_closing(rows[-1], campaign.measured[pair][seed])
+        # The closing row is the solve's end and best, at the latest time any row has, so
+        # a progress row stamped after it on the portfolio's clock cannot replace it.
+        closing = rows[-1]
+        points = [(row.t, row.objective) for row in rows[:-1]]
+        if not math.isnan(closing.objective):
+            points.append((max(row.t for row in rows), closing.objective))
+        traces.setdefault(pair, {})[seed] = points
 
 
 def load_traces(items: Sequence[str], campaign: Campaign) -> Traces:
     """cbls's anytime traces (`uc_chped --trace`), one per seed, covering every table row."""
+    if config_value(campaign.search_config, "demand", "ge") != "eq":
+        # z* takes Pedroso's UB and SCIP's, both of the source's `=` model (#446).
+        raise RefusedError(
+            "--trace: cbls solved demand >=, the references the source's ==: "
+            "run uc_chped --demand-equality"
+        )
     traces: Traces = {}
     seen: set[str] = set()
     for item in items:
@@ -697,16 +719,12 @@ def load_traces(items: Sequence[str], campaign: Campaign) -> Traces:
 
 
 def check_equal_time(campaign: Campaign, scip: Scip) -> None:
-    """The primal integrals compare only one model, on every roster row, at one wall budget
-    and thread count (#442, #446)."""
+    """The primal integrals compare only on every roster row, at one wall budget and thread
+    count (#442, #446); `load_traces` holds cbls to the same model."""
     if scip.backend != "driver":
         raise RefusedError(
             f"--trace scores at equal time: the SCIP records are {scip.backend}'s, "
             "with no trajectory; use ucp_valve_scip.py --backend driver"
-        )
-    if config_value(campaign.search_config, "demand", "ge") != "eq":
-        raise RefusedError(
-            "cbls solved demand >=, SCIP the source's ==: run uc_chped --demand-equality"
         )
     threads = config_threads(campaign.search_config)
     if str(scip.threads) != threads:

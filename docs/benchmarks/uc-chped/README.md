@@ -323,9 +323,9 @@ bound. `--trace SEED:CSV`, once per seed (the run's `--trace` file), adds #442's
 equal-time table: the primal integral over [0, budget] and the final primal gap of
 cbls and of each SCIP method's `--backend driver` trajectory, against the row's
 lowest known objective. It uses `benchmarks/common/primal_integral.py` and
-refuses SCIP records at another wall budget or thread count, missing a roster row,
-or beside a cbls run without `--demand-equality`, and a trace whose closing rows
-are not the table's run. The scorer refuses an incomplete roster, a row failing
+refuses a cbls run without `--demand-equality` (every reference solves `=`), SCIP
+records at another wall budget or thread count or missing a roster row, and a
+trace whose closing rows are not the table's run. The scorer refuses an incomplete roster, a row failing
 verification or never verified, mixed commits, search configurations (thread count
 included) or tolerances, and one horizon at two budgets; the module's docstring
 has the full list. `--roster NAME:T,T ...` scores a smoke's subset and says so on
