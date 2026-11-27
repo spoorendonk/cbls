@@ -56,21 +56,24 @@ cbls_scip_traj PROBLEM --threads N --time-limit S --traj-out TRAJ.jsonl \
   N = 1 it goes to the main SCIP as a partial solution. At N > 1 a concurrent
   solver gets only a complete solution (`concsolver_scip.c:636`), so an
   auxiliary single-thread SCIP completes it first with SCIP's `completesol`
-  (`presolving/maxrounds` 0: only the before-presolve heuristics run) and
-  completesol's own best solution goes to the main by variable name. If
+  (`presolving/maxrounds` 0, every other heuristic off) and completesol's best
+  solution goes to the main by variable name. If
   completesol finds none (it skips a start past
   `heuristics/completesol/maxunknownrate`), nothing goes to the main and
   `start_completed` is false.
 - `TRAJ.jsonl`: one `{"mono_s", "solver", "objective"}` per incumbent of the
-  main SCIP (`solver` 0) or a concurrent solver (1..N, numbered as they start
-  logging), all at sub-SCIP depth 0 (`concurrent.c:91`), in `mono_s` order.
+  main SCIP (`solver` 0) or a concurrent solver (1..N), in `mono_s` order. A
+  concurrent solver is a copy made from the main while it sits at `PRESOLVED`,
+  not one at depth 0: `heur_dualval` builds a depth-0 sub-SCIP too. Once the
+  solvers exist the main logs no more, since it only re-adds their solutions.
   `mono_s` is absolute `CLOCK_MONOTONIC`, Python's `time.monotonic()` on Linux,
   so a caller subtracts its own start. Objectives are in the original space
-  (`null` if not finite); take the running best in the result's `sense`
+  (`null` if infinite); take the running best in the result's `sense`
   (solvers interleave, and a shared solution is logged once per solver).
 - `RESULT.json`: `ok`, `scip_retcode`, `status` (PySCIPOpt's names), `sense`,
   `primal_bound`, `dual_bound` (`null` while infinite), `n_sols`, `records`,
   `problem`, `threads`, `time_limit_s`, `wall_s`, `solving_time_s`,
-  `start_mono_s`, `start_completed` (`null` without `--partial-sol`),
+  `start_mono_s`, `start_completed` (`null` without `--partial-sol` or at
+  N = 1, where SCIP's own completesol takes the partial solution),
   `completion_s` (N > 1 with a start), `scip_version`, `scip_git_hash`.
 - `BEST.sol`: the best solution with zeros printed, read by variable name.

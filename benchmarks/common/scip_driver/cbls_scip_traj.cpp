@@ -11,6 +11,7 @@
 // SCIP_COMMIT beside this file (CBLS_SCIP_PINNED_COMMIT).
 
 #include <algorithm>
+#include <atomic>
 #include <cerrno>
 #include <cmath>
 #include <cstdio>
@@ -50,43 +51,38 @@ struct TrajLog {
     std::mutex mu;
     FILE* out = nullptr;
     SCIP* main = nullptr;
+    bool concurrent = false;  // N > 1: SCIPsolveConcurrent
+    std::atomic<bool> solvers_copied{false};
     int next_solver = 1;
     int records = 0;
 };
 
-constexpr int kUnassigned = -1;
+constexpr int kSilent = -1;
 
 struct HandlerData {
     TrajLog* log = nullptr;
-    int solver = kUnassigned;  // 0: the main SCIP; k >= 1: the k-th copy to log
+    int solver = kSilent;  // 0: the main SCIP; k >= 1: the k-th concurrent solver; else silent
 };
 
 HandlerData* handler_data(SCIP_EVENTHDLR* eventhdlr) {
     return reinterpret_cast<HandlerData*>(SCIPeventhdlrGetData(eventhdlr));
 }
 
-// A record is an incumbent of the main SCIP or of a concurrent solver: both sit
-// at sub-SCIP depth 0 (SCIPcreateConcurrent resets a copy's depth,
-// concurrent.c:91). A heuristic's sub-SCIP is deeper, and what it finds reaches
-// depth 0 anyway.
-bool logs_depth(SCIP* scip) {
-    return SCIPgetSubscipDepth(scip) == 0;
-}
-
 // Called from SCIP's C frames, which no exception may cross: printf, not json.
 // Stamped under the lock, so the file is in time order across threads.
-SCIP_RETCODE write_record(TrajLog& log, int solver, double objective) {
+SCIP_RETCODE write_record(TrajLog& log, int solver, std::optional<double> objective) {
     try {
         const std::scoped_lock lock(log.mu);
         const double mono_s = monotonic_seconds();
-        if (std::isfinite(objective)) {
-            std::fprintf(log.out, "{\"mono_s\":%.17g,\"solver\":%d,\"objective\":%.17g}\n", mono_s,
-                         solver, objective);
-        } else {  // %.17g would print inf or nan, which is not JSON
-            std::fprintf(log.out, "{\"mono_s\":%.17g,\"solver\":%d,\"objective\":null}\n", mono_s,
-                         solver);
+        const int n =
+            objective.has_value()
+                ? std::fprintf(log.out, "{\"mono_s\":%.17g,\"solver\":%d,\"objective\":%.17g}\n",
+                               mono_s, solver, *objective)
+                : std::fprintf(log.out, "{\"mono_s\":%.17g,\"solver\":%d,\"objective\":null}\n",
+                               mono_s, solver);
+        if (n < 0 || std::fflush(log.out) != 0) {
+            return SCIP_WRITEERROR;
         }
-        std::fflush(log.out);
         ++log.records;
     } catch (...) {
         return SCIP_ERROR;
@@ -96,8 +92,24 @@ SCIP_RETCODE write_record(TrajLog& log, int solver, double objective) {
 
 SCIP_RETCODE include_traj_handler(SCIP* scip, TrajLog* log, int solver);
 
+// A copy logs only if it is a concurrent solver: copied from the main while the
+// main sits at PRESOLVED, which is SCIPsolveConcurrent setting its solvers up
+// (scip_solve.c:3269 on). Depth cannot tell: a concurrent solver's is reset to
+// 0 (concurrent.c:91), and dualval builds its sub-SCIP at depth 0 too.
 SCIP_DECL_EVENTCOPY(event_copy_traj) {
-    SCIP_CALL(include_traj_handler(scip, handler_data(eventhdlr)->log, kUnassigned));
+    const HandlerData* source = handler_data(eventhdlr);
+    TrajLog* log = source->log;
+    int solver = kSilent;
+    if (source->solver == 0 && log->concurrent && SCIPgetStage(log->main) == SCIP_STAGE_PRESOLVED) {
+        try {
+            const std::scoped_lock lock(log->mu);
+            solver = log->next_solver++;
+            log->solvers_copied = true;
+        } catch (...) {
+            return SCIP_ERROR;
+        }
+    }
+    SCIP_CALL(include_traj_handler(scip, log, solver));
     return SCIP_OKAY;
 }
 
@@ -109,26 +121,15 @@ SCIP_DECL_EVENTFREE(event_free_traj) {
 }
 
 // Caught at INIT, not INITSOL, so solutions found while presolving count too.
-// Numbered here, not at copy time, so only the copies that log take an id: with
-// presolving first, heuristic sub-SCIPs are copied before the concurrent solvers.
 SCIP_DECL_EVENTINIT(event_init_traj) {
-    if (logs_depth(scip)) {
-        HandlerData* data = handler_data(eventhdlr);
-        if (data->solver == kUnassigned) {
-            try {
-                const std::scoped_lock lock(data->log->mu);
-                data->solver = data->log->next_solver++;
-            } catch (...) {
-                return SCIP_ERROR;
-            }
-        }
+    if (handler_data(eventhdlr)->solver != kSilent) {
         SCIP_CALL(SCIPcatchEvent(scip, SCIP_EVENTTYPE_BESTSOLFOUND, eventhdlr, nullptr, nullptr));
     }
     return SCIP_OKAY;
 }
 
 SCIP_DECL_EVENTEXIT(event_exit_traj) {
-    if (logs_depth(scip)) {
+    if (handler_data(eventhdlr)->solver != kSilent) {
         SCIP_CALL(SCIPdropEvent(scip, SCIP_EVENTTYPE_BESTSOLFOUND, eventhdlr, nullptr, -1));
     }
     return SCIP_OKAY;
@@ -137,14 +138,21 @@ SCIP_DECL_EVENTEXIT(event_exit_traj) {
 SCIP_DECL_EVENTEXEC(event_exec_traj) {
     (void)eventdata;
     const HandlerData* data = handler_data(eventhdlr);
-    SCIP_SOL* sol = SCIPeventGetSol(event);
+    SCIP* main = data->log->main;
+    // Once the concurrent solvers exist the main stays silent: after their solve
+    // it re-adds their solutions (concsolver_scip.c:925), already logged.
+    if (scip == main && data->log->solvers_copied) {
+        return SCIP_OKAY;
+    }
     // A copy's original space is the main's transformed space (the concurrent
     // solvers copy the transformed problem), so its objective is retransformed.
-    double objective = SCIPgetSolOrigObj(scip, sol);
-    if (scip != data->log->main) {
-        objective = SCIPretransformObj(data->log->main, objective);
+    double objective = SCIPgetSolOrigObj(scip, SCIPeventGetSol(event));
+    if (scip != main) {
+        objective = SCIPretransformObj(main, objective);
     }
-    return write_record(*data->log, data->solver, objective);
+    const bool finite = std::isfinite(objective) && !SCIPisInfinity(main, std::abs(objective));
+    return write_record(*data->log, data->solver,
+                        finite ? std::optional<double>(objective) : std::nullopt);
 }
 
 SCIP_RETCODE include_traj_handler(SCIP* scip, TrajLog* log, int solver) {
@@ -311,12 +319,11 @@ SCIP_RETCODE add_partial_sol(SCIP* scip, const std::string& path) {
 // A concurrent solver gets only the main's complete best solution
 // (concsolver_scip.c:636), never a partial one, and the main never runs
 // completesol at N > 1. So the start is completed first by SCIP's own
-// completesol: an auxiliary single-thread SCIP runs only its before-presolve
-// heuristics (presolving/maxrounds 0), and completesol's best solution, matched
-// by variable name, goes to the main as a complete solution (#442). Only
-// completesol's: trivial, feasjump and the like run there too, and completesol
-// skips a start past maxunknownrate with only a warning, so "a solution exists"
-// does not mean "the start was completed".
+// completesol: an auxiliary single-thread SCIP, the other before-presolve
+// heuristics off, runs it before presolving (presolving/maxrounds 0), and its best solution,
+// matched by variable name, goes to the main as a complete solution (#442).
+// Checked by heuristic: completesol skips a start past maxunknownrate with only
+// a warning, so "a solution exists" does not mean "the start was completed".
 SCIP_SOL* completesol_best(SCIP* aux) {
     const SCIP_HEUR* completesol = SCIPfindHeur(aux, "completesol");
     SCIP_SOL** sols = SCIPgetSols(aux);  // best first
@@ -329,6 +336,24 @@ SCIP_SOL* completesol_best(SCIP* aux) {
     return nullptr;
 }
 
+// Every other before-presolve heuristic's freq to -1: one storing the same
+// point first would leave completesol's copy dropped as a duplicate and the
+// start unreported. Only those, since completesol's sub-MIP copies these
+// params and needs its node heuristics. Not SCIPsetHeuristics(OFF): it first
+// resets heuristics/* to defaults, maxunknownrate from --set too (paramset.c:3092).
+SCIP_RETCODE only_completesol_before_presolve(SCIP* aux) {
+    SCIP_HEUR** heurs = SCIPgetHeurs(aux);
+    const int nheurs = SCIPgetNHeurs(aux);
+    for (int i = 0; i < nheurs; ++i) {
+        const std::string name = SCIPheurGetName(heurs[i]);
+        if (name != "completesol" &&
+            (SCIPheurGetTimingmask(heurs[i]) & SCIP_HEURTIMING_BEFOREPRESOL) != 0) {
+            SCIP_CALL(SCIPsetIntParam(aux, ("heuristics/" + name + "/freq").c_str(), -1));
+        }
+    }
+    return SCIP_OKAY;
+}
+
 SCIP_RETCODE complete_start(SCIP* main, const Args& a, double deadline, bool* completed) {
     *completed = false;
     SCIP* aux = nullptr;
@@ -339,6 +364,9 @@ SCIP_RETCODE complete_start(SCIP* main, const Args& a, double deadline, bool* co
     }
     if (rc == SCIP_OKAY) {
         rc = SCIPsetIntParam(aux, "presolving/maxrounds", 0);
+    }
+    if (rc == SCIP_OKAY) {
+        rc = only_completesol_before_presolve(aux);
     }
     if (rc == SCIP_OKAY) {
         rc = SCIPsetRealParam(aux, "limits/time", std::max(deadline - monotonic_seconds(), 0.0));
@@ -464,6 +492,7 @@ int run_main(int argc, char** argv) {
     SCIP_RETCODE rc = SCIPcreate(&scip);
     if (rc == SCIP_OKAY) {
         log.main = scip;
+        log.concurrent = args->threads > 1;
         rc = run(scip, *args, log, start, result);
     }
     if (scip != nullptr) {
