@@ -14,6 +14,7 @@
 #include "data.h"
 #include "greedy_init.h"
 #include "trace_recorder.h"
+#include "uc_hook.h"
 #include "uc_model.h"
 #include "verify_uc_chped.h"
 
@@ -100,6 +101,11 @@ struct Args {
     // Demand as `=` (Pedroso 2014) instead of the published `>=` (#442): a
     // different model, so not the published protocol.
     bool demand_equality = false;
+    // The UC inner solver (uc_hook.h, #445): "" off, "ed" dispatch only,
+    // "full" dispatch plus commitment search. Opt-in, never published.
+    std::string uc_hook;
+    // Dump the final assignment (y, p) as JSON for the external checker.
+    std::string solution_out;
     bool commit_set = false;
     std::string commit_sha = "unknown";
     std::string out_csv;    // default: <inst_dir>/comparison.csv
@@ -152,6 +158,14 @@ void check_numeric_flags(Args& a) {
         a.search_config += (a.search_config.empty() ? "" : ";");
         a.search_config += "demand=eq";
     }
+    if (!a.uc_hook.empty()) {
+        if (a.uc_hook != "ed" && a.uc_hook != "full") {
+            std::fprintf(stderr, "--uc-hook must be ed or full (got %s)\n", a.uc_hook.c_str());
+            std::exit(2);
+        }
+        a.search_config += (a.search_config.empty() ? "" : ";");
+        a.search_config += "uc_hook=" + a.uc_hook;
+    }
     // NaN, 0 or negative fails: solve() would return having searched nothing,
     // a full-looking table of empty results; isfinite too, as "inf" would never
     // terminate. The wall-clock-free arm (#136) is the one way past: solve()
@@ -192,6 +206,9 @@ const char* non_published_protocol(const Args& a) {
     }
     if (a.demand_equality) {
         return "--demand-equality";
+    }
+    if (!a.uc_hook.empty()) {
+        return "--uc-hook";
     }
     const char* arm =
         cbls::bench::first_non_default_search_flag(a.search, published_search_flags());
@@ -312,6 +329,10 @@ Args parse_args(int argc, char** argv) {
             a.out_csv = v;
         } else if (c.value_flag("--trace", v)) {
             a.trace_csv = v;
+        } else if (c.value_flag("--uc-hook", v)) {
+            a.uc_hook = v;
+        } else if (c.value_flag("--solution-out", v)) {
+            a.solution_out = v;
         } else if (cbls::bench::match_search_flag(c, s, a.search)) {
             // A search-configuration flag (#136); the table, the parse and the
             // recorded spelling all live in benchmarks/common/search_config_flags.h.
@@ -577,7 +598,19 @@ cbls::SearchResult solve_instance(const Args& args, const cbls::uc_chped::UCInst
         cbls::fj_nl_initialize(ucm.model, init_vm, 200, &init_rng, init_limit);
     }
 
-    cbls::FloatIntensifyHook hook;
+    const bool uc_hook = !args.uc_hook.empty();
+    const bool uc_full = args.uc_hook == "full";
+    if (uc_hook) {
+        // One pass over the warm start before the search: the greedy start
+        // re-dispatched (and, under "full", recommitted).
+        cbls::uc_chped::UCHook init_hook(inst, ucm, uc_full, args.seed);
+        cbls::ViolationManager init_vm(ucm.model);
+        init_hook.solve(ucm.model, init_vm);
+    }
+    cbls::FloatIntensifyHook float_hook;
+    cbls::uc_chped::UCHook uc_hook_1(inst, ucm, uc_full, args.seed + 1);
+    cbls::InnerSolverHook& hook = uc_hook ? static_cast<cbls::InnerSolverHook&>(uc_hook_1)
+                                          : static_cast<cbls::InnerSolverHook&>(float_hook);
     cbls::LNS lns(0.3);
     cbls::SearchConfig cfg;
     cfg.skip_init = true;
@@ -597,7 +630,13 @@ cbls::SearchResult solve_instance(const Args& args, const cbls::uc_chped::UCInst
     // (skip_init keeps that start). One hook and one LNS per worker -- the search
     // locks neither, so a shared instance would be a data race (pool.h).
     std::function<std::shared_ptr<cbls::InnerSolverHook>(cbls::Model&)> hook_factory;
-    if (args.search.float_hook) {
+    if (uc_hook) {
+        auto counter = std::make_shared<std::atomic<uint64_t>>(args.seed * 1000 + 7);
+        hook_factory = [&inst, &ucm, uc_full, counter](cbls::Model&) {
+            return std::make_shared<cbls::uc_chped::UCHook>(inst, ucm, uc_full,
+                                                            counter->fetch_add(1));
+        };
+    } else if (args.search.float_hook) {
         hook_factory = [](cbls::Model&) { return std::make_shared<cbls::FloatIntensifyHook>(); };
     }
     std::function<std::shared_ptr<cbls::LNS>()> lns_factory;
@@ -736,6 +775,29 @@ void run_one(std::ostream& csv, std::ofstream& trace, const Args& args,
     print_result_line(result, scored);
 
     const bool withhold = verification_withholds(args, ucm, inst, result, row, tally);
+    if (!args.solution_out.empty() && result.feasible) {
+        // One JSON line per row, for the external checker (#445).
+        std::ofstream sol(args.solution_out, std::ios::app);
+        sol << "{\"instance\":\"" << instance_name << "\",\"periods\":" << horizon
+            << ",\"seed\":" << args.seed << ",\"objective\":" << num(result.objective, 12)
+            << ",\"y\":[";
+        for (int u = 0; u < inst.n_units; ++u) {
+            sol << (u ? "," : "") << "[";
+            for (int t = 0; t < horizon; ++t) {
+                sol << (t ? "," : "") << (ucm.model.var(-(ucm.y[u][t] + 1)).value > 0.5 ? 1 : 0);
+            }
+            sol << "]";
+        }
+        sol << "],\"p\":[";
+        for (int u = 0; u < inst.n_units; ++u) {
+            sol << (u ? "," : "") << "[";
+            for (int t = 0; t < horizon; ++t) {
+                sol << (t ? "," : "") << num(ucm.model.var(-(ucm.p[u][t] + 1)).value, 17);
+            }
+            sol << "]";
+        }
+        sol << "]}\n";
+    }
     if (scored.have_objective && !withhold) {
         row.objective = result.objective;
         row.gap_pct = scored.gap;
@@ -756,6 +818,14 @@ void run_one(std::ostream& csv, std::ofstream& trace, const Args& args,
                 result.feasible ? "feasible" : "INFEASIBLE",
                 static_cast<long>(ucm.model.num_vars()), static_cast<long>(ucm.model.num_nodes()),
                 static_cast<long>(result.iterations));
+    if (!args.uc_hook.empty()) {
+        auto& st = cbls::uc_chped::UCHookStats::get();
+        std::printf("    uc-hook: %ld calls, %ld skipped, %ld improved, %.2f s\n",
+                    static_cast<long>(st.calls.exchange(0)),
+                    static_cast<long>(st.skipped.exchange(0)),
+                    static_cast<long>(st.improvements.exchange(0)),
+                    static_cast<double>(st.nanos.exchange(0)) * 1e-9);
+    }
 
     write_row(csv, row);
     csv.flush();
