@@ -80,8 +80,18 @@ Source: <http://www.dcc.fc.up.pt/~jpp/code/valve/ucp_valve.py>, 2013-12-09,
    `--time-limit` counted on `time.monotonic()` from the start, writing and
    reading included. The record carries `backend`, `threads`, `time_limit_s`
    (not `cpu_limit_s`), `wall_s` (not `cpu_s`), `scip_git_hash` and
-   `trajectory`: `[[wall_s, objective], ...]`, each pwl iteration's true-cost UB
-   or each exact incumbent's SCIP objective. Strict mode's `numerics/feastol`
+   `trajectory`: `[[wall_s, objective], ...]`, the running best, strictly
+   falling. For pwl it is the true-cost UB at each iteration's end that beats
+   every earlier one; each iteration also records `start_completed` (N > 1;
+   on ucp13 T=1 completesol mostly stops at its default node limit, at N = 1
+   too, and the start is then lost). For exact
+   it is SCIP's objective at each improving incumbent, an upper bound on that
+   incumbent's true cost (the fuel and valve terms are `>=` relaxations), so
+   the final `ub` may sit below the last point. Each solve's `--time-limit` is
+   what is left just before the spawn; the driver is killed 60 s past it. A
+   point past `time_limit_s` is a real time, which a score over
+   `[0, time_limit_s]` ignores. A failed run keeps its work directory, named on
+   stderr. Strict mode's `numerics/feastol`
    1e-9 also sets `numerics/sumepsilon` 1e-9: SCIP 11 refuses sumepsilon above
    feastol (`set.c:681`), and SCIP 10 did not check.
 

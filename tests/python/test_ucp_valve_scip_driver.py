@@ -41,10 +41,19 @@ def test_driver_trajectory_ends_at_the_runs_bound_within_its_limit(
     assert SCIP_COMMIT.read_text().strip().startswith(r["scip_git_hash"])
     assert r["check"] == []
     times = [t for t, _ in r["trajectory"]]
+    objs = [obj for _, obj in r["trajectory"]]
     assert times, "no incumbent logged"
     assert times == sorted(times)
     assert times[0] >= 0.0 and times[-1] <= r["wall_s"] <= LIMIT_S
-    # exact logs SCIP's incumbents, so its running minimum ends at SCIP's primal
-    # bound; pwl logs each iteration's true-cost UB, whose best is the result's.
-    final = r["scip_objective"] if method == "exact" else r["ub"]
-    assert min(obj for _, obj in r["trajectory"]) == pytest.approx(final, rel=1e-12)
+    assert all(a > b for a, b in zip(objs, objs[1:], strict=False)), "not the running best"
+    if method == "exact":
+        # SCIP's objective, an upper bound on each incumbent's true cost.
+        assert objs[-1] == pytest.approx(r["scip_objective"], rel=1e-12)
+        assert objs[-1] >= r["ub"] - 1e-6 * abs(r["ub"])
+    else:
+        assert objs[-1] == pytest.approx(r["ub"], rel=1e-12)
+        # Only a start completed by the driver (N > 1) is reported; the first
+        # iteration has none. completesol may fail at SCIP's defaults (False).
+        completed = [it["start_completed"] for it in r["iterations"] if "ub" in it]
+        assert completed[0] is None
+        assert all(isinstance(c, bool) if threads > 1 else c is None for c in completed[1:])
