@@ -20,12 +20,14 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <benchmarks/common/published_guard.h>
 #include <benchmarks/common/runner_args.h>
 #include <benchmarks/common/runner_io.h>
 #include <benchmarks/common/search_config_flags.h>
 #include <benchmarks/mipfeas/worker_accounting.h>
 #include <cbls/cbls.h>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -585,7 +587,8 @@ void write_reference_rows(std::ostream& csv, const cbls::uc_chped::UCInstance& b
 /// independent of how it is scored or printed.
 cbls::SearchResult solve_instance(const Args& args, const cbls::uc_chped::UCInstance& inst,
                                   cbls::uc_chped::UCModel& ucm, double tlim,
-                                  cbls::SolveCallback* callback) {
+                                  cbls::uc_chped::TraceRecorder* recorder, double* init_out) {
+    cbls::SolveCallback* callback = recorder;
     // Greedy initialization + short FJ polish.
     cbls::uc_chped::greedy_uc_initialize(ucm.model, inst, ucm);
     {
@@ -600,13 +603,28 @@ cbls::SearchResult solve_instance(const Args& args, const cbls::uc_chped::UCInst
 
     const bool uc_hook = !args.uc_hook.empty();
     const bool uc_full = args.uc_hook == "full";
+    double init_seconds = 0.0;
     if (uc_hook) {
         // One pass over the warm start before the search: the greedy start
-        // re-dispatched (and, under "full", recommitted).
+        // re-dispatched (and, under "full", recommitted). Its time comes out of
+        // the budget (and shifts the trace), capped at a quarter of it.
+        const auto t0 = std::chrono::steady_clock::now();
+        struct Deadline {
+            std::chrono::steady_clock::time_point at;
+            [[nodiscard]] bool requested() const { return std::chrono::steady_clock::now() >= at; }
+        };
+        const Deadline dl{t0 + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                                   std::chrono::duration<double>(0.25 * tlim))};
         cbls::uc_chped::UCHook init_hook(inst, ucm, uc_full, args.seed);
         cbls::ViolationManager init_vm(ucm.model);
-        init_hook.solve(ucm.model, init_vm);
+        init_hook.solve(ucm.model, init_vm, {}, cbls::StopRef(dl));
+        init_seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        if (recorder != nullptr) {
+            recorder->time_offset = init_seconds;
+        }
+        tlim = std::max(0.01, tlim - init_seconds);
     }
+    *init_out = init_seconds;
     cbls::FloatIntensifyHook float_hook;
     cbls::uc_chped::UCHook uc_hook_1(inst, ucm, uc_full, args.seed + 1);
     cbls::InnerSolverHook& hook = uc_hook ? static_cast<cbls::InnerSolverHook&>(uc_hook_1)
@@ -752,8 +770,13 @@ void run_one(std::ostream& csv, std::ofstream& trace, const Args& args,
     // Trace rows carry the horizon too: one row per (instance, horizon), so the
     // instance alone cannot key a trace row to its solve (#147).
     cbls::uc_chped::TraceRecorder recorder(trace, instance_name, horizon, tlim, args.commit_sha);
-    const cbls::SearchResult result =
-        solve_instance(args, inst, ucm, tlim, trace.is_open() ? &recorder : nullptr);
+    double init_seconds = 0.0;
+    cbls::SearchResult result =
+        solve_instance(args, inst, ucm, tlim, trace.is_open() ? &recorder : nullptr, &init_seconds);
+    // The --uc-hook warm-start pass ran inside the budget (#445): the row's
+    // time is the whole budget spent; record_final adds the offset itself.
+    const double solve_seconds = result.time_seconds;
+    result.time_seconds += init_seconds;
     const bool lost_workers = cbls::mipfeas::lost_workers(result, args.threads);
     if (lost_workers) {
         std::fputs(cbls::mipfeas::lost_workers_message(inst.name, args.threads, result).c_str(),
@@ -763,7 +786,9 @@ void run_one(std::ostream& csv, std::ofstream& trace, const Args& args,
     // The closing row: every started (instance, horizon) appears once at its
     // final time (TraceRecorder::record_final, #147).
     if (trace.is_open()) {
-        recorder.record_final(result);
+        cbls::SearchResult for_trace = result;
+        for_trace.time_seconds = solve_seconds;
+        recorder.record_final(for_trace);
     }
     ++tally.solved;
     if (result.feasible) {

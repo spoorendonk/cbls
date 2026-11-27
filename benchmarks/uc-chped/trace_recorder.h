@@ -118,11 +118,15 @@ public:
         write_row(result.time_seconds, last_batches_, objective, /*new_best=*/false);
     }
 
+    /// Seconds spent inside the budget before solve() started its clock (the
+    /// --uc-hook warm-start pass, #445); added to every row's time.
+    double time_offset = 0.0;
+
 private:
     void write_row(double time_seconds, int64_t batches, const std::string& objective,
                    bool new_best) {
         out_ << instance_ << "," << periods_ << "," << trace_num(time_limit_s_) << ","
-             << trace_num(time_seconds) << ",";
+             << trace_num(time_seconds + time_offset) << ",";
         if (batches >= 0) {
             out_ << batches;
         }
