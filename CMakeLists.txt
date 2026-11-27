@@ -400,6 +400,21 @@ if(CBLS_BUILD_BENCHMARKS)
     target_link_libraries(cbls_cvrp PRIVATE cbls_lib)
     cbls_enable_warnings(cbls_cvrp)
     target_include_directories(cbls_cvrp PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${json_SOURCE_DIR}/include)
+
+    # SCIP's incumbent trajectory on a pinned SCIP build (#442,
+    # benchmarks/common/scip_driver/README.md). Off unless CBLS_SCIP_DIR names
+    # that build's prefix, so the gate needs no SCIP.
+    set(CBLS_SCIP_DIR "" CACHE PATH "Prefix of the pinned SCIP build for cbls_scip_traj (empty: off)")
+    if(CBLS_SCIP_DIR)
+        find_package(SCIP CONFIG REQUIRED PATHS "${CBLS_SCIP_DIR}" NO_DEFAULT_PATH)
+        file(STRINGS benchmarks/common/scip_driver/SCIP_COMMIT CBLS_SCIP_PINNED_COMMIT LIMIT_COUNT 1)
+        add_executable(cbls_scip_traj benchmarks/common/scip_driver/cbls_scip_traj.cpp)
+        target_link_libraries(cbls_scip_traj PRIVATE SCIP::SCIP)
+        cbls_enable_warnings(cbls_scip_traj)
+        target_include_directories(cbls_scip_traj PRIVATE ${json_SOURCE_DIR}/include)
+        target_compile_definitions(cbls_scip_traj PRIVATE
+            CBLS_SCIP_PINNED_COMMIT="${CBLS_SCIP_PINNED_COMMIT}")
+    endif()
 endif()
 
 # Python bindings (optional)
