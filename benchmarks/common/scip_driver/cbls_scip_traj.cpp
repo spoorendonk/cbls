@@ -146,11 +146,12 @@ SCIP_DECL_EVENTEXEC(event_exec_traj) {
     }
     // A copy's original space is the main's transformed space (the concurrent
     // solvers copy the transformed problem), so its objective is retransformed.
+    // Infinity is tested in the copy's own space: retransforming scales it.
     double objective = SCIPgetSolOrigObj(scip, SCIPeventGetSol(event));
+    const bool finite = std::isfinite(objective) && !SCIPisInfinity(scip, std::abs(objective));
     if (scip != main) {
         objective = SCIPretransformObj(main, objective);
     }
-    const bool finite = std::isfinite(objective) && !SCIPisInfinity(main, std::abs(objective));
     return write_record(*data->log, data->solver,
                         finite ? std::optional<double>(objective) : std::nullopt);
 }
@@ -338,9 +339,10 @@ SCIP_SOL* completesol_best(SCIP* aux) {
 
 // Every other before-presolve heuristic's freq to -1: one storing the same
 // point first would leave completesol's copy dropped as a duplicate and the
-// start unreported. Only those, since completesol's sub-MIP copies these
-// params and needs its node heuristics. Not SCIPsetHeuristics(OFF): it first
-// resets heuristics/* to defaults, maxunknownrate from --set too (paramset.c:3092).
+// start unreported. Only those: completesol's sub-MIP copies these params and
+// keeps every other heuristic (these six or so lose their node runs too).
+// Not SCIPsetHeuristics(OFF): it first resets heuristics/* to defaults,
+// maxunknownrate from --set too (paramset.c:3092).
 SCIP_RETCODE only_completesol_before_presolve(SCIP* aux) {
     SCIP_HEUR** heurs = SCIPgetHeurs(aux);
     const int nheurs = SCIPgetNHeurs(aux);

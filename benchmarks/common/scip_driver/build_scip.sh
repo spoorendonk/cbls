@@ -38,11 +38,14 @@ EOF
 
 # fetch URL FILE SHA256 DIR: download and unpack once; refuse an archive whose
 # hash is not the one the verified build fetched (2026-11-27). Renamed only once
-# complete, so a failed download is fetched again.
+# complete, so a failed download or unpack is redone. DIR is the archive's top.
 fetch() {
   [ -f "$2" ] || { wget -q "$1" -O "$2.part" && mv "$2.part" "$2"; }
   echo "$3  $2" | sha256sum -c --quiet - || { echo "$2: sha256 mismatch" >&2; exit 1; }
-  [ -d "$4" ] || tar -xf "$2"
+  if [ ! -d "$4" ]; then
+    rm -rf "$4.part" && mkdir "$4.part" && tar -xf "$2" -C "$4.part"
+    mv "$4.part/$4" "$4" && rmdir "$4.part"
+  fi
 }
 
 if [ ! -f "$PREFIX/lib/libmetis.a" ]; then
@@ -63,7 +66,8 @@ fi
 if [ ! -f "$PREFIX/lib/pkgconfig/coinmumps.pc" ]; then
   [ -d ThirdParty-Mumps ] || git clone -q https://github.com/coin-or-tools/ThirdParty-Mumps.git
   (cd ThirdParty-Mumps && git checkout -q $MUMPS_TP_COMMIT
-   if [ ! -d MUMPS ]; then  # get.Mumps's steps from a checksummed archive; it checks none
+   if [ ! -f MUMPS/.patched ]; then  # get.Mumps's steps, checksummed; it checks none
+     rm -rf MUMPS
      grep -qx "mumps_ver=$MUMPS_VERSION" get.Mumps || { echo "get.Mumps is not MUMPS $MUMPS_VERSION" >&2; exit 1; }
      fetch https://coin-or-tools.github.io/ThirdParty-Mumps/MUMPS_$MUMPS_VERSION.tar.gz MUMPS_$MUMPS_VERSION.tar.gz \
        652d28a91c7ff886b4a5ea122df4e5d014bdb2eba0545e581be4d8fa50c0ff19 MUMPS_$MUMPS_VERSION
@@ -71,6 +75,7 @@ if [ ! -f "$PREFIX/lib/pkgconfig/coinmumps.pc" ]; then
      patch -p0 < mumps_mpi.patch
      mv MUMPS/libseq/mpi.h MUMPS/libseq/mumps_mpi.h
      patch -p0 < mumps_call.patch
+     touch MUMPS/.patched
    fi
    ./configure --prefix="$PREFIX"
    make -j1 && make install)   # serial: MUMPS's Fortran module dependencies race under parallel make
