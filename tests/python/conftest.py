@@ -152,6 +152,32 @@ if _ignored_benchmark_tests and os.environ.get("CBLS_REQUIRE_BENCHMARKS") == "1"
     )
 
 
+# `cbls_scip_traj` (#442) is built only with -DCBLS_SCIP_DIR, which the gate does not
+# set, so a test asking for the `scip_driver` fixture skips without it -- named in the
+# summary, and an error under CBLS_REQUIRE_SCIP_DRIVER=1. Not CBLS_REQUIRE_BENCHMARKS:
+# the ```test fence sets that one.
+_skipped_scip_driver_tests: list[str] = []
+
+
+def scip_driver_path() -> Path:
+    """Where the driver is looked for: $CBLS_SCIP_DRIVER, else the root build's."""
+    default = Path(__file__).resolve().parents[2] / "build" / "cbls_scip_traj"
+    return Path(os.environ.get("CBLS_SCIP_DRIVER", str(default)))
+
+
+@pytest.fixture
+def scip_driver(request: pytest.FixtureRequest) -> Path:
+    """The built `cbls_scip_traj`, or a skip (an error under CBLS_REQUIRE_SCIP_DRIVER=1)."""
+    path = scip_driver_path()
+    if os.access(path, os.X_OK):
+        return path
+    why = f"no cbls_scip_traj at {path} (benchmarks/common/scip_driver/README.md)"
+    if os.environ.get("CBLS_REQUIRE_SCIP_DRIVER") == "1":
+        pytest.fail(f"CBLS_REQUIRE_SCIP_DRIVER=1, but {why}")
+    _skipped_scip_driver_tests.append(request.node.nodeid)
+    pytest.skip(why)
+
+
 def pytest_terminal_summary(terminalreporter: pytest.TerminalReporter) -> None:
     """Announce every silently skipped suite so a short run cannot look complete.
 
@@ -174,6 +200,14 @@ def pytest_terminal_summary(terminalreporter: pytest.TerminalReporter) -> None:
             f"in {len(_ignored_benchmark_tests)} file(s): "
             f"{', '.join(_ignored_benchmark_tests)}. "
             "Set CBLS_REQUIRE_BENCHMARKS=1 to make this an error.",
+            yellow=True,
+            bold=True,
+        )
+    if _skipped_scip_driver_tests:
+        terminalreporter.write_line(
+            f"WARNING: cbls_scip_traj not built — skipped {len(_skipped_scip_driver_tests)} "
+            f"test(s) needing it (looked at {scip_driver_path()}). "
+            "Set CBLS_REQUIRE_SCIP_DRIVER=1 to make this an error.",
             yellow=True,
             bold=True,
         )

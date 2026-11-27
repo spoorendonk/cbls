@@ -31,6 +31,13 @@ true `|e*sin(f*(p_min - p))|` term, solved by SCIP's spatial branch-and-bound.
 Both write one JSON line per solve. The deviations from ucp_valve.py are listed
 in README.md beside this file.
 
+`--backend pyscipopt` (the default) solves in process on the PySCIPOpt wheel's
+SCIP, single-threaded, on a process-CPU budget. `--backend driver` (#442) keeps
+the wheel as the modeller only: each MIP or MINLP goes out as CIP to
+`cbls_scip_traj` (`benchmarks/common/scip_driver/`), the pinned SCIP 11 at
+`--threads` N, on a wall budget, and the record gains an incumbent trajectory
+`[[wall_s, ub], ...]` for a primal integral.
+
 Coefficient names follow ucp_valve.py: the valve term is `|e*sin(f*(p_min-p))|`,
 which cbls's data calls `|d*sin(e*(P_min-P))|`.
 
@@ -46,8 +53,11 @@ import importlib.util
 import json
 import math
 import os
+import subprocess
 import sys
+import tempfile
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -386,26 +396,35 @@ def ucp_exact_obj(m: Any, v: UcpVars, pr: Problem) -> None:
 # ---------------------------------------------------------------------------
 
 
-def true_cost(m: Any, v: UcpVars, pr: Problem) -> float:
+#: A solution as variable name -> value: what both backends hand back (#442).
+Values = dict[str, float]
+
+
+def solution_values(m: Any) -> Values:
+    """The in-process model's best solution, by variable name."""
+    return {var.name: float(m.getVal(var)) for var in m.getVars()}
+
+
+def true_cost(x: Values, v: UcpVars, pr: Problem) -> float:
     """The solution's startup cost plus its dispatch priced at the true fuel cost."""
     fixed = sum(
-        m.getVal(v.startup[u, t]) for u in range(len(pr.units)) for t in range(1, pr.horizon + 1)
+        x[v.startup[u, t].name] for u in range(len(pr.units)) for t in range(1, pr.horizon + 1)
     )
     variable = sum(
-        cost(unit, m.getVal(v.p[u, t]))
+        cost(unit, x[v.p[u, t].name])
         for u, unit in enumerate(pr.units)
         for t in range(1, pr.horizon + 1)
-        if m.getVal(v.y[u, t]) > 0.5
+        if x[v.y[u, t].name] > 0.5
     )
     return float(fixed + variable)
 
 
-def check_solution(m: Any, v: UcpVars, pr: Problem, tol: float = 1.0e-6) -> list[str]:
+def check_solution(x: Values, v: UcpVars, pr: Problem, tol: float = 1.0e-6) -> list[str]:
     """Demand, reserve and dispatch limits, re-checked outside SCIP. Empty when it passes."""
     errors: list[str] = []
     for t in range(1, pr.horizon + 1):
-        on = [m.getVal(v.y[u, t]) > 0.5 for u in range(len(pr.units))]
-        p = [m.getVal(v.p[u, t]) for u in range(len(pr.units))]
+        on = [x[v.y[u, t].name] > 0.5 for u in range(len(pr.units))]
+        p = [x[v.p[u, t].name] for u in range(len(pr.units))]
         dem = pr.dem[t - 1]
         if abs(sum(p) - dem) > tol * max(1.0, dem):
             errors.append(f"t={t}: dispatch {sum(p):.6f} != demand {dem}")
@@ -439,13 +458,155 @@ def _relative_gap(lb: float | None, ub: float | None) -> float | None:
     return (ub - lb) / lb
 
 
-def _base_params(m: Any, cpu_left: float) -> None:
-    m.setIntParam("timing/clocktype", 2)  # wall, as ucp_valve.py's Gurobi; README item 4 (#441)
+Params = dict[str, float]
+
+
+def _base_params() -> Params:
+    # Wall, as ucp_valve.py's Gurobi; README item 4 (#441). Threads and the time
+    # limit are the backend's.
+    return {"timing/clocktype": 2}
+
+
+@dataclass
+class Solve:
+    """One SCIP solve as both backends report it."""
+
+    status: str  # PySCIPOpt's status names, which the driver writes too
+    n_sols: int
+    lb: float | None
+    objective: float | None  # SCIP's, in the original space
+    x: Values | None  # the best solution, None without one
+    #: Driver only: (seconds since the run's start, SCIP objective) per incumbent.
+    trajectory: list[tuple[float, float]] = field(default_factory=list)
+
+
+#: A backend's solve: model, parameters, a partial start or None, the time left.
+SolveFn = Callable[[Any, Params, Values | None, float], Solve]
+
+
+def solve_in_process(m: Any, params: Params, start: Values | None, time_left: float) -> Solve:
+    """The wheel's SCIP, single-threaded, as #441's column ran it."""
+    for name, value in params.items():
+        m.setParam(name, value)
     m.setIntParam("parallel/maxnthreads", 1)
-    m.setRealParam("limits/time", max(cpu_left, 0.0))
+    m.setRealParam("limits/time", max(time_left, 0.0))
+    if start is not None:
+        by_name = {var.name: var for var in m.getVars()}
+        sol = m.createPartialSol()
+        for name, value in start.items():
+            m.setSolVal(sol, by_name[name], value)
+        m.addSol(sol)
+    m.optimize()
+    n_sols = int(m.getNSols())
+    return Solve(
+        status=str(m.getStatus()),
+        n_sols=n_sols,
+        lb=_finite_bound(m),
+        objective=float(m.getObjVal()) if n_sols else None,
+        x=solution_values(m) if n_sols else None,
+    )
 
 
-Incumbent = dict[str, dict[tuple[int, int], float]]
+#: SCIP's default `numerics/sumepsilon`.
+SCIP_SUMEPSILON = 1.0e-6
+#: The driver's pinned SCIP commit; a libscip reporting anything else is refused.
+SCIP_COMMIT_FILE = os.path.join(
+    os.path.dirname(__file__), "..", "..", "common", "scip_driver", "SCIP_COMMIT"
+)
+#: Where the root CMakeLists.txt puts the driver when built with -DCBLS_SCIP_DIR.
+DEFAULT_DRIVER = os.path.join(
+    os.path.dirname(__file__), "..", "..", "..", "build", "cbls_scip_traj"
+)
+
+
+def read_sol(path: str) -> Values:
+    """A SCIP `.sol` file (zeros printed) as variable name -> value."""
+    x: Values = {}
+    with open(path) as fh:
+        for line in fh:
+            if not line.strip() or line.startswith(("solution status:", "objective value:")):
+                continue
+            name, value = line.split()[:2]
+            x[name] = float(value)
+    return x
+
+
+@dataclass
+class Driver:
+    """`cbls_scip_traj` at N threads; one subprocess per solve, files in `workdir`."""
+
+    path: str
+    threads: int
+    workdir: str
+    pinned: str
+    origin: float = 0.0  # the method's start on time.monotonic(): trajectories count from it
+    scip_version: str | None = None
+    scip_git_hash: str | None = None
+    calls: int = 0
+
+    def solve(self, m: Any, params: Params, start: Values | None, time_left: float) -> Solve:
+        self.calls += 1
+        base = os.path.join(self.workdir, f"solve{self.calls}")
+        feastol = params.get("numerics/feastol", SCIP_SUMEPSILON)
+        if feastol < SCIP_SUMEPSILON:
+            # SCIP 11 refuses sumepsilon > feastol (set.c:681); 10 took it. Strict pwl only.
+            params = {**params, "numerics/sumepsilon": feastol}
+        m.writeProblem(base + ".cip", verbose=False)
+        with open(base + ".set", "w") as fh:
+            fh.writelines(f"{name} = {value!r}\n" for name, value in params.items())
+        cmd = [self.path, base + ".cip", "--threads", str(self.threads)]
+        cmd += ["--time-limit", repr(max(time_left, 0.0)), "--set", base + ".set"]
+        cmd += ["--traj-out", base + ".jsonl", "--result-out", base + ".json"]
+        cmd += ["--sol-out", base + ".sol"]
+        if start is not None:
+            with open(base + ".start.sol", "w") as fh:
+                fh.writelines(f"{name} {value!r}\n" for name, value in start.items())
+            cmd += ["--partial-sol", base + ".start.sol"]
+        proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        if proc.returncode != 0:
+            raise RuntimeError(f"cbls_scip_traj exited {proc.returncode}: {proc.stderr[-2000:]}")
+        with open(base + ".json") as fh:
+            res = json.load(fh)
+        # The driver refuses another libscip itself; this catches a stale binary.
+        git_hash = str(res.get("scip_git_hash") or "")
+        if not res.get("ok") or not git_hash or not self.pinned.startswith(git_hash):
+            raise RuntimeError(f"cbls_scip_traj ran SCIP {git_hash!r}, not {self.pinned}: {res}")
+        self.scip_version, self.scip_git_hash = str(res["scip_version"]), git_hash
+        with open(base + ".jsonl") as fh:
+            records = [json.loads(line) for line in fh if line.strip()]
+        n_sols = int(res["n_sols"])
+        return Solve(
+            status=str(res["status"]),
+            n_sols=n_sols,
+            lb=res["dual_bound"],
+            objective=res["primal_bound"],
+            x=read_sol(base + ".sol") if n_sols else None,
+            trajectory=[(r["mono_s"] - self.origin, r["objective"]) for r in records],
+        )
+
+
+@dataclass
+class Backend:
+    """How the methods solve and keep time: the wheel on CPU, or the driver on wall."""
+
+    name: str
+    solve: SolveFn
+    clock: Callable[[], float]
+    time_key: str  # the record's elapsed-time field
+    threads: int = 1
+    driver: Driver | None = None
+
+    def start(self) -> float:
+        """The method's start on this clock; the driver's trajectories count from it."""
+        now = self.clock()
+        if self.driver is not None:
+            self.driver.origin = now
+        return now
+
+
+IN_PROCESS = Backend("pyscipopt", solve_in_process, time.process_time, "cpu_s")
+
+
 #: The variables ucp_valve.py passes from one iteration's solution to the next.
 WARM_VARS = ("y", "hot", "cold", "on", "off")
 
@@ -454,9 +615,8 @@ def _pwl_model(
     pr: Problem,
     prev: dict[tuple[int, int], list[float]],
     n: int,
-    incumbent: Incumbent | None,
 ) -> tuple[Any, UcpVars, int]:
-    """One iteration's MIP: the base model, the interpolated cost, the warm start."""
+    """One iteration's MIP: the base model and the interpolated cost."""
     m, v = ucp_base(pr)
     brk = {
         (u, t): expand_brkpts(unit, prev[u, t], n)
@@ -464,38 +624,31 @@ def _pwl_model(
         for t in range(1, pr.horizon + 1)
     }
     n_brk = ucp_lin_obj(m, v, pr, brk)
-    if incumbent is not None:
-        sol = m.createPartialSol()
-        for name, values in incumbent.items():
-            for key, val in values.items():
-                m.setSolVal(sol, getattr(v, name)[key], val)
-        m.addSol(sol)
-        # The start fixes y, hot, cold, on and off only; every breakpoint weight,
-        # p, fuel and startup is unknown, which is far past completesol's default
-        # 0.85 unknown rate, so SCIP would drop the start without a word.
-        m.setRealParam("heuristics/completesol/maxunknownrate", 1.0)
     return m, v, n_brk
 
 
-def _pwl_params(m: Any, strict: bool, cpu_left: float) -> None:
-    _base_params(m, cpu_left)
+def _pwl_params(strict: bool, warm: bool) -> Params:
+    params = _base_params()
     if strict:
-        m.setRealParam("limits/gap", 1.0e-12)
-        m.setRealParam("limits/absgap", 1.0e-12)
-        m.setRealParam("numerics/feastol", 1.0e-9)
+        params.update({"limits/gap": 1.0e-12, "limits/absgap": 1.0e-12, "numerics/feastol": 1.0e-9})
     else:
-        m.setRealParam("limits/gap", GUROBI_MIPGAP)
-        m.setRealParam("limits/absgap", GUROBI_MIPGAPABS)
+        params.update({"limits/gap": GUROBI_MIPGAP, "limits/absgap": GUROBI_MIPGAPABS})
+    if warm:
+        # The start fixes y, hot, cold, on and off only; every breakpoint weight,
+        # p, fuel and startup is unknown, which is far past completesol's default
+        # 0.85 unknown rate, so SCIP would drop the start without a word.
+        params["heuristics/completesol/maxunknownrate"] = 1.0
+    return params
 
 
-def _refine(m: Any, v: UcpVars, pr: Problem, prev: dict[tuple[int, int], list[float]]) -> bool:
+def _refine(x: Values, v: UcpVars, pr: Problem, prev: dict[tuple[int, int], list[float]]) -> bool:
     """Record each committed dispatch that lands in an unrefined valve interval."""
     new = False
     for u, unit in enumerate(pr.units):
         for t in range(1, pr.horizon + 1):
-            if m.getVal(v.y[u, t]) <= 0.5:
+            if x[v.y[u, t].name] <= 0.5:
                 continue
-            pt = float(m.getVal(v.p[u, t]))
+            pt = float(x[v.p[u, t].name])
             if has_added_p(unit, prev[u, t], pt):
                 if any(abs(pp - pt) <= 1.0e-6 for pp in prev[u, t]):
                     # ucp_valve.py asserts this before appending.
@@ -506,38 +659,43 @@ def _refine(m: Any, v: UcpVars, pr: Problem, prev: dict[tuple[int, int], list[fl
     return new
 
 
-def solve_pwl(pr: Problem, cpu: float, warm_start: bool = True) -> dict[str, Any]:
+def solve_pwl(
+    pr: Problem, budget: float, warm_start: bool = True, backend: Backend = IN_PROCESS
+) -> dict[str, Any]:
     """Pedroso's Algorithm 1, the loop of ucp_valve.py's `__main__`."""
-    start = time.process_time()
+    clock, time_key = backend.clock, backend.time_key
+    start = backend.start()
     prev: dict[tuple[int, int], list[float]] = {
         (u, t): [] for u in range(len(pr.units)) for t in range(1, pr.horizon + 1)
     }
     n = N_INIT
     strict = False
-    incumbent: Incumbent | None = None
+    incumbent: Values | None = None
     iterations: list[dict[str, Any]] = []
+    trajectory: list[list[float]] = []
     converged = False
     out_of_budget = False
     while True:
-        m, v, n_brk = _pwl_model(pr, prev, n, incumbent if warm_start else None)
-        cpu_left = cpu - (time.process_time() - start)
-        if cpu_left < 0:
+        m, v, n_brk = _pwl_model(pr, prev, n)
+        warm = incumbent if warm_start else None
+        time_left = budget - (clock() - start)
+        if time_left < 0:
             out_of_budget = True
             break
-        _pwl_params(m, strict, cpu_left)
-        m.optimize()
-        status = str(m.getStatus())
-        if m.getNSols() == 0:
-            iterations.append(
-                {"n": n, "breakpoints": n_brk, "status": status, "lb": _finite_bound(m)}
-            )
+        solve = backend.solve(m, _pwl_params(strict, warm is not None), warm, time_left)
+        status = solve.status
+        if solve.x is None:
+            iterations.append({"n": n, "breakpoints": n_brk, "status": status, "lb": solve.lb})
             # A proven-infeasible MIP did not run out of CPU.
             out_of_budget = status != "infeasible"
             break
-        lb = _finite_bound(m)
-        ub = true_cost(m, v, pr)
+        x = solve.x
+        lb = solve.lb
+        ub = true_cost(x, v, pr)
         gap = _relative_gap(lb, ub)
         error = gap if gap is not None else math.inf
+        check = check_solution(x, v, pr)
+        elapsed = clock() - start
         iterations.append(
             {
                 "n": n,
@@ -547,13 +705,14 @@ def solve_pwl(pr: Problem, cpu: float, warm_start: bool = True) -> dict[str, Any
                 "lb": lb,
                 "ub": ub,
                 "error": error,
-                "check": check_solution(m, v, pr),
-                "cpu_s": time.process_time() - start,
+                "check": check,
+                time_key: elapsed,
             }
         )
+        trajectory.append([elapsed, ub])
         print(
             f"  n={n} brk={n_brk} {status} LB={lb} UB={ub:.4f} err={error:.3e} "
-            f"cpu={time.process_time() - start:.1f}s",
+            f"{time_key}={elapsed:.1f}",
             file=sys.stderr,
         )
         if strict and error < EPS:
@@ -566,10 +725,9 @@ def solve_pwl(pr: Problem, cpu: float, warm_start: bool = True) -> dict[str, Any
             out_of_budget = True
             break
         incumbent = {
-            name: {key: float(m.getVal(var)) for key, var in getattr(v, name).items()}
-            for name in WARM_VARS
+            var.name: x[var.name] for name in WARM_VARS for var in getattr(v, name).values()
         }
-        if not _refine(m, v, pr, prev):
+        if not _refine(x, v, pr, prev):
             n *= 2
             strict = True
 
@@ -579,7 +737,7 @@ def solve_pwl(pr: Problem, cpu: float, warm_start: bool = True) -> dict[str, Any
     last_status = iterations[-1]["status"] if iterations else None
     result: dict[str, Any] = {
         "iterations": iterations,
-        "cpu_s": time.process_time() - start,
+        time_key: clock() - start,
         "converged": converged,
         "out_of_budget": out_of_budget,
         "last_lb": iterations[-1].get("lb") if iterations else None,
@@ -602,29 +760,52 @@ def solve_pwl(pr: Problem, cpu: float, warm_start: bool = True) -> dict[str, Any
     }
     if best is not None:
         result["check"] = iterations[best]["check"]
+    if backend.driver is not None:
+        result["trajectory"] = trajectory
     return result
 
 
-def solve_exact(pr: Problem, cpu: float, gap: float) -> dict[str, Any]:
+def solve_exact(
+    pr: Problem, budget: float, gap: float, backend: Backend = IN_PROCESS
+) -> dict[str, Any]:
     """One SCIP MINLP solve with the true valve-point term."""
-    start = time.process_time()
+    clock = backend.clock
+    start = backend.start()
     m, v = ucp_base(pr)
     ucp_exact_obj(m, v, pr)
-    _base_params(m, cpu - (time.process_time() - start))
-    m.setRealParam("limits/gap", gap)
-    m.optimize()
-    status = str(m.getStatus())
-    result: dict[str, Any] = {"status": status, "cpu_s": time.process_time() - start}
-    if m.getNSols() == 0:
-        result.update(lb=_finite_bound(m), ub=None)
+    params = _base_params()
+    params["limits/gap"] = gap
+    solve = backend.solve(m, params, None, budget - (clock() - start))
+    result: dict[str, Any] = {"status": solve.status, backend.time_key: clock() - start}
+    if backend.driver is not None:
+        # The records are SCIP's objective, which is the true cost in this model.
+        result["trajectory"] = [[t, obj] for t, obj in solve.trajectory]
+    if solve.x is None:
+        result.update(lb=solve.lb, ub=None)
         return result
     result.update(
-        lb=_finite_bound(m),
-        ub=true_cost(m, v, pr),
-        scip_objective=float(m.getObjVal()),
-        check=check_solution(m, v, pr),
+        lb=solve.lb,
+        ub=true_cost(solve.x, v, pr),
+        scip_objective=solve.objective,
+        check=check_solution(solve.x, v, pr),
     )
     return result
+
+
+def _budget_and_threads(ap: argparse.ArgumentParser, args: argparse.Namespace) -> tuple[float, int]:
+    """The backend's budget and threads; each refuses the other's flags."""
+    if args.backend == "pyscipopt":
+        if args.time_limit is not None or args.threads is not None:
+            ap.error("--time-limit and --threads are the driver's; pyscipopt takes --cpu")
+        return (3600.0 if args.cpu is None else args.cpu), 1
+    if args.cpu is not None:
+        ap.error("--cpu is pyscipopt's; the driver takes --time-limit, a wall budget")
+    threads = 10 if args.threads is None else args.threads
+    if threads < 1:
+        ap.error(f"--threads {threads} is not positive")
+    if not os.access(args.driver, os.X_OK):
+        ap.error(f"no cbls_scip_traj at {args.driver}: benchmarks/common/scip_driver/README.md")
+    return (3600.0 if args.time_limit is None else args.time_limit), threads
 
 
 def main() -> None:
@@ -633,11 +814,28 @@ def main() -> None:
     ap.add_argument("--periods", type=int, required=True)
     ap.add_argument("--method", required=True, choices=["pwl", "exact"])
     ap.add_argument(
+        "--backend",
+        choices=["pyscipopt", "driver"],
+        default="pyscipopt",
+        help="pyscipopt: the wheel's SCIP in process (default); driver: cbls_scip_traj (#442)",
+    )
+    ap.add_argument(
         "--cpu",
         type=float,
-        default=3600.0,
-        help="process CPU budget in seconds; each SCIP solve gets what is left as a wall limit "
+        help="pyscipopt: process CPU budget in seconds; each SCIP solve gets what is left as a "
+        "wall limit (default 3600)",
+    )
+    ap.add_argument(
+        "--time-limit",
+        type=float,
+        help="driver: wall budget in seconds from the start, writing and reading included "
         "(default 3600)",
+    )
+    ap.add_argument("--threads", type=int, help="driver: SCIP's threads (default 10)")
+    ap.add_argument(
+        "--driver",
+        default=os.environ.get("CBLS_SCIP_DRIVER", DEFAULT_DRIVER),
+        help="driver: the cbls_scip_traj binary (default $CBLS_SCIP_DRIVER, else build/)",
     )
     ap.add_argument(
         "--exact-gap",
@@ -652,38 +850,42 @@ def main() -> None:
     )
     ap.add_argument("--out", help="append the result as one JSON line")
     args = ap.parse_args()
+    budget, threads = _budget_and_threads(ap, args)
 
     import pyscipopt
 
     pr = load_problem(args.instance, args.periods)
     bad = [i for i, u in enumerate(pr.units) if not concave_between_valves(u)]
-    if args.method == "pwl":
-        res = solve_pwl(pr, args.cpu, warm_start=not args.no_warm_start)
-    else:
-        res = solve_exact(pr, args.cpu, args.exact_gap)
+    with tempfile.TemporaryDirectory(prefix="ucp_valve_scip_") as workdir:
+        backend, driver = IN_PROCESS, None
+        if args.backend == "driver":
+            with open(SCIP_COMMIT_FILE) as fh:
+                driver = Driver(args.driver, threads, workdir, pinned=fh.read().strip())
+            backend = Backend("driver", driver.solve, time.monotonic, "wall_s", threads, driver)
+        if args.method == "pwl":
+            res = solve_pwl(pr, budget, warm_start=not args.no_warm_start, backend=backend)
+        else:
+            res = solve_exact(pr, budget, args.exact_gap, backend)
     lb, ub = res.get("lb"), res.get("ub")
     record = {
         "instance": args.instance,
         "periods": args.periods,
         "method": args.method,
-        "cpu_limit_s": args.cpu,
+        **({"cpu_limit_s": budget} if driver is None else {"time_limit_s": budget}),
         "scip_clock": "wall",  # timing/clocktype 2; score.py refuses any other (#441)
         "lb": lb,
         "ub": ub,
         "gap_pct": (100.0 * g) if (g := _relative_gap(lb, ub)) is not None else None,
         "concavity_violated_units": bad,
+        "backend": args.backend,
+        "threads": threads,
         "pyscipopt": importlib.metadata.version("pyscipopt"),
-        "scip": str(pyscipopt.Model().version()),
+        "scip": str(pyscipopt.Model().version()) if driver is None else driver.scip_version,
+        "scip_git_hash": None if driver is None else driver.scip_git_hash,
         **{k: val for k, val in res.items() if k not in ("lb", "ub")},
     }
-    print(
-        json.dumps(
-            {
-                k: record[k]
-                for k in ("instance", "periods", "method", "lb", "ub", "gap_pct", "status", "cpu_s")
-            }
-        )
-    )
+    shown = ("instance", "periods", "method", "lb", "ub", "gap_pct", "status", backend.time_key)
+    print(json.dumps({k: record[k] for k in shown}))
     if args.out:
         with open(args.out, "a") as fh:
             fh.write(json.dumps(record) + "\n")

@@ -73,6 +73,17 @@ Source: <http://www.dcc.fc.up.pt/~jpp/code/valve/ucp_valve.py>, 2013-12-09,
    (`ucp_valve.py` uses neither in its loop). A unit with valve frequency
    `f <= 0` is refused: the script substitutes `f` in its breakpoint builders
    but `has_added_p` would divide by zero, and no instance has one.
+8. **`--backend driver`** (#442, opt-in; the default `pyscipopt` is items 1-7).
+   The wheel only builds each model; `cbls_scip_traj`
+   (`benchmarks/common/scip_driver/`) solves it on SCIP 11 at the pinned
+   commit, at `--threads` N (concurrent at N > 1, defaults), on a wall
+   `--time-limit` counted on `time.monotonic()` from the start, writing and
+   reading included. The record carries `backend`, `threads`, `time_limit_s`
+   (not `cpu_limit_s`), `wall_s` (not `cpu_s`), `scip_git_hash` and
+   `trajectory`: `[[wall_s, objective], ...]`, each pwl iteration's true-cost UB
+   or each exact incumbent's SCIP objective. Strict mode's `numerics/feastol`
+   1e-9 also sets `numerics/sumepsilon` 1e-9: SCIP 11 refuses sumepsilon above
+   feastol (`set.c:681`), and SCIP 10 did not check.
 
 ## Not validated yet
 
