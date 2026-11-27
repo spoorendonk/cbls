@@ -651,6 +651,31 @@ def driver_record(
     return {**record, "time_limit_s": 3.0, "trajectory": [], **cells}
 
 
+#: Every (instance, T, method) of `ROSTER` as the port names it.
+SCIP_ROWS = [
+    (i, t, m) for i, t in (("ucp13", 1), ("ucp13", 3), ("ucp100", 48)) for m in ("pwl", "exact")
+]
+
+
+def complete(records: list[dict[str, object]], **cells: object) -> list[dict[str, object]]:
+    """`records` plus a driver record with no solution, and `cells`, for every other row."""
+    have = {(r["instance"], r["periods"], r["method"]) for r in records}
+    return records + [
+        driver_record(i, t, m, None, None, **cells)
+        for i, t, m in SCIP_ROWS
+        if (i, t, m) not in have
+    ]
+
+
+def two_seeds_eq(tmp_path: Path) -> list[Path]:
+    """`two_seeds` under `--demand-equality`, the model the SCIP driver solves."""
+    config = CONFIG + ";demand=eq"
+    return [
+        write_table(tmp_path / f"seed{s}" / "c.csv", seed_rows(s, search_config=config))
+        for s in (1, 2)
+    ]
+
+
 def test_trace_columns_are_the_recorders() -> None:
     assert f'"{TRACE_HEADER}"' in TRACE_RUNNER_SOURCE.read_text()
 
@@ -678,13 +703,19 @@ def test_equal_time_table_gives_cbls_primal_integral_and_final_gap(tmp_path: Pat
 def test_equal_time_table_scores_the_driver_trajectories(tmp_path: Path) -> None:
     records = write_jsonl(
         tmp_path / "s",
-        [
-            driver_record("ucp13", 1, "pwl", 100.0, 101.0, trajectory=[[0.0, 103.0], [2.0, 101.0]]),
-            # SCIP's objective (101) bounds the true cost (100.5) from above.
-            driver_record("ucp13", 1, "exact", 99.0, 100.5, trajectory=[[1.0, 101.0]]),
-        ],
+        complete(
+            [
+                driver_record(
+                    "ucp13", 1, "pwl", 100.0, 101.0, trajectory=[[0.0, 103.0], [2.0, 101.0]]
+                ),
+                # SCIP's objective (101) bounds the true cost (100.5) from above.
+                driver_record("ucp13", 1, "exact", 99.0, 100.5, trajectory=[[1.0, 101.0]]),
+                # A solution the driver timed at no point.
+                driver_record("ucp13", 3, "exact", 199.0, 200.0),
+            ]
+        ),
     )
-    result = run_score(*two_seeds(tmp_path), *ROSTER, "--scip", records, *trace_args(tmp_path))
+    result = run_score(*two_seeds_eq(tmp_path), *ROSTER, "--scip", records, *trace_args(tmp_path))
     assert result.returncode == 0, result.stderr
     lines = result.stdout.splitlines()
     # ref 100.5. exact: 2 on [0, 1), 0.5/101 on [1, 3); pwl: 2.5/103 on [0, 2), 0.5/101 after.
@@ -693,9 +724,16 @@ def test_equal_time_table_scores_the_driver_trajectories(tmp_path: Path) -> None
         "| 0.0178 [0.0178, 0.0178] | 0.50 [0.50, 0.50] "
         "| 0.6700 [0.6700, 0.6700] | 0.00 [0.00, 0.00] |"
     ) in lines
+    # pwl found nothing; exact's untimed UB counts 2 throughout, and is named.
+    assert (
+        "| ucp13 | 3 | 3 | 200.00 | 0.0000 [0.0000, 0.0000] | 0.00 [0.00, 0.00] "
+        "| 2.0000 [2.0000, 2.0000] | - | 2.0000 [2.0000, 2.0000] | 0.00 [0.00, 0.00] |"
+    ) in lines
+    assert "- SCIP UB with no trajectory point, so PI as if no incumbent: 1" in lines
+    assert "  - ucp13 T=3 exact" in lines
     assert any(
         line.startswith("- SCIP 10.0.0 through cbls_scip_traj at 4 threads; budget (wall s")
-        and "pwl T=1 3; exact T=1 3" in line
+        and "pwl T=1 3; pwl T=3 3; pwl T=48 3; exact T=1 3; exact T=3 3; exact T=48 3" in line
         for line in lines
     )
 
@@ -742,17 +780,80 @@ def test_a_seed_traced_twice_and_a_torn_trace_are_refused(tmp_path: Path) -> Non
     torn = tmp_path / "trace1.csv"
     torn.write_text("instance,periods\nucp13,1\n")
     assert "columns are not the trace's" in refusal(two_seeds(tmp_path), *ROSTER, *traces)
+    torn.write_text(TRACE_HEADER + "\nucp13,1,3\n")
+    assert "torn row for ucp13" in refusal(two_seeds(tmp_path), *ROSTER, *traces)
+
+
+def test_a_budget_is_compared_at_the_tables_four_digits(tmp_path: Path) -> None:
+    scip = write_jsonl(tmp_path / "s.jsonl", complete([]))
+    for record_budget, argv in ((3.0001, []), (3.0, ["--scip", str(scip)])):
+        traces = trace_args(tmp_path, budget=record_budget)
+        result = run_score(*two_seeds_eq(tmp_path), *ROSTER, *traces, *argv)
+        assert result.returncode == 0, result.stderr
+    scip = write_jsonl(tmp_path / "s.jsonl", [{**r, "time_limit_s": 3.0004} for r in complete([])])
+    result = run_score(*two_seeds_eq(tmp_path), *ROSTER, *trace_args(tmp_path), "--scip", scip)
+    assert result.returncode == 0, result.stderr
+
+
+SEED1_CLOSING = "ucp13,1,3,3,7,102,0,abc1234\n"
+
+
+@pytest.mark.parametrize(
+    ("replacement", "reason"),
+    [
+        # Another run's closing row: another objective, none, or not a closing row at all.
+        ("ucp13,1,3,3,7,103,0,abc1234\n", "not this run's trace"),
+        ("ucp13,1,3,3,7,,0,abc1234\n", "not this run's trace"),
+        ("ucp13,1,3,3,7,102,1,abc1234\n", "not a closing row"),
+        # The solve again after its closing row, or a row out of time order.
+        (SEED1_CLOSING + "ucp13,1,3,1.5,7,125,1,abc1234\n" + SEED1_CLOSING, "one solve twice?"),
+        (SEED1_CLOSING + "ucp13,1,3,1,7,101,1,abc1234\n", "one solve twice?"),
+    ],
+)
+def test_a_trace_that_is_not_the_tables_run_is_refused(
+    tmp_path: Path, replacement: str, reason: str
+) -> None:
+    traces = trace_args(tmp_path)
+    path = Path(traces[0].partition(":")[2])
+    text = path.read_text()
+    assert SEED1_CLOSING in text
+    path.write_text(text.replace(SEED1_CLOSING, replacement))
+    assert reason in refusal(two_seeds(tmp_path), *ROSTER, *traces)
+
+
+def test_a_solve_split_by_another_in_a_trace_is_refused(tmp_path: Path) -> None:
+    traces = trace_args(tmp_path)
+    path = Path(traces[0].partition(":")[2])
+    with path.open("a") as fh:
+        fh.write(SEED1_CLOSING)
+    assert "apart from its other rows" in refusal(two_seeds(tmp_path), *ROSTER, *traces)
+
+
+def test_an_unsolved_row_whose_trace_ends_on_an_objective_is_refused(tmp_path: Path) -> None:
+    tables = []
+    for s in (1, 2):
+        rows = [r for r in seed_rows(s) if r["instance"] != "ucp100-48p"]
+        rows.append(measured("ucp100-48p", 48, s, None))
+        tables.append(write_table(tmp_path / f"seed{s}" / "c.csv", rows))
+    assert "not this run's trace" in refusal(tables, *ROSTER, *trace_args(tmp_path))
 
 
 @pytest.mark.parametrize(
     ("records", "reason"),
     [
-        ([scip_record("ucp13", 1, "pwl", 1.0, 2.0)], "use ucp_valve_scip.py --backend driver"),
-        ([driver_record("ucp13", 1, "pwl", 1.0, 2.0, threads=8)], "SCIP ran 8 threads, cbls 4"),
+        (
+            [scip_record(i, t, m, None, None) for i, t, m in SCIP_ROWS],
+            "use ucp_valve_scip.py --backend driver",
+        ),
+        (complete([], threads=8), "SCIP ran 8 threads, cbls 4"),
         ([driver_record("ucp13", 1, "pwl", 1.0, 2.0, time_limit_s=60.0)], "ran 60 s, cbls 3"),
         (
             [driver_record("ucp13", 1, "pwl", 1.0, 2.0, trajectory=[[2.0, 3.0], [1.0, 2.0]])],
             "out of time order",
+        ),
+        (
+            [driver_record("ucp13", 1, "pwl", 1.0, 2.0, trajectory=[[1.0, 3.0], [2.0, 3.0]])],
+            "does not improve on the last",
         ),
         ([driver_record("ucp13", 1, "pwl", 1.0, 2.0, trajectory=None)], "no trajectory list"),
         (
@@ -767,9 +868,28 @@ def test_a_seed_traced_twice_and_a_torn_trace_are_refused(tmp_path: Path) -> Non
 def test_scip_records_not_at_cbls_time_and_threads_are_refused(
     tmp_path: Path, records: list[dict[str, object]], reason: str
 ) -> None:
-    scip = write_jsonl(tmp_path / "s.jsonl", records)
+    scip = write_jsonl(tmp_path / "s.jsonl", complete(records))
     traces = trace_args(tmp_path)
+    assert reason in refusal(two_seeds_eq(tmp_path), *ROSTER, "--scip", str(scip), *traces)
+
+
+def test_a_driver_record_without_threads_is_refused(tmp_path: Path) -> None:
+    record = driver_record("ucp13", 1, "pwl", 1.0, 2.0)
+    del record["threads"]
+    scip = write_jsonl(tmp_path / "s.jsonl", complete([record]))
+    traces = trace_args(tmp_path)
+    reason = "a driver record has no threads"
+    assert reason in refusal(two_seeds_eq(tmp_path), *ROSTER, "--scip", str(scip), *traces)
+
+
+def test_scip_records_on_another_model_or_missing_a_row_are_refused(tmp_path: Path) -> None:
+    traces = trace_args(tmp_path)
+    scip = write_jsonl(tmp_path / "s.jsonl", complete([]))
+    reason = "run uc_chped --demand-equality"
     assert reason in refusal(two_seeds(tmp_path), *ROSTER, "--scip", str(scip), *traces)
+    scip = write_jsonl(tmp_path / "s.jsonl", complete([])[:4])
+    reason = "no SCIP record for 2 rows: ucp100-48p T=48 pwl; ucp100-48p T=48 exact"
+    assert reason in refusal(two_seeds_eq(tmp_path), *ROSTER, "--scip", str(scip), *traces)
 
 
 def test_an_out_over_a_trace_is_refused(tmp_path: Path) -> None:

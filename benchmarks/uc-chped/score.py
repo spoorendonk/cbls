@@ -61,13 +61,17 @@ REFUSALS (exit 2, naming what is wrong; nothing is written):
   method, a pair outside the roster, a (pair, method) twice, a record whose
   solution failed the port's re-check (`check`), two SCIP versions, backends or
   thread counts, two budgets for one method (driver: for one method and horizon), a
-  driver record whose trajectory is not time-ordered finite pairs. A pair whose
+  driver record with no threads or whose trajectory is not time-ordered finite pairs
+  with a falling objective. A pair whose
   best SCIP LB is above its best SCIP UB is named under the table, not refused. An
   LB that is not positive gives no gap;
 * with `--trace`: a file not in the trace's columns, a seed no table has or a seed
   twice, a row no table of that seed has, a commit or budget other than the tables',
-  a table row with no trace; with `--scip` too, records that are not the driver's or
-  whose threads or per-horizon budget differ from cbls's.
+  a table row with no trace, a solve whose rows are apart, fall in time or go on
+  past an empty closing row, and one whose last row is no closing row (`new_best` 0)
+  with the table's objective; with `--scip` too, records that are not the driver's,
+  miss a roster row or method, or whose threads or per-horizon budget (at the
+  table's four digits) differ from cbls's, and a cbls run without `demand=eq`.
 
 `--roster` replaces the published `ROSTER` for a smoke, and every output says so on
 its first line.
@@ -461,6 +465,9 @@ def scip_trajectory(where: str, record: dict[str, object]) -> Trajectory:
         z = json_number(where, "trajectory objective", item[1])
         if t is None or z is None or (points and t < points[-1][0]):
             raise RefusedError(f"{where}: trajectory point {item!r} is null or out of time order")
+        if points and z >= points[-1][1]:
+            # A running best only falls; anything else is not the driver's trajectory (#446).
+            raise RefusedError(f"{where}: trajectory point {item!r} does not improve on the last")
         points.append((t, z))
     return tuple(points)
 
@@ -472,6 +479,9 @@ def scip_backend(
     backend = record.get("backend", "pyscipopt")
     if backend not in SCIP_BACKENDS:
         raise RefusedError(f"{where}: unknown backend {backend!r}")
+    if backend == "driver" and "threads" not in record:
+        # The default of 1 is the wheel's, which predates the key; the driver always writes it.
+        raise RefusedError(f"{where}: a driver record has no threads")
     threads = record.get("threads", 1)
     if not isinstance(threads, int) or isinstance(threads, bool) or threads < 1:
         raise RefusedError(f"{where}: threads {threads!r} is not a positive integer")
@@ -587,26 +597,82 @@ def read_trace(path: Path) -> list[dict[str, str]]:
     return rows
 
 
+def at_table_precision(seconds: float) -> float:
+    """A budget as comparison.csv's time_limit_s prints it: four significant digits
+    (`num(r.time_limit_s, 4)` in uc_chped.cpp); the trace and the driver print more."""
+    return float(f"{seconds:.4g}")
+
+
+def same_objective(a: float, b: float) -> bool:
+    """Equal at the ten significant digits the table and the trace both print."""
+    return f"{a:.10g}" == f"{b:.10g}"
+
+
+@dataclass(frozen=True)
+class TraceRow:
+    name: str
+    t: float
+    objective: float
+    new_best: str
+
+
+def trace_row(path: Path, seed: str, campaign: Campaign, row: dict[str, str]) -> TraceRow:
+    """One trace row, held to the seed's table: its row, commit and budget."""
+    name = f"{path}: {row['instance']} T={row['periods']}"
+    pair = (row["instance"], periods_cell(name, row))
+    if seed not in campaign.measured.get(pair, {}):
+        raise RefusedError(f"{name}: no seed {seed} row in the tables")
+    if row["commit_sha"] != campaign.commit:
+        raise RefusedError(f"{name}: commit {row['commit_sha']!r}, the tables' is not")
+    budget = number_cell(name, row, "time_limit_s")
+    if at_table_precision(budget) != campaign.budgets[pair[1]]:
+        raise RefusedError(f"{name}: budget {budget:g} s, the tables' is not")
+    t = number_cell(name, row, "time_seconds")
+    objective = number_cell(name, row, "objective")
+    # An empty objective is the closing row of a solve with no incumbent.
+    if not math.isfinite(t) or math.isinf(objective):
+        raise RefusedError(f"{name}: time {t} or objective {objective} is not finite")
+    return TraceRow(name, t, objective, row["new_best"])
+
+
+def check_closing(last: TraceRow, measured: Measured) -> None:
+    """A solve's last row is its closing row (`TraceRecorder::record_final`): new_best 0, and
+    the table's objective, or empty where the table has none. Else it is another run's (#446)."""
+    if last.new_best != "0":
+        raise RefusedError(f"{last.name}: ends on new_best {last.new_best!r}, not a closing row")
+    empty = math.isnan(last.objective)
+    if empty == measured.solved or (
+        measured.solved and not same_objective(last.objective, measured.objective)
+    ):
+        raise RefusedError(
+            f"{last.name}: the trace ends on objective {last.objective:.10g}, seed "
+            f"{measured.seed}'s table row has {measured.objective:.10g}: not this run's trace"
+        )
+
+
 def add_trace_rows(path: Path, seed: str, campaign: Campaign, traces: Traces) -> None:
-    """One seed's trace rows into `traces`, each held to the seed's table."""
+    """One seed's trace rows into `traces`. One solve's rows are contiguous, never fall in
+    time, and end on its closing row, so a solve twice in one trace is refused (#446)."""
+    last: dict[Pair, TraceRow] = {}
+    current: Pair | None = None
     for row in read_trace(path):
-        name = f"{path}: {row['instance']} T={row['periods']}"
-        pair = (row["instance"], periods_cell(name, row))
-        if seed not in campaign.measured.get(pair, {}):
-            raise RefusedError(f"{name}: no seed {seed} row in the tables")
-        if row["commit_sha"] != campaign.commit:
-            raise RefusedError(f"{name}: commit {row['commit_sha']!r}, the tables' is not")
-        budget = number_cell(name, row, "time_limit_s")
-        if budget != campaign.budgets[pair[1]]:
-            raise RefusedError(f"{name}: budget {budget:g} s, the tables' is not")
-        t = number_cell(name, row, "time_seconds")
-        objective = number_cell(name, row, "objective")
-        # An empty objective is the closing row of a solve with no incumbent.
-        if not math.isfinite(t) or math.isinf(objective):
-            raise RefusedError(f"{name}: time {t} or objective {objective} is not finite")
+        parsed = trace_row(path, seed, campaign, row)
+        pair = (row["instance"], int(row["periods"]))
+        before = last.get(pair)
+        if before is not None and (
+            pair != current or parsed.t < before.t or math.isnan(before.objective)
+        ):
+            raise RefusedError(
+                f"{parsed.name}: a row at {parsed.t:g} s after the solve's closing row, before "
+                f"its last at {before.t:g} s, or apart from its other rows: one solve twice?"
+            )
+        current = pair
+        last[pair] = parsed
         points = traces.setdefault(pair, {}).setdefault(seed, [])
-        if not math.isnan(objective):
-            points.append((t, objective))
+        if not math.isnan(parsed.objective):
+            points.append((parsed.t, parsed.objective))
+    for pair, closing in last.items():
+        check_closing(closing, campaign.measured[pair][seed])
 
 
 def load_traces(items: Sequence[str], campaign: Campaign) -> Traces:
@@ -631,29 +697,48 @@ def load_traces(items: Sequence[str], campaign: Campaign) -> Traces:
 
 
 def check_equal_time(campaign: Campaign, scip: Scip) -> None:
-    """The primal integrals compare only at one wall budget and thread count (#442)."""
+    """The primal integrals compare only one model, on every roster row, at one wall budget
+    and thread count (#442, #446)."""
     if scip.backend != "driver":
         raise RefusedError(
             f"--trace scores at equal time: the SCIP records are {scip.backend}'s, "
             "with no trajectory; use ucp_valve_scip.py --backend driver"
         )
+    if config_value(campaign.search_config, "demand", "ge") != "eq":
+        raise RefusedError(
+            "cbls solved demand >=, SCIP the source's ==: run uc_chped --demand-equality"
+        )
     threads = config_threads(campaign.search_config)
     if str(scip.threads) != threads:
         raise RefusedError(f"SCIP ran {scip.threads} threads, cbls {threads}")
+    missing = [
+        f"{pair[0]} T={pair[1]} {method}"
+        for pair in sorted(campaign.measured)
+        for method in SCIP_METHODS
+        if method not in scip.results.get(pair, {})
+    ]
+    if missing:
+        raise RefusedError(f"no SCIP record for {len(missing)} rows: " + "; ".join(missing))
     for (method, t), budget in scip.budgets.items():
         # Every driver budget names its horizon, and the roster gives cbls each one.
         cbls = campaign.budgets[t] if t is not None else math.nan
-        if budget != cbls:
+        if at_table_precision(budget) != cbls:
             raise RefusedError(f"SCIP {method} T={t} ran {budget:g} s, cbls {cbls:g} s")
 
 
-def config_threads(search_config: str) -> str:
-    """The portfolio's size: the runner records `threads=N` only off its default of 1."""
+def config_value(search_config: str, wanted: str, default: str) -> str:
+    """A `key=value` item of the search_config cell, which the runner writes only off its
+    default."""
     for item in search_config.split(";"):
         key, _, value = item.partition("=")
-        if key == "threads":
+        if key == wanted:
             return value
-    return "1"
+    return default
+
+
+def config_threads(search_config: str) -> str:
+    """The portfolio's size."""
+    return config_value(search_config, "threads", "1")
 
 
 def gap_pct(objective: float, bound: float) -> float:
@@ -865,7 +950,7 @@ def render_integrals(
     heads = [f"{who} {what}" for who in ("cbls", *SCIP_METHODS) for what in ("PI", "final gap %")]
     lines = [
         "",
-        "## UC-CHPED: equal time, primal integral",
+        "## UC-CHPED: primal integral at one budget and thread count",
         "",
         f"| instance | T | budget (s) | reference | {' | '.join(heads)} |",
         "|---|---|---|---|" + "---|" * len(heads),
@@ -891,6 +976,20 @@ def render_integrals(
         f"- no incumbent from any method, so no reference: {len(unreferenced)}",
         *[f"  - {line}" for line in unreferenced],
     ]
+    if scip is not None:
+        # The driver missed the incumbent's time; its PI counts no incumbent at all (#446).
+        untimed = [
+            f"{pair[0]} T={pair[1]} {method}"
+            for pair in pairs
+            for method in SCIP_METHODS
+            if (result := scip.results.get(pair, {}).get(method)) is not None
+            and result.ub is not None
+            and not result.trajectory
+        ]
+        lines += [
+            f"- SCIP UB with no trajectory point, so PI as if no incumbent: {len(untimed)}",
+            *[f"  - {line}" for line in untimed],
+        ]
     return lines
 
 
