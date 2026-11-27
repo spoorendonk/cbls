@@ -696,6 +696,8 @@ cbls::SearchResult solve_instance(const Args& args, const cbls::uc_chped::UCInst
                                    std::chrono::duration<double>(0.25 * tlim))};
         cbls::uc_chped::UCHook init_hook(inst, ucm, uc_full, args.seed);
         configure(init_hook);
+        init_hook.ls_polish_sweeps = 0;  // fast descent only: no incumbent until it ends
+        init_hook.ils_seconds = 0.0;
         cbls::ViolationManager init_vm(ucm.model);
         init_hook.solve(ucm.model, init_vm, {}, cbls::StopRef(dl));
         init_seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();

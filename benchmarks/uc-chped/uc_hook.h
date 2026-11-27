@@ -418,7 +418,11 @@ private:
         init_costs();
         if (commit_ls_) {
             commitment_search(stop);
-            if (ils_seconds > 0.0) {
+            // No ILS on a hook's first descent, so the first incumbent is
+            // recorded after one descent, not after a whole ILS slice.
+            const bool first = !descended_;
+            descended_ = true;
+            if (ils_seconds > 0.0 && !first) {
                 // With probability elite_prob, kick from this hook's elite
                 // commitment rather than the search's descended one.
                 std::uniform_real_distribution<double> coin(0.0, 1.0);
@@ -1060,6 +1064,7 @@ private:
     std::chrono::steady_clock::time_point born_;
     double own_seconds_ = 0.0;
     double best_seen_ = hook_detail::kInf;
+    bool descended_ = false;
     double elite_total_ = hook_detail::kInf;  // fast-dispatch cost of elite_y_
     std::vector<std::vector<int8_t>> elite_y_;
     std::vector<Row> y_, y0_, last_y_;
