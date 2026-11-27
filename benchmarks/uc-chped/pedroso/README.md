@@ -67,7 +67,7 @@ Source: <http://www.dcc.fc.up.pt/~jpp/code/valve/ucp_valve.py>, 2013-12-09,
    script prints, `infeasible` (no iteration found a UB), or `stopped: infeasible
    MIP after a UB`. Every iteration's solution is re-checked
    outside SCIP (demand, reserve, dispatch limits) into its iteration's `check`;
-   the top-level `check` is the reported UB's. `out_of_budget` is false on a
+   the top-level `check` is the reported UB's (exact's late best: item 8). `out_of_budget` is false on a
    proven-infeasible MIP.
 7. **Python 3**, typed; `lower_brkpts` and `upper_brkpts` are not ported
    (`ucp_valve.py` uses neither in its loop). A unit with valve frequency
@@ -88,10 +88,19 @@ Source: <http://www.dcc.fc.up.pt/~jpp/code/valve/ucp_valve.py>, 2013-12-09,
    it is SCIP's objective at each improving incumbent, an upper bound on that
    incumbent's true cost (the fuel and valve terms are `>=` relaxations), so
    the final `ub` may sit below the last point. Each solve's `--time-limit` is
-   what is left just before the spawn; the driver is killed 60 s past it. A
-   point past `time_limit_s` is a real time, which a score over
-   `[0, time_limit_s]` ignores. A failed run keeps its work directory, named on
-   stderr. Strict mode's `numerics/feastol`
+   what is left just before the spawn; the driver is killed `--driver-grace`
+   (60 s) past it, an error unless `--salvage-killed` finds the result it wrote
+   before `SCIPfree` (`driver_killed_in_free` counts those). A pwl point past
+   `time_limit_s` is a real time, which a score over `[0, time_limit_s]`
+   ignores. A failed run keeps its work directory, named on stderr.
+   **Budget:** `ub` counts only solutions SCIP found within `time_limit_s`. A
+   pwl iteration records `found_s` (its best incumbent's time) and `in_budget`;
+   a late one's UB and LB do not count and it cannot converge the run. In exact,
+   a late best goes to `trajectory_after_budget` and `ub_after_budget`,
+   `scip_objective_after_budget`, `check_after_budget`; `ub` is then the last
+   in-budget point's SCIP objective (`ub_is_scip_objective`), not re-checked.
+   Exact's `lb` and `status`, and a pwl iteration's `lb`, are SCIP's at its stop,
+   which can overshoot the limit by a step. Strict mode's `numerics/feastol`
    1e-9 also sets `numerics/sumepsilon` 1e-9: SCIP 11 refuses sumepsilon above
    feastol (`set.c:681`), and SCIP 10 did not check.
 

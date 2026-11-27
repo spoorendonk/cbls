@@ -612,7 +612,10 @@ class Driver:
             res = json.load(fh)
         # The driver refuses another libscip itself; this catches a stale binary.
         git_hash = str(res.get("scip_git_hash") or "")
-        if not res.get("ok") or not git_hash or not self.pinned.startswith(git_hash):
+        if not res.get("ok"):
+            # A salvaged driver's exit code is lost; its retcode says what failed.
+            raise RuntimeError(f"cbls_scip_traj failed, SCIP retcode {res.get('scip_retcode')}")
+        if not git_hash or not self.pinned.startswith(git_hash):
             raise RuntimeError(f"cbls_scip_traj ran SCIP {git_hash!r}, not {self.pinned}: {res}")
         self.scip_version, self.scip_git_hash = str(res["scip_version"]), git_hash
         with open(base + ".jsonl") as fh:
@@ -732,14 +735,19 @@ def _trajectory_step(trajectory: list[list[float]], elapsed: float, ub: float) -
 def _wall_step(
     trajectory: list[list[float]],
     iteration: dict[str, Any],
-    elapsed: float,
+    solve: Solve,
     budget: float,
     ub: float,
 ) -> None:
-    """On the wall budget, a UB known only after it (the last solve's overshoot) is
-    not the run's (#442); the wheel's CPU budget is #441's and unchanged."""
-    iteration["in_budget"] = elapsed <= budget
-    if elapsed <= budget:
+    """On the wall budget, a UB whose solution SCIP found only after it (its limit's
+    overshoot) is not the run's (#442); the wheel's CPU budget is #441's and unchanged.
+    Found, not returned: the exit, SCIPfree and the re-check come after the limit."""
+    steps = improving(solve.trajectory)
+    elapsed = iteration["wall_s"]
+    found = steps[-1][0] if steps else elapsed
+    iteration["found_s"] = found
+    iteration["in_budget"] = found <= budget
+    if found <= budget:
         _trajectory_step(trajectory, elapsed, ub)
 
 
@@ -798,7 +806,7 @@ def solve_pwl(
             | _start_fate(backend, solve)
         )
         if backend.driver is not None:
-            _wall_step(trajectory, iterations[-1], elapsed, budget, ub)
+            _wall_step(trajectory, iterations[-1], solve, budget, ub)
         print(
             f"  n={n} brk={n_brk} {status} LB={lb} UB={ub:.4f} err={error:.3e} "
             f"{time_key}={elapsed:.1f}",
@@ -831,7 +839,7 @@ def _pwl_result(
     iterations: list[dict[str, Any]], converged: bool, out_of_budget: bool
 ) -> dict[str, Any]:
     """The run's bounds and status from its iterations."""
-    with_lb = [it for it in iterations if it.get("lb") is not None]
+    with_lb = [it for it in iterations if it.get("lb") is not None and it.get("in_budget", True)]
     with_ub = [
         i
         for i, it in enumerate(iterations)
@@ -893,18 +901,22 @@ def solve_exact(
     if solve.x is None:
         result.update(lb=solve.lb, ub=None)
         return result
-    ub: float | None = true_cost(solve.x, v, pr)
-    if result.get("trajectory_after_budget"):
-        # The best solution came after the budget (#442): its true cost is kept
-        # apart, and `ub` is the last in-budget incumbent's SCIP objective.
-        result["ub_after_budget"] = ub
-        ub = result["trajectory"][-1][1] if result["trajectory"] else None
-    result.update(
-        lb=solve.lb,
-        ub=ub,
-        scip_objective=solve.objective,
-        check=check_solution(solve.x, v, pr),
-    )
+    late = {
+        "ub": true_cost(solve.x, v, pr),
+        "scip_objective": solve.objective,
+        "check": check_solution(solve.x, v, pr),
+    }
+    result["lb"] = solve.lb
+    if not result.get("trajectory_after_budget"):
+        result.update(late)
+        return result
+    # The best solution came after the budget (#442): it is kept apart as
+    # `*_after_budget`, and `ub` is the last in-budget incumbent's SCIP objective,
+    # a bound on its true cost; the driver keeps only the best solution, so that
+    # incumbent is not re-checked.
+    result.update({f"{k}_after_budget": val for k, val in late.items()})
+    result["ub"] = result["trajectory"][-1][1] if result["trajectory"] else None
+    result["ub_is_scip_objective"] = True
     return result
 
 
