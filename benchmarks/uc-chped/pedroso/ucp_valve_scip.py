@@ -614,7 +614,9 @@ class Driver:
         git_hash = str(res.get("scip_git_hash") or "")
         if not res.get("ok"):
             # A salvaged driver's exit code is lost; its retcode says what failed.
-            raise RuntimeError(f"cbls_scip_traj failed, SCIP retcode {res.get('scip_retcode')}")
+            raise RuntimeError(
+                f"cbls_scip_traj failed, SCIP retcode {res.get('scip_retcode')} ({base}.*): {res}"
+            )
         if not git_hash or not self.pinned.startswith(git_hash):
             raise RuntimeError(f"cbls_scip_traj ran SCIP {git_hash!r}, not {self.pinned}: {res}")
         self.scip_version, self.scip_git_hash = str(res["scip_version"]), git_hash
@@ -741,14 +743,16 @@ def _wall_step(
 ) -> None:
     """On the wall budget, a UB whose solution SCIP found only after it (its limit's
     overshoot) is not the run's (#442); the wheel's CPU budget is #441's and unchanged.
-    Found, not returned: the exit, SCIPfree and the re-check come after the limit."""
+    Found, not returned: the exit, SCIPfree and the re-check come after the limit, so
+    the trajectory point is stamped at the find too. With no logged incumbent the find
+    time is unknown and the return time stands in: such a UB is not shown in budget."""
     steps = improving(solve.trajectory)
     elapsed = iteration["wall_s"]
-    found = steps[-1][0] if steps else elapsed
+    found = min(steps[-1][0], elapsed) if steps else elapsed
     iteration["found_s"] = found
     iteration["in_budget"] = found <= budget
     if found <= budget:
-        _trajectory_step(trajectory, elapsed, ub)
+        _trajectory_step(trajectory, found, ub)
 
 
 def solve_pwl(
@@ -839,7 +843,8 @@ def _pwl_result(
     iterations: list[dict[str, Any]], converged: bool, out_of_budget: bool
 ) -> dict[str, Any]:
     """The run's bounds and status from its iterations."""
-    with_lb = [it for it in iterations if it.get("lb") is not None and it.get("in_budget", True)]
+    # Every iteration's LB is SCIP's at its stop, late or not (README item 8).
+    with_lb = [it for it in iterations if it.get("lb") is not None]
     with_ub = [
         i
         for i, it in enumerate(iterations)
@@ -914,7 +919,10 @@ def solve_exact(
     # `*_after_budget`, and `ub` is the last in-budget incumbent's SCIP objective,
     # a bound on its true cost; the driver keeps only the best solution, so that
     # incumbent is not re-checked.
+    # SCIP's status is the late one too: the run itself stopped on its budget.
     result.update({f"{k}_after_budget": val for k, val in late.items()})
+    result["status_after_budget"] = result["status"]
+    result["status"] = "timelimit"
     result["ub"] = result["trajectory"][-1][1] if result["trajectory"] else None
     result["ub_is_scip_objective"] = True
     return result

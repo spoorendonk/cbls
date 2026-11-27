@@ -94,13 +94,15 @@ Source: <http://www.dcc.fc.up.pt/~jpp/code/valve/ucp_valve.py>, 2013-12-09,
    `time_limit_s` is a real time, which a score over `[0, time_limit_s]`
    ignores. A failed run keeps its work directory, named on stderr.
    **Budget:** `ub` counts only solutions SCIP found within `time_limit_s`. A
-   pwl iteration records `found_s` (its best incumbent's time) and `in_budget`;
-   a late one's UB and LB do not count and it cannot converge the run. In exact,
-   a late best goes to `trajectory_after_budget` and `ub_after_budget`,
-   `scip_objective_after_budget`, `check_after_budget`; `ub` is then the last
-   in-budget point's SCIP objective (`ub_is_scip_objective`), not re-checked.
-   Exact's `lb` and `status`, and a pwl iteration's `lb`, are SCIP's at its stop,
-   which can overshoot the limit by a step. Strict mode's `numerics/feastol`
+   pwl iteration records `found_s` (its best incumbent's logged time, else its
+   return) and `in_budget`; its trajectory point is stamped at `found_s`, and a
+   late one's UB does not count and cannot converge the run. In exact, a late
+   best goes to `trajectory_after_budget` and `ub_after_budget`,
+   `scip_objective_after_budget`, `check_after_budget`, `status_after_budget`;
+   `status` is then `timelimit` and `ub` the last in-budget point's SCIP
+   objective (`ub_is_scip_objective`, not re-checked; `score.py` lists those
+   rows). Every `lb` is SCIP's at its stop, which can overshoot the limit by a
+   step. Strict mode's `numerics/feastol`
    1e-9 also sets `numerics/sumepsilon` 1e-9: SCIP 11 refuses sumepsilon above
    feastol (`set.c:681`), and SCIP 10 did not check.
 

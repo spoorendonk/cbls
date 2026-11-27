@@ -709,7 +709,16 @@ def test_equal_time_table_scores_the_driver_trajectories(tmp_path: Path) -> None
                     "ucp13", 1, "pwl", 100.0, 101.0, trajectory=[[0.0, 103.0], [2.0, 101.0]]
                 ),
                 # SCIP's objective (101) bounds the true cost (100.5) from above.
-                driver_record("ucp13", 1, "exact", 99.0, 100.5, trajectory=[[1.0, 101.0]]),
+                # Named as a late best's in-budget bound (#442); scored like any UB.
+                driver_record(
+                    "ucp13",
+                    1,
+                    "exact",
+                    99.0,
+                    100.5,
+                    trajectory=[[1.0, 101.0]],
+                    ub_is_scip_objective=True,
+                ),
                 # A solution the driver timed at no point.
                 driver_record("ucp13", 3, "exact", 199.0, 200.0),
             ]
@@ -731,6 +740,11 @@ def test_equal_time_table_scores_the_driver_trajectories(tmp_path: Path) -> None
     ) in lines
     assert "- SCIP UB with no trajectory point, so PI as if no incumbent: 1" in lines
     assert "  - ucp13 T=3 exact" in lines
+    assert (
+        "- exact's best came after the budget, so its final gap uses the last in-budget "
+        "SCIP objective, not a re-checked true cost: 1"
+    ) in lines
+    assert "  - ucp13 T=1 exact" in lines
     assert any(
         line.startswith("- SCIP 10.0.0 through cbls_scip_traj at 4 threads; budget (wall s")
         and "pwl T=1 3; pwl T=3 3; pwl T=48 3; exact T=1 3; exact T=3 3; exact T=48 3" in line

@@ -212,6 +212,9 @@ class ScipResult:
     lb_not_a_bound: bool
     #: driver only: the running best as (wall s from the method's start, objective).
     trajectory: Trajectory | None = None
+    #: exact, driver: the best came after the budget, so `ub` is the last in-budget
+    #: incumbent's SCIP objective, not a re-checked true cost (#442).
+    ub_is_scip_objective: bool = False
 
     @property
     def bound_lb(self) -> float | None:
@@ -530,6 +533,7 @@ def parse_scip_record(where: str, record: object) -> tuple[str, int, str, str, S
         budget_s=budget,
         lb_not_a_bound=method == "pwl" and bool(violated),
         trajectory=trajectory,
+        ub_is_scip_objective=record.get("ub_is_scip_objective") is True,
     )
     return instance, periods, method, version, result
 
@@ -1008,6 +1012,19 @@ def render_integrals(
             f"- SCIP UB with no trajectory point, so PI as if no incumbent: {len(untimed)}",
             *[f"  - {line}" for line in untimed],
         ]
+        late = [
+            f"{pair[0]} T={pair[1]} exact"
+            for pair in pairs
+            if (result := scip.results.get(pair, {}).get("exact")) is not None
+            and result.ub_is_scip_objective
+        ]
+        if late:
+            # Listed only when present, so earlier tables' notes stay as they were.
+            lines += [
+                "- exact's best came after the budget, so its final gap uses the last "
+                f"in-budget SCIP objective, not a re-checked true cost: {len(late)}",
+                *[f"  - {line}" for line in late],
+            ]
     return lines
 
 

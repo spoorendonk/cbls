@@ -474,11 +474,13 @@ bool write_result(const Args& a, nlohmann::json& result, SCIP_RETCODE rc, bool f
         out.close();
         if (!out) {
             std::cerr << "cannot write " << tmp << "\n";
+            std::remove(tmp.c_str());
             return false;
         }
     }
     if (std::rename(tmp.c_str(), a.result_out.c_str()) != 0) {
         std::cerr << "cannot rename " << tmp << ": " << std::strerror(errno) << "\n";
+        std::remove(tmp.c_str());
         return false;
     }
     return true;
@@ -522,9 +524,7 @@ int run_main(int argc, char** argv) {
     // Written before SCIPfree too, which can outlast the caller's kill grace on a
     // large model: a killed driver leaves this result, "freed": false (#442).
     result["records"] = log.records;
-    if (!write_result(*args, result, rc, false)) {
-        return 2;
-    }
+    const bool early_written = write_result(*args, result, rc, false);
     if (scip != nullptr) {
         const SCIP_RETCODE free_rc = SCIPfree(&scip);
         if (rc == SCIP_OKAY) {
@@ -532,7 +532,7 @@ int run_main(int argc, char** argv) {
         }
     }
     std::fclose(log.out);
-    if (!write_result(*args, result, rc, true)) {
+    if (!write_result(*args, result, rc, true) || !early_written) {
         return 2;
     }
     return rc == SCIP_OKAY ? 0 : 1;

@@ -69,6 +69,7 @@ last = max((i for i, r in enumerate(recs) if r["objective"] is not None), defaul
 if last is not None:
     recs[last]["mono_s"] = start + limit + 5.0
 open(traj, "w").writelines(json.dumps(r) + "\\n" for r in recs)
+time.sleep(max(start + limit + 5.5 - time.monotonic(), 0.0))  # no find after the return
 """
 # Returns past the budget, within the kill grace.
 LATE_RETURN = "time.sleep(max(start + limit + 1.0 - time.monotonic(), 0.0))"
@@ -133,7 +134,7 @@ def test_exact_ub_counts_only_incumbents_within_the_budget(
     late = r["trajectory_after_budget"][0][1]
     assert r["ub_after_budget"] <= late + 1e-6 * abs(late)
     assert r["check_after_budget"] == [] and "check" not in r
-    assert r["ub_is_scip_objective"] is True
+    assert r["ub_is_scip_objective"] is True and r["status"] == "timelimit"
     assert r["ub"] == (r["trajectory"][-1][1] if r["trajectory"] else None)
 
 
@@ -144,7 +145,9 @@ def test_pwl_ub_found_only_after_the_budget_is_not_the_runs(
     r = run_driver(tmp_path, wrap(tmp_path, scip_driver, LATE_INCUMBENT), "pwl", 1, limit)
     assert r["iterations"] and all(it["found_s"] > limit for it in r["iterations"])
     assert all(it["in_budget"] is False for it in r["iterations"])
-    assert (r["ub"], r["lb"], r["trajectory"], r["converged"]) == (None, None, [], False)
+    assert (r["ub"], r["trajectory"], r["converged"]) == (None, [], False)
+    # LBs are SCIP's at its stop, late or not.
+    assert r["lb"] == max(it["lb"] for it in r["iterations"])
     assert r["status"] == "time limit reached" and r["out_of_budget"] is True
 
 
@@ -156,4 +159,6 @@ def test_pwl_ub_found_within_the_budget_counts_though_returned_after_it(
     first = r["iterations"][0]
     assert first["wall_s"] > limit >= first["found_s"] and first["in_budget"] is True
     assert r["ub"] == first["ub"] and r["check"] == []
+    # Stamped at the find, so a score over [0, limit] sees it.
+    assert r["trajectory"] == [[first["found_s"], first["ub"]]]
     assert r["converged"] is False and r["out_of_budget"] is True
