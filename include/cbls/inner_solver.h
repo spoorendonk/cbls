@@ -33,6 +33,11 @@ public:
     // by -Woverloaded-virtual (GCC 15 -Wall, clang-tidy), not use-override.
     virtual void solve(Model& model, ViolationManager& vm,
                        const std::vector<int32_t>& last_changed_vars = {}, StopRef stop = {}) = 0;
+
+    // Opt-in (#445): also call solve() after an infeasible batch, so a hook
+    // that can repair one (re-dispatch a feasible commitment) is not starved
+    // where the search rarely lands feasible. The hook throttles itself.
+    [[nodiscard]] virtual bool wants_infeasible() const { return false; }
 };
 
 // Generic Float intensification: coordinate-descent sweeps over all Float vars

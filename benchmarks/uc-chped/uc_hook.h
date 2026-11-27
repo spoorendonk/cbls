@@ -108,22 +108,45 @@ public:
     }
 
     /// Pair-transfer descent from a feasible `p`, at most `max_sweeps` sweeps.
-    double polish(const std::vector<int>& on, std::vector<double>& p, int max_sweeps) const {
+    // `window` > 0 tries only the valve points within `window` steps of p_i
+    // (the LS's cheap variant); 0 tries all of them.
+    // `jcap` > 0 tries about that many absorbing units per move, a stride
+    // through the on-set rotated by (i, k); 0 tries all of them.
+    double polish(const std::vector<int>& on, std::vector<double>& p, int max_sweeps,
+                  int window = 0, int jcap = 0) const {
         const UCInstance& in = inst_;
+        const size_t stride =
+            jcap > 0 ? std::max<size_t>(1, (on.size() + jcap - 1) / static_cast<size_t>(jcap)) : 1;
+        fcache_.resize(in.n_units);
+        for (int u : on) {
+            fcache_[u] = fuel(u, p[u]);
+        }
         for (int sweep = 0; sweep < max_sweeps; ++sweep) {
             bool improved = false;
             for (int i : on) {
-                const double fi = fuel(i, p[i]);
+                const double fi = fcache_[i];
                 double best_gain = -1e-7;
                 int best_j = -1;
                 double best_q = 0.0;
-                for (double q : valves_[i]) {
+                const auto& vi = valves_[i];
+                size_t lo = 0;
+                size_t hi = vi.size();
+                if (window > 0) {
+                    const size_t at = static_cast<size_t>(
+                        std::lower_bound(vi.begin(), vi.end(), p[i]) - vi.begin());
+                    lo = at > static_cast<size_t>(window) ? at - window : 0;
+                    hi = std::min(vi.size(), at + window);
+                }
+                for (size_t k = lo; k < hi; ++k) {
+                    const double q = vi[k];
                     const double delta = q - p[i];
                     if (std::abs(delta) < 1e-9) {
                         continue;
                     }
                     const double di = fuel(i, q) - fi;
-                    for (int j : on) {
+                    for (size_t jj = (static_cast<size_t>(i) + k) % stride; jj < on.size();
+                         jj += stride) {
+                        const int j = on[jj];
                         if (j == i) {
                             continue;
                         }
@@ -131,7 +154,7 @@ public:
                         if (pj < in.P_min[j] - 1e-12 || pj > in.P_max[j] + 1e-12) {
                             continue;
                         }
-                        const double g = di + fuel(j, pj) - fuel(j, p[j]);
+                        const double g = di + fuel(j, pj) - fcache_[j];
                         if (g < best_gain) {
                             best_gain = g;
                             best_j = j;
@@ -143,6 +166,8 @@ public:
                     const double delta = best_q - p[i];
                     p[i] = best_q;
                     p[best_j] = std::clamp(p[best_j] - delta, in.P_min[best_j], in.P_max[best_j]);
+                    fcache_[i] = fuel(i, p[i]);
+                    fcache_[best_j] = fuel(best_j, p[best_j]);
                     improved = true;
                 }
             }
@@ -287,6 +312,7 @@ private:
     const UCInstance& inst_;
     std::vector<std::vector<double>> valves_;
     mutable std::vector<int> idx_;
+    mutable std::vector<double> fcache_;
 };
 
 }  // namespace hook_detail
@@ -297,6 +323,10 @@ struct UCHookStats {
     std::atomic<int64_t> skipped{0};
     std::atomic<int64_t> improvements{0};
     std::atomic<int64_t> nanos{0};
+    std::atomic<int64_t> throttled{0};
+    std::atomic<int64_t> infeasible_calls{0};
+    std::atomic<int64_t> ils_kicks{0};
+    std::atomic<int64_t> ils_wins{0};
     static UCHookStats& get() {
         static UCHookStats s;
         return s;
@@ -308,34 +338,102 @@ struct UCHookStats {
 class UCHook : public InnerSolverHook {
 public:
     UCHook(const UCInstance& inst, const UCModel& ucm, bool commit_ls, uint64_t seed)
-        : inst_(inst), ucm_(ucm), ed_(inst), commit_ls_(commit_ls), rng_(seed) {}
+        : inst_(inst),
+          ucm_(ucm),
+          ed_(inst),
+          commit_ls_(commit_ls),
+          rng_(seed),
+          born_(std::chrono::steady_clock::now()) {}
 
     int polish_sweeps = 4;
+    int ls_polish_sweeps = 0;  // > 0: the LS scores periods by polished dispatch
+    int ls_polish_window = 0;  // its valve window (Dispatcher::polish)
+    int ls_polish_jcap = 0;    // its absorbing-unit cap (Dispatcher::polish)
     size_t memo_cap = 200000;
+    // Also run on infeasible batches whose commitment is feasible (re-dispatch
+    // repairs p). Those calls are skipped once the hook has used more than
+    // `infeasible_share` of this worker's wall time, or the commitment repeats.
+    bool on_infeasible = false;
+    double infeasible_share = 0.5;
+    // Iterated local search after the descent: random kicks, re-descend, keep
+    // if cheaper; at most `ils_seconds` per call and `ils_stall` kicks in a row
+    // without improvement. 0 seconds = off.
+    double ils_seconds = 0.0;
+    int ils_stall = 100;
+    int ils_kick = 3;
+    double elite_prob = 0.0;  // chance an ILS starts from the hook's elite y
+    // > 0: the descent after a kick tries only the kicked units plus this many
+    // random ones (a full pass is the cost on 100+ unit rows).
+    int ils_local = 0;
+    // Repair a commitment that breaks min up/down or capacity (repair_row,
+    // repair_capacity) instead of skipping the call.
+    bool repair = false;
+
+    [[nodiscard]] bool wants_infeasible() const override { return on_infeasible; }
 
     void solve(Model& model, ViolationManager& vm, const std::vector<int32_t>& /*last*/ = {},
                StopRef stop = {}) override {
         const auto t0 = std::chrono::steady_clock::now();
         UCHookStats& st = UCHookStats::get();
+        const bool feasible_in = vm.is_feasible();
+        if (!feasible_in) {
+            const double alive = std::chrono::duration<double>(t0 - born_).count();
+            if (own_seconds_ > infeasible_share * alive) {
+                ++st.throttled;
+                return;
+            }
+        }
         ++st.calls;
-        run(model, vm, stop);
-        st.nanos += std::chrono::duration_cast<std::chrono::nanoseconds>(
-                        std::chrono::steady_clock::now() - t0)
-                        .count();
+        run(model, vm, stop, feasible_in);
+        const auto dt = std::chrono::steady_clock::now() - t0;
+        own_seconds_ += std::chrono::duration<double>(dt).count();
+        st.nanos += std::chrono::duration_cast<std::chrono::nanoseconds>(dt).count();
     }
 
 private:
-    void run(Model& model, ViolationManager& vm, StopRef stop) {
+    void run(Model& model, ViolationManager& vm, StopRef stop, bool feasible_in) {
         UCHookStats& st = UCHookStats::get();
         read_state(model);
+        if (!feasible_in && y_ == last_y_) {
+            ++st.skipped;
+            return;
+        }
+        last_y_ = y_;
+        if (repair) {
+            repair_state();
+        }
         if (!state_feasible()) {
             ++st.skipped;
             return;
         }
-        const double before = current_cost(model);
+        // An infeasible point has no cost to beat: write back only what beats
+        // the best this hook has seen.
+        double before = best_seen_;
+        if (feasible_in) {
+            before = current_cost(model);
+            best_seen_ = std::min(best_seen_, before);
+        } else {
+            ++st.infeasible_calls;
+        }
         init_costs();
         if (commit_ls_) {
             commitment_search(stop);
+            if (ils_seconds > 0.0) {
+                // With probability elite_prob, kick from this hook's elite
+                // commitment rather than the search's descended one.
+                std::uniform_real_distribution<double> coin(0.0, 1.0);
+                if (!elite_y_.empty() && elite_total_ < total_cost() - 1e-6 &&
+                    coin(rng_) < elite_prob) {
+                    y_ = elite_y_;
+                    init_costs();
+                }
+                iterated_search(stop);
+                const double c = total_cost();
+                if (c < elite_total_) {
+                    elite_total_ = c;
+                    elite_y_ = y_;
+                }
+            }
         }
         // Final dispatch: polished, from the fast dispatch and from the model's
         // own p where the column is unchanged; the cheaper is kept.
@@ -349,6 +447,7 @@ private:
         if (!(total < before - 1e-6)) {
             return;
         }
+        best_seen_ = std::min(best_seen_, total);
         ++st.improvements;
         for (int u = 0; u < inst_.n_units; ++u) {
             for (int t = 0; t < inst_.n_periods; ++t) {
@@ -432,6 +531,81 @@ private:
         return true;
     }
 
+    // Forward pass making row r feasible for unit u, only ever switching units
+    // on outside the initial-condition span: that span is forced to its held
+    // state; a startup's min_on run is extended; a shutdown whose off run is
+    // cut short by a restart inside min_off is cancelled (the gap filled).
+    void repair_row(int u, Row& r) const {
+        const UCInstance& in = inst_;
+        const int T = in.n_periods;
+        int forced = 0;
+        if (in.y_prev[u] == 1 || in.y_prev[u] == 0) {
+            const int held = in.y_prev[u];
+            const int min_run = held == 1 ? in.min_on[u] : in.min_off[u];
+            forced = std::min(T, std::max(0, min_run - in.n_init[u]));
+            std::fill(r.begin(), r.begin() + forced, static_cast<int8_t>(held));
+        }
+        for (int t = forced; t < T; ++t) {
+            const int prev = t == 0 ? in.y_prev[u] : r[t - 1];
+            if (r[t] == prev) {
+                continue;
+            }
+            if (r[t] == 1) {
+                const int end = std::min(t + in.min_on[u], T);
+                std::fill(r.begin() + t, r.begin() + end, 1);
+            } else {
+                const int end = std::min(t + in.min_off[u], T);
+                int restart = -1;
+                for (int tau = t + 1; tau < end && restart < 0; ++tau) {
+                    if (r[tau] == 1) {
+                        restart = tau;
+                    }
+                }
+                if (restart >= 0) {
+                    std::fill(r.begin() + t, r.begin() + restart, 1);
+                }
+            }
+        }
+    }
+
+    // Each row repaired, then every period short of demand + reserve gets the
+    // largest idle unit that may start there, run for min_on, until covered.
+    void repair_state() {
+        const UCInstance& in = inst_;
+        for (int u = 0; u < in.n_units; ++u) {
+            if (!row_feasible(u, y_[u])) {
+                repair_row(u, y_[u]);
+            }
+        }
+        for (int t = 0; t < in.n_periods; ++t) {
+            for (;;) {
+                double cap = 0.0;
+                for (int u = 0; u < in.n_units; ++u) {
+                    cap += in.P_max[u] * y_[u][t];
+                }
+                if (cap >= in.demand[t] + std::max(0.0, in.reserve[t]) - 1e-9) {
+                    break;
+                }
+                int best = -1;
+                for (int u = 0; u < in.n_units; ++u) {
+                    if (y_[u][t] == 0 && (best < 0 || in.P_max[u] > in.P_max[best])) {
+                        Row r = y_[u];
+                        r[t] = 1;
+                        repair_row(u, r);
+                        if (r[t] == 1 && row_feasible(u, r)) {
+                            best = u;
+                        }
+                    }
+                }
+                if (best < 0) {
+                    break;
+                }
+                y_[best][t] = 1;
+                repair_row(best, y_[best]);
+            }
+        }
+    }
+
     [[nodiscard]] double startup_cost(int u, const Row& r) const {
         const UCInstance& in = inst_;
         double c = 0.0;
@@ -488,7 +662,11 @@ private:
             return hook_detail::kInf;
         }
         scratch_.assign(inst_.n_units, 0.0);
-        const double c = ed_.fast(on_set(t), inst_.demand[t], scratch_);
+        const std::vector<int> on = on_set(t);
+        double c = ed_.fast(on, inst_.demand[t], scratch_);
+        if (ls_polish_sweeps > 0 && c < hook_detail::kInf) {
+            c = ed_.polish(on, scratch_, ls_polish_sweeps, ls_polish_window, ls_polish_jcap);
+        }
         fast_memo_.emplace(std::move(k), c);
         return c;
     }
@@ -679,10 +857,16 @@ private:
     }
 
     // First-improvement descent over single-unit rows, then unit swaps.
-    void commitment_search(StopRef stop) {
-        std::vector<int> order(inst_.n_units);
-        for (int u = 0; u < inst_.n_units; ++u) {
-            order[u] = u;
+    // With `subset`, only those units' rows (and swaps out of them) are tried.
+    void commitment_search(StopRef stop, const std::vector<int>* subset = nullptr) {
+        std::vector<int> order;
+        if (subset != nullptr) {
+            order = *subset;
+        } else {
+            order.resize(inst_.n_units);
+            for (int u = 0; u < inst_.n_units; ++u) {
+                order[u] = u;
+            }
         }
         std::vector<Row> cands;
         std::vector<int> touched;
@@ -711,7 +895,7 @@ private:
             if (stop.requested()) {
                 return;
             }
-            if (swap_pass(stop)) {
+            if (swap_pass(stop, order)) {
                 improved = true;
             }
             if (!improved) {
@@ -721,7 +905,7 @@ private:
     }
 
     // Swap: unit u's block off, an idle unit v on over the same span.
-    bool swap_pass(StopRef stop) {
+    bool swap_pass(StopRef stop, const std::vector<int>& from) {
         bool improved = false;
         std::vector<int> two(2);
         std::vector<Row> rows(2);
@@ -731,7 +915,7 @@ private:
         for (int u = 0; u < inst_.n_units; ++u) {
             others[u] = u;
         }
-        for (int u = 0; u < inst_.n_units; ++u) {
+        for (int u : from) {
             for (const auto& [s, e] : blocks(y_[u])) {
                 if (stop.requested()) {
                     return improved;
@@ -776,12 +960,109 @@ private:
         return improved;
     }
 
+    [[nodiscard]] double total_cost() const {
+        double c = 0.0;
+        for (double x : pc_) {
+            c += x;
+        }
+        for (double x : su_) {
+            c += x;
+        }
+        return c;
+    }
+
+    // One kick: `ils_kick` random single-unit rows (from candidate_rows) or
+    // unit swaps, applied whatever they cost, so long as dispatch stays finite.
+    void kick(std::vector<int>& kicked) {
+        kicked.clear();
+        std::vector<Row> cands;
+        std::vector<int> touched;
+        std::vector<double> new_pc;
+        std::vector<int> one(1);
+        std::vector<Row> one_row(1);
+        std::uniform_int_distribution<int> unit(0, inst_.n_units - 1);
+        for (int k = 0; k < ils_kick; ++k) {
+            for (int attempt = 0; attempt < 10; ++attempt) {
+                const int u = unit(rng_);
+                candidate_rows(u, cands);
+                if (cands.empty()) {
+                    continue;
+                }
+                std::uniform_int_distribution<size_t> pick(0, cands.size() - 1);
+                one[0] = u;
+                one_row[0] = cands[pick(rng_)];
+                const double d = try_rows(one, one_row, touched, new_pc);
+                if (d < hook_detail::kInf) {
+                    apply_rows(one, one_row, touched, new_pc);
+                    kicked.push_back(u);
+                    break;
+                }
+            }
+        }
+    }
+
+    // ILS from the descended y_: kick, re-descend, keep the better; ends on
+    // the time slice, the stall cap or `stop`, with y_/pc_/su_ the best found.
+    void iterated_search(StopRef stop) {
+        UCHookStats& st = UCHookStats::get();
+        const auto end = std::chrono::steady_clock::now() +
+                         std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                             std::chrono::duration<double>(ils_seconds));
+        double best = total_cost();
+        std::vector<Row> by = y_;
+        std::vector<double> bpc = pc_;
+        std::vector<double> bsu = su_;
+        int stall = 0;
+        std::vector<int> kicked;
+        std::vector<int> local;
+        std::uniform_int_distribution<int> unit(0, inst_.n_units - 1);
+        const bool restrict = ils_local > 0 && ils_local < inst_.n_units;
+        while (stall < ils_stall && !stop.requested() && std::chrono::steady_clock::now() < end) {
+            ++st.ils_kicks;
+            kick(kicked);
+            if (restrict) {
+                local = kicked;
+                for (int i = 0; i < ils_local; ++i) {
+                    const int u = unit(rng_);
+                    if (std::find(local.begin(), local.end(), u) == local.end()) {
+                        local.push_back(u);
+                    }
+                }
+                commitment_search(stop, &local);
+            } else {
+                commitment_search(stop);
+            }
+            const double c = total_cost();
+            if (c < best - 1e-6) {
+                ++st.ils_wins;
+                best = c;
+                by = y_;
+                bpc = pc_;
+                bsu = su_;
+                stall = 0;
+            } else {
+                ++stall;
+                y_ = by;
+                pc_ = bpc;
+                su_ = bsu;
+            }
+        }
+        y_ = std::move(by);
+        pc_ = std::move(bpc);
+        su_ = std::move(bsu);
+    }
+
     const UCInstance& inst_;
     const UCModel& ucm_;
     hook_detail::Dispatcher ed_;
     bool commit_ls_;
     std::mt19937_64 rng_;
-    std::vector<Row> y_, y0_;
+    std::chrono::steady_clock::time_point born_;
+    double own_seconds_ = 0.0;
+    double best_seen_ = hook_detail::kInf;
+    double elite_total_ = hook_detail::kInf;  // fast-dispatch cost of elite_y_
+    std::vector<std::vector<int8_t>> elite_y_;
+    std::vector<Row> y_, y0_, last_y_;
     std::vector<std::vector<double>> p0_;
     std::vector<double> pc_, su_, scratch_;
     std::unordered_map<hook_detail::ColumnKey, double, hook_detail::ColumnKeyHash> fast_memo_;

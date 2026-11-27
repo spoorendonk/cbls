@@ -106,6 +106,19 @@ struct Args {
     // The UC inner solver (uc_hook.h, #445): "" off, "ed" dispatch only,
     // "full" dispatch plus commitment search. Opt-in, never published.
     std::string uc_hook;
+    // With --uc-hook: also run it on infeasible batches (--uc-infeasible), and
+    // an ILS of up to uc_ils x the row's budget seconds per call (--uc-ils).
+    bool uc_infeasible = false;
+    double uc_ils = 0.0;
+    bool uc_repair = false;  // --uc-repair: repair the commitment, not skip
+    int uc_ils_stall = 100;  // --uc-ils-stall N
+    int uc_ils_local = 0;    // --uc-ils-local N
+    double uc_share = 0.5;   // --uc-share F: hook wall share on infeasible calls
+    int uc_polish = 4;       // --uc-polish N: final dispatch polish sweeps
+    int uc_ls_polish = 0;    // --uc-ls-polish N: LS period-cost polish sweeps
+    int uc_ls_window = 0;    // --uc-ls-window N: its valve window
+    int uc_ls_jcap = 0;      // --uc-ls-jcap N: its absorbing-unit cap
+    double uc_elite = 0.0;   // --uc-elite P: ILS from the hook's elite y
     // Dump the final assignment (y, p) as JSON for the external checker.
     std::string solution_out;
     bool commit_set = false;
@@ -167,6 +180,25 @@ void check_numeric_flags(Args& a) {
         }
         a.search_config += (a.search_config.empty() ? "" : ";");
         a.search_config += "uc_hook=" + a.uc_hook;
+        if (a.uc_infeasible) {
+            a.search_config += ";uc_infeasible";
+        }
+        if (a.uc_ils > 0.0) {
+            a.search_config += ";uc_ils=" + std::to_string(a.uc_ils) +
+                               ";uc_ils_stall=" + std::to_string(a.uc_ils_stall) +
+                               ";uc_ils_local=" + std::to_string(a.uc_ils_local);
+        }
+        if (a.uc_infeasible) {
+            a.search_config += ";uc_share=" + std::to_string(a.uc_share);
+        }
+        a.search_config += ";uc_polish=" + std::to_string(a.uc_polish) +
+                           ";uc_ls_polish=" + std::to_string(a.uc_ls_polish) +
+                           ";uc_ls_window=" + std::to_string(a.uc_ls_window) +
+                           ";uc_ls_jcap=" + std::to_string(a.uc_ls_jcap) +
+                           ";uc_elite=" + std::to_string(a.uc_elite);
+        if (a.uc_repair) {
+            a.search_config += ";uc_repair";
+        }
     }
     // NaN, 0 or negative fails: solve() would return having searched nothing,
     // a full-looking table of empty results; isfinite too, as "inf" would never
@@ -333,6 +365,28 @@ Args parse_args(int argc, char** argv) {
             a.trace_csv = v;
         } else if (c.value_flag("--uc-hook", v)) {
             a.uc_hook = v;
+        } else if (s == "--uc-infeasible") {
+            a.uc_infeasible = true;
+        } else if (s == "--uc-repair") {
+            a.uc_repair = true;
+        } else if (c.value_flag("--uc-ils-local", v)) {
+            a.uc_ils_local = static_cast<int>(parse_double("--uc-ils-local", v));
+        } else if (c.value_flag("--uc-polish", v)) {
+            a.uc_polish = static_cast<int>(parse_double("--uc-polish", v));
+        } else if (c.value_flag("--uc-ls-polish", v)) {
+            a.uc_ls_polish = static_cast<int>(parse_double("--uc-ls-polish", v));
+        } else if (c.value_flag("--uc-ls-window", v)) {
+            a.uc_ls_window = static_cast<int>(parse_double("--uc-ls-window", v));
+        } else if (c.value_flag("--uc-ls-jcap", v)) {
+            a.uc_ls_jcap = static_cast<int>(parse_double("--uc-ls-jcap", v));
+        } else if (c.value_flag("--uc-elite", v)) {
+            a.uc_elite = parse_double("--uc-elite", v);
+        } else if (c.value_flag("--uc-share", v)) {
+            a.uc_share = parse_double("--uc-share", v);
+        } else if (c.value_flag("--uc-ils-stall", v)) {
+            a.uc_ils_stall = static_cast<int>(parse_double("--uc-ils-stall", v));
+        } else if (c.value_flag("--uc-ils", v)) {
+            a.uc_ils = parse_double("--uc-ils", v);
         } else if (c.value_flag("--solution-out", v)) {
             a.solution_out = v;
         } else if (cbls::bench::match_search_flag(c, s, a.search)) {
@@ -604,6 +658,31 @@ cbls::SearchResult solve_instance(const Args& args, const cbls::uc_chped::UCInst
     const bool uc_hook = !args.uc_hook.empty();
     const bool uc_full = args.uc_hook == "full";
     double init_seconds = 0.0;
+    const bool uc_infeasible = args.uc_infeasible;
+    const bool uc_repair = args.uc_repair;
+    const int ils_stall = args.uc_ils_stall;
+    const int ils_local = args.uc_ils_local;
+    const double share = args.uc_share;
+    const double ils_seconds = args.uc_ils * tlim;
+    const int polish = args.uc_polish;
+    const int ls_polish = args.uc_ls_polish;
+    const int ls_window = args.uc_ls_window;
+    const int ls_jcap = args.uc_ls_jcap;
+    const double elite = args.uc_elite;
+    auto configure = [uc_infeasible, uc_repair, ils_stall, ils_local, share, ils_seconds, polish,
+                      ls_polish, ls_window, ls_jcap, elite](cbls::uc_chped::UCHook& h) {
+        h.elite_prob = elite;
+        h.polish_sweeps = polish;
+        h.ls_polish_sweeps = ls_polish;
+        h.ls_polish_window = ls_window;
+        h.ls_polish_jcap = ls_jcap;
+        h.on_infeasible = uc_infeasible;
+        h.repair = uc_repair;
+        h.ils_stall = ils_stall;
+        h.ils_local = ils_local;
+        h.infeasible_share = share;
+        h.ils_seconds = ils_seconds;
+    };
     if (uc_hook) {
         // One pass over the warm start before the search: the greedy start
         // re-dispatched (and, under "full", recommitted). Its time comes out of
@@ -616,6 +695,7 @@ cbls::SearchResult solve_instance(const Args& args, const cbls::uc_chped::UCInst
         const Deadline dl{t0 + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
                                    std::chrono::duration<double>(0.25 * tlim))};
         cbls::uc_chped::UCHook init_hook(inst, ucm, uc_full, args.seed);
+        configure(init_hook);
         cbls::ViolationManager init_vm(ucm.model);
         init_hook.solve(ucm.model, init_vm, {}, cbls::StopRef(dl));
         init_seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
@@ -627,6 +707,7 @@ cbls::SearchResult solve_instance(const Args& args, const cbls::uc_chped::UCInst
     *init_out = init_seconds;
     cbls::FloatIntensifyHook float_hook;
     cbls::uc_chped::UCHook uc_hook_1(inst, ucm, uc_full, args.seed + 1);
+    configure(uc_hook_1);
     cbls::InnerSolverHook& hook = uc_hook ? static_cast<cbls::InnerSolverHook&>(uc_hook_1)
                                           : static_cast<cbls::InnerSolverHook&>(float_hook);
     cbls::LNS lns(0.3);
@@ -650,9 +731,11 @@ cbls::SearchResult solve_instance(const Args& args, const cbls::uc_chped::UCInst
     std::function<std::shared_ptr<cbls::InnerSolverHook>(cbls::Model&)> hook_factory;
     if (uc_hook) {
         auto counter = std::make_shared<std::atomic<uint64_t>>(args.seed * 1000 + 7);
-        hook_factory = [&inst, &ucm, uc_full, counter](cbls::Model&) {
-            return std::make_shared<cbls::uc_chped::UCHook>(inst, ucm, uc_full,
-                                                            counter->fetch_add(1));
+        hook_factory = [&inst, &ucm, uc_full, counter, configure](cbls::Model&) {
+            auto h =
+                std::make_shared<cbls::uc_chped::UCHook>(inst, ucm, uc_full, counter->fetch_add(1));
+            configure(*h);
+            return h;
         };
     } else if (args.search.float_hook) {
         hook_factory = [](cbls::Model&) { return std::make_shared<cbls::FloatIntensifyHook>(); };
@@ -845,11 +928,15 @@ void run_one(std::ostream& csv, std::ofstream& trace, const Args& args,
                 static_cast<long>(result.iterations));
     if (!args.uc_hook.empty()) {
         auto& st = cbls::uc_chped::UCHookStats::get();
-        std::printf("    uc-hook: %ld calls, %ld skipped, %ld improved, %.2f s\n",
-                    static_cast<long>(st.calls.exchange(0)),
-                    static_cast<long>(st.skipped.exchange(0)),
-                    static_cast<long>(st.improvements.exchange(0)),
-                    static_cast<double>(st.nanos.exchange(0)) * 1e-9);
+        std::printf(
+            "    uc-hook: %ld calls (%ld infeasible, %ld throttled), %ld skipped, %ld improved, "
+            "%ld/%ld ils wins/kicks, %.2f s\n",
+            static_cast<long>(st.calls.exchange(0)),
+            static_cast<long>(st.infeasible_calls.exchange(0)),
+            static_cast<long>(st.throttled.exchange(0)), static_cast<long>(st.skipped.exchange(0)),
+            static_cast<long>(st.improvements.exchange(0)),
+            static_cast<long>(st.ils_wins.exchange(0)), static_cast<long>(st.ils_kicks.exchange(0)),
+            static_cast<double>(st.nanos.exchange(0)) * 1e-9);
     }
 
     write_row(csv, row);

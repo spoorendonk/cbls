@@ -433,6 +433,7 @@ private:
     // Steps 3-4: bank the feasible point, polish it, bank the polish. Returns
     // whether the batch produced a new best, and may set `resync`.
     bool polish_and_record(double batch_violation, bool& resync);
+    void run_hook();
     // Steps 5-6. Returns false when the run is over (pure feasibility: solved).
     bool apply_batch_outcome(bool improved, bool resync, bool count_stagnation);
     void maybe_arm_escape_probe();
@@ -1199,42 +1200,52 @@ void ViolationLSLoop::note_closest_approach(double batch_violation) {
 
 bool ViolationLSLoop::polish_and_record(double batch_violation, bool& resync) {
     if (batch_violation > config_.feasibility_tolerance) {
-        return false;
+        // An opt-in hook may repair an infeasible point (#445); kept only if
+        // the result is feasible.
+        if (hook_ == nullptr || !hook_->wants_infeasible() || past_deadline()) {
+            return false;
+        }
+        run_hook();
+        resync = true;
+        return real_feasible() && record_best();
     }
     // Record before polishing: the hook can leave the feasible region, and a
     // visited feasible point must not be lost.
     bool improved = record_best();
     // The hook's time is unbounded; don't start one with no budget left.
     if (hook_ != nullptr && !past_deadline()) {
-        ++counters_.inner_solver_calls;
-        // An iteration-budgeted run reads no clock at all (#169, the determinism
-        // note in docs/architecture.md), so inner_solver_seconds reads 0.0 there.
-        // An attached tracer widens the gate: Tracer::hook carries the duration.
-        const bool time_the_hook = has_deadline_ || tracer_ != nullptr;
-        const auto hook_started = time_the_hook ? std::chrono::steady_clock::now()
-                                                : std::chrono::steady_clock::time_point{};
-        // The hook gets the loop's stop condition (#191). past_deadline() reads
-        // no clock on a clockless run, so it stays bit-reproducible.
-        const LoopStop stop{this};
-        // continuous-objective polish (mutates floats)
-        hook_->solve(model_, vm_, {}, StopRef(stop));
-        if (time_the_hook) {
-            const double hook_seconds =
-                std::chrono::duration<double>(std::chrono::steady_clock::now() - hook_started)
-                    .count();
-            if (has_deadline_) {
-                counters_.inner_solver_seconds += hook_seconds;
-            }
-            if (tracer_ != nullptr) {
-                tracer_->hook(hook_seconds);
-            }
-        }
+        run_hook();
         resync = true;
         if (real_feasible()) {  // keep the polish only if it stayed feasible
             improved = record_best() || improved;
         }
     }
     return improved;
+}
+
+void ViolationLSLoop::run_hook() {
+    ++counters_.inner_solver_calls;
+    // An iteration-budgeted run reads no clock at all (#169, the determinism
+    // note in docs/architecture.md), so inner_solver_seconds reads 0.0 there.
+    // An attached tracer widens the gate: Tracer::hook carries the duration.
+    const bool time_the_hook = has_deadline_ || tracer_ != nullptr;
+    const auto hook_started =
+        time_the_hook ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+    // The hook gets the loop's stop condition (#191). past_deadline() reads
+    // no clock on a clockless run, so it stays bit-reproducible.
+    const LoopStop stop{this};
+    // continuous-objective polish (mutates floats)
+    hook_->solve(model_, vm_, {}, StopRef(stop));
+    if (time_the_hook) {
+        const double hook_seconds =
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - hook_started).count();
+        if (has_deadline_) {
+            counters_.inner_solver_seconds += hook_seconds;
+        }
+        if (tracer_ != nullptr) {
+            tracer_->hook(hook_seconds);
+        }
+    }
 }
 
 bool ViolationLSLoop::apply_batch_outcome(bool improved, bool resync, bool count_stagnation) {
