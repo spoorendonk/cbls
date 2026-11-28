@@ -153,7 +153,7 @@ SUMMARY = (
 ogp_site_url = html_baseurl
 ogp_site_name = "cbls"
 # No generated cards (they need matplotlib, which the benchmarks extra brings
-# and the docs group does not): the card is a committed image (#467).
+# and the docs group does not): a committed card image comes with #467.
 ogp_social_cards = {"enable": False}
 
 

@@ -440,9 +440,9 @@ if(CBLS_BUILD_TESTS)
     else()
         message(WARNING "No doxygen, or no Python with the docs group, found: "
                         "docs_build is not registered, so the gate skips the "
-                        "Sphinx build of docs/. Install doxygen (brew install "
-                        "doxygen), and the group with: uv sync --extra dev "
-                        "--extra benchmarks")
+                        "Sphinx build of docs/. Install doxygen (brew or apt "
+                        "install doxygen), and the group with: uv sync --extra "
+                        "dev --extra benchmarks")
     endif()
 endif()
 
