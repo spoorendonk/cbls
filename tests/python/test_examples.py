@@ -61,21 +61,33 @@ def test_an_example_page_command_runs_as_written(command: str, reference: float 
         _assert_near(float(found[1]), reference)
 
 
-_ST_E38_CLI = "cbls benchmarks/instances/minlplib/st_e38.nl --time-limit 2 --threads 1"
-_NEOS5_CLI = "cbls benchmarks/instances/miplib-fj/neos5.mps.gz --time-limit 2 --threads 1"
+_ST_E38_CLI = "cbls benchmarks/instances/minlplib/st_e38.nl --time-limit 2 --threads 1 --seed 42"
+_NEOS5_CLI = "cbls benchmarks/instances/miplib-fj/neos5.mps.gz --time-limit 2 --threads 1 --seed 42"
+_ST_E38_NAMES = [f"x{i}" for i in range(4)]
+_NEOS5_NAMES = [f"d{i}" for i in range(1, 64)]  # all 63 columns
+
+
+def _human_result(names: list[str]) -> str:
+    """The page's result block, `--quiet`: a blank line, then one value per variable."""
+    values = "".join(rf"  {name} = -?\d+\.\d\d\n" for name in names)
+    return (
+        r"\nStatus:     feasible\nObjective:  (\S+)\n"
+        r"Time:       \d+\.\d\ds \(\d+ iterations, stopped on time_limit\)\n"
+        rf"Solution:\n{values}"
+    )
 
 
 @pytest.mark.parametrize(
-    ("page", "command", "reference"),
+    ("page", "command", "names", "reference"),
     [
-        ("minlplib.md", f"{_ST_E38_CLI} --quiet", ST_E38_BEST),
-        ("minlplib.md", f"{_ST_E38_CLI} --format jsonl --quiet", ST_E38_BEST),
-        ("mip.md", f"{_NEOS5_CLI} --quiet", None),
-        ("mip.md", f"{_NEOS5_CLI} --format jsonl --quiet", None),
+        ("minlplib.md", f"{_ST_E38_CLI} --quiet", _ST_E38_NAMES, ST_E38_BEST),
+        ("minlplib.md", f"{_ST_E38_CLI} --format jsonl --quiet", _ST_E38_NAMES, ST_E38_BEST),
+        ("mip.md", f"{_NEOS5_CLI} --quiet", _NEOS5_NAMES, None),
+        ("mip.md", f"{_NEOS5_CLI} --format jsonl --quiet", _NEOS5_NAMES, None),
     ],
 )
 def test_an_example_page_cli_command_runs_as_written(
-    page: str, command: str, reference: float | None
+    page: str, command: str, names: list[str], reference: float | None
 ) -> None:
     # The page shows this exact line; `python -m cbls` is the console script's entry.
     assert f"\n{command}\n" in (ROOT / "docs" / "examples" / page).read_text()
@@ -88,12 +100,26 @@ def test_an_example_page_cli_command_runs_as_written(
         lines = result.stdout.splitlines()
         assert len(lines) == 1, result.stdout
         record = json.loads(lines[0])
-        assert record["event"] == "result"
-        assert record["feasible"] is True
+        assert list(record) == [
+            "event",
+            "feasible",
+            "iterations",
+            "objective",
+            "solution",
+            "status",
+            "termination",
+            "time",
+        ]
+        assert (record["event"], record["feasible"], record["status"]) == (
+            "result",
+            True,
+            "feasible",
+        )
+        assert record["termination"] == "time_limit"
+        assert list(record["solution"]) == sorted(names)  # sorted as text, as the page says
         objective = float(record["objective"])
     else:
-        assert re.search(r"^Status:\s+feasible$", result.stdout, re.M), result.stdout
-        found = re.search(r"^Objective:\s+(\S+)$", result.stdout, re.M)
+        found = re.fullmatch(_human_result(names), result.stdout)
         assert found, result.stdout
         objective = float(found[1])
     if reference is not None:

@@ -48,7 +48,7 @@ The `cbls` command solves the file with no script, here with the same 2 s, one
 thread and seed 42:
 
 ```sh
-cbls benchmarks/instances/minlplib/st_e38.nl --time-limit 2 --threads 1 --quiet
+cbls benchmarks/instances/minlplib/st_e38.nl --time-limit 2 --threads 1 --seed 42 --quiet
 ```
 
 ```text
@@ -62,12 +62,13 @@ Solution:
   x3 = 10.00
 ```
 
-`--quiet` prints the result only. Without it, a header and a line for each new
-best point come first. `--format jsonl` prints the result as one JSON line,
+It prints a blank line first. `--quiet` prints the result only. Without it, a
+header and progress lines come first: a line for each new best point, marked
+`*`, and one about every second between them. `--format jsonl` prints the result as one JSON line,
 with the values at full precision:
 
 ```sh
-cbls benchmarks/instances/minlplib/st_e38.nl --time-limit 2 --threads 1 --format jsonl --quiet
+cbls benchmarks/instances/minlplib/st_e38.nl --time-limit 2 --threads 1 --seed 42 --format jsonl --quiet
 ```
 
 ```json

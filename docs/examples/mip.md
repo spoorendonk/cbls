@@ -45,7 +45,7 @@ The `cbls` command solves the file with no script, here with the same 2 s, one
 thread and seed 42:
 
 ```sh
-cbls benchmarks/instances/miplib-fj/neos5.mps.gz --time-limit 2 --threads 1 --quiet
+cbls benchmarks/instances/miplib-fj/neos5.mps.gz --time-limit 2 --threads 1 --seed 42 --quiet
 ```
 
 ```text
@@ -59,14 +59,15 @@ Solution:
   d63 = 0.00
 ```
 
-The solution lists all 63 columns by name, zeros too, at two decimals.
-`--quiet` prints the result only. Without it, a header and a line for each new
-best point come first. `--format jsonl` prints the result as one JSON line,
+It prints a blank line first, and the solution lists all 63 columns by name,
+zeros too, at two decimals. `--quiet` prints the result only. Without it, a
+header and progress lines come first: a line for each new best point, marked
+`*`, and one about every second between them. `--format jsonl` prints the result as one JSON line,
 with the values at full precision and the columns sorted as text (`d1`,
 `d10`, `d11`, ...):
 
 ```sh
-cbls benchmarks/instances/miplib-fj/neos5.mps.gz --time-limit 2 --threads 1 --format jsonl --quiet
+cbls benchmarks/instances/miplib-fj/neos5.mps.gz --time-limit 2 --threads 1 --seed 42 --format jsonl --quiet
 ```
 
 ```text
