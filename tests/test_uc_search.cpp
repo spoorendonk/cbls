@@ -294,4 +294,8 @@ TEST_CASE("uc search init_costs and final_dispatch stop when asked", "[uc-search
     CommitmentSearch::Dispatches p;
     CHECK(s.final_dispatch(p, stop_final) == kDispatchInf);
     CHECK(std::isfinite(s.final_dispatch(p)));
+    // A misshapen loaded dispatch is ignored, not indexed.
+    const Commitment y = s.commitment();
+    s.load(y, {});
+    CHECK(std::isfinite(s.final_dispatch(p)));
 }

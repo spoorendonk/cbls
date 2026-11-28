@@ -79,11 +79,19 @@ public:
         : inst_(inst), cfg_(cfg), ed_(inst), rng_(seed) {}
 
     /// Start from commitment y and its dispatch p[u][t]; y is also the loaded
-    /// commitment whose columns final_dispatch may take p from.
+    /// commitment whose columns final_dispatch may take p from. A p not
+    /// n_units x n_periods is ignored (no loaded dispatch).
     void load(const Commitment& y, const std::vector<std::vector<double>>& p) {
         y_ = y;
         y0_ = y;
-        p0_ = p;
+        p0_.clear();
+        const bool shaped = static_cast<int>(p.size()) == inst_.n_units &&
+                            std::all_of(p.begin(), p.end(), [&](const std::vector<double>& row) {
+                                return static_cast<int>(row.size()) == inst_.n_periods;
+                            });
+        if (shaped) {
+            p0_ = p;
+        }
     }
 
     /// repair_state on y_; costs then need init_costs.
@@ -279,7 +287,9 @@ public:
 
     /// Polished dispatch of every period of y_ into pnew[t][u], plus startup
     /// cost; a column equal to the loaded one also tries the loaded p,
-    /// polished, if it balances within bounds. +inf when stopped part-way.
+    /// polished, if it balances within bounds. +inf when a period cannot be
+    /// dispatched or when stopped part-way; the caller tells them apart by
+    /// polling its stop.
     double final_dispatch(Dispatches& pnew, StopRef stop = {}) {
         pnew.assign(inst_.n_periods, {});
         double total = 0.0;
@@ -387,6 +397,9 @@ private:
     // The loaded p of period t into q, when column t is the loaded one and that
     // p balances demand with every on unit within its bounds.
     bool loaded_dispatch(int t, const std::vector<int>& on, std::vector<double>& q) const {
+        if (p0_.empty()) {
+            return false;
+        }
         for (int u = 0; u < inst_.n_units; ++u) {
             if (y_[u][t] != y0_[u][t]) {
                 return false;
