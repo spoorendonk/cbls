@@ -10,11 +10,11 @@ benchmarks/cvrp/cvrp_model.h, and writes, next to itself, `routes-light.svg`
 and `routes-dark.svg` (the landing page's figure, one per Furo colour mode),
 `logo-light.svg` and `logo-dark.svg` (the sidebar logo: the routes cut out of
 the figure), `favicon.svg`, and `routes-card.png` (the light figure on a
-white card, the image a link to the site shows on LinkedIn and elsewhere,
-which do not render SVG). The docs build uses the committed files and never
-runs this script.
+white card: conf.py's Open Graph image). The docs build uses the committed
+files and never runs this script.
 """
 
+import re
 import sys
 import time
 from dataclasses import dataclass, replace
@@ -42,7 +42,7 @@ BEST_KNOWN = 12747
 # The fleet: X's minimum `k` plus 3, as default_fleet() gives for k = 10.
 FLEET = 13
 # One thread and an iteration cap, not a time limit, so that the routes are the
-# same on every run of one build and platform. Seconds of CPU with LNS.
+# same on every run of one build and platform.
 ITERATIONS = 500_000
 SEED = 1
 LNS_FRACTION = 0.2
@@ -66,8 +66,18 @@ class Palette:
     depot: str
 
 
-LIGHT = Palette(accent="#b45309", depot="#111827")
-DARK = Palette(accent="#f59e0b", depot="#f3f4f6")
+def conf_colour(name: str) -> str:
+    """An accent colour as docs/conf.py sets it, so the two cannot drift."""
+    found = re.search(
+        rf'^{name} = "(#[0-9a-fA-F]{{6}})"$', (HERE.parent / "conf.py").read_text(), re.M
+    )
+    if not found:
+        raise SystemExit(f"docs/conf.py sets no {name}")
+    return found[1]
+
+
+LIGHT = Palette(accent=conf_colour("ACCENT_LIGHT"), depot="#111827")
+DARK = Palette(accent=conf_colour("ACCENT_DARK"), depot="#f3f4f6")
 # A browser tab may be light or dark: an amber between the two modes'.
 FAVICON_ACCENT = "#d97706"
 
@@ -259,7 +269,9 @@ def solve(inst: VrpInstance) -> tuple[float, list[list[int]]]:
     config.structural_neighbours = cbls.nearest_neighbours(
         n, NEIGHBOURS, lambda a, b: float(between[a, b])
     )
-    # The time limit only backs the iteration cap up.
+    # The iteration cap ends the run. The time limit stays far above its run
+    # time: a time limit arms time-based escapes after long stagnation, which
+    # would make the routes depend on the host's speed.
     result = cbls.solve(
         model, time_limit=600.0, seed=SEED, threads=1, lns=LNS_FRACTION, config=config
     )

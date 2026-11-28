@@ -233,12 +233,13 @@ card on LinkedIn and elsewhere, which render no SVG. `docs/figures/make_routes.p
 draws them all from a CVRP solve (`X-n115-k10`, the model of
 `benchmarks/cvrp/cvrp_model.h`) through the Python API, single-threaded under an
 iteration cap, so one build on one platform redraws the same files; the docs
-build does not run it. Redraw them after an engine change that moves those
-routes, after the build fence (about 20 s of CPU):
+build does not run it. The committed files were drawn at engine commit
+`3ef800c9` on macOS. Redraw them after an engine change that moves those
+routes, after the build fence, and update that commit here:
 `PYTHONPATH=build/python .venv/bin/python docs/figures/make_routes.py`. It prints
 the cost, its gap to the best known and the route count; the captions in
-`docs/index.md` state none of them. The accent colour is set in
-`docs/conf.py`, and the script draws in the same colours.
+`docs/index.md` state none of them. The script reads the accent colours from
+`docs/conf.py`.
 
 ## LSP
 

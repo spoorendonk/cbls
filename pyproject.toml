@@ -64,6 +64,9 @@ dev = [
     # the import -- pytest exits 2 having run nothing -- rather than skip one
     # file. mypy --strict over every tracked .py needs it for the same reason.
     "numpy>=1.24",
+    # docs/figures/make_routes.py draws the site's link card with it; mypy
+    # --strict needs it too. Otherwise only matplotlib brings it.
+    "pillow>=10.0",
     # Without these, at these versions, pre-commit refuses every commit
     # (#371): it runs .venv/bin's ruff and mypy only at the pins below.
     #
