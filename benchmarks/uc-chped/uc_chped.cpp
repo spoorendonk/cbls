@@ -247,6 +247,8 @@ void check_uc_flags(Args& a) {
     u.commit_ls = a.uc_hook == "full";
     u.feasibility_tolerance = a.feas_tol;
     auto on = [](bool b) { return b ? "on" : "off"; };
+    // uc_share, uc_polish, uc_memo_cap and uc_ils_kick are fixed, not flags;
+    // recorded so rows from before a change (uc_share 0.5 until #457) stay apart.
     std::string& sc = a.search_config;
     sc += (sc.empty() ? "" : ";");
     sc += "uc_hook=" + a.uc_hook + ";uc_infeasible=" + on(u.on_infeasible) +
