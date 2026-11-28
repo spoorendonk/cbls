@@ -4,6 +4,8 @@ Constraint-Based Local Search engine for mixed discrete-continuous optimization.
 ViolationLS — guided local search over single- and compound-variable jumps on an
 expression DAG, with per-constraint GLS weights carrying the feasibility pressure.
 
+<!-- docs/index.md puts the docs site's problem figure here. -->
+
 ## Example
 
 ```cpp

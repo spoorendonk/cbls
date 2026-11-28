@@ -226,6 +226,20 @@ GitHub refuses the deploy. The sidebar and `llms.txt`
 name the version from `git describe` over the release tags: the tag, or
 `main (after v0.1.0, abc1234)`, or `main (abc1234)` before the first tag.
 
+The landing page's figure, the sidebar logo and the favicon are committed SVGs
+in `docs/figures/`, beside `routes-card.png`, the 1200×627 image of the Open
+Graph tags (`sphinxext-opengraph`) that gives a link to the site its preview
+card on LinkedIn and elsewhere, which render no SVG. `docs/figures/make_routes.py`
+draws them all from a CVRP solve (`X-n115-k10`, the model of
+`benchmarks/cvrp/cvrp_model.h`) through the Python API, single-threaded under an
+iteration cap, so one build on one platform redraws the same files; the docs
+build does not run it. Redraw them after an engine change that moves those
+routes, after the build fence (about 20 s of CPU):
+`PYTHONPATH=build/python .venv/bin/python docs/figures/make_routes.py`. It prints
+the cost, its gap to the best known and the route count; the captions in
+`docs/index.md` state none of them. The accent colour is set in
+`docs/conf.py`, and the script draws in the same colours.
+
 ## LSP
 
 ### C++

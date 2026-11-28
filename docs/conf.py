@@ -14,6 +14,7 @@ import html
 import os
 import re
 import shutil
+import struct
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -121,12 +122,15 @@ exclude_patterns = [
 ]
 
 html_theme = "furo"
-# Furo shows it in the sidebar.
+# Furo shows it in the sidebar, under the logo.
 html_title = f"cbls {release}"
 html_baseurl = "https://spoorendonk.dk/cbls/"
 
-# The site's accent colour (Furo's brand variables; no custom CSS). An amber,
+# The site's identity: an accent colour (Furo's brand variables; no custom
+# CSS), and a logo and favicon cut from the landing page's figure. An amber,
 # apart from cptp's teal; the light one keeps link contrast on white.
+# figures/make_routes.py draws the figure and the logos in these colours, and
+# the favicon in an amber between them; change them there too.
 ACCENT_LIGHT = "#b45309"
 ACCENT_DARK = "#f59e0b"
 html_theme_options = {
@@ -138,7 +142,17 @@ html_theme_options = {
         "color-brand-primary": ACCENT_DARK,
         "color-brand-content": ACCENT_DARK,
     },
+    "light_logo": "logo-light.svg",
+    "dark_logo": "logo-dark.svg",
 }
+# The logos and the link-preview card are named one by one, so that _static
+# gets no copy of the script.
+html_static_path = [
+    "figures/logo-light.svg",
+    "figures/logo-dark.svg",
+    "figures/routes-card.png",
+]
+html_favicon = "figures/favicon.svg"
 
 # The site in a sentence: the landing page's description in link previews and
 # search results, and llms.txt's summary.
@@ -149,11 +163,21 @@ SUMMARY = (
     "Python module."
 )
 
-# Open Graph tags, so that a link to the site shows a card.
+# Open Graph tags, so that a link to the site shows a card on LinkedIn and
+# elsewhere. The image is a PNG, as they render no SVG; figures/make_routes.py
+# draws it, and its size is read from its PNG header.
+CARD = ROOT / "docs" / "figures" / "routes-card.png"
+CARD_WIDTH, CARD_HEIGHT = struct.unpack(">II", CARD.read_bytes()[16:24])
 ogp_site_url = html_baseurl
 ogp_site_name = "cbls"
-# No generated cards (they need matplotlib, which the benchmarks extra brings
-# and the docs group does not): a committed card image comes with #467.
+ogp_image = "_static/routes-card.png"
+ogp_image_alt = "Routes cbls finds for a CVRP instance, fanning out from a central depot."
+ogp_custom_meta_tags = (
+    f'<meta property="og:image:width" content="{CARD_WIDTH}" />',
+    f'<meta property="og:image:height" content="{CARD_HEIGHT}" />',
+    '<meta name="twitter:card" content="summary_large_image" />',
+)
+# No generated cards: they need matplotlib, which the docs group does not bring.
 ogp_social_cards = {"enable": False}
 
 
