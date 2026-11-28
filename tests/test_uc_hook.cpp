@@ -11,7 +11,6 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
 #include <cbls/cbls.h>
-#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <functional>
@@ -25,7 +24,6 @@ using namespace cbls::uc_chped;
 namespace {
 
 constexpr double kTol = 1e-6;
-using Clock = std::chrono::steady_clock;
 
 // ucp13 at its greedy start, fully evaluated.
 struct Fixture {
@@ -182,6 +180,34 @@ TEST_CASE("uc hook rolls back a write-back the model refuses, then skips the rep
     hook.solve(m, vm);
     CHECK(hook.stats().skipped == 1);
     CHECK(values(m) == start);
+}
+
+// A call stopped mid-search did not search its commitment in full, so the next
+// infeasible call on the same one runs rather than skips.
+TEST_CASE("uc hook retries a commitment whose call was stopped mid-search", "[uc-hook]") {
+    UCHookConfig cfg;
+    cfg.feasibility_tolerance = -1.0;  // the infeasible path, where repeats skip
+    cfg.infeasible_share = 1.0;
+    int polls = 0;
+    {
+        Fixture f;
+        ViolationManager vm(f.ucm.model);
+        UCHook hook(f.inst, f.ucm, cfg, 8);
+        const CountingStop counter;
+        hook.solve(f.ucm.model, vm, {}, counter);
+        polls = counter.polls;
+    }
+    REQUIRE(polls > 4);
+    for (const int at : {polls / 2, polls - 2}) {  // in the descent; in final_dispatch
+        CAPTURE(at);
+        Fixture f;
+        ViolationManager vm(f.ucm.model);
+        UCHook hook(f.inst, f.ucm, cfg, 8);
+        const CountdownStop stop{at};
+        hook.solve(f.ucm.model, vm, {}, stop);
+        hook.solve(f.ucm.model, vm);
+        CHECK(hook.stats().skipped == 0);
+    }
 }
 
 TEST_CASE("uc hook throttles infeasible calls past its time share", "[uc-hook]") {

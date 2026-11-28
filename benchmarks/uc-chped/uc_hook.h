@@ -148,6 +148,9 @@ private:
             search_.set_commitment(start);
             total = search_.final_dispatch(pnew, stop);
         }
+        if (stop.requested()) {
+            last_y_.clear();  // not searched in full: the next call may retry it
+        }
         // +inf also when stopped part-way.
         if (!(total < before - 1e-6)) {
             return;
