@@ -1055,9 +1055,9 @@ table names its engine commit and the tie-break's state.
   "Selection method" and "Operator support"). The published table compares on
   CBLS's expressible domain, not on MINLPLib. The full-library status (#283)
   drops the size, problem-type and convexity filters and the
-  `opvcpower`/`opcvpower` exclusion; #256's campaign ran both solvers on the
-  modelled part of Mittelmann's nontrivial roster
-  ([docs/results.md](../../../docs/results.md#minlplib)).
+  `opvcpower`/`opcvpower` exclusion; #256's campaign ran cbls on the modelled
+  part of Mittelmann's nontrivial roster and scored it against SCIP rows reused
+  from the 2026-11-01 run ([docs/results.md](../../../docs/results.md#minlplib)).
 
 ## Portfolio A/B: the shared objective bound (#179)
 

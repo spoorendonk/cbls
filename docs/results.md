@@ -782,12 +782,13 @@ run for this purpose, not from a timed comparison.
 - **Two more rows proven optimal (to SCIP tolerance):** ucp13-6p (91,568.93) and ucp40-3p (178,445.07), which neither Pedroso's Table 2 nor #441 closed. The three rows already known optimal are matched to the cent.
 - **UB:** at or below #441's best on all 24 rows. It ties on ucp13-1p/3p, ucp40-1p, ucp100-1p and ucp200-1p, and is lower on the other 19. Every ucp13/ucp40 UB lies inside Pedroso's [LB, UB] and is below his UB, except the three known optima, which it equals.
 - **LB:** at or above every *valid* reference LB on every row that has one; on 6 constructed rows #441 has no valid LB at all, as its exact runs crashed. It is below some LBs that are not proven bounds, by 7–97: #441's pwl LB on ucp100-1p, -24p, ucp200-1p, -24p, and both pwl and Pedroso on ucp40-24p. On ucp100-1p and ucp200-1p, pwl converged to LB = UB at our UB, which suggests our UB is optimal there but does not prove it.
+  - That list misses two rows, by this table: the best LB is also below #441's pwl LB, not a bound, on ucp100-6p (by 1.28) and ucp100-48p (by 492).
 
 Run record:
 - **UB:** each solution file checked against Pedroso's model by `verify.py`, written once and not changed (equality demand within 1e-6 relative, reserve, min up/down from the initial state, true valve-point cost and start-up costs).
 - **LB:** each a SCIP 10 dual bound (1 thread, feastol 1e-7, gap 1e-6) on a model that relaxes Pedroso's problem, as the source comment's Methods section argues. The bounds are valid up to SCIP's tolerances.
 - **Run:** 2026-11-26 09:02Z-13:02Z on simon-workstation; the source comment gives the method and time behind every bound.
-- **Code and files:** the methods' code is not in the repository. It is on an archived local branch, `campaign/443`, in its session's clone, and in `~/data/cbls-idun/` on simon-workstation (`code.patch`, `results.jsonl`, `best_final.jsonl`, solutions and SCIP logs).
+- **Code and files:** the methods' code is not in the repository. It was never committed: it is archived as `refs/wcp-archive/20261126T130420Z/uncommitted` in its session's clone and in that archive's bundle on simon-workstation ([#443, comment 7192840644](https://github.com/spoorendonk/cbls/issues/443#issuecomment-7192840644)). The same code, with the run's files, is in `~/data/cbls-idun/` there (`code/`, `code.patch`, `results.jsonl`, `best_final.jsonl`, solutions and SCIP logs).
 
 ### cbls against the best known bounds
 
