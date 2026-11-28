@@ -739,6 +739,8 @@ TEST_CASE("an iteration-budgeted run with an infeasible-path hook is bit-identic
     CHECK(a.counters.inner_solver_calls == b.counters.inner_solver_calls);
     CHECK(a.counters.inner_solver_infeasible_calls == b.counters.inner_solver_infeasible_calls);
     CHECK(a.best_state.values == b.best_state.values);
+    // The #169 gate on this path: no wall clock, so the hook is not timed.
+    CHECK(a.counters.inner_solver_seconds == 0.0);
 }
 
 TEST_CASE("ParallelSearch workers' factory hooks take the infeasible path", "[inner_solver]") {

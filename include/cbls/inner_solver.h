@@ -13,15 +13,17 @@ namespace cbls {
 // - The search calls solve() after every batch that ends real-feasible
 //   (ViolationManager::max_real_violation() within
 //   SearchConfig::feasibility_tolerance), after that point is offered to the
-//   incumbent; with
-//   wants_infeasible() also after every other batch, uncapped, so such a hook
-//   budgets itself.
+//   incumbent; with wants_infeasible() also after every other batch,
+//   uncapped, so such a hook budgets itself.
 // - It mutates the model directly and leaves it fully evaluated. The search
-//   records the result only if it is real-feasible and beats the incumbent,
-//   and never rolls back: it resyncs and continues from what the hook left.
-//   So a hook may repair an infeasible point; one that cannot should leave it.
-// - The cost to beat is model.objective_bound(); a feasible point above it
-//   is not recorded.
+//   records the result only if it is real-feasible and strictly better than
+//   this worker's incumbent (model.objective_bound() sits below that: it is
+//   the target the search pushes toward, not the acceptance test). It does
+//   not roll the hook's point back: it resyncs and continues from it, unless
+//   a diversification kick due in the same pass restores the incumbent. So a
+//   hook may repair an infeasible point; one that cannot should leave it.
+// - On a run that ends infeasible, the closest approach reported is taken
+//   from batch ends, before the hook: an infeasible hook result is never it.
 // - One hook object serves every solve() it is passed to: under
 //   ParallelSearch a worker keeps its hook across pool restarts while the
 //   incumbent and bound start over, so state it carries must stay valid then.
