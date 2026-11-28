@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import copy
 import gc
+import math
 import subprocess
 import sys
 from typing import TYPE_CHECKING, Any
@@ -144,13 +145,28 @@ def test_solve_reports_a_maximised_nl_objective_in_the_files_sense(tmp_path: Pat
     assert result.search.objective == -result.objective
 
 
-def test_minimize_after_maximize_resets_the_sense() -> None:
+def test_a_maximised_objective_keeps_the_no_point_sentinel() -> None:
+    """+inf is SearchResult's "no point recorded", in either sense, as the CLI reads it."""
+    m = cbls.Model()
+    m.maximize(m.Int(0, 5, "x") + 1.0)
+    m.close()
+    assert cbls._solve._user_objective(m, math.inf) == math.inf
+    assert cbls._solve._user_objective(m, 2.0) == -2.0
+
+
+def test_minimize_after_maximize_resets_the_sense(tmp_path: Path) -> None:
     m = cbls.Model()
     x = m.Int(0, 5, "x")
     m.maximize(x + 1.0)
     m.minimize(x + 1.0)
     m.close()
     assert not m.is_maximizing()
+    # save_model read the stale flag: it wrote `maximize` of the Sum's child.
+    path = tmp_path / "model.cbls"
+    cbls.save_model(m, str(path))
+    loaded = cbls.load_model(str(path))
+    assert not loaded.is_maximizing()
+    assert loaded.node(loaded.objective_id()).op == cbls.NodeOp.Sum
     result = cbls.solve(m, time_limit=60.0, threads=1, config=_capped(2_000))
     assert result.objective == result.search.objective == pytest.approx(result.value(x) + 1.0)
 

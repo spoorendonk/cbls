@@ -4,6 +4,7 @@
 // Usage: build/cbls_example_minlplib benchmarks/instances/minlplib/st_e38.nl
 #include <cbls/cbls.h>
 #include <cbls/io_nl.h>
+#include <cmath>
 #include <cstdio>
 #include <exception>
 #include <string>
@@ -24,8 +25,10 @@ int run(const char* path) {
     cbls::SearchResult result = cbls::solve(model, /*time_limit=*/2.0, /*seed=*/42);
 
     std::printf("feasible  = %s\n", result.feasible ? "true" : "false");
-    // The engine minimises: a maximisation model's objective comes back negated.
-    const double objective = model.is_maximizing() ? -result.objective : result.objective;
+    // The engine minimises: a maximisation model's objective comes back negated
+    // (+inf, no point recorded, stays as it is).
+    const bool flip = model.is_maximizing() && std::isfinite(result.objective);
+    const double objective = flip ? -result.objective : result.objective;
     std::printf("objective = %.6f\n", objective);
     const std::vector<double> values = converted.original_values(model);
     for (size_t column = 0; column < values.size(); ++column) {

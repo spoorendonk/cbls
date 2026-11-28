@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import math
 import os
 from dataclasses import dataclass
 
@@ -15,7 +16,9 @@ class SolveResult:
 
     `objective` is in the model's own sense, as the CLI prints it. The engine
     minimises, so a maximisation model's `search.objective`, its objective
-    node's value and `SolveProgress.objective` are the negation (#472).
+    node's value and `SolveProgress.objective` are the negation (#472). A
+    non-finite value is not flipped: +inf means no point was recorded, as in
+    `SearchResult`, for either sense.
     `values[i]` and `elements[i]` belong to the variable with id `i`; the model
     itself is also left at that point. `search` is the full `SearchResult`
     (counters, portfolio worker accounting, `best_state`).
@@ -161,10 +164,15 @@ def _solve_parallel(
     return result
 
 
+def _user_objective(model: _core.Model, internal: float) -> float:
+    """`internal` in the model's sense; +inf (no point recorded) stays +inf."""
+    return -internal if model.is_maximizing() and math.isfinite(internal) else internal
+
+
 def _result(model: _core.Model, result: _core.SearchResult) -> SolveResult:
     variables = [model.var(i) for i in range(model.num_vars())]
     return SolveResult(
-        objective=-result.objective if model.is_maximizing() else result.objective,
+        objective=_user_objective(model, result.objective),
         feasible=result.feasible,
         iterations=result.iterations,
         time_seconds=result.time_seconds,
