@@ -1,5 +1,6 @@
 """Model a CVRP with List variables, solve it and read the routes (docs/examples/cvrp.md).
 
+Needs NumPy beside cbls (`pip install . numpy`).
 Usage: python examples/cvrp.py benchmarks/instances/cvrp/X/X-n115-k10.vrp
 """
 
@@ -42,7 +43,12 @@ def read_vrp(path: str) -> Instance:
             coords.append((float(x), float(y)))
         else:
             demands.append(int(line.split()[1]))
-    if header.get("EDGE_WEIGHT_TYPE") != "EUC_2D" or demands[0] != 0:
+    if (
+        header.get("EDGE_WEIGHT_TYPE") != "EUC_2D"
+        or not demands
+        or demands[0] != 0
+        or len(coords) != len(demands)
+    ):
         raise ValueError(f"{path}: expected EUC_2D distances and the depot at node 1")
     return Instance(header["NAME"], int(header["CAPACITY"]), coords, demands)
 
@@ -102,8 +108,9 @@ def main(path: str) -> int:
     inst = read_vrp(path)
     dist = distances(inst)
     n = len(inst.demands) - 1
-    k = int(inst.name.rsplit("-k", 1)[1])  # an X name's minimum vehicle count
-    fleet = k + 3  # room to spare: the search may leave routes empty
+    # The fewest vehicles the total demand needs, plus room to spare: the
+    # search may leave routes empty.
+    fleet = math.ceil(sum(inst.demands) / inst.capacity) + 3
     model, routes = build(inst, dist, fleet)
     print(f"{inst.name}: {n} customers, capacity {inst.capacity}, fleet {fleet}")
 

@@ -9,6 +9,7 @@
 #include <exception>
 #include <fstream>
 #include <memory>
+#include <numeric>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -165,8 +166,10 @@ int run(const char* path) {
     const Instance inst = read_vrp(path);
     auto dist = std::make_shared<const std::vector<std::vector<double>>>(distances(inst));
     const int n = inst.customers();
-    const int k = std::stoi(inst.name.substr(inst.name.rfind("-k") + 2));  // the minimum count
-    const int fleet = k + 3;  // room to spare: the search may leave routes empty
+    // The fewest vehicles the total demand needs, plus room to spare: the
+    // search may leave routes empty.
+    const int total = std::accumulate(inst.demands.begin(), inst.demands.end(), 0);
+    const int fleet = ((total + inst.capacity - 1) / inst.capacity) + 3;
     cbls::Model model;
     const std::vector<int32_t> routes = build(model, inst, dist, fleet);
     std::printf("%s: %d customers, capacity %d, fleet %d\n", inst.name.c_str(), n, inst.capacity,
@@ -185,11 +188,9 @@ int run(const char* path) {
 
     std::printf("feasible  = %s\n", result.feasible ? "true" : "false");
     std::printf("objective = %.0f\n", result.objective);
-    // The solve leaves the model at its last point; load the best one found.
-    model.restore_state(result.best_state);
-    cbls::full_evaluate(model);
-    // A List's elements are its customers in visiting order, printed here as
-    // node numbers (CVRPLIB's .sol numbering).
+    // The solve leaves the model at the best point found. A List's elements
+    // are its customers in visiting order, printed here as node numbers
+    // (CVRPLIB's .sol numbering).
     std::vector<std::vector<int>> visited;
     for (const int32_t h : routes) {
         std::vector<int> route;

@@ -13,8 +13,8 @@ It is the instance of the figure on the [home page](../index.md).
 
 ## Run it
 
-From a checkout, with the module installed (`pip install .`; see
-[Use from Python](https://github.com/spoorendonk/cbls#use-from-python)):
+From a checkout, with the module and NumPy installed (`pip install . numpy`;
+see [Use from Python](https://github.com/spoorendonk/cbls#use-from-python)):
 
 ```sh
 python examples/cvrp.py benchmarks/instances/cvrp/X/X-n115-k10.vrp
@@ -28,7 +28,8 @@ cmake --build build --target cbls_example_cvrp
 build/cbls_example_cvrp benchmarks/instances/cvrp/X/X-n115-k10.vrp
 ```
 
-Both solve for 5 s on one thread with seed 1. The Python script prints:
+Both solve for 5 s on one thread with seed 1. In one run, at commit
+`aedfded8`, the Python script printed:
 
 ```text
 X-n115-k10: 114 customers, capacity 169, fleet 13
@@ -48,7 +49,7 @@ Route #11: 16 5 66 89
 verify: PASS
 ```
 
-The C++ program prints `true` in place of `True`. The routes above are 6.8 %
+The C++ program printed the same, with `true` in place of `True`. Those routes are 6.8 %
 above the best-known cost, with 11 vehicles where the best-known solution uses
 10. The solve stops on wall-clock time, so the routes can differ from run to
 run, or on a slower machine; the tests check that they are feasible and
@@ -69,8 +70,9 @@ verify. The test suite runs both commands against the build tree:
 
 - **One `List` per vehicle**, `list_var(n, 0, n, ...)`: an ordered sequence of
   distinct customers `0..n-1`, of length 0 to `n`. The depot is not an
-  element. The fleet is the instance's minimum `k` plus 3, a size the search
-  may leave partly unused: it is not a vehicle count.
+  element. The fleet is the fewest vehicles the total demand needs,
+  ⌈Σ demand / capacity⌉ = 10 here, plus 3: a size the search may leave partly
+  unused, not a vehicle count.
 - **`add_list_partition(routes, Cover.Exact)`** puts every customer on exactly
   one route. It is not a penalised constraint but an invariant: the search
   starts from a random complete partition (the Lists' `ListInit` is ignored)
@@ -98,8 +100,8 @@ integer, the metric CVRPLIB's best-known costs are stated in.
 - **`objective`** is the total route length.
 - **The routes** are the Lists' elements in visiting order. In Python they are
   in `result.elements`, by variable id; a List handle `h` is variable
-  `-(h + 1)`. In C++, `restore_state(result.best_state)` loads the best point
-  into the model, and each List's `elements` are read from it. The scripts
+  `-(h + 1)`. In C++, `solve` leaves the model at the best point found, and
+  each List's `elements` are read from `model.var(handle_to_var_id(h))`. The scripts
   print each non-empty route as node numbers, customer element `e` as `e + 1`,
   in the numbering of CVRPLIB's `.sol` files.
 
