@@ -14,6 +14,7 @@
 #include "data.h"
 #include "greedy_init.h"
 #include "trace_recorder.h"
+#include "uc_hook.h"
 #include "uc_model.h"
 #include "verify_uc_chped.h"
 
@@ -36,6 +37,7 @@
 #include <limits>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <ostream>
 #include <sstream>
@@ -100,6 +102,18 @@ struct Args {
     // Demand as `=` (Pedroso 2014) instead of the published `>=` (#442): a
     // different model, so not the published protocol.
     bool demand_equality = false;
+    // The UC inner solver (uc_hook.h, #445): "" off (the published protocol),
+    // "ed" re-dispatch only, "full" with the commitment search. Its knobs are
+    // the #445 candidate's; ILS, elite and LS-polish read nothing under "ed".
+    std::string uc_hook;
+    cbls::uc_chped::UCHookConfig uc;
+    double uc_ils = 0.0;  // --uc-ils F: ILS slice per call, F x the row's budget
+    // The first --uc-* flag given, to refuse it without --uc-hook (#462).
+    std::string uc_flag_seen;
+    std::string uc_full_flag_seen;  // the same for the "full"-only ones
+    // One JSON line per measured row with a finite objective, for
+    // check_solutions.py (#462); a row the verifier vetoed writes none.
+    std::string solution_out;
     bool commit_set = false;
     std::string commit_sha = "unknown";
     std::string out_csv;    // default: <inst_dir>/comparison.csv
@@ -128,6 +142,126 @@ bool is_positive_finite(double v) {
     return v > 0.0 && std::isfinite(v);
 }
 
+[[noreturn]] void refuse(const std::string& message) {
+    std::fprintf(stderr, "%s\n", message.c_str());
+    std::exit(2);
+}
+
+/// An integer --uc-* knob: at least `lo`, and an int, as UCHookConfig holds it.
+int parse_uc_int(const char* flag, const char* v, int64_t lo) {
+    const int64_t x = parse_int64(flag, v);
+    if (x < lo || x > std::numeric_limits<int>::max()) {
+        refuse(std::string(flag) + " must be in [" + std::to_string(lo) + ", " +
+               std::to_string(std::numeric_limits<int>::max()) + "] (got " + std::to_string(x) +
+               ")");
+    }
+    return static_cast<int>(x);
+}
+
+/// Consumes one --uc-* flag. The "full"-only ones (commitment-search knobs) are
+/// noted apart, so `--uc-hook ed` can refuse what it would not read.
+bool match_uc_flag(cbls::bench::ArgCursor& c, const std::string& s, Args& a) {
+    const char* v = nullptr;
+    cbls::uc_chped::UCHookConfig& u = a.uc;
+    bool full_only = true;
+    if (c.value_flag("--uc-hook", v)) {
+        a.uc_hook = v;
+        return true;
+    }
+    if (s == "--uc-infeasible") {
+        u.on_infeasible = true;
+        full_only = false;
+    } else if (s == "--uc-repair") {
+        u.repair = true;
+        full_only = false;
+    } else if (c.value_flag("--uc-share", v)) {
+        u.infeasible_share = parse_double("--uc-share", v);
+        full_only = false;
+    } else if (c.value_flag("--uc-ils", v)) {
+        a.uc_ils = parse_double("--uc-ils", v);
+    } else if (c.value_flag("--uc-ils-stall", v)) {
+        u.search.ils_stall = parse_uc_int("--uc-ils-stall", v, 1);
+    } else if (c.value_flag("--uc-ils-local", v)) {
+        u.search.ils_local = parse_uc_int("--uc-ils-local", v, 0);
+    } else if (c.value_flag("--uc-ls-polish", v)) {
+        u.search.ls_polish_sweeps = parse_uc_int("--uc-ls-polish", v, 0);
+    } else if (c.value_flag("--uc-ls-window", v)) {
+        u.search.ls_polish_window = parse_uc_int("--uc-ls-window", v, 0);
+    } else if (c.value_flag("--uc-ls-jcap", v)) {
+        u.search.ls_polish_jcap = parse_uc_int("--uc-ls-jcap", v, 0);
+    } else if (c.value_flag("--uc-elite", v)) {
+        u.elite_prob = parse_double("--uc-elite", v);
+    } else {
+        return false;
+    }
+    if (a.uc_flag_seen.empty()) {
+        a.uc_flag_seen = s;
+    }
+    if (full_only && a.uc_full_flag_seen.empty()) {
+        a.uc_full_flag_seen = s;
+    }
+    return true;
+}
+
+std::string knob(double v) {
+    std::ostringstream os;
+    os.precision(10);
+    os << v;
+    return os.str();
+}
+
+/// The --uc-* guards, then every knob the hook reads appended to
+/// `search_config`, so a row states the hook it ran (#462).
+void check_uc_flags(Args& a) {
+    if (a.uc_hook.empty()) {
+        if (!a.uc_flag_seen.empty()) {
+            refuse(a.uc_flag_seen + " requires --uc-hook");
+        }
+        return;
+    }
+    if (a.uc_hook != "ed" && a.uc_hook != "full") {
+        refuse("--uc-hook must be ed or full (got " + a.uc_hook + ")");
+    }
+    if (a.uc_hook == "ed" && !a.uc_full_flag_seen.empty()) {
+        refuse(a.uc_full_flag_seen + " requires --uc-hook full");
+    }
+    // The hook's throttle and ILS read the wall clock, which an iteration-
+    // budgeted arm must not depend on (#136, #452 Medium 3).
+    if (a.search.no_time_limit) {
+        refuse("--uc-hook cannot run under --no-time-limit (its throttle and ILS read the clock)");
+    }
+    cbls::uc_chped::UCHookConfig& u = a.uc;
+    // NaN fails every comparison, so in_unit() and is_positive_finite() refuse it.
+    auto in_unit = [](double v) { return v >= 0.0 && v <= 1.0; };
+    if (!is_positive_finite(u.infeasible_share) || u.infeasible_share > 1.0) {
+        refuse("--uc-share must be in (0, 1] (got " + knob(u.infeasible_share) + ")");
+    }
+    if (!in_unit(a.uc_ils)) {
+        refuse("--uc-ils must be in [0, 1] (got " + knob(a.uc_ils) + ")");
+    }
+    if (!in_unit(u.elite_prob)) {
+        refuse("--uc-elite must be in [0, 1] (got " + knob(u.elite_prob) + ")");
+    }
+    u.commit_ls = a.uc_hook == "full";
+    u.feasibility_tolerance = a.feas_tol;
+    auto on = [](bool b) { return b ? "on" : "off"; };
+    std::string& sc = a.search_config;
+    sc += (sc.empty() ? "" : ";");
+    sc += "uc_hook=" + a.uc_hook + ";uc_infeasible=" + on(u.on_infeasible) +
+          ";uc_share=" + knob(u.infeasible_share) + ";uc_repair=" + on(u.repair) +
+          ";uc_polish=" + std::to_string(u.search.polish_sweeps) +
+          ";uc_memo_cap=" + std::to_string(u.search.memo_cap);
+    if (u.commit_ls) {
+        sc += ";uc_ils=" + knob(a.uc_ils) + ";uc_ils_stall=" + std::to_string(u.search.ils_stall) +
+              ";uc_ils_kick=" + std::to_string(u.search.ils_kick) +
+              ";uc_ils_local=" + std::to_string(u.search.ils_local) +
+              ";uc_ls_polish=" + std::to_string(u.search.ls_polish_sweeps) +
+              ";uc_ls_window=" + std::to_string(u.search.ls_polish_window) +
+              ";uc_ls_jcap=" + std::to_string(u.search.ls_polish_jcap) +
+              ";uc_elite=" + knob(u.elite_prob);
+    }
+}
+
 /// The numeric flags' value guards, apart from the flag table: the parse layer
 /// reports a bad token and hands over NaN, the guard decides the exit code
 /// (tests/python/test_run_benchmark.py pins both halves).
@@ -152,6 +286,7 @@ void check_numeric_flags(Args& a) {
         a.search_config += (a.search_config.empty() ? "" : ";");
         a.search_config += "demand=eq";
     }
+    check_uc_flags(a);
     // NaN, 0 or negative fails: solve() would return having searched nothing,
     // a full-looking table of empty results; isfinite too, as "inf" would never
     // terminate. The wall-clock-free arm (#136) is the one way past: solve()
@@ -192,6 +327,9 @@ const char* non_published_protocol(const Args& a) {
     }
     if (a.demand_equality) {
         return "--demand-equality";
+    }
+    if (!a.uc_hook.empty()) {
+        return "--uc-hook";
     }
     const char* arm =
         cbls::bench::first_non_default_search_flag(a.search, published_search_flags());
@@ -240,6 +378,16 @@ const char* build_refusal() {
 void resolve_out_csv(Args& a) {
     if (a.out_csv.empty()) {
         a.out_csv = a.inst_dir + "/comparison.csv";
+    }
+    // --solution-out truncates in place: it must not name the table, its temp
+    // file or the trace.
+    if (!a.solution_out.empty()) {
+        for (const std::string& other : {a.out_csv, a.out_csv + ".tmp", a.trace_csv}) {
+            if (!other.empty() && cbls::bench::same_file(a.solution_out, other)) {
+                refuse("--solution-out " + a.solution_out + " names another output (" + other +
+                       ")");
+            }
+        }
     }
     const std::optional<cbls::bench::PublishedTarget> target = cbls::bench::check_published_write(
         a.out_csv, a.trace_csv, a.inst_dir, non_published_protocol(a), a.commit_set);
@@ -312,14 +460,21 @@ Args parse_args(int argc, char** argv) {
             a.out_csv = v;
         } else if (c.value_flag("--trace", v)) {
             a.trace_csv = v;
-        } else if (cbls::bench::match_search_flag(c, s, a.search)) {
-            // A search-configuration flag (#136); the table, the parse and the
+        } else if (c.value_flag("--solution-out", v)) {
+            a.solution_out = v;
+        } else if (match_uc_flag(c, s, a) || cbls::bench::match_search_flag(c, s, a.search)) {
+            // The UC hook's flags (#462), validated by check_uc_flags, or a
+            // search-configuration flag (#136); the table, the parse and the
             // recorded spelling all live in benchmarks/common/search_config_flags.h.
         } else if (s == "--help" || s == "-h") {
             std::printf(
                 "Usage: cbls_uc_chped [inst-dir] [--verify] [--time-limit S] [--seed N]"
                 " [--feas-tol T] [--instance NAME ...] [--periods N ...] [--threads N]"
-                " [--demand-equality] [--commit SHA] [--out CSV] [--trace CSV]\n"
+                " [--demand-equality] [--commit SHA] [--out CSV] [--trace CSV]"
+                " [--solution-out JSONL]\n"
+                "       [--uc-hook ed|full] [--uc-infeasible] [--uc-share F] [--uc-repair]"
+                " [--uc-ils F] [--uc-ils-stall N] [--uc-ils-local N] [--uc-ls-polish N]"
+                " [--uc-ls-window N] [--uc-ls-jcap N] [--uc-elite P]\n"
                 "       %s\n",
                 cbls::bench::search_flags_usage(kSearchFlagFamilies).c_str());
             std::exit(0);
@@ -560,11 +715,15 @@ void write_reference_rows(std::ostream& csv, const cbls::uc_chped::UCInstance& b
     }
 }
 
+/// The UC hooks one solve built, one per worker, kept for their counters.
+using UCHooks = std::vector<std::shared_ptr<cbls::uc_chped::UCHook>>;
+
 /// Build, warm-start and search one model: the measured part of the row,
-/// independent of how it is scored or printed.
+/// independent of how it is scored or printed. Under --uc-hook, `uc_hooks`
+/// receives every hook the solve built.
 cbls::SearchResult solve_instance(const Args& args, const cbls::uc_chped::UCInstance& inst,
                                   cbls::uc_chped::UCModel& ucm, double tlim,
-                                  cbls::SolveCallback* callback) {
+                                  cbls::SolveCallback* callback, UCHooks& uc_hooks) {
     // Greedy initialization + short FJ polish.
     cbls::uc_chped::greedy_uc_initialize(ucm.model, inst, ucm);
     {
@@ -587,17 +746,38 @@ cbls::SearchResult solve_instance(const Args& args, const cbls::uc_chped::UCInst
     // configuration this call received (#136).
     cbls::bench::apply_search_flags(args.search, cfg);
     const double time_limit = cbls::bench::time_limit_argument(args.search, tlim);
+    // The UC hook replaces the float hook (#462). Its ILS slice is a share of
+    // this row's budget; worker k's hook is seeded seed + 1 + k, k counting
+    // factory calls, which the pool makes on worker threads in start order.
+    cbls::uc_chped::UCHookConfig uc_cfg = args.uc;
+    uc_cfg.ils_seconds = args.uc_ils * tlim;
+    // Both outlive every factory call: the pool calls it within ps.solve.
+    std::mutex uc_mutex;
+    uint64_t next_uc_seed = args.seed + 1;
+    auto make_uc_hook = [&inst, &ucm, &uc_cfg, &uc_mutex, &next_uc_seed, &uc_hooks] {
+        const std::scoped_lock lock(uc_mutex);
+        auto h = std::make_shared<cbls::uc_chped::UCHook>(inst, ucm, uc_cfg, next_uc_seed++);
+        uc_hooks.push_back(h);
+        return h;
+    };
+    const bool uc_hook = !args.uc_hook.empty();
     if (args.threads == 1) {
+        const std::shared_ptr<cbls::uc_chped::UCHook> uc = uc_hook ? make_uc_hook() : nullptr;
         return cbls::solve(ucm.model, time_limit, args.seed,
-                           cbls::bench::hook_argument(args.search, hook),
+                           cbls::bench::hook_argument(args.search, hook, uc.get()),
                            cbls::bench::lns_argument(args.search, lns),
                            cbls::bench::lns_interval_argument(args.search), callback, cfg);
     }
     // The master overload, as cbls_cvrp: workers copy the warm-started model
     // (skip_init keeps that start). One hook and one LNS per worker -- the search
-    // locks neither, so a shared instance would be a data race (pool.h).
+    // locks neither, so a shared instance would be a data race (pool.h). A UC
+    // hook's var handles are valid on every worker's copy (uc_hook.h).
     std::function<std::shared_ptr<cbls::InnerSolverHook>(cbls::Model&)> hook_factory;
-    if (args.search.float_hook) {
+    if (uc_hook) {
+        hook_factory = [make_uc_hook](cbls::Model&) -> std::shared_ptr<cbls::InnerSolverHook> {
+            return make_uc_hook();
+        };
+    } else if (args.search.float_hook) {
         hook_factory = [](cbls::Model&) { return std::make_shared<cbls::FloatIntensifyHook>(); };
     }
     std::function<std::shared_ptr<cbls::LNS>()> lns_factory;
@@ -700,8 +880,79 @@ bool verification_withholds(const Args& args, const cbls::uc_chped::UCModel& ucm
     return true;
 }
 
+/// A JSON string literal: quote, backslash and control characters escaped.
+std::string json_string(const std::string& s) {
+    std::string out = "\"";
+    for (const char ch : s) {
+        const auto u = static_cast<unsigned char>(ch);
+        if (ch == '"' || ch == '\\') {
+            out += '\\';
+            out += ch;
+        } else if (u < 0x20) {
+            std::array<char, 8> buf{};
+            std::snprintf(buf.data(), buf.size(), "\\u%04x", static_cast<unsigned>(u));
+            out += buf.data();
+        } else {
+            out += ch;
+        }
+    }
+    return out + "\"";
+}
+
+/// One check_solutions.py line (#462): the model's own y and p values, at
+/// round-trip precision, so the checker sees what the row reports.
+void write_solution(std::ostream& out, const std::string& instance_name, uint64_t seed,
+                    const cbls::uc_chped::UCInstance& inst, const cbls::uc_chped::UCModel& ucm,
+                    double objective) {
+    auto rows = [&](const std::vector<std::vector<int32_t>>& handles) {
+        out << "[";
+        for (int u = 0; u < inst.n_units; ++u) {
+            out << (u > 0 ? ",[" : "[");
+            for (int t = 0; t < inst.n_periods; ++t) {
+                out << (t > 0 ? "," : "")
+                    << num(ucm.model.var(cbls::handle_to_var_id(handles[u][t])).value, 17);
+            }
+            out << "]";
+        }
+        out << "]";
+    };
+    out << "{\"instance\":" << json_string(instance_name) << ",\"periods\":" << inst.n_periods
+        << ",\"seed\":" << seed << ",\"objective\":" << num(objective, 17) << ",\"y\":";
+    rows(ucm.y);
+    out << ",\"p\":";
+    rows(ucm.p);
+    out << "}\n";
+}
+
+/// The UC hooks' counters, summed over workers.
+void print_uc_hook_stats(const UCHooks& hooks) {
+    cbls::uc_chped::UCHookStats s;
+    cbls::uc_chped::CommitmentSearchStats ss;
+    for (const auto& h : hooks) {
+        const cbls::uc_chped::UCHookStats& o = h->stats();
+        s.calls += o.calls;
+        s.skipped += o.skipped;
+        s.throttled += o.throttled;
+        s.infeasible_calls += o.infeasible_calls;
+        s.improvements += o.improvements;
+        s.rejected += o.rejected;
+        s.nanos += o.nanos;
+        s.ils_nanos += o.ils_nanos;
+        ss.ils_kicks += h->search_stats().ils_kicks;
+        ss.ils_wins += h->search_stats().ils_wins;
+    }
+    std::printf(
+        "    uc-hook (%zu): %lld calls (%lld infeasible), %lld throttled, %lld skipped, "
+        "%lld kept, %lld rejected, %lld/%lld ILS wins/kicks, %.2f s (ILS %.2f s)\n",
+        hooks.size(), static_cast<long long>(s.calls), static_cast<long long>(s.infeasible_calls),
+        static_cast<long long>(s.throttled), static_cast<long long>(s.skipped),
+        static_cast<long long>(s.improvements), static_cast<long long>(s.rejected),
+        static_cast<long long>(ss.ils_wins), static_cast<long long>(ss.ils_kicks),
+        static_cast<double>(s.nanos) * 1e-9, static_cast<double>(s.ils_nanos) * 1e-9);
+}
+
 /// Solve one (instance, horizon) pair and append its row.
-void run_one(std::ostream& csv, std::ofstream& trace, const Args& args,
+void run_one(std::ostream& csv, std::ofstream& trace, std::ofstream& solutions, const Args& args,
              const cbls::uc_chped::UCInstance& inst, const std::string& instance_name, double tlim,
              Tally& tally) {
     auto ucm = cbls::uc_chped::build_uc_model(inst, args.demand_equality);
@@ -713,8 +964,9 @@ void run_one(std::ostream& csv, std::ofstream& trace, const Args& args,
     // Trace rows carry the horizon too: one row per (instance, horizon), so the
     // instance alone cannot key a trace row to its solve (#147).
     cbls::uc_chped::TraceRecorder recorder(trace, instance_name, horizon, tlim, args.commit_sha);
+    UCHooks uc_hooks;
     const cbls::SearchResult result =
-        solve_instance(args, inst, ucm, tlim, trace.is_open() ? &recorder : nullptr);
+        solve_instance(args, inst, ucm, tlim, trace.is_open() ? &recorder : nullptr, uc_hooks);
     const bool lost_workers = cbls::mipfeas::lost_workers(result, args.threads);
     if (lost_workers) {
         std::fputs(cbls::mipfeas::lost_workers_message(inst.name, args.threads, result).c_str(),
@@ -739,6 +991,10 @@ void run_one(std::ostream& csv, std::ofstream& trace, const Args& args,
     if (scored.have_objective && !withhold) {
         row.objective = result.objective;
         row.gap_pct = scored.gap;
+        if (solutions.is_open()) {
+            write_solution(solutions, instance_name, args.seed, inst, ucm, result.objective);
+            solutions.flush();
+        }
     }
     if (row.note.empty()) {
         // The exit code says the job failed; the note says which row, for a
@@ -756,6 +1012,9 @@ void run_one(std::ostream& csv, std::ofstream& trace, const Args& args,
                 result.feasible ? "feasible" : "INFEASIBLE",
                 static_cast<long>(ucm.model.num_vars()), static_cast<long>(ucm.model.num_nodes()),
                 static_cast<long>(result.iterations));
+    if (!args.uc_hook.empty()) {
+        print_uc_hook_stats(uc_hooks);
+    }
 
     write_row(csv, row);
     csv.flush();
@@ -915,8 +1174,8 @@ bool open_trace(const Args& args, std::ofstream& trace) {
 
 /// The measurement: every (instance, horizon) pair in roster order. The files
 /// (which may be written, opening, publishing) stay with run_benchmark.
-void solve_roster(std::ostream& csv, std::ofstream& trace, const Args& args,
-                  const std::vector<InstanceSpec>& specs,
+void solve_roster(std::ostream& csv, std::ofstream& trace, std::ofstream& solutions,
+                  const Args& args, const std::vector<InstanceSpec>& specs,
                   const std::vector<cbls::uc_chped::UCInstance>& loaded, Tally& tally) {
     for (size_t i = 0; i < specs.size(); ++i) {
         const cbls::uc_chped::UCInstance& base = loaded[i];
@@ -937,7 +1196,8 @@ void solve_roster(std::ostream& csv, std::ofstream& trace, const Args& args,
             // `horizon == base.n_periods` is already the right size.
             const cbls::uc_chped::UCInstance inst =
                 horizon < base.n_periods ? cbls::uc_chped::make_subinstance(base, horizon) : base;
-            run_one(csv, trace, args, inst, base.name, horizon_budget(args, horizon), tally);
+            run_one(csv, trace, solutions, args, inst, base.name, horizon_budget(args, horizon),
+                    tally);
         }
         std::printf("\n");
     }
@@ -983,6 +1243,15 @@ int run_benchmark(int argc, char** argv) {
     if (!open_trace(args, trace)) {
         return 2;
     }
+    // Truncated here, after both, for the same reason; written in place.
+    std::ofstream solutions;
+    if (!args.solution_out.empty()) {
+        solutions.open(args.solution_out);
+        if (!solutions.is_open()) {
+            std::fprintf(stderr, "Failed to open %s for writing\n", args.solution_out.c_str());
+            return 2;
+        }
+    }
     write_header_comment(csv, args);
     csv << kCsvHeader << "\n";
 
@@ -998,7 +1267,7 @@ int run_benchmark(int argc, char** argv) {
         write_reference_rows(csv, loaded[i], specs[i].periods);
     }
 
-    solve_roster(csv, trace, args, specs, loaded, tally);
+    solve_roster(csv, trace, solutions, args, specs, loaded, tally);
 
     // A stream error means the table on disk is short rows nobody can see are
     // missing, so it must not be published or reported as success.
@@ -1021,6 +1290,12 @@ int run_benchmark(int argc, char** argv) {
     // defend a budget on evidence never written.
     if (!args.trace_csv.empty() && !trace) {
         std::fprintf(stderr, "Error writing %s; the trace is incomplete\n", args.trace_csv.c_str());
+        return 2;
+    }
+    // The same for the checker's input: a short file would check fewer rows.
+    if (!args.solution_out.empty() && !solutions) {
+        std::fprintf(stderr, "Error writing %s; the solutions are incomplete\n",
+                     args.solution_out.c_str());
         return 2;
     }
     // As cbls_mipfeas and cbls_cvrp: a portfolio that lost workers measured

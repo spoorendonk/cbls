@@ -86,8 +86,8 @@ ln -sfn /path/to/this/checkout/.venv .venv && .venv/bin/pytest --tb=short -q; rm
 
 ### Fast vs. slow tests
 
-The C++ suite is **896 ctest tests**: 894 Catch2 ones over **890 `TEST_CASE`s**
-— 884 registered by `catch_discover_tests` plus **10 registered by hand**, the 6
+The C++ suite is **897 ctest tests**: 895 Catch2 ones over **891 `TEST_CASE`s**
+— 885 registered by `catch_discover_tests` plus **10 registered by hand**, the 6
 `[timing]` cases and the four hang guards `hang_guard_iteration_only_portfolio`,
 `hang_guard_novelty_zero_move_batch`, `hang_guard_nonpositive_batch_iterations`
 and `hang_guard_nl_placement_counts`, each hand-registered *as well as*
@@ -95,12 +95,12 @@ discovered (a hang only reports through a `TIMEOUT`, but all four are cheap enou
 to belong in the fast set), so each of those `TEST_CASE`s accounts for two
 ctest tests — plus **2 shell tests that are not Catch2 at all**,
 `clang_tidy_gate_probe` and `gate_lib_shell_test`, registered in the root
-`CMakeLists.txt` (they pin the clang-tidy gate and the hook filters, #171). Of the 884,
+`CMakeLists.txt` (they pin the clang-tidy gate and the hook filters, #171). Of the 885,
 **4 carry the
 Catch2 `[slow]` tag** — the UC-CHPED benchmark solves. `tests/CMakeLists.txt` discovers them in a second
 `catch_discover_tests` call with `LABELS "slow"`, so:
 
-- `ctest -LE slow` — the other 887 tests, ~12s with `-j`. The fast inner loop; run it yourself before committing (the hook no longer does).
+- `ctest -LE slow` — the other 888 tests, ~12s with `-j`. The fast inner loop; run it yourself before committing (the hook no longer does).
 - `ctest` — everything. This is what **pre-push**'s local CI runs.
 - `ctest -L timing` — 6 tests: `timing_structural_batch_deadline`, the three
   `timing_throughput_*` floors added for #125,
@@ -129,7 +129,7 @@ agree:
 1. this section,
 2. the comment above `catch_discover_tests` in `tests/CMakeLists.txt`,
 3. the build section of `README.md`,
-4. the `.venv/bin/pytest` line in `README.md` for the Python side (1743 tests, 258
+4. the `.venv/bin/pytest` line in `README.md` for the Python side (1763 tests, 258
    of them binding tests, echoed in prose by `pyproject.toml`),
 5. the `-LE slow` guidance and the ~25s/~490s figures in `docs/profiling.md`.
    Note its "302/302 green" sanitizer line is a **dated record of one run at a

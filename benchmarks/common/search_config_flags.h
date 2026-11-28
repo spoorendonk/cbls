@@ -629,6 +629,14 @@ inline InnerSolverHook* hook_argument(const SearchFlags& f, InnerSolverHook& hoo
     return f.float_hook ? &hook : nullptr;
 }
 
+/// A runner's problem-specific hook, when non-null, replaces the float hook
+/// whatever `--no-float-hook` says: that flag turns off the generic hook only,
+/// never the one the runner was asked for (#462).
+inline InnerSolverHook* hook_argument(const SearchFlags& f, InnerSolverHook& hook,
+                                      InnerSolverHook* problem_hook) {
+    return problem_hook != nullptr ? problem_hook : hook_argument(f, hook);
+}
+
 inline LNS* lns_argument(const SearchFlags& f, LNS& lns) {
     return f.lns ? &lns : nullptr;
 }

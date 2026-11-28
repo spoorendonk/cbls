@@ -295,8 +295,16 @@ tuning study scores, #262; a horizon no selected file has is refused).
 `solve()` the table measures, and the row records it in `search_config` as
 `threads=N` (at 1 the cell stays as published). `--demand-equality` solves and
 verifies demand as the source's `=` instead of `>=` (#442) and records
-`demand=eq` there. `--instance`, `--periods`, `--threads`, `--demand-equality` and
-`--time-limit` are refused outright when the resolved `--out` path *is*
+`demand=eq` there. `--uc-hook ed|full` swaps the float hook for the UC inner
+solver (`benchmarks/uc-chped/uc_hook.h`: re-dispatch only, or with the
+commitment search), opt-in and never published; its `--uc-*` knobs are #445's
+candidate's (`cbls_uc_chped --help`), each recorded in `search_config`, and it
+refuses `--no-time-limit`, as its throttle and ILS read the clock (#462).
+`--solution-out FILE` writes each measured row's (y, p) as one JSON line, none
+for a row the verifier vetoed; `benchmarks/uc-chped/check_solutions.py
+INST_DIR FILE`, #445's checker of Pedroso's `=` model, rechecks them
+independently. `--instance`, `--periods`, `--threads`, `--demand-equality`,
+`--uc-hook` and `--time-limit` are refused outright when the resolved `--out` path *is*
 the published table above — a partial roster or a shortened budget cannot become
 the published result, whether the path was defaulted or spelled out. Writing
 that file at all requires `--commit`, so a published row always names the engine

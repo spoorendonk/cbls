@@ -287,6 +287,17 @@ TEST_CASE("every search flag sets the field it claims", "[bench][flags]") {
     REQUIRE(cbls::bench::lns_argument(no_lns, lns) == nullptr);
 }
 
+TEST_CASE("a problem hook survives --no-float-hook", "[bench][flags]") {
+    cbls::FloatIntensifyHook float_hook;
+    cbls::FloatIntensifyHook problem_hook;
+    const SearchFlags on = parse({}).flags;
+    const SearchFlags off = parse({"--no-float-hook"}).flags;
+    REQUIRE(cbls::bench::hook_argument(off, float_hook, &problem_hook) == &problem_hook);
+    REQUIRE(cbls::bench::hook_argument(on, float_hook, &problem_hook) == &problem_hook);
+    REQUIRE(cbls::bench::hook_argument(on, float_hook, nullptr) == &float_hook);
+    REQUIRE(cbls::bench::hook_argument(off, float_hook, nullptr) == nullptr);
+}
+
 TEST_CASE("the on/off pairs are order-independent", "[bench][flags]") {
     REQUIRE(parse({"--compound-moves"}).flags.compound_moves);
     REQUIRE_FALSE(parse({"--no-compound-moves"}).flags.compound_moves);

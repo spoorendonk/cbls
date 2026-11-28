@@ -220,6 +220,8 @@ def _uc_chped_scratch(tmp_path: Path) -> Path:
         ["--threads", "2"],
         # `=` demand is another model than the published `>=` one (#442).
         ["--demand-equality"],
+        # The UC hook is another solver than the published protocol's (#462).
+        ["--uc-hook", "full"],
     ],
 )
 def test_uc_chped_refuses_a_partial_run_onto_the_published_table(
