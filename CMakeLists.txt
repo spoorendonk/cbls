@@ -455,7 +455,7 @@ if(CBLS_BUILD_EXAMPLES)
 
     # The C++ halves of the docs' example pages (docs/examples/, #470); each
     # page's command runs as written in example_<name>.
-    foreach(_example minlplib mip)
+    foreach(_example minlplib mip cvrp)
         add_executable(cbls_example_${_example} examples/${_example}.cpp)
         target_link_libraries(cbls_example_${_example} PRIVATE cbls_lib)
         cbls_enable_warnings(cbls_example_${_example})
@@ -467,10 +467,14 @@ if(CBLS_BUILD_EXAMPLES)
         add_test(NAME example_mip
             COMMAND cbls_example_mip benchmarks/instances/miplib-fj/neos5.mps.gz
             WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
+        add_test(NAME example_cvrp
+            COMMAND cbls_example_cvrp benchmarks/instances/cvrp/X/X-n115-k10.vrp
+            WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
         # Each exits nonzero unless the point is feasible and verifies; a
         # PASS_REGULAR_EXPRESSION would make ctest ignore that exit status.
-        # Each solves for 2 s; the timeout catches one that ignores its limit.
-        set_tests_properties(example_minlplib example_mip PROPERTIES TIMEOUT 60)
+        # Each solves for 2 s (cvrp 5 s); the timeout catches one that ignores
+        # its limit.
+        set_tests_properties(example_minlplib example_mip example_cvrp PROPERTIES TIMEOUT 60)
     endif()
 endif()
 

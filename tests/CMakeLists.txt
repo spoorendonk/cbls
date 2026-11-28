@@ -75,13 +75,13 @@ include(Catch)
 # slow solves into one serial invocation would make the full suite far slower
 # than it is.
 #
-# The 4 [slow]-tagged tests are the UC-CHPED benchmark solves. The remaining 891 (881 discovered, plus the
-# ten tests registered outside discovery that carry no slow label -- the five
+# The 4 [slow]-tagged tests are the UC-CHPED benchmark solves. The remaining 892 (881 discovered, plus the
+# eleven tests registered outside discovery that carry no slow label -- the five
 # hand-registered here, timing_structural_batch_deadline, hang_guard_iteration_only_portfolio,
 # hang_guard_novelty_zero_move_batch, hang_guard_nonpositive_batch_iterations
 # and hang_guard_nl_placement_counts, and the two shell gate tests clang_tidy_gate_probe and
-# gate_lib_shell_test, the docs_build test (#466) and the example_minlplib and example_mip
-# tests (#470) in the root CMakeLists.txt)
+# gate_lib_shell_test, the docs_build test (#466) and the example_minlplib, example_mip
+# (#470) and example_cvrp (#469) tests in the root CMakeLists.txt)
 # finish in ~12s with `-j`, the `ctest -LE slow` loop to run before committing (no hook runs it).
 # pre-push still runs everything.
 #
@@ -90,9 +90,9 @@ include(Catch)
 # the tag -- "measure both ways before tagging" applies to KEEPING a tag as
 # much as to adding one.
 #
-# The roster is therefore 903 ctest tests: 885 discovered here, the 10
+# The roster is therefore 904 ctest tests: 885 discovered here, the 10
 # hand-registered ones below, the 2 non-Catch2 shell gate tests, 2
-# consumer tests (#447), docs_build (#466) and the 2 example tests (#470) the root
+# consumer tests (#447), docs_build (#466) and the 3 example tests (#470, #469) the root
 # CMakeLists.txt registers, and the wheel_smoke
 # test (#463) python/CMakeLists.txt registers. The 895 Catch2 ones are four more than the 891
 # TEST_CASEs in tests/*.cpp, because the four hang_guard_* tests are both

@@ -54,7 +54,7 @@ m.close();
 ```bash
 cmake -B build
 cmake --build build
-ctest --test-dir build    # 903 C++ tests with -DCBLS_BUILD_PYTHON=ON, 902 without (add -LE slow for the fast 891, ~12s); one fewer without doxygen and the docs group (docs_build)
+ctest --test-dir build    # 904 C++ tests with -DCBLS_BUILD_PYTHON=ON, 903 without (add -LE slow for the fast 892, ~12s); one fewer without doxygen and the docs group (docs_build)
 ```
 
 CMake 3.15 or newer (3.20 for `ctest --test-dir`), a C++17 compiler and zlib
@@ -79,7 +79,7 @@ cbls, and the tests import the module the build puts in `build/python/cbls`):
 uv sync --extra dev
 cmake -B build -DCBLS_BUILD_PYTHON=ON -DPython_EXECUTABLE="$PWD/.venv/bin/python"
 cmake --build build
-.venv/bin/pytest          # 1870 tests, 351 of them for the bindings
+.venv/bin/pytest          # 1871 tests, 352 of them for the bindings
 ```
 
 Tests of the benchmark baselines skip themselves when `ortools` or `pyscipopt` is

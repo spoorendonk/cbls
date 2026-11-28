@@ -47,6 +47,8 @@ def _assert_near(objective: float, reference: float) -> None:
         ("examples/minlplib.py benchmarks/instances/minlplib/st_e38.nl", ST_E38_BEST),
         # MIPLIB's optimum is 15; the page asks for a feasible point only.
         ("examples/mip.py benchmarks/instances/miplib-fj/neos5.mps.gz", None),
+        # The script checks its own routes; no List result is published (#469).
+        ("examples/cvrp.py benchmarks/instances/cvrp/X/X-n115-k10.vrp", None),
     ],
 )
 def test_an_example_page_command_runs_as_written(command: str, reference: float | None) -> None:
