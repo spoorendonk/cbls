@@ -80,7 +80,8 @@ public:
 
     /// Start from commitment y and its dispatch p[u][t]; y is also the loaded
     /// commitment whose columns final_dispatch may take p from. A p not
-    /// n_units x n_periods is ignored (no loaded dispatch).
+    /// n_units x n_periods is ignored (no loaded dispatch). Costs then need
+    /// init_costs.
     void load(const Commitment& y, const std::vector<std::vector<double>>& p) {
         y_ = y;
         y0_ = y;
@@ -152,6 +153,8 @@ public:
 
     /// ILS from y_: kick, re-descend, keep the better. Ends on `end`, after
     /// `ils_stall` kicks without a win, or on `stop`, with y_/pc_/su_ the best.
+    /// `end` is read between kicks only; a caller needing a hard deadline
+    /// folds the clock into `stop`, which the re-descent polls.
     void iterate(StopRef stop, std::chrono::steady_clock::time_point end) {
         double best = total_cost();
         Commitment by = y_;
