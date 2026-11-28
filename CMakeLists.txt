@@ -417,11 +417,12 @@ if(CBLS_BUILD_TESTS)
     # Registered when configure finds doxygen and a Python (the build fence's
     # Python_EXECUTABLE, else a .venv's as for clang-tidy above) with the `docs`
     # group; a warning otherwise, since the gate installs nothing.
-    find_program(CBLS_DOXYGEN doxygen NO_CACHE)
-    set(_cbls_docs_python "${Python_EXECUTABLE}")
-    if(NOT _cbls_docs_python)
-        find_program(_cbls_docs_python python HINTS ${_cbls_tidy_hints}
-            NO_DEFAULT_PATH NO_CACHE)
+    find_program(CBLS_DOXYGEN doxygen)
+    if(Python_EXECUTABLE)
+        set(_cbls_docs_python "${Python_EXECUTABLE}")
+    else()
+        find_program(CBLS_DOCS_PYTHON python HINTS ${_cbls_tidy_hints} NO_DEFAULT_PATH)
+        set(_cbls_docs_python "${CBLS_DOCS_PYTHON}")
     endif()
     set(_cbls_docs_ok 1)
     if(CBLS_DOXYGEN AND _cbls_docs_python)

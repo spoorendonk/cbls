@@ -5,9 +5,12 @@ The supported part of the C++ library, in namespace `cbls`: what
 [Use from C++](index.md#use-from-c)). Link `cbls::cbls`. Build a `Model` with
 its variable and constraint methods, or load one with `load_model`,
 `mps_to_model(read_mps(path))` or `nl_to_model(read_nl(path))`, then call
-`solve` for one search or `ParallelSearch::solve` for the portfolio. Other
-installed headers serve this repository's runners and tests and are not
-documented here.
+`solve` for one search or `ParallelSearch::solve` for the portfolio. This page
+documents those entry points and the extension points their signatures take;
+the rest of what `<cbls/cbls.h>` brings in (the DAG, the violation manager,
+the moves) is documented in its headers. Headers outside that set, such as
+`structural_batch.h` and `arg_parse.h`, serve this repository's runners and
+tests.
 
 ## Model
 
@@ -108,6 +111,36 @@ documented here.
 ```
 
 ```{doxygenstruct} cbls::ParallelConfig
+```
+
+## Extension points
+
+The hooks `solve` and `SearchConfig` take: an inner solver run on the search's
+incumbents, large neighbourhood search, extra move generators, a tracer, and
+the caller's thread pool for the portfolio.
+
+```{doxygenclass} cbls::InnerSolverHook
+```
+
+```{doxygenclass} cbls::FloatIntensifyHook
+```
+
+```{doxygenclass} cbls::LNS
+```
+
+```{doxygenclass} cbls::MoveGenerator
+```
+
+```{doxygenstruct} cbls::MoveContext
+```
+
+```{doxygenclass} cbls::NeighbourList
+```
+
+```{doxygenclass} cbls::Tracer
+```
+
+```{doxygenclass} cbls::ExecutorRef
 ```
 
 ## Model files

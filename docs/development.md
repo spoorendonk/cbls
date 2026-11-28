@@ -193,8 +193,9 @@ macOS, a CPU pin needs `taskset`, and off Linux `allowed_cpus()` is every CPU, n
 
 The site at <https://spoorendonk.dk/cbls/> is built with Sphinx (MyST, Furo)
 from `docs/` (#451): `docs/index.md` includes the README, beside the results,
-a C++ reference (Doxygen XML of the headers in `CPP_HEADERS` in `docs/conf.py`,
-rendered by Breathe) and a Python reference (sphinx-autoapi, read statically
+a C++ reference (Doxygen XML of the supported headers, `<cbls/cbls.h>`, what
+it includes and `<cbls/io_nl.h>`, read from `cbls.h` into `CPP_HEADERS` in
+`docs/conf.py`, rendered by Breathe) and a Python reference (sphinx-autoapi, read statically
 from `python/cbls/` and the committed `_cbls_core.pyi`, so nothing is
 compiled). It also writes `llms.txt` and `llms-full.txt`. The other files in
 `docs/` are for working on cbls: `exclude_patterns` keeps them off the site,
@@ -211,14 +212,17 @@ packages; `default-groups` in `pyproject.toml` makes the usual `uv sync` keep it
 The gate keeps it warning-free: the ctest test `docs_build` (label `docs`) runs
 the same build into the build directory, when configure finds `doxygen` (on
 macOS `brew install doxygen`) and a Python with the `docs` group; without
-either, configure warns and the test is not registered. A push that changes
+either, configure warns and the test is not registered, and the roster above
+is one short (900, and 888 in the fast set). A push that changes
 the README or a file under `docs/` runs the gate. The `docs` workflow
 (`.github/workflows/docs.yml`) builds and deploys the site to GitHub Pages on a
 push to `main` that changes what the site is built from (`docs/`, the README,
-`CMakeLists.txt`, the headers in `CPP_HEADERS`, `python/cbls/`, the workflow),
-on a release tag (`v[0-9]*`), or by hand (`gh workflow run docs.yml`). It runs
-no tests, and never on another branch or a pull request. A header added to
-`CPP_HEADERS` goes into the workflow's `paths` too. The sidebar and `llms.txt`
+`CMakeLists.txt`, `include/cbls/`, `python/cbls/`, `pyproject.toml`, the
+workflow), on a release tag (`v[0-9]*`), or by hand (`gh workflow run
+docs.yml`). It runs no tests, and never on another branch or a pull request. A
+tag deploys only because the `github-pages` environment has a `v*` tag rule
+beside its default-branch one (set when Pages was enabled, #466); without it
+GitHub refuses the deploy. The sidebar and `llms.txt`
 name the version from `git describe` over the release tags: the tag, or
 `main (after v0.1.0, abc1234)`, or `main (abc1234)` before the first tag.
 

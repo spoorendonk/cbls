@@ -13,22 +13,16 @@ on:
     # does not apply the path filter below to tag pushes.
     tags: ["v[0-9]*"]
     # What the site is built from: the pages, the README they include,
-    # CMakeLists.txt (conf.py's fallback version), the C++ headers in
-    # conf.py's CPP_HEADERS, the Python package autoapi reads, and this file.
+    # CMakeLists.txt (conf.py's fallback version), the C++ headers
+    # (conf.py's CPP_HEADERS, read from cbls.h), the Python package autoapi
+    # reads, pyproject.toml (the docs group), and this file.
     paths:
       - "docs/**"
       - "README.md"
       - "CMakeLists.txt"
-      - "include/cbls/model.h"
-      - "include/cbls/expr.h"
-      - "include/cbls/search.h"
-      - "include/cbls/pool.h"
-      - "include/cbls/stop.h"
-      - "include/cbls/io.h"
-      - "include/cbls/io_mps.h"
-      - "include/cbls/io_nl.h"
-      - "include/cbls/verify.h"
+      - "include/cbls/**"
       - "python/cbls/**"
+      - "pyproject.toml"
       - ".github/workflows/docs.yml"
 
 permissions:

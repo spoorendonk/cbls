@@ -58,19 +58,15 @@ if not os.path.isfile(DOXYGEN):
     DOXYGEN = shutil.which("doxygen") or ""
 DOXYGEN_OUT = Path(os.environ.get("CBLS_DOXYGEN_OUT") or ROOT / "build" / "docs" / "doxygen")
 
-# The headers declaring what docs/cpp.md documents: the supported API is
-# <cbls/cbls.h> and <cbls/io_nl.h> (README, Use from C++; #447). The push paths
-# in .github/workflows/docs.yml list them too, so a change to one redeploys.
+# The supported API (README, Use from C++; #447): <cbls/cbls.h>, the headers it
+# includes, and <cbls/io_nl.h>. Read from cbls.h, so a header it gains is
+# documented too; the push paths in .github/workflows/docs.yml take
+# include/cbls/** for the same reason.
+_CBLS_H = ROOT / "include" / "cbls" / "cbls.h"
 CPP_HEADERS = [
-    "include/cbls/model.h",
-    "include/cbls/expr.h",
-    "include/cbls/search.h",
-    "include/cbls/pool.h",
-    "include/cbls/stop.h",
-    "include/cbls/io.h",
-    "include/cbls/io_mps.h",
+    "include/cbls/cbls.h",
+    *(f"include/cbls/{h}" for h in re.findall(r'^#include "(\w+\.h)"', _CBLS_H.read_text(), re.M)),
     "include/cbls/io_nl.h",
-    "include/cbls/verify.h",
 ]
 
 DOXYGEN_CONFIG = f"""
@@ -84,7 +80,10 @@ GENERATE_HTML    = NO
 GENERATE_LATEX   = NO
 QUIET            = YES
 WARN_IF_UNDOCUMENTED = NO
+WARN_IF_DOC_ERROR = NO
 """
+# WARN_IF_DOC_ERROR: the headers' comments are written for their readers, not
+# for doxygen; `O(#nodes + #rows)` there means counts, not links.
 
 if not DOXYGEN:
     raise RuntimeError("the docs build needs doxygen on PATH for the C++ reference")
