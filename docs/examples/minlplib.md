@@ -36,7 +36,9 @@ objective = 7197.727149
 verify: PASS
 ```
 
-The C++ program prints `true` in place of `True`. The test suite runs both
+The C++ program prints `true` in place of `True`. The solve stops on
+wall-clock time, so the digits can differ on a slower machine; the Python test
+also checks the objective against the best known. The test suite runs both
 commands as written here: `example_minlplib` in ctest, and
 `tests/python/test_examples.py`.
 
@@ -79,8 +81,9 @@ feasible objective would mean a verification bug, not a record.
 
 ## Where cbls stands
 
-cbls cannot prove optimality. SCIP reaches the same objective on `st_e38` and
-proves it optimal in 0.07 s. Over Mittelmann's nontrivial MINLPLib roster, cbls
+cbls cannot prove optimality. SCIP 10.0.2 reaches the same objective on
+`st_e38` and proves it optimal in 0.07 s (the instance's row in
+[`scip_baseline.csv`](https://github.com/spoorendonk/cbls/blob/main/benchmarks/instances/minlplib/scip_baseline.csv)). Over Mittelmann's nontrivial MINLPLib roster, cbls
 is behind SCIP:
 - its GM(gap+1) is **1.676 times SCIP's**;
 - it finds a feasible point on 169 instances, against SCIP's 187 of 195.

@@ -47,4 +47,7 @@ def main(path: str) -> int:
 
 
 if __name__ == "__main__":
+    if len(sys.argv) != 2:
+        print(f"usage: {sys.argv[0]} MODEL.nl", file=sys.stderr)
+        sys.exit(2)
     sys.exit(main(sys.argv[1]))

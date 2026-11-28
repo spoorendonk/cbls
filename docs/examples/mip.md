@@ -34,7 +34,9 @@ verify: PASS
 ```
 
 The C++ program prints `true` in place of `True` and only the count of nonzero
-columns. The test suite runs both commands as written here: `example_mip` in
+columns. The solve stops on wall-clock time, so the point can differ from run
+to run, or on a slower machine; the tests check that it is feasible and
+verifies. The test suite runs both commands as written here: `example_mip` in
 ctest, and `tests/python/test_examples.py`.
 
 ## The code
@@ -54,8 +56,8 @@ ctest, and `tests/python/test_examples.py`.
   reads `.mps` and `.mps.gz`. cbls variables need finite bounds: an infinite
   one is derived from the rows where it can be, else clamped to 1e9, which can
   cut off solutions. `n_clamped_columns` counts the columns clamped.
-- **`objective`** is in the minimise sense. A maximisation model reports the
-  negated objective (#472).
+- **`objective`** is the MPS objective, minimised. `mps_to_model` rejects
+  `OBJSENSE MAX` with an error; negate the costs to maximise.
 - **`original_values()`** gives the point as one value per MPS column, in the
   file's order. The script prints the nonzero ones by column name.
 - **`feasible`** means every row and bound holds within the engine's tolerance
@@ -81,8 +83,9 @@ defaults is ahead of cbls:
 - its primal integral (shifted geometric mean, lower is better) is **0.168**,
   against cbls's **0.390**.
 
-CP-SAT's `fj` and `ls` workers run the same algorithm as cbls, so this is a
-like-for-like check, not a case for cbls on MILPs (#255). The
+CP-SAT's `fj` and `ls` workers run the same algorithm as cbls, but at its
+defaults CP-SAT also brings presolve and its full portfolio, so the table
+compares the tools as shipped. It is no case for cbls on MILPs (#255). The
 [MIPfeas table](../results.md#mipfeas) has the full numbers and run record.
 cbls's case is the terms a MILP cannot state: see the
 [MINLPLib example](minlplib.md).

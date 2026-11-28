@@ -467,8 +467,8 @@ if(CBLS_BUILD_EXAMPLES)
         add_test(NAME example_mip
             COMMAND cbls_example_mip benchmarks/instances/miplib-fj/neos5.mps.gz
             WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
-        set_tests_properties(example_minlplib example_mip PROPERTIES
-            PASS_REGULAR_EXPRESSION "feasible  = true.*verify: PASS")
+        # Each exits nonzero unless the point is feasible and verifies; a
+        # PASS_REGULAR_EXPRESSION would make ctest ignore that exit status.
     endif()
 endif()
 

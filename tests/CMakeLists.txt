@@ -76,10 +76,10 @@ include(Catch)
 # than it is.
 #
 # The 4 [slow]-tagged tests are the UC-CHPED benchmark solves. The remaining 891 (881 discovered, plus the
-# ten hand-registered tests that carry no slow label --
-# timing_structural_batch_deadline, hang_guard_iteration_only_portfolio,
+# ten tests registered outside discovery that carry no slow label -- the five
+# hand-registered here, timing_structural_batch_deadline, hang_guard_iteration_only_portfolio,
 # hang_guard_novelty_zero_move_batch, hang_guard_nonpositive_batch_iterations
-# and hang_guard_nl_placement_counts here, and the two shell gate tests clang_tidy_gate_probe and
+# and hang_guard_nl_placement_counts, and the two shell gate tests clang_tidy_gate_probe and
 # gate_lib_shell_test, the docs_build test (#466) and the example_minlplib and example_mip
 # tests (#470) in the root CMakeLists.txt)
 # finish in ~12s with `-j`, the `ctest -LE slow` loop to run before committing (no hook runs it).

@@ -35,7 +35,7 @@ def main(path: str) -> int:
     result = cbls.solve(model, time_limit=2.0, seed=42, threads=1)
 
     print(f"feasible  = {result.feasible}")
-    print(f"objective = {result.objective:.6f}")  # in the minimise sense (#472)
+    print(f"objective = {result.objective:.6f}")  # the MPS objective, minimised
     # One value per MPS column; a handle encodes variable id i as -(i + 1).
     values = converted.original_values()
     nonzero = [
@@ -53,4 +53,7 @@ def main(path: str) -> int:
 
 
 if __name__ == "__main__":
+    if len(sys.argv) != 2:
+        print(f"usage: {sys.argv[0]} MODEL.mps[.gz]", file=sys.stderr)
+        sys.exit(2)
     sys.exit(main(sys.argv[1]))
