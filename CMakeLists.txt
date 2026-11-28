@@ -5,13 +5,22 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# Under add_subdirectory or FetchContent, cbls is the parent's library only: no
+# tests, examples or benchmarks by default, and the parent's build type and git
+# config left alone (#447). PROJECT_IS_TOP_LEVEL needs CMake 3.21.
+if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+    set(CBLS_IS_TOP_LEVEL ON)
+else()
+    set(CBLS_IS_TOP_LEVEL OFF)
+endif()
+
 # Most of this project's test suite is real solver runs, so an unoptimized build
 # costs the full ctest cycle roughly 8x. Nothing set a build type, which means the
 # documented `cmake -B build` produced -O0 binaries and every push paid for it.
 # Only default it: an explicit -DCMAKE_BUILD_TYPE still wins, and multi-config
 # generators (which ignore the variable and set CMAKE_CONFIGURATION_TYPES instead)
 # are left alone.
-if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+if(CBLS_IS_TOP_LEVEL AND NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Release CACHE STRING
         "Build type; defaults to Release because the suite is solver runs" FORCE)
     set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS
@@ -100,9 +109,9 @@ option(CBLS_INSTALL_GIT_HOOKS
 # Only an unset hooksPath, or one already pointing at .githooks, is touched.
 # The top-level guard matters: without it, a project that vendors cbls via
 # add_subdirectory or FetchContent would get core.hooksPath written into *its*
-# repository. (PROJECT_IS_TOP_LEVEL would read better but needs CMake 3.21.)
+# repository.
 if(CBLS_INSTALL_GIT_HOOKS
-   AND CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR
+   AND CBLS_IS_TOP_LEVEL
    AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/.git")
     find_package(Git QUIET)
     if(GIT_FOUND)
@@ -137,7 +146,9 @@ if(CBLS_INSTALL_GIT_HOOKS
     endif()
 endif()
 
-# Compression libraries (required for MPS .gz reader; bzip2 optional).
+# Compression libraries (required for MPS .gz reader; bzip2 optional). Each is
+# found again by cmake/cblsConfig.cmake.in for an installed copy's consumers.
+find_package(Threads REQUIRED)
 find_package(ZLIB REQUIRED)
 option(CBLS_USE_BZIP2 "Enable bzip2 (.bz2) support in the MPS reader" OFF)
 if(CBLS_USE_BZIP2)
@@ -201,8 +212,9 @@ function(cbls_enable_warnings target)
     target_compile_options(${target} PRIVATE ${CBLS_WARNING_FLAGS})
 endfunction()
 
-# Library
-add_library(cbls_lib
+# Library. STATIC whatever BUILD_SHARED_LIBS says: a shared libcbls would need a
+# SOVERSION and a symbol-visibility policy, and has neither (#447).
+add_library(cbls_lib STATIC
     src/dag.cpp
     src/dag_ops.cpp
     src/model.cpp
@@ -241,10 +253,16 @@ target_include_directories(cbls_lib PUBLIC
 set_target_properties(cbls_lib PROPERTIES
     POSITION_INDEPENDENT_CODE ON
     OUTPUT_NAME cbls
+    EXPORT_NAME cbls
 )
+# The headers are C++17; CMAKE_CXX_STANDARD above does not reach a consumer.
+target_compile_features(cbls_lib PUBLIC cxx_std_17)
+# One name for consumers, whether cbls comes from find_package or from
+# add_subdirectory/FetchContent (#447).
+add_library(cbls::cbls ALIAS cbls_lib)
 # Link json headers privately (interface lib, so use target_include_directories instead)
 target_include_directories(cbls_lib PRIVATE ${json_SOURCE_DIR}/include)
-target_link_libraries(cbls_lib PRIVATE pthread ZLIB::ZLIB)
+target_link_libraries(cbls_lib PRIVATE Threads::Threads ZLIB::ZLIB)
 cbls_enable_warnings(cbls_lib)
 if(CBLS_USE_BZIP2)
     target_compile_definitions(cbls_lib PRIVATE CBLS_HAS_BZIP2)
@@ -272,13 +290,19 @@ install(EXPORT cblsTargets
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/cbls
 )
 
-configure_file(cmake/cblsConfig.cmake.in
-    ${CMAKE_CURRENT_BINARY_DIR}/cblsConfig.cmake @ONLY)
+include(CMakePackageConfigHelpers)
+configure_package_config_file(cmake/cblsConfig.cmake.in
+    ${CMAKE_CURRENT_BINARY_DIR}/cblsConfig.cmake
+    INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/cbls)
+write_basic_package_version_file(
+    ${CMAKE_CURRENT_BINARY_DIR}/cblsConfigVersion.cmake
+    COMPATIBILITY SameMinorVersion)
 install(FILES ${CMAKE_CURRENT_BINARY_DIR}/cblsConfig.cmake
+    ${CMAKE_CURRENT_BINARY_DIR}/cblsConfigVersion.cmake
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/cbls)
 
 # C++ tests
-option(CBLS_BUILD_TESTS "Build C++ tests" ON)
+option(CBLS_BUILD_TESTS "Build C++ tests" ${CBLS_IS_TOP_LEVEL})
 if(CBLS_BUILD_TESTS)
     FetchContent_Declare(
         Catch2
@@ -347,10 +371,27 @@ if(CBLS_BUILD_TESTS)
     add_test(NAME gate_lib_shell_test
         COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/.githooks/tests/gate-lib-test.sh"
                 "${CMAKE_BINARY_DIR}")
+
+    # A downstream project builds and links cbls::cbls from the installed tree
+    # and from add_subdirectory (#447, tests/consumer/). Each configures and
+    # builds a project of its own, hence slow, and two of ctest's -j slots for
+    # the inner build's two jobs.
+    foreach(_mode find_package add_subdirectory)
+        add_test(NAME consumer_${_mode}
+            COMMAND "${CMAKE_COMMAND}" -DMODE=${_mode}
+                    "-DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+                    "-DBUILD_DIR=${CMAKE_BINARY_DIR}"
+                    "-DWORK_DIR=${CMAKE_BINARY_DIR}/consumer/${_mode}"
+                    "-DCXX=${CMAKE_CXX_COMPILER}"
+                    "-DJSON_SOURCE_DIR=${json_SOURCE_DIR}" -DJOBS=2
+                    -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/consumer/run.cmake")
+        set_tests_properties(consumer_${_mode}
+            PROPERTIES LABELS "slow" PROCESSORS 2 TIMEOUT 900)
+    endforeach()
 endif()
 
 # Examples
-option(CBLS_BUILD_EXAMPLES "Build examples" ON)
+option(CBLS_BUILD_EXAMPLES "Build examples" ${CBLS_IS_TOP_LEVEL})
 if(CBLS_BUILD_EXAMPLES)
     add_executable(cbls_simple examples/simple.cpp)
     target_link_libraries(cbls_simple PRIVATE cbls_lib)
@@ -358,7 +399,7 @@ if(CBLS_BUILD_EXAMPLES)
 endif()
 
 # Benchmarks
-option(CBLS_BUILD_BENCHMARKS "Build benchmarks" ON)
+option(CBLS_BUILD_BENCHMARKS "Build benchmarks" ${CBLS_IS_TOP_LEVEL})
 if(CBLS_BUILD_BENCHMARKS)
     add_executable(cbls_uc_chped benchmarks/uc-chped/uc_chped.cpp)
     target_link_libraries(cbls_uc_chped PRIVATE cbls_lib)

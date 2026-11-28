@@ -86,7 +86,7 @@ ln -sfn /path/to/this/checkout/.venv .venv && .venv/bin/pytest --tb=short -q; rm
 
 ### Fast vs. slow tests
 
-The C++ suite is **897 ctest tests**: 895 Catch2 ones over **891 `TEST_CASE`s**
+The C++ suite is **899 ctest tests**: 895 Catch2 ones over **891 `TEST_CASE`s**
 — 885 registered by `catch_discover_tests` plus **10 registered by hand**, the 6
 `[timing]` cases and the four hang guards `hang_guard_iteration_only_portfolio`,
 `hang_guard_novelty_zero_move_batch`, `hang_guard_nonpositive_batch_iterations`
@@ -95,7 +95,10 @@ discovered (a hang only reports through a `TIMEOUT`, but all four are cheap enou
 to belong in the fast set), so each of those `TEST_CASE`s accounts for two
 ctest tests — plus **2 shell tests that are not Catch2 at all**,
 `clang_tidy_gate_probe` and `gate_lib_shell_test`, registered in the root
-`CMakeLists.txt` (they pin the clang-tidy gate and the hook filters, #171). Of the 885,
+`CMakeLists.txt` (they pin the clang-tidy gate and the hook filters, #171) —
+plus **2 consumer tests**, `consumer_find_package` and
+`consumer_add_subdirectory`, also registered there with `LABELS "slow"`: each
+builds `tests/consumer/` against cbls as a downstream project would (#447). Of the 885,
 **4 carry the
 Catch2 `[slow]` tag** — the UC-CHPED benchmark solves. `tests/CMakeLists.txt` discovers them in a second
 `catch_discover_tests` call with `LABELS "slow"`, so:
@@ -111,8 +114,8 @@ Catch2 `[slow]` tag** — the UC-CHPED benchmark solves. `tests/CMakeLists.txt` 
   reason.
 
 **The Catch2 `[slow]` tag and the ctest `slow` label are not the same set here**,
-and both numbers appear above: 4 tests carry the *tag*, 9 carry the *label*
-(`ctest -N -L slow` says 9). The three throughput floors and #191's and
+and both numbers appear above: 4 tests carry the *tag*, 11 carry the *label*
+(`ctest -N -L slow` says 11): the 2 consumer tests, and the following. The three throughput floors and #191's and
 #461's deadline tests are tagged `[timing]`
 — which is what keeps them out of both `catch_discover_tests` calls, since the
 second spec is `[slow]~[timing]`; retagging one `[slow]` *instead of* `[timing]`

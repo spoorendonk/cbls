@@ -52,8 +52,12 @@ m.close();
 ```bash
 cmake -B build
 cmake --build build
-ctest --test-dir build    # 897 C++ tests (add -LE slow for the fast 888, ~12s)
+ctest --test-dir build    # 899 C++ tests (add -LE slow for the fast 888, ~12s)
 ```
+
+CMake 3.15 or newer, a C++17 compiler and zlib are required; bzip2 is
+optional (`-DCBLS_USE_BZIP2=ON` reads `.mps.bz2`). The build fetches
+nlohmann/json, and Catch2 for the tests, so the first configure needs network.
 
 The build type defaults to `Release`; pass `-DCMAKE_BUILD_TYPE=Debug` to override
 it. Install `ccache` and CMake will use it as a compiler launcher automatically,
@@ -82,12 +86,54 @@ uv sync --extra dev --extra benchmarks   # names both: uv sync drops an unnamed 
 CBLS_REQUIRE_BENCHMARKS=1 .venv/bin/pytest   # turns that skip into an error
 ```
 
-To use CBLS from another project, install it as a Python package
+To use CBLS from another Python project, install it as a package
 (this repository's own venv is managed by `uv sync` only):
 
 ```bash
 pip install .
 ```
+
+## Use from C++
+
+Either way, link `cbls::cbls`. It carries the include path, C++17 and the
+static library's link dependencies (zlib, threads, bzip2 when built with it).
+
+Against an installed copy:
+
+```bash
+cmake -B build -DCBLS_BUILD_TESTS=OFF -DCBLS_BUILD_BENCHMARKS=OFF
+cmake --build build
+cmake --install build --prefix /opt/cbls
+```
+
+```cmake
+find_package(cbls 0.1 CONFIG REQUIRED)   # -DCMAKE_PREFIX_PATH=/opt/cbls
+target_link_libraries(my_app PRIVATE cbls::cbls)
+```
+
+From source, with FetchContent (or `add_subdirectory` on a checkout):
+
+```cmake
+include(FetchContent)
+FetchContent_Declare(cbls
+    GIT_REPOSITORY https://github.com/spoorendonk/cbls.git
+    GIT_TAG main)   # pin a commit
+FetchContent_MakeAvailable(cbls)
+target_link_libraries(my_app PRIVATE cbls::cbls)
+```
+
+As a subproject cbls builds the library and the `cbls` CLI only: tests,
+examples and benchmarks default to OFF, and it neither sets the build type nor
+touches the parent's git config. It compiles at the parent's build type, so set
+one (`-DCMAKE_BUILD_TYPE=Release`): an unset one compiles cbls unoptimized.
+
+The library is static only (`BUILD_SHARED_LIBS` does not apply) and 0.x: the
+version check accepts 0.1.x for `0.1`, and nothing promises source or ABI
+compatibility between releases. The supported API is what `<cbls/cbls.h>`
+declares, plus `<cbls/io_nl.h>` for AMPL `.nl` models. The other headers under
+`include/cbls/` are installed because those include them, or serve this
+repository's own runners and tests; they can change without notice.
+`tests/consumer/` builds both ways in the test suite (`ctest -R consumer_`).
 
 ## Scope
 

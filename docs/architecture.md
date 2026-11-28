@@ -98,7 +98,7 @@ A one-screen map of the pipeline, its files, the extension points, build targets
 
 | Target | Source | Description |
 |--------|--------|-------------|
-| `cbls_lib` | `src/*.cpp`, `src/io/*.cpp` | Core library (static) |
+| `cbls_lib` | `src/*.cpp`, `src/io/*.cpp` | Core library (static only); `cbls::cbls` to consumers, installed or in-tree (#447) |
 | `cbls_cli` | `src/cli.cpp` | CLI executable (output name `cbls`) |
 | `cbls_tests` | `tests/*.cpp` | Catch2 test suite |
 | `cbls_simple` | `examples/simple.cpp` | Minimal modeling example |
@@ -111,8 +111,11 @@ A one-screen map of the pipeline, its files, the extension points, build targets
 | `cbls_scip_traj` | `benchmarks/common/scip_driver/` | SCIP incumbent trajectory on a pinned SCIP 11 (#442); only with `-DCBLS_SCIP_DIR` |
 
 Examples, tests, benchmarks and bindings are each behind an option:
-`CBLS_BUILD_EXAMPLES`/`CBLS_BUILD_TESTS`/`CBLS_BUILD_BENCHMARKS` default ON,
+`CBLS_BUILD_EXAMPLES`/`CBLS_BUILD_TESTS`/`CBLS_BUILD_BENCHMARKS` default ON
+when cbls is the top-level project and OFF under `add_subdirectory`/FetchContent,
 `CBLS_BUILD_PYTHON` defaults OFF (but the gated build turns it on).
+`tests/consumer/` is the downstream project that pins both ways in
+(`ctest -R consumer_`).
 
 ### Tools
 

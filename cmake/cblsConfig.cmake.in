@@ -1,4 +1,13 @@
 @PACKAGE_INIT@
 
+# libcbls is static, so its private link dependencies are the consumer's to
+# link (#447). BZip2 only when this copy was built with CBLS_USE_BZIP2.
+include(CMakeFindDependencyMacro)
+find_dependency(Threads)
+find_dependency(ZLIB)
+if(@CBLS_USE_BZIP2@)
+    find_dependency(BZip2)
+endif()
+
 include("${CMAKE_CURRENT_LIST_DIR}/cblsTargets.cmake")
 check_required_components(cbls)
