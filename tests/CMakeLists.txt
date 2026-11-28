@@ -29,6 +29,7 @@ add_executable(cbls_tests
     test_uc_chped.cpp
     test_uc_chped_trace.cpp
     test_uc_dispatch.cpp
+    test_uc_search.cpp
     test_inner_solver.cpp
     test_callback.cpp
     test_io.cpp
