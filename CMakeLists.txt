@@ -162,10 +162,16 @@ include(FetchContent)
 # rather than a moving branch. json is header-only and its 4500-commit history is
 # never read. Measured: a cold configure drops 32s -> 21s and _deps/ 359MB ->
 # 214MB. The remainder is json's working tree, which shallow cloning cannot help.
+#
+# Only json's headers are used (${json_SOURCE_DIR}/include), never its target.
+# SOURCE_SUBDIR names a directory with no CMakeLists.txt, so MakeAvailable
+# populates the source without adding json's project: a parent with its own
+# nlohmann_json target then gets no duplicate (#447).
 FetchContent_Declare(json
     GIT_REPOSITORY https://github.com/nlohmann/json.git
     GIT_TAG v3.11.3
     GIT_SHALLOW TRUE
+    SOURCE_SUBDIR headers-only-no-cmake
 )
 FetchContent_MakeAvailable(json)
 
@@ -397,6 +403,9 @@ if(CBLS_BUILD_TESTS)
                     "-DCXX=${CMAKE_CXX_COMPILER}"
                     "-DJSON_SOURCE_DIR=${json_SOURCE_DIR}" -DJOBS=2
                     "-DCONFIG=$<CONFIG>" "-DLINK_FLAGS=${_cbls_consumer_link}"
+                    "-DGENERATOR=${CMAKE_GENERATOR}"
+                    "-DMAKE_PROGRAM=${CMAKE_MAKE_PROGRAM}"
+                    "-DCXX_FLAGS=${CMAKE_CXX_FLAGS}"
                     -P "${PROJECT_SOURCE_DIR}/tests/consumer/run.cmake")
         set_tests_properties(consumer_${_mode}
             PROPERTIES LABELS "slow" PROCESSORS 2 TIMEOUT 900)

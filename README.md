@@ -55,7 +55,8 @@ cmake --build build
 ctest --test-dir build    # 899 C++ tests (add -LE slow for the fast 888, ~12s)
 ```
 
-CMake 3.15 or newer, a C++17 compiler and zlib are required; bzip2 is
+CMake 3.15 or newer (3.20 for `ctest --test-dir`), a C++17 compiler and zlib
+are required; bzip2 is
 optional (`-DCBLS_USE_BZIP2=ON` reads `.mps.bz2`). The build fetches
 nlohmann/json, and Catch2 for the tests, so the first configure needs network.
 
@@ -131,9 +132,10 @@ one (`-DCMAKE_BUILD_TYPE=Release`): an unset one compiles cbls unoptimized.
 The library is static only (`BUILD_SHARED_LIBS` does not apply) and 0.x: the
 version check accepts 0.1.x for `0.1`, and nothing promises source or ABI
 compatibility between releases. The supported API is what `<cbls/cbls.h>`
-declares, plus `<cbls/io_nl.h>` for AMPL `.nl` models. The other headers under
-`include/cbls/` are installed because those include them, or serve this
-repository's own runners and tests; they can change without notice.
+brings in (the model, `solve`, the portfolio, MPS reading, ...), plus
+`<cbls/io_nl.h>` for AMPL `.nl` models. Headers outside that set, such as
+`structural_batch.h` and `arg_parse.h`, are installed for this repository's own
+runners and tests and can change without notice.
 `tests/consumer/` builds both ways in the test suite (`ctest -R consumer_`).
 
 ## Scope

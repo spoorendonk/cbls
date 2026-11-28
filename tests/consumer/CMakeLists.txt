@@ -14,14 +14,20 @@ if(CBLS_CONSUMER_MODE STREQUAL "find_package")
     find_package(cbls 0.1 CONFIG REQUIRED)
 elseif(CBLS_CONSUMER_MODE STREQUAL "add_subdirectory")
     set(CBLS_SOURCE_DIR "" CACHE PATH "The cbls source tree")
+    # A parent with nlohmann/json of its own: cbls needs only json's headers and
+    # must not define a second nlohmann_json target.
+    add_library(nlohmann_json INTERFACE)
     add_subdirectory("${CBLS_SOURCE_DIR}" cbls)
-    # A subproject builds the library only: no Catch2, tests, examples or
-    # benchmark runners, and the parent's build type left alone.
+    # A subproject builds the library only: no Catch2, tests, examples,
+    # benchmark runners or install rules, and the parent's build type left alone.
     foreach(_t Catch2 cbls_tests cbls_simple cbls_mipfeas)
         if(TARGET ${_t})
             message(FATAL_ERROR "cbls as a subproject defined target ${_t}")
         endif()
     endforeach()
+    if(CBLS_INSTALL)
+        message(FATAL_ERROR "cbls as a subproject turned CBLS_INSTALL on")
+    endif()
     if(CMAKE_BUILD_TYPE)
         message(FATAL_ERROR
             "cbls as a subproject set CMAKE_BUILD_TYPE to ${CMAKE_BUILD_TYPE}")
