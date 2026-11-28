@@ -121,9 +121,9 @@ is cheap to score. `UCHook` (#445, #452) adds both:
    `vm.is_feasible()`, which counts the objective-bound row (#454). Hook and
    engine then agree on what feasible means.
 3. **Budget infeasible calls.** It sets `wants_infeasible()` from
-   `--uc-infeasible`. An infeasible call is skipped once the hook has used more
-   than 90% of its wall time, or when its commitment repeats the last
-   call's.
+   `--uc-infeasible`. An infeasible call is skipped once the hook's own time
+   exceeds `UCHookConfig::infeasible_share` (0.9) of the wall time since it was
+   constructed, or when its commitment repeats the last call's.
 4. **Repair** (`--uc-repair`) a commitment that breaks min up/down or capacity,
    or skip the call.
 5. **Search:** a first-improvement descent over each unit's on/off blocks,
