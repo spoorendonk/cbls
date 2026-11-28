@@ -200,9 +200,10 @@ it includes and `<cbls/io_nl.h>`, read from `cbls.h` into `CPP_HEADERS` in
 `docs/conf.py`, rendered by Breathe) and a Python reference (sphinx-autoapi, read statically
 from `python/cbls/` and the committed `_cbls_core.pyi`, so nothing is
 compiled). It also writes `llms.txt` and `llms-full.txt`. The UC-CHPED
-application page, `docs/uc-chped.md`, reports the results tables and how to run
-the runner; `tests/python/test_docs_uc_chped.py` runs its `bash` blocks as
-written. The other files in
+application page, `docs/uc-chped.md`, summarises and links the results tables
+and says how to run the runner; `tests/python/test_docs_uc_chped.py` runs its
+`bash` blocks as written, but checks the build block rather than run it. The
+other files in
 `docs/` are for working on cbls: `exclude_patterns` keeps them off the site,
 so a site page or the README links them by absolute GitHub URL, as it does any
 other repository file. Build it with `doxygen` on PATH:

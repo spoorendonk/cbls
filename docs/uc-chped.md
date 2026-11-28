@@ -17,12 +17,13 @@ $y_{u,t} \in \{0, 1\}$ and the dispatch $p_{u,t} \geq 0$ are the decisions.
 $$\min \sum_{u, t} \left[ y_{u,t} F_u(p_{u,t}) + SC_{u,t} \right], \qquad
 F_u(P) = a_u + b_u P + c_u P^2 + \left| d_u \sin\big(e_u (P_u^{\min} - P)\big) \right|$$
 
-subject to, for every $u$ and $t$:
+subject to:
 
-- **demand:** $\sum_u p_{u,t} = D_t$;
-- **spinning reserve:** $\sum_u P_u^{\max} y_{u,t} \geq D_t + R_t$, on committed
-  capacity, not on dispatch;
-- **dispatch limits:** $P_u^{\min} y_{u,t} \leq p_{u,t} \leq P_u^{\max} y_{u,t}$;
+- **demand:** $\sum_u p_{u,t} = D_t$ in every period $t$;
+- **spinning reserve:** $\sum_u P_u^{\max} y_{u,t} \geq D_t + R_t$ in every
+  period $t$, on committed capacity, not on dispatch;
+- **dispatch limits:** $P_u^{\min} y_{u,t} \leq p_{u,t} \leq P_u^{\max} y_{u,t}$
+  for every unit $u$ and period $t$;
 - **minimum up and down times**, including what each unit's state before the
   horizon still owes;
 - **start-up cost** $SC_{u,t}$: hot if the unit ran within its last
@@ -33,10 +34,10 @@ There are no ramp rates, in the source or here.
 
 | Instance | Units | Periods | Source |
 |---|---:|---:|---|
-| `ucp13` | 13 | 1-24 | Pedroso et al.'s data, checked field by field |
-| `ucp40` | 40 | 1-24 | Pedroso et al.'s data, checked field by field |
-| `ucp100` | 100 | 1-24, 48, 168 | this repository's construction from `ucp40` |
-| `ucp200` | 200 | 1-24, 48, 168 | this repository's construction from `ucp40` |
+| `ucp13` | 13 | 1, 3, 6, 12, 24 | Pedroso et al.'s data, checked field by field |
+| `ucp40` | 40 | 1, 3, 6, 12, 24 | Pedroso et al.'s data, checked field by field |
+| `ucp100` | 100 | 1, 3, 6, 12, 24, 48, 168 | this repository's construction from `ucp40` |
+| `ucp200` | 200 | 1, 3, 6, 12, 24, 48, 168 | this repository's construction from `ucp40` |
 
 Pedroso et al. publish bounds for `ucp13` and `ucp40` only. The construction of
 the larger instances, the field-by-field check and the instance files are in
@@ -47,7 +48,7 @@ the larger instances, the field-by-field check and the instance files are in
 [benchmarks/uc-chped/FIDELITY.md](https://github.com/spoorendonk/cbls/blob/main/benchmarks/uc-chped/FIDELITY.md)
 audits the model equation by equation against the source. The objective, the
 start-up costs, the reserve and the minimum up and down times match. One row
-differs:
+differs, and a flag restores it:
 
 - **Demand is `>=` by default.** The runner solves
   $\sum_u p_{u,t} \geq D_t$, where the source has `=`. That is a relaxation: a
@@ -101,7 +102,8 @@ solution:
 Leave out `--instance`, `--periods` and `--time-limit` for the whole roster at
 its per-horizon budgets (10 s at 1 period up to 600 s at 168). `--threads N` runs the parallel
 portfolio, as the results below do at 16. `cbls_uc_chped --help` lists every
-flag; docs/benchmarks/uc-chped/README.md says what each one records, and how
+flag; the [benchmark's README](https://github.com/spoorendonk/cbls/blob/main/docs/benchmarks/uc-chped/README.md)
+says what each one records, and how
 `score.py` scores a multi-seed campaign against the SCIP references. The SCIP
 references are in
 [benchmarks/uc-chped/pedroso/](https://github.com/spoorendonk/cbls/blob/main/benchmarks/uc-chped/pedroso/README.md),
@@ -111,7 +113,8 @@ SCIP (`pwl`), and SCIP's MINLP with the true valve-point term (`exact`).
 ## Results
 
 The tables are on the [benchmark results](results.md#uc-chped) page, each
-copied from the issue comment that scored it, with its run record. This page
+copied from the issue comment that scored it, with its run record, except one
+computed there from posted numbers. This page
 states each one's conditions and what it shows; every number below is from
 those tables.
 
