@@ -39,6 +39,52 @@ to run, or on a slower machine; the tests check that it is feasible and
 verifies. The test suite runs both commands against the build tree:
 `example_mip` in ctest, and `tests/python/test_examples.py`.
 
+## From the command line
+
+The `cbls` command solves the file with no script, here with the same 2 s, one
+thread and seed 42:
+
+```sh
+cbls benchmarks/instances/miplib-fj/neos5.mps.gz --time-limit 2 --threads 1 --quiet
+```
+
+```text
+Status:     feasible
+Objective:  15.000000
+Time:       2.00s (117250 iterations, stopped on time_limit)
+Solution:
+  d1 = 1.00
+  d2 = 0.00
+  ...
+  d63 = 0.00
+```
+
+The solution lists all 63 columns by name, zeros too, at two decimals.
+`--quiet` prints the result only. Without it, a header and a line for each new
+best point come first. `--format jsonl` prints the result as one JSON line,
+with the values at full precision and the columns sorted as text (`d1`,
+`d10`, `d11`, ...):
+
+```sh
+cbls benchmarks/instances/miplib-fj/neos5.mps.gz --time-limit 2 --threads 1 --format jsonl --quiet
+```
+
+```text
+{"event":"result","feasible":true,"iterations":117641,"objective":15.0,"solution":{"d1":1.0,"d10":1.0,"d11":0.0, ... ,"d9":0.0},"status":"feasible","termination":"time_limit","time":2.0}
+```
+
+The iteration count and the point depend on the machine. The command exits
+with 0 when it found a feasible point, else 1. It does not run the checks of
+[Verifying it](#verifying-it); the scripts do.
+
+This is the `cbls` a pip install provides, also run as `python -m cbls`. It
+reads `.cbls`, MPS (`.mps`, `.mps.gz`) and `.nl` files. The `cbls` binary of a
+CMake build or install (`build/cbls`, `<prefix>/bin/cbls`) reads `.cbls` files
+only and stops on this file with `Error loading model`. With both installed,
+the first on `PATH` runs, and `cbls --help` lists the formats it reads (see
+[Command line](https://github.com/spoorendonk/cbls#command-line)).
+`tests/python/test_examples.py` runs both commands as `python -m cbls`.
+
 ## The code
 
 ```{literalinclude} ../../examples/mip.py

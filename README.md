@@ -79,7 +79,7 @@ cbls, and the tests import the module the build puts in `build/python/cbls`):
 uv sync --extra dev
 cmake -B build -DCBLS_BUILD_PYTHON=ON -DPython_EXECUTABLE="$PWD/.venv/bin/python"
 cmake --build build
-.venv/bin/pytest          # 1866 tests, 347 of them for the bindings
+.venv/bin/pytest          # 1870 tests, 351 of them for the bindings
 ```
 
 Tests of the benchmark baselines skip themselves when `ortools` or `pyscipopt` is
