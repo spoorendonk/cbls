@@ -42,4 +42,5 @@ cpp
 autoapi/cbls/index
 examples/minlplib
 examples/mip
+uc-chped
 ```

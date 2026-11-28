@@ -146,7 +146,7 @@ agree:
 1. this section,
 2. the comment above `catch_discover_tests` in `tests/CMakeLists.txt`,
 3. the build section of `README.md`,
-4. the `.venv/bin/pytest` line in `README.md` for the Python side (1865 tests, 347
+4. the `.venv/bin/pytest` line in `README.md` for the Python side (1866 tests, 347
    of them binding tests, echoed in prose by `pyproject.toml`),
 5. the `-LE slow` guidance and the ~25s/~490s figures in `docs/profiling.md`.
    Note its "302/302 green" sanitizer line is a **dated record of one run at a
@@ -199,7 +199,10 @@ a C++ reference (Doxygen XML of the supported headers, `<cbls/cbls.h>`, what
 it includes and `<cbls/io_nl.h>`, read from `cbls.h` into `CPP_HEADERS` in
 `docs/conf.py`, rendered by Breathe) and a Python reference (sphinx-autoapi, read statically
 from `python/cbls/` and the committed `_cbls_core.pyi`, so nothing is
-compiled). It also writes `llms.txt` and `llms-full.txt`. The other files in
+compiled). It also writes `llms.txt` and `llms-full.txt`. The UC-CHPED
+application page, `docs/uc-chped.md`, reports the results tables and how to run
+the runner; `tests/python/test_docs_uc_chped.py` runs its `bash` blocks as
+written. The other files in
 `docs/` are for working on cbls: `exclude_patterns` keeps them off the site,
 so a site page or the README links them by absolute GitHub URL, as it does any
 other repository file. Build it with `doxygen` on PATH:

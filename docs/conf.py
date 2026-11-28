@@ -109,7 +109,7 @@ extensions = [
 ]
 
 # The site's pages are the README (index.md), the results, the examples
-# (examples/), and the references.
+# (examples/), the UC-CHPED application page, and the references.
 # The other files under docs/ are for working on cbls and are read on GitHub;
 # the pages link them by absolute URL.
 exclude_patterns = [
