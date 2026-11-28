@@ -79,7 +79,7 @@ cbls, and the tests import the module the build puts in `build/python/cbls`):
 uv sync --extra dev
 cmake -B build -DCBLS_BUILD_PYTHON=ON -DPython_EXECUTABLE="$PWD/.venv/bin/python"
 cmake --build build
-.venv/bin/pytest          # 1871 tests, 352 of them for the bindings
+.venv/bin/pytest          # 1874 tests, 355 of them for the bindings
 ```
 
 Tests of the benchmark baselines skip themselves when `ortools` or `pyscipopt` is
@@ -121,6 +121,9 @@ print(result.feasible, result.objective, result.value(x), result.value(y))
 `cbls.solve` takes the CLI's options and defaults (`time_limit=10.0`, `seed=42`,
 `threads=0`, `lns=None`, `intensify=False`) plus a `SolveCallback`, a
 `StopToken` and a `SearchConfig`, and leaves the model at the best point found.
+`result.objective` is in the model's own sense, as the CLI prints it; the
+engine minimises, so after `m.maximize(e)` (`m.is_maximizing()`) the internal
+`result.search.objective` is its negation.
 Models also come from files: `load_model`/`save_model` (`.cbls`),
 `mps_to_model(read_mps(path))` and `nl_to_model(read_nl(path))`, whose results
 carry the model as `.model`. The public names are `cbls.__all__`, typed by the

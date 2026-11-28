@@ -515,7 +515,9 @@ same loop, so a wider dispatch table would buy nothing. The header defines
 **Objective.** `minimize(e)` sets the objective node directly; `maximize(e)`
 sets it to `neg(e)` and flips `is_maximizing_`. Internally the objective is
 *always a quantity to minimize*, so the soft constraint `obj <= bound` is
-uniformly correct for both senses.
+uniformly correct for both senses. `SearchResult::objective` is that internal
+value; the CLI's formatter and Python's `cbls.solve` report it in the model's
+own sense (#472).
 
 ### Finalization
 

@@ -1202,6 +1202,9 @@ NB_MODULE(_cbls_core, m) {
         .def("node", &Model::node, nb::rv_policy::copy, kModelNodeDoc)
         .def("node_value", &Model::node_value, nb::arg("id"))
         .def("objective_id", &Model::objective_id)
+        // maximize(e) minimises neg(e): objective_id() is that node, and
+        // cbls.solve flips SearchResult.objective back with this (#472).
+        .def("is_maximizing", &Model::is_maximizing)
         .def("constraint_ids", &Model::constraint_ids)
         // The modeller's rows are constraint_ids()[:num_user_constraints()];
         // close() appends the hidden domain rows after them (#248).

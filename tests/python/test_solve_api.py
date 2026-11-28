@@ -11,12 +11,15 @@ import copy
 import gc
 import subprocess
 import sys
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import cbls
 import pytest
 from cbls import _cbls_core
 from support import run_scenario
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 CHILD_TIMEOUT_SECONDS = 60.0
 # The portfolio restarts its workers until the clock runs out, so an iteration
@@ -33,6 +36,28 @@ def _quadratic() -> tuple[cbls.Model, cbls.Expr, cbls.Expr]:
     m.minimize(x * x + y * y)
     m.close()
     return m, x, y
+
+
+# Maximise 1 + x, x in [0, 5]: an AMPL .nl objective of sense 1 (max), its
+# constant in the nonlinear part and x in the linear one (#472).
+MAXIMISE_NL = """g3 0 1 0	# maximise 1 + x
+ 1 0 1 0 0
+ 0 0
+ 0 0
+ 0 0 0
+ 0 0 0 1
+ 0 0 0 0 0
+ 0 1
+ 0 0
+ 0 0 0 0 0
+O0 1
+n1
+b
+0 0 5
+k0
+G0 1
+0 1
+"""
 
 
 def _capped(iterations: int = 20_000) -> cbls.SearchConfig:
@@ -92,6 +117,42 @@ def test_solve_single_thread_returns_values_by_variable() -> None:
     assert result.objective == pytest.approx(result.value(x) ** 2 + result.value(y) ** 2)
     assert result.termination == cbls.TerminationReason.IterationLimit
     assert result.search.iterations == result.iterations
+
+
+def test_solve_reports_a_maximised_objective_in_the_models_sense() -> None:
+    m = cbls.Model()
+    x = m.Int(0, 5, "x")
+    m.maximize(x + 1.0)
+    m.close()
+    assert m.is_maximizing()
+    result = cbls.solve(m, time_limit=60.0, threads=1, config=_capped(2_000))
+    assert result.objective == pytest.approx(result.value(x) + 1.0)
+    assert result.objective >= 1.0
+    assert result.search.objective == -result.objective
+    assert m.node_value(m.objective_id()) == pytest.approx(result.search.objective)
+
+
+def test_solve_reports_a_maximised_nl_objective_in_the_files_sense(tmp_path: Path) -> None:
+    path = tmp_path / "maximise.nl"
+    path.write_text(MAXIMISE_NL)
+    converted = cbls.nl_to_model(cbls.read_nl(str(path)))
+    assert converted.supported
+    assert converted.model.is_maximizing()
+    result = cbls.solve(converted.model, time_limit=60.0, threads=1, config=_capped(2_000))
+    assert result.objective == pytest.approx(1.0 + converted.original_values()[0])
+    assert result.objective >= 1.0
+    assert result.search.objective == -result.objective
+
+
+def test_minimize_after_maximize_resets_the_sense() -> None:
+    m = cbls.Model()
+    x = m.Int(0, 5, "x")
+    m.maximize(x + 1.0)
+    m.minimize(x + 1.0)
+    m.close()
+    assert not m.is_maximizing()
+    result = cbls.solve(m, time_limit=60.0, threads=1, config=_capped(2_000))
+    assert result.objective == result.search.objective == pytest.approx(result.value(x) + 1.0)
 
 
 def test_solve_single_thread_is_reproducible_by_seed() -> None:

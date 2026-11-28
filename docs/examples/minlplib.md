@@ -103,8 +103,10 @@ on this file with `Error loading model`. With both installed, the first on
 - **`nl_to_model(read_nl(path))`** builds a closed model, with one variable per
   `.nl` column. If the file uses an operator cbls does not model, `supported`
   is false and `skipped_reasons` says why. Such a model must not be solved.
-- **`objective`** is in the minimise sense. A maximisation model reports the
-  negated objective (#472).
+- **`objective`** is in the model's own sense, as the CLI prints it. The engine
+  minimises, so for a maximisation model C++'s `SearchResult::objective` (in
+  Python `result.search.objective`) is the negation; the C++ program flips it
+  back with `is_maximizing()`.
 - **`original_values()`** gives the point as one value per `.nl` column, in the
   file's order. `x2` and `x3` are the integer variables.
 - **`feasible`** means every constraint holds within the engine's tolerance of

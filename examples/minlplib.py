@@ -36,7 +36,7 @@ def main(path: str) -> int:
     result = cbls.solve(model, time_limit=2.0, seed=42, threads=1)
 
     print(f"feasible  = {result.feasible}")
-    print(f"objective = {result.objective:.6f}")  # in the minimise sense (#472)
+    print(f"objective = {result.objective:.6f}")  # in the model's own sense
     for column, value in enumerate(converted.original_values()):
         print(f"  x{column} = {value:.6f}")
     errors = verify(model)

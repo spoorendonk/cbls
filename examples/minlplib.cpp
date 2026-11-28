@@ -24,7 +24,9 @@ int run(const char* path) {
     cbls::SearchResult result = cbls::solve(model, /*time_limit=*/2.0, /*seed=*/42);
 
     std::printf("feasible  = %s\n", result.feasible ? "true" : "false");
-    std::printf("objective = %.6f\n", result.objective);  // in the minimise sense
+    // The engine minimises: a maximisation model's objective comes back negated.
+    const double objective = model.is_maximizing() ? -result.objective : result.objective;
+    std::printf("objective = %.6f\n", objective);
     const std::vector<double> values = converted.original_values(model);
     for (size_t column = 0; column < values.size(); ++column) {
         std::printf("  x%zu = %.6f\n", column, values[column]);

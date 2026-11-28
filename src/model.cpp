@@ -909,6 +909,7 @@ void Model::minimize(int32_t expr_id) {
         throw std::out_of_range("minimize: node handle out of range");
     }
     objective_id_ = expr_id;
+    is_maximizing_ = false;  // a later minimize replaces a maximize: its sense too (#472)
 }
 
 void Model::maximize(int32_t expr_id) {

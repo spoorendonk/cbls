@@ -13,6 +13,9 @@ from . import _cbls_core as _core
 class SolveResult:
     """What `cbls.solve` returns: the engine's report and the best point found.
 
+    `objective` is in the model's own sense, as the CLI prints it. The engine
+    minimises, so a maximisation model's `search.objective`, its objective
+    node's value and `SolveProgress.objective` are the negation (#472).
     `values[i]` and `elements[i]` belong to the variable with id `i`; the model
     itself is also left at that point. `search` is the full `SearchResult`
     (counters, portfolio worker accounting, `best_state`).
@@ -161,7 +164,7 @@ def _solve_parallel(
 def _result(model: _core.Model, result: _core.SearchResult) -> SolveResult:
     variables = [model.var(i) for i in range(model.num_vars())]
     return SolveResult(
-        objective=result.objective,
+        objective=-result.objective if model.is_maximizing() else result.objective,
         feasible=result.feasible,
         iterations=result.iterations,
         time_seconds=result.time_seconds,
