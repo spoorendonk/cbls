@@ -40,8 +40,6 @@ CANDIDATE = [
     "24",
     "--uc-elite",
     "0.5",
-    "--uc-share",
-    "0.9",
 ]
 
 
@@ -156,12 +154,11 @@ def test_check_solutions_fails_on_a_file_with_no_solutions(tmp_path: Path) -> No
         (["--uc-hook", "full", "--uc-ils-stall", "0"], "--uc-ils-stall must be in [1,"),
         (["--uc-hook", "full", "--uc-ls-jcap", "-1"], "--uc-ls-jcap must be in [0,"),
         (["--uc-hook", "full", "--uc-ils-local", "4294967296"], "--uc-ils-local must be in"),
-        (["--uc-hook", "full", "--uc-share", "0"], "--uc-share must be in (0, 1]"),
-        (["--uc-hook", "full", "--uc-share", "nan"], "--uc-share must be in (0, 1]"),
         (["--uc-hook", "full", "--uc-ils", "inf"], "--uc-ils must be in [0, 1]"),
         (["--uc-hook", "full", "--uc-elite", "1.5"], "--uc-elite must be in [0, 1]"),
+        (["--uc-hook", "full", "--uc-elite", "nan"], "--uc-elite must be in [0, 1]"),
         # The message's 15-digit DBL_MAX overflows a read-back.
-        (["--uc-hook", "full", "--uc-share", "1.7976931348623157e308"], "--uc-share must be in"),
+        (["--uc-hook", "full", "--uc-elite", "1.7976931348623157e308"], "--uc-elite must be in"),
     ],
 )
 def test_uc_chped_refuses_a_bad_uc_flag(args: list[str], message: str, tmp_path: Path) -> None:

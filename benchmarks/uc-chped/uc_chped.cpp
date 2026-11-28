@@ -174,9 +174,6 @@ bool match_uc_flag(cbls::bench::ArgCursor& c, const std::string& s, Args& a) {
     } else if (s == "--uc-repair") {
         u.repair = true;
         full_only = false;
-    } else if (c.value_flag("--uc-share", v)) {
-        u.infeasible_share = parse_double("--uc-share", v);
-        full_only = false;
     } else if (c.value_flag("--uc-ils", v)) {
         a.uc_ils = parse_double("--uc-ils", v);
     } else if (c.value_flag("--uc-ils-stall", v)) {
@@ -239,11 +236,8 @@ void check_uc_flags(Args& a) {
         refuse("--uc-hook cannot run under --no-time-limit (its throttle and ILS read the clock)");
     }
     cbls::uc_chped::UCHookConfig& u = a.uc;
-    // NaN fails every comparison, so in_unit() and is_positive_finite() refuse it.
+    // NaN fails every comparison, so in_unit() refuses it.
     auto in_unit = [](double v) { return v >= 0.0 && v <= 1.0; };
-    if (!is_positive_finite(u.infeasible_share) || u.infeasible_share > 1.0) {
-        refuse("--uc-share must be in (0, 1] (got " + knob(u.infeasible_share) + ")");
-    }
     if (!in_unit(a.uc_ils)) {
         refuse("--uc-ils must be in [0, 1] (got " + knob(a.uc_ils) + ")");
     }
@@ -519,7 +513,7 @@ Args parse_args(int argc, char** argv) {
                 " [--feas-tol T] [--instance NAME ...] [--periods N ...] [--threads N]"
                 " [--demand-equality] [--commit SHA] [--out CSV] [--trace CSV]"
                 " [--solution-out JSONL]\n"
-                "       [--uc-hook ed|full] [--uc-infeasible] [--uc-share F] [--uc-repair]"
+                "       [--uc-hook ed|full] [--uc-infeasible] [--uc-repair]"
                 " [--uc-ils F] [--uc-ils-stall N] [--uc-ils-local N] [--uc-ls-polish N]"
                 " [--uc-ls-window N] [--uc-ls-jcap N] [--uc-elite P]\n"
                 "       %s\n",

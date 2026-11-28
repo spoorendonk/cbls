@@ -17,8 +17,9 @@ namespace cbls {
 //   uncapped, so such a hook budgets itself.
 // - It mutates the model directly and leaves it fully evaluated. The search
 //   records the result only if it is real-feasible and strictly better than
-//   this worker's incumbent (model.objective_bound() sits below that: it is
-//   the target the search pushes toward, not the acceptance test). It does
+//   this worker's incumbent, or this worker's first feasible point even with a
+//   non-finite objective (#100) (model.objective_bound() sits below that: it
+//   is the target the search pushes toward, not the acceptance test). It does
 //   not roll the hook's point back: it resyncs and continues from it, unless
 //   a diversification kick due in the same pass replaces it (restoring the
 //   kick origin or adopting a pool point). So a hook may repair an

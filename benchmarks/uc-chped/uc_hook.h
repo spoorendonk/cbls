@@ -26,8 +26,10 @@ struct UCHookConfig {
     // Also run on infeasible batches (wants_infeasible); such a call is skipped
     // once this hook has used more than `infeasible_share` of its wall time
     // since construction, or when its commitment repeats the last call's.
+    // The runner keeps the default: 0.5 and 0.9 measured within noise (#457),
+    // so the share is no runner flag; tests set it to force or bar the throttle.
     bool on_infeasible = false;
-    double infeasible_share = 0.5;
+    double infeasible_share = 0.9;
     // ILS after the descent, at most this long per call; 0 = off. Never on the
     // hook's first descent, so the first incumbent is not held up by it.
     double ils_seconds = 0.0;

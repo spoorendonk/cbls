@@ -122,7 +122,7 @@ is cheap to score. `UCHook` (#445, #452) adds both:
    engine then agree on what feasible means.
 3. **Budget infeasible calls.** It sets `wants_infeasible()` from
    `--uc-infeasible`. An infeasible call is skipped once the hook has used more
-   than `--uc-share` of its wall time, or when its commitment repeats the last
+   than 90% of its wall time, or when its commitment repeats the last
    call's.
 4. **Repair** (`--uc-repair`) a commitment that breaks min up/down or capacity,
    or skip the call.
