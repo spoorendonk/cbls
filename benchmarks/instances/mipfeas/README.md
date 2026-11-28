@@ -180,7 +180,7 @@ benchmarks/instances/mipfeas/
                        its 130 both-feasible ones, evenly spaced by sorted name
   manifest.csv         sha256 + byte size per instance      (committed)
   smoke_comparison.csv the wiring check's output            (committed)
-  comparison.csv       scored results                       (committed once a run is published)
+  comparison.csv       scored results                       (not committed: docs/results.md gives its sha256)
   *.mps.gz             instances, ~546 MiB                   (gitignored)
 
 benchmarks/mipfeas/
@@ -432,7 +432,7 @@ uv sync --extra dev --extra benchmarks
 #    #255 ran the 211 outside tuned.txt at 60s: cbls at seed 1 on 16 threads
 #    pinned to cores 0-15, CP-SAT unpinned at its defaults (the runner refuses
 #    --cpuset with CP-SAT at its defaults, so the two halves ran separately).
-#    It scored them with --held-out tuned.txt in step 6; its table waits on #253.
+#    It scored them with --held-out tuned.txt in step 6 (docs/results.md).
 .venv/bin/python benchmarks/mipfeas/run_benchmark.py --roster full --budget 60 --jobs 1
 
 # 6. Score it — into the results directory, beside what it scores
@@ -607,7 +607,8 @@ implied bounds now clear the clamp entirely on 5 of these 11 instances
 (`binkar10_1`, where the 1e9-vs-1e7 difference was largest, among them); it
 still binds on `mad`, `pk1`, `gen-ip002` and `gen-ip054`, and `mas76` and
 `neos5` had no clamped column. Whether any of it holds over the roster is what
-the full run is for (#255; its table waits on #253).
+the full run is for (#255; its table is in
+[docs/results.md](../../../docs/results.md#mipfeas)).
 
 ## Choices tuned on the smoke roster (#233)
 

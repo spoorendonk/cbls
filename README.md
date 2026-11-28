@@ -4,8 +4,6 @@ Constraint-Based Local Search engine for mixed discrete-continuous optimization.
 ViolationLS — guided local search over single- and compound-variable jumps on an
 expression DAG, with per-constraint GLS weights carrying the feasibility pressure.
 
-**Status: early-stage research solver, actively developed.**
-
 ## Example
 
 ```cpp
@@ -100,8 +98,7 @@ diversification kicks or LNS restart the search from a perturbed copy of the
 point it is exploring around — its own incumbent, a peer's state under the
 multi-threaded portfolio, or the live assignment until the first feasible
 solution. How it fares against CP-SAT, SCIP and published results is what the
-benchmarks below measure. Their current tables are smoke-scale or predate
-recent engine work; the full-campaign tables are not published yet (#253).
+benchmarks below measure.
 
 ## Known limitations
 
@@ -130,11 +127,21 @@ nothing is restricted or evened out, and the differences are reported, not
 corrected for (Simon, 2026-11-01,
 [#87](https://github.com/spoorendonk/cbls/issues/87#issuecomment-6558356494)).
 
+### What the benchmarks show
+
+The full tables, each with its engine commit, run record and caveats, are in
+[docs/results.md](docs/results.md).
+
+- **MIPfeas:** CP-SAT at its defaults is ahead. On 211 held-out MIPLIB instances at 60 s, it finds a feasible point on 175 against cbls's 140, at a primal integral of 0.168 against 0.390 (engine `8246efd`, since moved on).
+- **MINLPLib:** SCIP at its defaults is ahead. On Mittelmann's 195 nontrivial instances at 60 s, cbls's GM(gap+1) is 1.68 times SCIP's, and it solves 169 against 187. On MINLPLib's open instances it improves the best known on 3 by more than a tolerance can buy (engine `02c78ad`).
+- **UC-CHPED:** at equal time and threads, cbls has the lowest primal integral on 19 of 20 rows, and Pedroso et al.'s method ported to SCIP has the best final gap. cbls's median ends 0-6.5 % above the best known bounds (engine `2eb27278`).
+- **CVRP:** not run, so no `List` result.
+
 The other directories under `benchmarks/` are **not** comparative benchmarks:
 
 | Directory | Runner | What it is |
 |-----------|--------|------------|
-| `benchmarks/cvrp/` | `cbls_cvrp` | the worked example for `List` variables: CVRPLIB X set, scored as gap to the best-known values, with PyVRP and OR-Tools as context. Unpublished until #204 |
+| `benchmarks/cvrp/` | `cbls_cvrp` | the worked example for `List` variables: CVRPLIB X set, scored as gap to the best-known values, with PyVRP and OR-Tools as context. Its full campaign (#204) has not been run, so it has no published result |
 | `benchmarks/setcover/` | `cbls_setcover` | the worked example for `Set` variables: ten OR-Library instances under both a `Set` and a Bool encoding. Its result is a documented limitation, not a comparative claim |
 | `benchmarks/common/` | none | headers and Python helpers the runners share |
 | `benchmarks/instances/miplib-fj/` | none | a retired benchmark's instances, kept because tests read them |

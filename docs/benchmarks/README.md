@@ -42,12 +42,12 @@ as separate: expressiveness (rows 2-3) or the same algorithm in the baseline
 
 | # | Benchmark | Compared against | Purpose | Tracking |
 |---|-----------|------------------|---------|----------|
-| 1 | `mipfeas` | OR-Tools CP-SAT at its default parameters | correctness *and* performance against CP-SAT as it ships, which holds the reference implementation of the same jump-based algorithm | #87; campaign #255 is closed and its table waits on #253; #321 adds a CP-SAT `fj` + `ls` arm |
+| 1 | `mipfeas` | OR-Tools CP-SAT at its default parameters | correctness *and* performance against CP-SAT as it ships, which holds the reference implementation of the same jump-based algorithm | #87; campaign #255, table in [results.md](../results.md#mipfeas); #321 adds a CP-SAT `fj` + `ls` arm |
 | 2 | `minlplib` | SCIP (nonlinear) | performance on non-convex MINLP — the regime CP-SAT's LS worker cannot express | #87, campaign #256, scored by #306 |
 | 3 | `uc-chped` | Pedroso 2014 | a good result on a published unit-commitment formulation | #87, campaign #257 |
 
-#253 publishes the full-benchmark tables of all four sets: these three and CVRP
-(#204).
+The full-benchmark tables of all four sets, these three and CVRP (#204, not
+run), are in [docs/results.md](../results.md).
 
 **Every comparison solver runs at its own default parameters** (Simon,
 2026-11-01, [#87](https://github.com/spoorendonk/cbls/issues/87#issuecomment-6558356494)):

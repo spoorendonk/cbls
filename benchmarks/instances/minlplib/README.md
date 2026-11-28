@@ -528,9 +528,10 @@ Latest run: **60s per instance, seed 1, feasibility tolerance 1e-6**, engine com
 predates compound moves on by default (`79a694a`), #201's structural-batch
 fallback, #226's defaults (among them the objective tie-break on, `9e1cce9`)
 and the #270-#273 search performance changes. No open issue regenerates this
-table: #256's full-library campaign will give the newer cbls/SCIP score over the
-full-library `bounds.csv` and writes nothing under `benchmarks/instances/`
-(#306 scores it, #253 publishes it in the docs).
+table. The newer cbls/SCIP score, #256's at engine `02c78ad` on Mittelmann's
+nontrivial roster, and #440's against MINLPLib's best known on its open
+instances, are in [docs/results.md](../../../docs/results.md#minlplib); neither
+writes anything under `benchmarks/instances/`.
 
 The published table is seed 1, pre-registered, of #123's three-seed campaign;
 seeds 2 and 3 are in `comparison_seeds.csv` and their spread under "Across
@@ -1023,8 +1024,9 @@ longer unseen (the runs on it are listed in HELDOUT.md); #331 decided the presol
 and compound-propagation defaults (both kept off) on 25 of its instances, which
 are in-sample for them. #228's smoke (`0c0a945`,
 60 s, seeds 1-2) found no in-sample gap between the two rosters (cbls/SCIP
-GM(gap+1) 1.81-1.84 held-out, 1.75-1.88 published); #256 runs the full library
-instead of a full-scale repeat.
+GM(gap+1) 1.81-1.84 held-out, 1.75-1.88 published); instead of a full-scale
+repeat, #256 ran Mittelmann's nontrivial roster
+([docs/results.md](../../../docs/results.md#minlplib)).
 
 **The tie-break and the `search_config` cell.** The cell records
 `objective_tie_break` only when it is off (see "Ablation arms"), so a default
@@ -1053,8 +1055,9 @@ table names its engine commit and the tie-break's state.
   "Selection method" and "Operator support"). The published table compares on
   CBLS's expressible domain, not on MINLPLib. The full-library status (#283)
   drops the size, problem-type and convexity filters and the
-  `opvcpower`/`opcvpower` exclusion; #256's campaign runs both solvers on its
-  modelled set, its score not yet published (#306, #253).
+  `opvcpower`/`opcvpower` exclusion; #256's campaign ran both solvers on the
+  modelled part of Mittelmann's nontrivial roster
+  ([docs/results.md](../../../docs/results.md#minlplib)).
 
 ## Portfolio A/B: the shared objective bound (#179)
 

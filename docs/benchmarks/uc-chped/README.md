@@ -223,16 +223,18 @@ a **GPL-3.0-or-later** directory (the rest of cbls is MIT):
   branch-and-bound.
 
 Both solve the source's problem (demand as an equality, its startup logic). The
-deviations from `ucp_valve.py` are listed in that directory's README. Neither is
-validated against Table 2 yet.
+deviations from `ucp_valve.py` are listed in that directory's README. #441 ran
+both at Pedroso's one-hour budget and compares them with Table 2
+([docs/results.md](../../results.md#uc-chped)).
 
 They replace `reference_solve.py`, a 50-segment piecewise-linear MIP that was not
 a bound in either direction (FIDELITY.md §4; in git history).
 
 ## Results
 
-`comparison.csv` carries the 10 cited Pedroso reference rows only; no measured
-CBLS row is published yet. The full campaign, #257, writes them. (The
+`comparison.csv` carries the 10 cited Pedroso reference rows only. The measured
+tables, #257's on `demand >=` and #442's on the source's `=` against SCIP, are
+in [docs/results.md](../../results.md#uc-chped), not in this file. (The
 simulated-annealing rows the file once held recorded no feasibility tolerance
 and were deleted when the default moved from `1e-9` to `1e-6`; they are in git
 history.)

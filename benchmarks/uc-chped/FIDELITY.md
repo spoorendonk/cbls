@@ -95,7 +95,8 @@ make overproduction cheaper. It leaves the 1- and 3-period proven optima
 unchanged (§7.4). The SCIP references in `pedroso/` keep the source's `=`, so
 their LB bounds our model where the two optima are equal, as on the proven
 rows above. `cbls_uc_chped --demand-equality` (#442) solves and verifies the
-source's `=` instead (§2.4); the published table stays on `≥`.
+source's `=` instead (§2.4). #442's tables use it; #257's and #441's cbls
+column stay on `≥` ([docs/results.md](../../docs/results.md#uc-chped)).
 
 The reserve constraint is *committed-capacity-based*, not
 dispatch-based: it counts every committed unit's full capacity, not its
