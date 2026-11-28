@@ -203,10 +203,18 @@ bool match_uc_flag(cbls::bench::ArgCursor& c, const std::string& s, Args& a) {
     return true;
 }
 
+/// The shortest of 15 or 17 digits that reads back as `v`, so the recorded
+/// knob is the value the hook ran (0.05, not 0.050000000000000003). strtod,
+/// not stod: a refused DBL_MAX rounds up past the range and must not throw.
 std::string knob(double v) {
     std::ostringstream os;
-    os.precision(10);
+    os.precision(15);
     os << v;
+    if (std::strtod(os.str().c_str(), nullptr) != v) {
+        os.str("");
+        os.precision(17);
+        os << v;
+    }
     return os.str();
 }
 
@@ -372,6 +380,34 @@ const char* build_refusal() {
 #endif
 }
 
+/// Whether `file` lies anywhere under `dir`, symlinks resolved, or is a hard
+/// link to a file there (#462). Cost: one walk of `dir`, only when `file`
+/// exists, once per run.
+bool inside_dir(const std::string& file, const std::string& dir) {
+    namespace fs = std::filesystem;
+    std::error_code ec_file;
+    std::error_code ec_dir;
+    const fs::path f = fs::weakly_canonical(fs::absolute(file), ec_file);
+    const fs::path d = fs::weakly_canonical(fs::absolute(dir), ec_dir);
+    if (!ec_file && !ec_dir) {
+        const fs::path rel = f.lexically_relative(d);
+        if (!rel.empty() && *rel.begin() != "..") {
+            return true;
+        }
+    }
+    std::error_code ec;
+    if (!fs::exists(file, ec)) {
+        return false;
+    }
+    for (fs::recursive_directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
+        std::error_code ec_eq;
+        if (fs::equivalent(it->path(), file, ec_eq)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 /// Fills in `--out` and enforces what may overwrite this benchmark's published
 /// artifacts: the shared guards (published_guard.h), then this runner's own
 /// two, `--verify` and a Release binary.
@@ -390,11 +426,7 @@ void resolve_out_csv(Args& a) {
         if (a.feas_tol > 1e-6) {
             refuse("--solution-out requires --feas-tol <= 1e-6 (check_solutions.py's tolerance)");
         }
-        const std::filesystem::path parent =
-            std::filesystem::path(a.solution_out).parent_path().empty()
-                ? std::filesystem::path(".")
-                : std::filesystem::path(a.solution_out).parent_path();
-        if (cbls::bench::same_file(parent.string(), a.inst_dir)) {
+        if (inside_dir(a.solution_out, a.inst_dir)) {
             refuse("--solution-out " + a.solution_out + " is inside the instance directory");
         }
         for (const std::string& other : {a.out_csv, a.out_csv + ".tmp", a.trace_csv}) {
@@ -1255,8 +1287,9 @@ int run_benchmark(int argc, char** argv) {
 
     // Opened after the table's temp file: `--trace` truncates in place, so a
     // run that fails the table's open must not have emptied it.
-    // --solution-out is probed in append mode before the trace truncates, so a
-    // failed open leaves both files as found, then truncated; written in place.
+    // --solution-out is probed in append mode before the trace truncates, so its
+    // failed open leaves the trace as found (the probe may create an empty
+    // solutions file); truncated after both, written in place.
     std::ofstream solutions;
     if (!args.solution_out.empty()) {
         solutions.open(args.solution_out, std::ios::app);

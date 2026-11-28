@@ -11,7 +11,7 @@ usage: check_solutions.py INSTANCE_DIR SOLUTIONS.jsonl [...]
 Each solution line: {"instance", "periods", "seed", "objective", "y", "p"},
 as `cbls_uc_chped --solution-out` writes them.
 Prints one line per solution: verdict, recomputed cost, |reported - recomputed|.
-Exit 1 if any solution fails.
+Exit 1 if any solution fails, or if there is none to check.
 """
 
 from __future__ import annotations
@@ -129,10 +129,12 @@ def main(argv: list[str]) -> int:
     inst_dir = Path(argv[1])
     cache: dict[str, dict[str, Any]] = {}
     bad = 0
+    checked = 0
     for path in argv[2:]:
         for line in Path(path).read_text().splitlines():
             if not line.strip():
                 continue
+            checked += 1
             sol = json.loads(line)
             f = base_file(inst_dir, sol["instance"])
             if str(f) not in cache:
@@ -145,6 +147,10 @@ def main(argv: list[str]) -> int:
                 f"{'OK  ' if ok else 'FAIL'} {sol['instance']:<14} seed={sol['seed']} "
                 f"cost={cost:.4f} |diff|={diff:.2e} {'; '.join(err[:3])}"
             )
+    if checked == 0:
+        # An empty file (every row vetoed or infeasible) is no evidence (#462).
+        print("FAIL no solutions to check")
+        return 1
     return 1 if bad else 0
 
 

@@ -133,6 +133,15 @@ def test_check_solutions_rejects_a_tampered_solution(tmp_path: Path) -> None:
     assert checked.stdout.startswith("FAIL") and "demand[0]" in checked.stdout, checked.stdout
 
 
+def test_check_solutions_fails_on_a_file_with_no_solutions(tmp_path: Path) -> None:
+    """Every row vetoed leaves an empty file: no evidence, not a pass."""
+    empty = tmp_path / "s.jsonl"
+    empty.write_text("\n")
+    checked = _check(empty)
+    assert checked.returncode == 1, checked.stdout
+    assert "no solutions to check" in checked.stdout, checked.stdout
+
+
 @pytest.mark.parametrize(
     ("args", "message"),
     [
@@ -151,6 +160,8 @@ def test_check_solutions_rejects_a_tampered_solution(tmp_path: Path) -> None:
         (["--uc-hook", "full", "--uc-share", "nan"], "--uc-share must be in (0, 1]"),
         (["--uc-hook", "full", "--uc-ils", "inf"], "--uc-ils must be in [0, 1]"),
         (["--uc-hook", "full", "--uc-elite", "1.5"], "--uc-elite must be in [0, 1]"),
+        # The message's 15-digit DBL_MAX overflows a read-back.
+        (["--uc-hook", "full", "--uc-share", "1.7976931348623157e308"], "--uc-share must be in"),
     ],
 )
 def test_uc_chped_refuses_a_bad_uc_flag(args: list[str], message: str, tmp_path: Path) -> None:
@@ -182,6 +193,9 @@ def test_uc_chped_refuses_a_solution_file_that_names_another_output(
         # Inside the instance directory: the published table, trace or an instance.
         (["--demand-equality", "--inst-file", "comparison.csv"], "inside the instance directory"),
         (["--demand-equality", "--inst-file", "ucp13.jsonl"], "inside the instance directory"),
+        (["--demand-equality", "--inst-file", "traces/x.csv"], "inside the instance directory"),
+        # Outside it by path, but a hard link to the published table.
+        (["--demand-equality", "--link-file", "comparison.csv"], "inside the instance directory"),
     ],
 )
 def test_uc_chped_refuses_a_solution_file_its_checker_cannot_stand_behind(
@@ -189,15 +203,21 @@ def test_uc_chped_refuses_a_solution_file_its_checker_cannot_stand_behind(
 ) -> None:
     target = str(tmp_path / "s.jsonl")
     inst_dir = INSTANCES
-    if "--inst-file" in args:
+    flag = next((f for f in ("--inst-file", "--link-file") if f in args), None)
+    if flag is not None:
         # A scratch copy: a regression here would truncate the file it names.
         inst_dir = tmp_path / "uc-chped"
         inst_dir.mkdir()
         for f in INSTANCES.iterdir():
             if f.is_file():
                 (inst_dir / f.name).write_bytes(f.read_bytes())
-        i = args.index("--inst-file")
-        target = str(inst_dir / args[i + 1])
+        i = args.index(flag)
+        inside = inst_dir / args[i + 1]
+        inside.parent.mkdir(exist_ok=True)
+        target = str(inside)
+        if flag == "--link-file":
+            target = str(tmp_path / "s.jsonl")
+            Path(target).hardlink_to(inside)
         args = args[:i]
     before = Path(target).read_bytes() if Path(target).exists() else None
     result = _run(tmp_path, "--time-limit", "1", "--solution-out", target, *args, inst_dir=inst_dir)
