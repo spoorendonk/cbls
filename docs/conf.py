@@ -129,8 +129,7 @@ html_baseurl = "https://spoorendonk.dk/cbls/"
 # The site's identity: an accent colour (Furo's brand variables; no custom
 # CSS), and a logo and favicon cut from the landing page's figure. An amber,
 # apart from cptp's teal; the light one keeps link contrast on white.
-# figures/make_routes.py draws the figure and the logos in these colours, and
-# the favicon in an amber between them; change them there too.
+# figures/make_routes.py reads these colours; redraw its files after a change.
 ACCENT_LIGHT = "#b45309"
 ACCENT_DARK = "#f59e0b"
 html_theme_options = {

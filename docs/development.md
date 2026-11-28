@@ -232,7 +232,7 @@ Graph tags (`sphinxext-opengraph`) that gives a link to the site its preview
 card on LinkedIn and elsewhere, which render no SVG. `docs/figures/make_routes.py`
 draws them all from a CVRP solve (`X-n115-k10`, the model of
 `benchmarks/cvrp/cvrp_model.h`) through the Python API, single-threaded under an
-iteration cap, so one build on one platform redraws the same files; the docs
+iteration cap, so one build on one platform redraws the same routes; the docs
 build does not run it. The committed files were drawn at engine commit
 `3ef800c9` on macOS. Redraw them after an engine change that moves those
 routes, after the build fence, and update that commit here:

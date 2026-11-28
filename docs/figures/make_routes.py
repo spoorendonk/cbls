@@ -31,14 +31,15 @@ import cbls  # noqa: E402
 
 from benchmarks.cvrp.verify_solution import (  # noqa: E402
     VrpInstance,
+    check_routes,
     distance_matrix,
     read_vrp_file,
 )
+from benchmarks.instances.cvrp.download import parse_sol  # noqa: E402
 
 # A small X instance with a central depot: 114 customers, at least 10 routes.
+# Its best-known solution, the .sol beside it, gives the printed gap only.
 INSTANCE = ROOT / "benchmarks" / "instances" / "cvrp" / "X" / "X-n115-k10.vrp"
-# CVRPLIB's best-known cost (the .sol beside it), for the printed gap only.
-BEST_KNOWN = 12747
 # The fleet: X's minimum `k` plus 3, as default_fleet() gives for k = 10.
 FLEET = 13
 # One thread and an iteration cap, not a time limit, so that the routes are the
@@ -231,7 +232,7 @@ def draw_logo(
     """
     accent, depot_color = colors
     frame = Frame.fit(inst.coords, size, size / (16 if icon else 20), square=icon)
-    line, side = (size / 24, size / 5) if icon else (size / 48, size / 9)
+    line, side = (size / 12, size / 5) if icon else (size / 48, size / 9)
     body = [route_path(frame, inst.coords, r, accent, line) for r in routes]
     body.append(depot_square(frame, inst.coords[0], side, depot_color))
     return svg(frame, "cbls", body)
@@ -269,9 +270,10 @@ def solve(inst: VrpInstance) -> tuple[float, list[list[int]]]:
     config.structural_neighbours = cbls.nearest_neighbours(
         n, NEIGHBOURS, lambda a, b: float(between[a, b])
     )
-    # The iteration cap ends the run. The time limit stays far above its run
-    # time: a time limit arms time-based escapes after long stagnation, which
-    # would make the routes depend on the host's speed.
+    # The iteration cap ends the run. A time limit arms time-based escapes after
+    # stagnation of a fraction of it, so it stays far above the run time; it
+    # also caps each LNS repair at 2 s, so a host slow enough to hit that cap
+    # draws other routes.
     result = cbls.solve(
         model, time_limit=600.0, seed=SEED, threads=1, lns=LNS_FRACTION, config=config
     )
@@ -286,6 +288,10 @@ def main() -> None:
     start = time.process_time()
     cost, routes = solve(inst)
     seconds = time.process_time() - start
+    # The captions say every customer is on one route within capacity.
+    verdict = check_routes(inst, routes, cost)
+    if not verdict.ok:
+        raise SystemExit(f"{inst.name}: {'; '.join(verdict.errors)}")
     for mode, pal in (("light", LIGHT), ("dark", DARK)):
         (HERE / f"routes-{mode}.svg").write_text(draw_figure(inst, routes, pal))
         (HERE / f"logo-{mode}.svg").write_text(
@@ -295,9 +301,10 @@ def main() -> None:
         draw_logo(inst, routes, (FAVICON_ACCENT, FAVICON_ACCENT), 64.0, icon=True)
     )
     draw_card(inst, routes, LIGHT).save(HERE / "routes-card.png", optimize=True)
-    gap = 100.0 * (cost - BEST_KNOWN) / BEST_KNOWN
+    best = parse_sol(INSTANCE.with_suffix(".sol").read_text()).cost
+    gap = 100.0 * (cost - best) / best
     print(
-        f"{inst.name}: cost {cost:.0f} ({gap:.1f}% above the best known {BEST_KNOWN}), "
+        f"{inst.name}: cost {cost:.0f} ({gap:.1f}% above the best known {best:.0f}), "
         f"{len(routes)} routes, {seconds:.1f} s CPU"
     )
 
