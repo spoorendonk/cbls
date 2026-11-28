@@ -134,7 +134,7 @@ The full tables, each with its engine commit, run record and caveats, are in
 
 - **MIPfeas:** CP-SAT at its defaults is ahead. On 211 held-out MIPLIB instances at 60 s, it finds a feasible point on 175 against cbls's 140, at a primal integral of 0.168 against 0.390 (engine `8246efd`, since moved on).
 - **MINLPLib:** SCIP at its defaults is ahead. On Mittelmann's 195 nontrivial instances at 60 s, cbls's GM(gap+1) is 1.68 times SCIP's, and it solves 169 against 187. On MINLPLib's open instances it improves the best known on 3 by more than a tolerance can buy (engine `02c78ad`).
-- **UC-CHPED:** at equal time and threads, cbls has the lowest primal integral on 23 of 24 rows. Pedroso et al.'s method ported to SCIP has the best final gap on 21, and cbls on the 3 largest (ucp100 T=168, ucp200 T=48 and T=168; the 4 long rows are one cbls seed, the rest three). On the 20 short rows, cbls's median ends 0-6.5 % above the best known bounds (engine `2eb27278`).
+- **UC-CHPED:** at equal time and threads, cbls has the lowest primal integral on 23 of 24 rows. Pedroso et al.'s method ported to SCIP has the best or tied final gap on 21, and cbls alone on the 3 largest (ucp100 T=168, ucp200 T=48 and T=168). cbls ends 0-6.5 % above the best known bounds on the 20 short rows and 6.4-7.8 % on the 4 long ones (engine `2eb27278`). The long rows are one cbls seed, the rest three.
 - **CVRP:** not run, so no `List` result.
 
 The other directories under `benchmarks/` are **not** comparative benchmarks:

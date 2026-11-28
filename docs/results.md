@@ -24,7 +24,7 @@ Every comparison solver ran at its own defaults, unless a table says otherwise
 |---|---|---|
 | [MIPfeas](#mipfeas) | CP-SAT at its defaults | CP-SAT is ahead: 175 feasible against cbls's 140 of 211; primal integral 0.168 against 0.390 |
 | [MINLPLib](#minlplib) | SCIP 10 at its defaults; MINLPLib's best known | SCIP is ahead: GM(gap+1) ratio cbls/SCIP 1.68; 169 feasible against 187 of 195. On open instances, 3 clear improvements on MINLPLib's best known |
-| [UC-CHPED](#uc-chped) | Pedroso et al. 2014's method ported to SCIP 11; SCIP's exact MINLP | at equal time and threads, cbls has the lowest primal integral on 23 of 24 rows; Pedroso's method ends with the best final gap on 21, cbls on the 3 largest |
+| [UC-CHPED](#uc-chped) | Pedroso et al. 2014's method ported to SCIP 11; SCIP's exact MINLP | at equal time and threads, cbls has the lowest primal integral on 23 of 24 rows; Pedroso's method ends with the best or tied final gap on 21, cbls alone on the 3 largest; the 4 long rows are one cbls seed |
 | [CVRP](#cvrp) | - | not run: no table |
 
 ## MIPfeas
@@ -732,19 +732,19 @@ The 4 long rows (T=48 and T=168, 600 s) are from
 | ucp200 | 48 | 600 | 23285086.42 | 0.0029 | 0.00 | 2.0000 § | - | 2.0000 | - |
 | ucp200 | 168 | 600 | 80302761.40 | 0.0079 | 0.00 | 2.0000 ‡ | - | 2.0000 | - |
 
-- rule: benchmarks/common/primal_integral.py's MIPfeas primal gap |z - ref| / max(|z|, |ref|), 2 before the first incumbent, and PI its time average over [0, budget]. cbls is median [min, max] over 3 seeds on the 20 short rows; its PI is over every seed, its final gap over the seeds that solved it. **The 4 long rows are one cbls seed (42)**, so they show one value and no range. pwl and exact are one run each. The reference is the lowest of Pedroso's UB, every final objective and every trajectory point, over all seeds and methods.
+- rule: benchmarks/common/primal_integral.py's MIPfeas primal gap |z - ref| / max(|z|, |ref|), 2 before the first incumbent, and PI its time average over [0, budget]. cbls is median [min, max] over 3 seeds on the 20 short rows; its PI is over every seed, its final gap over the seeds that solved it. **The 4 long rows are one cbls seed (42)**, so they show one value and no range. pwl and exact are one run each. The reference is the lowest of Pedroso's UB and every in-budget final objective and trajectory point, over all seeds and methods.
 - cbls: its `--trace`, seconds from the solve's start. SCIP: the driver's running best, wall seconds from the method's start (model build and file I/O included). exact's points are SCIP's objective, an upper bound on that incumbent's true cost; its final gap uses the true cost.
 - † marks the 7 exact rows whose best came after the budget (SCIP's overshoot). Their final gap uses the last in-budget SCIP objective.
-- `-`: no in-budget incumbent, so PI is 2 and there is no final gap. Neither exact ucp200 long row has one; their SCIP LBs are 21319401.65 (T=48, which leaves cbls within 9.22 % of a proven bound) and 122548.65 (T=168).
+- `-`: no in-budget incumbent, so PI is 2 and there is no final gap. Neither exact ucp200 long row has one; their 600 s LBs, 21319401.65 (T=48) and 122548.65 (T=168), are far below the best known LBs ([below](#cbls-against-the-best-known-bounds)).
 - ‡ no SCIP record: exact ucp100 T=168 and pwl ucp200 T=168 had no primal bound when stopped (at 591 s and 583 s), the driver hung in SCIP's concurrent stop and was killed before writing ([#442, comment 7226835568](https://github.com/spoorendonk/cbls/issues/442#issuecomment-7226835568)). Each is scored as no incumbent, through a stand-in record (`ub` and `lb` null, no trajectory) that changes no other method's numbers.
 - § pwl ucp200 T=48's only solution, 21703629.70, came at 605.4 s, after the budget. cbls's in-budget 23285086.42 is 7.3 % above it.
 - pwl's LB is 0 on all 4 long rows, and it is not a bound there: some unit breaks `c <= e*f^2/2`. pwl found its ucp100 solutions at 591.5 s (T=48, hence its PI near 2) and 158.9 s (T=168).
 
 **Read-out:**
 - **Primal integral:** cbls is lowest on 23 of 24 rows. It is not lowest on ucp40 T=3: pwl's 0.0210 is below cbls's median 0.0214 and inside cbls's seed range [0.0189, 0.0223].
-- **Final gap:** on the 20 short rows, pwl is 0.00 on 19 and 0.05 % on ucp40 T=6; ucp13 T=1/T=3 and ucp40 T=1 are 0.00 for all three methods. On the long rows, pwl ends best on ucp100 T=48, and cbls on the other three (ucp100 T=168, ucp200 T=48 and T=168); on the two ucp200 rows, cbls is the only method with an in-budget incumbent. exact is best on none.
-- At equal time and threads, cbls gets good solutions fastest on every size. Pedroso's pwl ends best on the 20 short rows and ucp100 T=48; on the three largest rows, cbls does, and SCIP finds no in-budget incumbent on ucp200 at T=48 or T=168 with either method.
-- **Caveat:** the long rows are one cbls seed; the short rows are three.
+- **Final gap:** pwl is best or tied on 21 rows: 0.00 on 19 short rows, 0.05 % on ucp40 T=6, and 0.00 on ucp100 T=48. ucp13 T=1/T=3 and ucp40 T=1 are 0.00 for all three methods. cbls alone is best on the other 3, the largest (ucp100 T=168, ucp200 T=48 and T=168); on the two ucp200 rows it is the only method with an in-budget incumbent. exact is never best alone. A 0.00 here is against the row's reference, which on those 3 rows is cbls's own result: against the best known UBs, cbls ends 7.3-7.8 % above on them ([below](#cbls-against-the-best-known-bounds)).
+- At equal time and threads, cbls gets good solutions fastest on every size. Pedroso's pwl ends best or tied on 21 rows and cbls alone on the 3 largest, where neither SCIP method has an incumbent within 600 s on ucp200 at T=48 or T=168.
+- **Caveat:** the long rows are one cbls seed; the short rows are three. Both counts above pool them.
 
 Run record:
 - **Arms**, all at 16 threads and the same wall budget per horizon (10/30/60/120/300 s; 600 s at T=48 and T=168), on simon-workstation cores 0-15, one row per `xk lock`, nothing else timed on those cores:
@@ -809,6 +809,10 @@ median objective over seeds 1, 2 and 42 from [#442, comment
 LB/UB table (the same #445 baseline runs as the table above), against the best
 known bounds of the previous table. Gap = 100 · (cbls − bound) / bound. The
 cbls medians are posted to one decimal, so a gap below 0.005 % is not resolved.
+The 4 long rows (¹) are seed 42 only: ucp100 T=48 is from [#445, comment
+7219885674](https://github.com/spoorendonk/cbls/issues/445#issuecomment-7219885674)'s
+baseline column, rounded there to the unit; the other three are the references
+of the equal-time table, which are cbls's own final objectives.
 
 | instance | T | cbls objective (median) | best known UB | best known LB | cbls gap to UB % | cbls gap to LB % |
 |---|---|---|---|---|---|---|
@@ -832,6 +836,10 @@ cbls medians are posted to one decimal, so a gap below 0.005 % is not resolved.
 | ucp200 | 6 | 2114433.1 | 2078841.66 | 2078456.82 | 1.71 | 1.73 |
 | ucp200 | 12 | 5747520.2 | 5553011.57 | 5552607.86 | 3.50 | 3.51 |
 | ucp200 | 24 | 11869941.0 | 11150910.56 | 11149711.95 | 6.45 | 6.46 |
+| ucp100 | 48 ¹ | 11754012 | 11049341.43 | 11044543.47 | 6.38 | 6.42 |
+| ucp100 | 168 ¹ | 40872386.61 | 37966440.39 | 37945629.72 | 7.65 | 7.71 |
+| ucp200 | 48 ¹ | 23285086.42 | 21697353.94 | 21689590.98 | 7.32 | 7.36 |
+| ucp200 | 168 ¹ | 80302761.40 | 74519886.78 | 74491273.76 | 7.76 | 7.80 |
 
 ### SCIP references at one hour (cbls on `>=`)
 
