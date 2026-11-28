@@ -91,7 +91,7 @@ A one-screen map of the pipeline, its files, the extension points, build targets
 
 ### Key extension points
 
-- **`InnerSolverHook`** — subclass for a problem-specific solver run on the search's points; `FloatIntensifyHook` (`include/cbls/inner_solver.h`) is the generic reference, and the header states the contract. Called after every real-feasible batch, and with `wants_infeasible()` (opt-in, #454) after every other batch too, so a hook may repair; a result is recorded only if real-feasible (`ViolationManager::max_real_violation()`). Its `solve()` gets a `StopRef stop` and **must** poll it if its work can outlast the budget, and return leaving every committed value delta-evaluated: the call cannot be pre-empted.
+- **`InnerSolverHook`** — subclass for a problem-specific solver run on the search's points; `FloatIntensifyHook` (`include/cbls/inner_solver.h`) is the generic reference, and the header states the contract. Called after every real-feasible batch, and with `wants_infeasible()` (opt-in, #454) after every other batch too, so a hook may repair; a result is recorded only if real-feasible (`ViolationManager::max_real_violation()`). Its `solve()` gets a `StopRef stop` and **must** poll it if its work can outlast the budget, and return leaving every committed value delta-evaluated: the call cannot be pre-empted. How to write and pass one, with the UC hook as the worked example: [`docs/inner-solver-hooks.md`](inner-solver-hooks.md).
 - **New operations** — add to `NodeOp` in `dag.h`, implement `evaluate()` in `dag.cpp`, `local_derivative()` for AD, and `delta_evaluate` support in `dag_ops.cpp`.
 
 ### Build targets

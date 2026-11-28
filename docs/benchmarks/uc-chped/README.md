@@ -299,9 +299,10 @@ verifies demand as the source's `=` instead of `>=` (#442) and records
 solver (`benchmarks/uc-chped/uc_hook.h`: re-dispatch only, or with the
 commitment search), opt-in and never published; its `--uc-*` knobs are #445's
 candidate's (`cbls_uc_chped --help`), each recorded in `search_config`, and it
-refuses `--no-time-limit`, as its throttle and ILS read the clock (#462).
-`--solution-out FILE` writes each measured row's (y, p) as one JSON line, none
-for a row the verifier vetoed; `benchmarks/uc-chped/check_solutions.py
+refuses `--no-time-limit`, as its throttle and ILS read the clock (#462). How
+the hook plugs into the engine: `docs/inner-solver-hooks.md`.
+`--solution-out FILE` writes one JSON line of (y, p) per measured row with an
+objective, none for a row that ends infeasible or the verifier vetoed; `benchmarks/uc-chped/check_solutions.py
 INST_DIR FILE`, #445's checker of Pedroso's `=` model at 1e-6, rechecks them
 independently, so the flag requires `--demand-equality` and `--feas-tol` at
 most 1e-6, and refuses a path inside the instance directory. `--instance`, `--periods`, `--threads`, `--demand-equality`,
