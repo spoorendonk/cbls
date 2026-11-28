@@ -20,10 +20,12 @@ namespace cbls {
 //   this worker's incumbent (model.objective_bound() sits below that: it is
 //   the target the search pushes toward, not the acceptance test). It does
 //   not roll the hook's point back: it resyncs and continues from it, unless
-//   a diversification kick due in the same pass restores the incumbent. So a
-//   hook may repair an infeasible point; one that cannot should leave it.
+//   a diversification kick due in the same pass replaces it (restoring the
+//   kick origin or adopting a pool point). So a hook may repair an
+//   infeasible point; one that cannot should leave it.
 // - On a run that ends infeasible, the closest approach reported is taken
-//   from batch ends, before the hook: an infeasible hook result is never it.
+//   from batch ends, before the hook: the hook's own result counts only if
+//   a later batch ends on it unchanged.
 // - One hook object serves every solve() it is passed to: under
 //   ParallelSearch a worker keeps its hook across pool restarts while the
 //   incumbent and bound start over, so state it carries must stay valid then.
