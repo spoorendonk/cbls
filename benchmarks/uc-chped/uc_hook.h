@@ -19,7 +19,8 @@ namespace cbls::uc_chped {
 
 struct UCHookConfig {
     CommitmentSearchConfig search;
-    bool commit_ls = true;  // false: re-dispatch the search's commitment only
+    // false: re-dispatch the search's commitment only (no descent, ILS or elite).
+    bool commit_ls = true;
     // Repair a commitment breaking min up/down or capacity instead of skipping.
     bool repair = false;
     // Also run on infeasible batches (wants_infeasible); such a call is skipped
@@ -31,14 +32,15 @@ struct UCHookConfig {
     // hook's first descent, so the first incumbent is not held up by it.
     double ils_seconds = 0.0;
     double elite_prob = 0.0;  // chance an ILS starts from the hook's elite y
-    // The search's SearchConfig::feasibility_tolerance.
+    // Must equal the search's SearchConfig::feasibility_tolerance: a smaller one
+    // sends points the search calls feasible down the infeasible path.
     double feasibility_tolerance = kDefaultFeasibilityTolerance;
 };
 
 /// One hook's counters; the runner sums them over workers.
 struct UCHookStats {
     int64_t calls = 0;
-    int64_t skipped = 0;           // repeated infeasible commitment, or unrepairable
+    int64_t skipped = 0;           // repeated infeasible commitment, or not repaired
     int64_t throttled = 0;         // infeasible call over the time share
     int64_t infeasible_calls = 0;  // run on an infeasible point
     int64_t improvements = 0;      // write-backs kept
@@ -111,7 +113,6 @@ private:
             ++stats_.skipped;
             return;
         }
-        last_y_ = y_in_;
         search_.load(y_in_, p_in_);
         if (cfg_.repair) {
             search_.repair(stop);
@@ -119,6 +120,7 @@ private:
         if (stop.requested()) {
             return;
         }
+        last_y_ = y_in_;  // after the stop: a stopped call does not skip the next
         if (!search_.feasible()) {
             ++stats_.skipped;
             return;
@@ -134,10 +136,9 @@ private:
         } else {
             ++stats_.infeasible_calls;
         }
-        if (!search_.init_costs(stop)) {
-            return;
-        }
-        if (cfg_.commit_ls && !commitment_search(stop)) {
+        // final_dispatch needs no cached costs, so re-dispatch alone skips them.
+        if (cfg_.commit_ls && (!search_.init_costs(stop) || !commitment_search(stop))) {
+            last_y_.clear();
             return;
         }
         CommitmentSearch::Dispatches pnew;
@@ -159,7 +160,7 @@ private:
     bool commitment_search(StopRef stop) {
         search_.descend(stop);
         const bool first = !descended_;
-        descended_ = true;
+        descended_ = descended_ || !stop.requested();  // a whole descent only
         if (cfg_.ils_seconds <= 0.0 || first) {
             return true;
         }
@@ -204,8 +205,8 @@ private:
     }
 
     // Writes (y, pnew) and keeps it only if the model holds it real-feasible
-    // and below `before`; else restores the point read, value for value. Only
-    // a kept point lowers best_seen_ (#452 review, High 2).
+    // and below `before`; else restores the point read, value for value. Of
+    // write-backs, only a kept one lowers best_seen_ (#452 review, High 2).
     void write_back(Model& model, ViolationManager& vm, const Commitment& y,
                     const CommitmentSearch::Dispatches& pnew, double total, double before) {
         const int n = inst_.n_units;

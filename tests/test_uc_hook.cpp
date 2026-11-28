@@ -247,10 +247,9 @@ constexpr bool kOptimizedBuild = true;
 constexpr bool kOptimizedBuild = false;
 #endif
 
-// #460 review: iterate() reads its end between kicks only, and on ucp200 one
-// full re-descent (ils_local = 0) runs far past a 20 ms ILS. Measured
-// 2026-11-28 (Release, M-series Mac), ILS phase over 9 calls: with the deadline
-// folded into the re-descent's stop the overrun is at most 0.4 ms; unfolded,
+// On ucp200 one full re-descent (ils_local = 0) outlasts a 20 ms ILS (#461).
+// Measured 2026-11-28 (Release, M-series Mac), ILS phase over 9 calls: overrun
+// at most 0.4 ms with the deadline in the re-descent's stop; without it,
 // 17-221 ms, median 52 ms. The 5 ms bound on the median sits between.
 TEST_CASE("uc hook ILS stops at its deadline mid re-descent", "[timing][uc-hook]") {
     if (!kOptimizedBuild) {
@@ -269,11 +268,12 @@ TEST_CASE("uc hook ILS stops at its deadline mid re-descent", "[timing][uc-hook]
     std::vector<double> overrun;  // the ILS phase alone: the descent before it is not bounded
     for (int i = 0; i < 9; ++i) {
         const int64_t before = hook.stats().ils_nanos;
+        const int64_t kicks = hook.search_stats().ils_kicks;
         hook.solve(m, vm);
+        REQUIRE(hook.search_stats().ils_kicks > kicks);  // every call ran the ILS
         overrun.push_back((1e-9 * static_cast<double>(hook.stats().ils_nanos - before)) -
                           cfg.ils_seconds);
     }
-    REQUIRE(hook.search_stats().ils_kicks >= 9);
     std::sort(overrun.begin(), overrun.end());
     CAPTURE(overrun);
     CHECK(overrun[overrun.size() / 2] <= 0.005);
@@ -298,11 +298,12 @@ TEST_CASE("uc hook one per worker under ParallelSearch keeps valid handles", "[u
     const SearchResult r = ps.solve(f.ucm.model, 1.0, 9, cfg, factory, {}, nullptr, par);
     REQUIRE(hooks.size() == 2);
     CHECK(hooks[0] != hooks[1]);
-    int64_t calls = 0;
+    // A kept write-back ran its feasibility check on a worker's own copy.
+    int64_t kept = 0;
     for (const auto& h : hooks) {
-        calls += h->stats().calls;
+        kept += h->stats().improvements;
     }
-    CHECK(calls > 0);
+    CHECK(kept > 0);
     REQUIRE(r.feasible);
     REQUIRE(r.best_state.values.size() == f.ucm.model.num_vars());
     f.ucm.model.restore_state(r.best_state);

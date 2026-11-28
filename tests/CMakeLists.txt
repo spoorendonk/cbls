@@ -145,9 +145,8 @@ add_test(NAME timing_inner_solver_hook_deadline
 set_tests_properties(timing_inner_solver_hook_deadline
     PROPERTIES LABELS "timing;slow" TIMEOUT 60 SKIP_RETURN_CODE 4)
 
-# #461: the UC hook's ILS deadline bounds its re-descent too (#460 review found
-# one full re-descent past it). Sits beside the hook's deterministic stop-poll
-# test; LABELS and TIMEOUT as for #191's.
+# #461: the UC hook's ILS deadline bounds its re-descent too. Sits beside the
+# hook's deterministic stop-poll test; LABELS and TIMEOUT as for #191's.
 add_test(NAME timing_uc_hook_ils_deadline
     COMMAND cbls_tests "uc hook ILS stops at its deadline mid re-descent"
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
