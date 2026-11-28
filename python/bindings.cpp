@@ -1,4 +1,6 @@
+#include <cbls/arg_parse.h>
 #include <cbls/cbls.h>
+#include <cbls/formatter.h>
 #include <cbls/io_nl.h>
 #include <cmath>
 #include <memory>
@@ -13,6 +15,7 @@
 #include <nanobind/stl/string.h>
 #include <nanobind/stl/vector.h>
 #include <nanobind/trampoline.h>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <unordered_set>
@@ -657,10 +660,99 @@ void bind_io(nb::module_& m) {
           "and must not be solved.");
 }
 
+// One of src/cli.cpp's formatters, writing to a Python text stream, so the
+// console script (#465) prints exactly what the C++ CLI does. One buffer for the
+// formatter's life, as std::cout there, so the iomanip state it leaves carries.
+template <class Formatter>
+class StreamFormatter : public SolveCallback {
+public:
+    explicit StreamFormatter(nb::object stream) : stream_(std::move(stream)) {}
+
+    void print_header(const std::string& model_path, const Model& model, uint64_t seed,
+                      double time_limit) {
+        formatter_.print_header(model_path, model, seed, time_limit);
+        flush();
+    }
+    // Called under a solve's released GIL, from a portfolio worker too.
+    void on_progress(const SolveProgress& p) override {
+        formatter_.on_progress(p);
+        flush();
+    }
+    void print_result(const SearchResult& result, const Model& model) {
+        formatter_.print_result(result, model);
+        flush();
+    }
+
+private:
+    void flush() {
+        const std::string text = buffer_.str();
+        buffer_.str({});
+        const nb::gil_scoped_acquire gil;
+        stream_.attr("write")(text);
+        stream_.attr("flush")();
+    }
+
+    nb::object stream_;
+    std::ostringstream buffer_;
+    Formatter formatter_{buffer_};  // after buffer_, which it writes to
+};
+
+template <class Formatter>
+void bind_stream_formatter(nb::module_& m, const char* name, const char* doc) {
+    using Bound = StreamFormatter<Formatter>;
+    nb::class_<Bound, SolveCallback>(m, name, doc)
+        .def(nb::init<nb::object>(), nb::arg("stream"))
+        .def("print_header", &Bound::print_header, nb::arg("model_path"), nb::arg("model"),
+             nb::arg("seed"), nb::arg("time_limit"))
+        .def("print_result", &Bound::print_result, nb::arg("result"), nb::arg("model"));
+}
+
+const char* parse_status_name(ParseStatus status) {
+    switch (status) {
+        case ParseStatus::kOk:
+            return "ok";
+        case ParseStatus::kMalformed:
+            return "malformed";
+        case ParseStatus::kOutOfRange:
+            return "out_of_range";
+    }
+    return "malformed";
+}
+
+// The C++ CLI's output and its flag parsing, for cbls/__main__.py (#465).
+void bind_cli(nb::module_& m) {
+    bind_stream_formatter<HumanFormatter>(
+        m, "HumanFormatter",
+        "The `cbls` CLI's human format, written to `stream` (write and flush) as a "
+        "SolveCallback.");
+    bind_stream_formatter<JsonlFormatter>(
+        m, "JsonlFormatter",
+        "The `cbls` CLI's JSON-lines format, written to `stream` (write and flush) as a "
+        "SolveCallback.");
+    // cbls/arg_parse.h's rule, so the console script accepts what src/cli.cpp
+    // does: (status, value), status "ok", "malformed" or "out_of_range".
+    m.def("_parse_double", [](const std::string& text) {
+        double value = 0.0;
+        const ParseStatus status = parse_double_status(text, value);
+        return std::make_pair(std::string(parse_status_name(status)), value);
+    });
+    m.def("_parse_int64", [](const std::string& text) {
+        int64_t value = 0;
+        const ParseStatus status = parse_int64_status(text, value);
+        return std::make_pair(std::string(parse_status_name(status)), value);
+    });
+    m.def("_parse_uint64", [](const std::string& text) {
+        uint64_t value = 0;
+        const ParseStatus status = parse_uint64_status(text, value);
+        return std::make_pair(std::string(parse_status_name(status)), value);
+    });
+}
+
 }  // namespace
 
 NB_MODULE(_cbls_core, m) {
     m.doc() = "CBLS: Constraint-Based Local Search engine (C++ core)";
+    m.attr("version") = kVersion;  // cbls.__version__; stubgen drops a dunder
 
     // Exception translators
     nb::register_exception_translator([](const std::exception_ptr& p, void*) {
@@ -1659,6 +1751,7 @@ NB_MODULE(_cbls_core, m) {
         .def(nb::init<>())
         .def("on_progress",
              [](SolveCallback& self, const SolveProgress& p) { self.on_progress(p); });
+    bind_cli(m);  // its formatters derive from SolveCallback
 
     // `hook` and `lns` have no trampoline (#132): a Python subclass's `solve` /
     // `destroy_repair` override is never dispatched; the base runs. Wrapped to

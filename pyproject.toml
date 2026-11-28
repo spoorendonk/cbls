@@ -8,10 +8,13 @@ version = "0.1.0"
 description = "Constraint-Based Local Search engine (C++ core with Python bindings)"
 requires-python = ">=3.12"
 
+[project.scripts]
+cbls = "cbls.__main__:main"
+
 # The wheel is the Python package alone: `cbls/__init__.py` from python/cbls and
 # `_cbls_core` from the `python` install component. The C++ library, headers,
-# CMake config and `cbls` binary stay with a CMake install, so the wheel puts no
-# second `cbls` on PATH (#463). Only the extension is built.
+# CMake config and `cbls` binary stay with a CMake install (#463); the wheel's
+# `cbls` is the console script below (#465). Only the extension is built.
 [tool.scikit-build]
 # Defaults as of the floor in [build-system], whatever release pip resolves.
 minimum-version = "build-system.requires"
@@ -86,7 +89,7 @@ dev = [
     # (CLAUDE.md's ```build fence) locates nanobind by running
     # `python -m nanobind --cmake_dir` against .venv/bin/python, so without it
     # here the documented bootstrap yields a venv that cannot build the
-    # bindings -- and the 295 binding tests would go unrun. 3.0.x is excluded
+    # bindings -- and the 336 binding tests would go unrun. 3.0.x is excluded
     # in both places: it has neither keep_alive entry point python/bindings.cpp
     # calls (see expr_object there). Pinned exactly here, unlike the floor in
     # [build-system]: tests/python/test_stub.py holds the committed stub

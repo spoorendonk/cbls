@@ -77,7 +77,7 @@ cbls, and the tests import the module the build puts in `build/python/cbls`):
 uv sync --extra dev
 cmake -B build -DCBLS_BUILD_PYTHON=ON -DPython_EXECUTABLE="$PWD/.venv/bin/python"
 cmake --build build
-.venv/bin/pytest          # 1813 tests, 295 of them for the bindings
+.venv/bin/pytest          # 1854 tests, 336 of them for the bindings
 ```
 
 Tests of the benchmark baselines skip themselves when `ortools` or `pyscipopt` is
@@ -95,9 +95,10 @@ pip compiles the extension, so it needs CMake 3.15+, a C++17 compiler and zlib:
 pip install git+https://github.com/spoorendonk/cbls   # or `pip install .` in a checkout
 ```
 
-The wheel holds the `cbls` Python package only. The C++ library, headers and
-`cbls` binary come from a CMake install (below). `ctest -R wheel_smoke` builds a
-wheel, installs it into a fresh venv and solves a model there.
+The wheel holds the `cbls` Python package and its `cbls` console script (see
+[Command line](#command-line)). The C++ library, headers and `cbls` binary come
+from a CMake install (below). `ctest -R wheel_smoke` builds a wheel, installs it
+into a fresh venv and solves a model there, through both CLI entry points too.
 
 ## Use from Python
 
@@ -123,6 +124,23 @@ Models also come from files: `load_model`/`save_model` (`.cbls`),
 carry the model as `.model`. The public names are `cbls.__all__`, typed by the
 shipped stub; the engine internals stay in `cbls._cbls_core`.
 `examples/simple.py` is the Python twin of `examples/simple.cpp`.
+
+## Command line
+
+```bash
+cbls examples/simple.cbls --time-limit 5 --format jsonl
+```
+
+Two programs answer to `cbls`, with the same options, output and exit codes
+(0 when a feasible point was found, else 1; `cbls --help` lists the options):
+
+- **pip install** gives the Python console script, also `python -m cbls`. It
+  reads `.cbls`, MPS (`.mps`, `.mps.gz`) and AMPL `.nl` files, by extension.
+- **CMake build or install** gives the C++ binary (`build/cbls`,
+  `<prefix>/bin/cbls`). It reads `.cbls` files only.
+
+With both installed, the first on `PATH` runs; `cbls --help` says which, by the
+inputs it lists.
 
 ## Use from C++
 

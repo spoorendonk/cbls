@@ -7,6 +7,8 @@ from typing import Annotated, overload
 import numpy
 from numpy.typing import NDArray
 
+version: str = "0.1.0"
+
 class VarType(enum.Enum):
     Bool = 0
 
@@ -1347,6 +1349,27 @@ class SolveCallback:
     def __init__(self) -> None: ...
     def on_progress(self, arg: SolveProgress, /) -> None: ...
 
+class HumanFormatter(SolveCallback):
+    """
+    The `cbls` CLI's human format, written to `stream` (write and flush) as a SolveCallback.
+    """
+
+    def __init__(self, stream: object) -> None: ...
+    def print_header(self, model_path: str, model: Model, seed: int, time_limit: float) -> None: ...
+    def print_result(self, result: SearchResult, model: Model) -> None: ...
+
+class JsonlFormatter(SolveCallback):
+    """
+    The `cbls` CLI's JSON-lines format, written to `stream` (write and flush) as a SolveCallback.
+    """
+
+    def __init__(self, stream: object) -> None: ...
+    def print_header(self, model_path: str, model: Model, seed: int, time_limit: float) -> None: ...
+    def print_result(self, result: SearchResult, model: Model) -> None: ...
+
+def _parse_double(arg: str, /) -> tuple[str, float]: ...
+def _parse_int64(arg: str, /) -> tuple[str, int]: ...
+def _parse_uint64(arg: str, /) -> tuple[str, int]: ...
 def solve(
     model: Model,
     time_limit: float = 10.0,

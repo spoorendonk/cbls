@@ -1,7 +1,8 @@
 """Wheel smoke test (#463), registered in ctest as `wheel_smoke`.
 
 Builds the wheel from the checkout, installs it into a fresh venv and uses it
-there, isolated from the source and build trees. Offline: the build runs
+there, isolated from the source and build trees, as a module and through the
+`cbls` console script (#465). Offline: the build runs
 without isolation in the calling interpreter (the dev venv carries
 scikit-build-core and nanobind), and json comes from the gated build's copy.
 """
@@ -108,6 +109,8 @@ def check_contents(wheel: Path) -> None:
     """The package and its metadata only: no C++ binary, headers or CMake files."""
     with zipfile.ZipFile(wheel) as archive:
         names = archive.namelist()
+        entry_points = [n for n in names if n.endswith(".dist-info/entry_points.txt")]
+        scripts = archive.read(entry_points[0]).decode() if entry_points else ""
     stray = [
         n
         for n in names
@@ -115,21 +118,25 @@ def check_contents(wheel: Path) -> None:
     ]
     if stray:
         sys.exit(f"wheel carries files outside the package: {stray}")
-    for required in ("__init__.py", "_solve.py", "_cbls_core.pyi", "py.typed"):
+    for required in ("__init__.py", "__main__.py", "_solve.py", "_cbls_core.pyi", "py.typed"):
         if f"cbls/{required}" not in names:
             sys.exit(f"wheel has no cbls/{required}: {names}")
     if not any(n.startswith("cbls/_cbls_core.") and n.endswith((".so", ".pyd")) for n in names):
         sys.exit(f"wheel has no compiled cbls/_cbls_core: {names}")
+    if "cbls = cbls.__main__:main" not in scripts:
+        sys.exit(f"wheel declares no cbls console script: {scripts!r}")
 
 
-def install(wheel: Path, env_dir: Path) -> Path:
-    """Install into a fresh venv; returns its interpreter.
+def install(wheel: Path, env_dir: Path) -> tuple[Path, Path | None]:
+    """Install into a fresh venv; returns its interpreter and `cbls` console script.
 
     With pip when the base interpreter has ensurepip. A Debian python3 without
     python3-venv lacks it, and there the wheel, which check_contents has shown
-    to be the package and its dist-info only, is unpacked into site-packages.
+    to be the package and its dist-info only, is unpacked into site-packages,
+    which generates no console script: None.
     """
-    python = env_dir / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    bin_dir = env_dir / ("Scripts" if os.name == "nt" else "bin")
+    python = bin_dir / ("python.exe" if os.name == "nt" else "python")
     try:
         venv.create(env_dir, with_pip=True, clear=True)
     except subprocess.CalledProcessError:
@@ -141,20 +148,43 @@ def install(wheel: Path, env_dir: Path) -> Path:
         ).stdout.strip()
         with zipfile.ZipFile(wheel) as archive:
             archive.extractall(site)
-        return python
+        return python, None
     subprocess.run(
         [str(python), "-m", "pip", "install", "-q", "--no-index", "--no-deps", str(wheel)],
         check=True,
     )
-    return python
+    return python, bin_dir / ("cbls.exe" if os.name == "nt" else "cbls")
+
+
+def run_cli(python: Path, script: Path | None, model: Path, work: Path) -> None:
+    """Both entry points (#465): `cbls --help` and `python -m cbls MODEL --format jsonl`.
+
+    Unpacked, with no script, the script's target is called as its launcher would.
+    """
+    launcher = "import sys; from cbls.__main__ import main; sys.exit(main())"
+    help_cmd = [str(script)] if script else [str(python), "-I", "-c", launcher]
+    shown = subprocess.run(
+        [*help_cmd, "--help"], cwd=work, capture_output=True, text=True, check=True
+    )
+    if not shown.stdout.startswith("Usage: cbls"):
+        sys.exit(f"cbls --help printed no usage: {shown.stdout!r}")
+    args = [str(model), "--format", "jsonl", "--threads", "1", "--time-limit", "1"]
+    ran = subprocess.run(
+        [str(python), "-I", "-m", "cbls", *args], cwd=work, capture_output=True, text=True
+    )
+    last = ran.stdout.splitlines()[-1] if ran.stdout else ""
+    if ran.returncode != 0 or '"event":"result"' not in last:
+        sys.exit(f"python -m cbls failed ({ran.returncode}): {ran.stdout}{ran.stderr}")
+    print("CLI OK", last)
 
 
 def install_and_use(wheel: Path, work: Path, source: Path) -> None:
-    python = install(wheel, work / "venv")
+    python, script = install(wheel, work / "venv")
     mps = work / "tiny.mps"
     mps.write_text(TINY_MPS)
     files = [source / "examples" / "simple.cbls", mps, source / "tests" / "data" / "filter.nl"]
     subprocess.run([str(python), "-I", "-c", USE_INSTALLED, *map(str, files)], cwd=work, check=True)
+    run_cli(python, script, files[0], work)
 
 
 def main() -> None:

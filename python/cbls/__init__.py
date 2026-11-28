@@ -67,7 +67,10 @@ from ._cbls_core import (
 from ._cbls_core import (
     round as round,  # explicit re-export, outside __all__
 )
+from ._cbls_core import version as _version
 from ._solve import SolveResult, solve
+
+__version__: str = _version
 
 # abs, max, min, pow and round are left out: `from cbls import *` would shadow
 # the builtins. They are still cbls.max and so on.
