@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import os
 from dataclasses import dataclass
 
@@ -53,12 +54,14 @@ def _effective_threads(threads: int) -> int:
 def _search_config(
     config: _core.SearchConfig | None, stop: _core.StopToken | None
 ) -> _core.SearchConfig:
-    config = config if config is not None else _core.SearchConfig()
-    if stop is not None:
-        if config.stop:
-            raise ValueError("cbls.solve: pass the StopToken as stop= or config.stop, not both")
-        config.stop = stop
-    return config
+    """`config` with `stop` attached to a copy: the caller's config is never changed."""
+    if stop is None:
+        return config if config is not None else _core.SearchConfig()
+    attached = copy.copy(config) if config is not None else _core.SearchConfig()
+    if attached.stop:
+        raise ValueError("cbls.solve: pass the StopToken as stop= or config.stop, not both")
+    attached.stop = stop
+    return attached
 
 
 def solve(
@@ -77,13 +80,19 @@ def solve(
     `threads` 1 runs the single-threaded search, any other count the parallel
     portfolio (0: one worker per core). `lns` is the LNS destroy fraction
     (None: off); `intensify` adds the float intensification hook. `stop` is
-    attached to `config` (a fresh `SearchConfig` when None), which also holds
-    `lns_interval`. The model is left at the best point found, which the result
-    also carries by variable id.
+    attached to a copy of `config` (a fresh `SearchConfig` when None), which
+    also holds `lns_interval`. The model is left at the best point found, which
+    the result also carries by variable id. An unclosed model raises
+    ValueError: `nl_to_model` leaves an unsupported one so.
 
     The GIL is released while the search runs; see `cbls._cbls_core.solve` and
     `ParallelSearch.solve_master` for what that permits.
     """
+    if not model.is_closed():
+        raise ValueError(
+            "cbls.solve: the model is not closed (an unsupported nl_to_model result "
+            "is left so); call close() on a model you built"
+        )
     if lns is not None and not lns > 0.0:
         raise ValueError(f"cbls.solve: lns must be a fraction > 0 or None, got {lns}")
     n_threads = _effective_threads(threads)

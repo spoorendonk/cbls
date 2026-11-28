@@ -10,7 +10,7 @@ def main() -> None:
     m.minimize(x**2 + y**2)
     m.close()
 
-    result = cbls.solve(m, time_limit=5.0)
+    result = cbls.solve(m, time_limit=5.0, threads=1)  # cbls::solve, as simple.cpp
     print(f"objective = {result.objective:f}")
     print(f"feasible = {'true' if result.feasible else 'false'}")
     print(f"iterations = {result.iterations}")

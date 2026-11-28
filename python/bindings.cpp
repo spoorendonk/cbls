@@ -1086,6 +1086,9 @@ NB_MODULE(_cbls_core, m) {
         .def("freeze", guarded(&Model::freeze, "Model.freeze"),
              nb::arg("cone_cache_bytes") = Model::kDefaultConeCacheBytes)
         .def("is_frozen", &Model::is_frozen)
+        // cbls.solve refuses an unclosed model: nl_to_model leaves an
+        // unsupported one so, and its search would ignore the dropped rows (#464).
+        .def("is_closed", &Model::is_closed)
         // The cone cache's size (#271): read-only counts, no handle into it.
         .def("num_cached_cones", &Model::num_cached_cones)
         .def("cone_cache_bytes", &Model::cone_cache_bytes)
@@ -1488,6 +1491,10 @@ NB_MODULE(_cbls_core, m) {
     // SearchConfig{} default nanobind casts at .def() time (else std::bad_cast).
     nb::class_<SearchConfig>(m, "SearchConfig")
         .def(nb::init<>())
+        // copy.copy(config), so cbls.solve attaches its stop= to a copy, never to
+        // the caller's config (#464). A copied `stop` is the same non-owning view;
+        // the original's keep-alive still holds that token.
+        .def("__copy__", [](const SearchConfig& c) { return c; })
         .def_rw("skip_init", &SearchConfig::skip_init)
         .def_rw("max_iterations", &SearchConfig::max_iterations)
         .def_rw("lns_interval", &SearchConfig::lns_interval)

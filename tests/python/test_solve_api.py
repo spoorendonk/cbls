@@ -138,6 +138,32 @@ def test_solve_rejects_bad_arguments(kwargs: dict[str, float], message: str) -> 
         cbls.solve(_quadratic()[0], **kwargs)  # type: ignore[arg-type]
 
 
+def test_solve_attaches_stop_to_a_copy_not_the_callers_config() -> None:
+    config = _capped()
+    token = cbls.StopToken()
+    token.request()
+    for _ in range(2):  # a second call must not see the first call's token
+        result = cbls.solve(_quadratic()[0], time_limit=60.0, threads=1, stop=token, config=config)
+        assert result.termination == cbls.TerminationReason.Cancelled
+    assert not config.stop
+    unstopped = cbls.solve(_quadratic()[0], time_limit=60.0, threads=1, config=config)
+    assert unstopped.termination == cbls.TerminationReason.IterationLimit
+
+
+def test_solve_refuses_an_unclosed_model() -> None:
+    m = cbls.Model()
+    x = m.Int(0, 10, "x")
+    m.minimize(x + 1.0)
+    with pytest.raises(ValueError, match="not closed"):
+        cbls.solve(m, threads=1)
+
+
+def test_builtin_named_functions_stay_out_of_star_import() -> None:
+    for name in ("abs", "max", "min", "pow", "round"):
+        assert name not in cbls.__all__
+        assert getattr(cbls, name) is getattr(_cbls_core, name)
+
+
 def test_solve_refuses_two_stop_tokens() -> None:
     config = cbls.SearchConfig()
     config.stop = cbls.StopToken()

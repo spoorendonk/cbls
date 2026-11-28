@@ -122,7 +122,7 @@ def test_mps_to_model_solves_to_the_known_optimum(tmp_path: Path) -> None:
     assert [solved.value(h) for h in result.var_handles] == [2.0, 1.0]
 
 
-def test_mps_to_model_options_keep_the_cpp_defaults_and_apply() -> None:
+def test_mps_to_model_options_keep_the_cpp_defaults() -> None:
     options = cbls.MpsToModelOptions()
     assert (options.inf_clamp, options.propagate_bounds, options.max_propagation_passes) == (
         1.0e9,
@@ -178,6 +178,10 @@ def test_an_unsupported_nl_operator_is_reported_not_raised(tmp_path: Path) -> No
     result = cbls.nl_to_model(cbls.read_nl(str(atan)))
     assert not result.supported
     assert any("49" in reason for reason in result.skipped_reasons), result.skipped_reasons
+    # Solving it would ignore the dropped constraint and report a wrong optimum.
+    assert not result.model.is_closed()
+    with pytest.raises(ValueError, match="not closed"):
+        cbls.solve(result.model, threads=1)
 
 
 def test_an_unknown_nl_opcode_is_refused_by_the_reader(tmp_path: Path) -> None:

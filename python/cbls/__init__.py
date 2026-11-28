@@ -34,7 +34,6 @@ from ._cbls_core import (
     Variable,
     VarType,
     WorkerFailure,
-    abs,
     ceil,
     cos,
     element,
@@ -43,22 +42,35 @@ from ._cbls_core import (
     if_then_else,
     load_model,
     log,
-    max,
-    min,
     mps_to_model,
     nearest_neighbours,
     nl_to_model,
-    pow,
     read_mps,
     read_nl,
-    round,
     save_model,
     sin,
     sqrt,
     tan,
 )
+from ._cbls_core import (
+    abs as abs,  # explicit re-export, outside __all__
+)
+from ._cbls_core import (
+    max as max,  # explicit re-export, outside __all__
+)
+from ._cbls_core import (
+    min as min,  # explicit re-export, outside __all__
+)
+from ._cbls_core import (
+    pow as pow,  # explicit re-export, outside __all__
+)
+from ._cbls_core import (
+    round as round,  # explicit re-export, outside __all__
+)
 from ._solve import SolveResult, solve
 
+# abs, max, min, pow and round are left out: `from cbls import *` would shadow
+# the builtins. They are still cbls.max and so on.
 __all__ = [
     "BoundPropagationStats",
     "Cover",
@@ -89,7 +101,6 @@ __all__ = [
     "VarType",
     "Variable",
     "WorkerFailure",
-    "abs",
     "ceil",
     "cos",
     "element",
@@ -98,15 +109,11 @@ __all__ = [
     "if_then_else",
     "load_model",
     "log",
-    "max",
-    "min",
     "mps_to_model",
     "nearest_neighbours",
     "nl_to_model",
-    "pow",
     "read_mps",
     "read_nl",
-    "round",
     "save_model",
     "sin",
     "solve",

@@ -70,10 +70,13 @@ dev = [
     # (CLAUDE.md's ```build fence) locates nanobind by running
     # `python -m nanobind --cmake_dir` against .venv/bin/python, so without it
     # here the documented bootstrap yields a venv that cannot build the
-    # bindings -- and the 291 binding tests would go unrun. 3.0.x is excluded
+    # bindings -- and the 294 binding tests would go unrun. 3.0.x is excluded
     # in both places: it has neither keep_alive entry point python/bindings.cpp
-    # calls (see expr_object there).
-    "nanobind>=2.0,!=3.0.*",
+    # calls (see expr_object there). Pinned exactly here, unlike the floor in
+    # [build-system]: tests/python/test_stub.py holds the committed stub
+    # byte-identical to this release's stubgen, which reformats between
+    # releases (#464). Bump it in its own commit, regenerating the stub.
+    "nanobind==3.1.0",
     # The wheel smoke test (tests/wheel/smoke.py) builds the wheel without build
     # isolation, so offline, from this venv; the floor is [build-system]'s.
     "scikit-build-core>=0.10",
