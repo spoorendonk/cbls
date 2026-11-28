@@ -17,8 +17,8 @@ which the binding copies out to a list -- so it is covered here too.
 import sys
 from typing import TYPE_CHECKING, Any
 
-import _cbls_core as cbls
 import pytest
+from cbls import _cbls_core as cbls
 from support import run_scenario, vid
 
 if TYPE_CHECKING:

@@ -20,8 +20,8 @@ import threading
 from collections.abc import Callable
 from typing import Any
 
-import _cbls_core as cbls
 import numpy as np
+from cbls import _cbls_core as cbls
 from support import run_scenario
 
 CHILD_TIMEOUT_SECONDS = 60.0

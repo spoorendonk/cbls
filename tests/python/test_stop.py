@@ -15,7 +15,7 @@ import subprocess
 import sys
 import threading
 
-import _cbls_core as cbls
+from cbls import _cbls_core as cbls
 from support import run_scenario
 
 # Generous against the ~1s solves below: this is a deadlock detector, not a

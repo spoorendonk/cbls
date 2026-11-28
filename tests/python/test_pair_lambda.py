@@ -25,9 +25,9 @@ from __future__ import annotations
 import sys
 from typing import TYPE_CHECKING
 
-import _cbls_core as cbls
 import numpy as np
 import pytest
+from cbls import _cbls_core as cbls
 from support import run_scenario, vid
 
 if TYPE_CHECKING:

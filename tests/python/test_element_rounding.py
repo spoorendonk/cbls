@@ -17,9 +17,9 @@ import sys
 from functools import partial
 from typing import TYPE_CHECKING, Any
 
-import _cbls_core as cbls
 import numpy as np
 import pytest
+from cbls import _cbls_core as cbls
 from support import run_scenario, vid
 
 if TYPE_CHECKING:

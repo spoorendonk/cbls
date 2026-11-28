@@ -1,6 +1,6 @@
 """Tests for the conftest gates that stop a short run from looking complete.
 
-The binding tests skip when `_cbls_core` is not built, and the tests guarded on
+The binding tests skip when `cbls` is not built, and the tests guarded on
 the `benchmarks` extra skip when it is not installed; either would otherwise
 leave a green summary indistinguishable from a full pass.
 """
@@ -12,6 +12,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
 from conftest import (
     BENCHMARK_IMPORTS,
     BINDING_MODULE,
@@ -73,34 +74,51 @@ def test_every_importorskipped_dependency_is_one_this_gate_watches() -> None:
 
 # --- the binding gate ----------------------------------------------------------
 #
-# Which files are collect-ignored without `_cbls_core`: prose naming the module
+# Which files are collect-ignored without `cbls`: prose naming the module
 # must not count, and every import spelling must (see `imports_module`).
 
 
 def test_a_file_that_only_mentions_the_module_in_prose_is_not_a_binding_test() -> None:
-    text = '"""Prose that says import _cbls_core without importing it."""\n'
+    text = '"""Prose that says import cbls without importing it."""\n'
     assert not imports_module(text, BINDING_MODULE)
 
 
 def test_a_comment_naming_the_module_is_not_a_binding_test() -> None:
-    assert not imports_module("# import _cbls_core one day\nx = 1\n", BINDING_MODULE)
+    assert not imports_module("# import cbls one day\nx = 1\n", BINDING_MODULE)
 
 
 def test_a_plain_import_is_a_binding_test() -> None:
-    assert imports_module("import _cbls_core\n", BINDING_MODULE)
+    assert imports_module("import cbls\n", BINDING_MODULE)
 
 
 def test_an_aliased_import_is_a_binding_test() -> None:
-    assert imports_module("import _cbls_core as core\n", BINDING_MODULE)
+    assert imports_module("import cbls as core\n", BINDING_MODULE)
 
 
 def test_a_from_import_is_a_binding_test() -> None:
     """The spelling that aborts collection for the whole directory when missed."""
-    assert imports_module("from _cbls_core import Model\n", BINDING_MODULE)
+    assert imports_module("from cbls import Model\n", BINDING_MODULE)
 
 
 def test_a_dynamic_import_is_a_binding_test() -> None:
-    assert imports_module('importlib.import_module("_cbls_core")\n', BINDING_MODULE)
+    assert imports_module('importlib.import_module("cbls")\n', BINDING_MODULE)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "import cbls._cbls_core\n",
+        "from cbls import _cbls_core as cbls\n",
+        "from cbls._cbls_core import Model\n",
+        'importlib.import_module("cbls._cbls_core")\n',
+    ],
+)
+def test_an_import_of_the_compiled_submodule_is_a_binding_test(text: str) -> None:
+    assert imports_module(text, BINDING_MODULE)
+
+
+def test_a_module_merely_prefixed_cbls_is_not_a_binding_test() -> None:
+    assert not imports_module("import cbls_tools\n", BINDING_MODULE)
 
 
 def test_an_unparseable_file_is_not_claimed_as_a_binding_test() -> None:
@@ -110,14 +128,14 @@ def test_an_unparseable_file_is_not_claimed_as_a_binding_test() -> None:
 
 
 def test_binding_test_files_names_only_the_importers(tmp_path: Path) -> None:
-    (tmp_path / "test_binding.py").write_text("from _cbls_core import Model\n")
-    (tmp_path / "test_prose.py").write_text('"""about _cbls_core."""\n')
-    (tmp_path / "not_a_test.py").write_text("import _cbls_core\n")
+    (tmp_path / "test_binding.py").write_text("from cbls import Model\n")
+    (tmp_path / "test_prose.py").write_text('"""about cbls."""\n')
+    (tmp_path / "not_a_test.py").write_text("import cbls\n")
     assert binding_test_files(tmp_path) == ["test_binding.py"]
 
 
 def test_a_prose_only_test_still_runs_when_the_bindings_are_absent(tmp_path: Path) -> None:
-    """End to end, in a directory where `_cbls_core` genuinely cannot be imported.
+    """End to end, in a directory where `cbls` genuinely cannot be imported.
 
     conftest adds `../../build/python` relative to its own location, so a copy
     two levels below `tmp_path` finds no bindings.
@@ -127,11 +145,11 @@ def test_a_prose_only_test_still_runs_when_the_bindings_are_absent(tmp_path: Pat
     source = Path(__file__).parent / "conftest.py"
     (root / "conftest.py").write_text(source.read_text())
     (root / "test_prose.py").write_text(
-        '"""This suite mentions from _cbls_core import Model in prose only."""\n\n'
+        '"""This suite mentions from cbls import Model in prose only."""\n\n'
         "def test_it_runs() -> None:\n    assert True\n"
     )
     (root / "test_real_binding.py").write_text(
-        "from _cbls_core import Model\n\ndef test_needs_bindings() -> None:\n    assert Model\n"
+        "from cbls import Model\n\ndef test_needs_bindings() -> None:\n    assert Model\n"
     )
     # An inherited CBLS_REQUIRE_BINDINGS=1 would raise UsageError before
     # collection, which is not what this test checks.

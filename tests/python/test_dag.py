@@ -7,7 +7,7 @@ neighbouring one. DAG semantics belong to `tests/test_dag.cpp`.
 
 import math
 
-import _cbls_core as cbls
+from cbls import _cbls_core as cbls
 from support import vid
 
 

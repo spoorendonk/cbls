@@ -1,7 +1,7 @@
 """Tests for C++ moves/LNS/pool via Python bindings."""
 
-import _cbls_core as cbls
 import pytest
+from cbls import _cbls_core as cbls
 from support import vid
 
 

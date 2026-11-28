@@ -1,6 +1,6 @@
 """Tests for the no-commit weighted-violation-delta API via Python bindings."""
 
-import _cbls_core as cbls
+from cbls import _cbls_core as cbls
 from support import vid
 
 

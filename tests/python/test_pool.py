@@ -23,8 +23,8 @@ import traceback
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
-import _cbls_core as cbls
 import pytest
+from cbls import _cbls_core as cbls
 from support import run_scenario
 
 from benchmarks.mipfeas.primal_integral import score_instance

@@ -8,7 +8,7 @@ modeller's rows, so a caller mapping row indices back to its own rows needs
 
 from __future__ import annotations
 
-import _cbls_core as cbls
+from cbls import _cbls_core as cbls
 
 
 def test_a_log_of_a_free_variable_adds_one_domain_row_after_the_users() -> None:

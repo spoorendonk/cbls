@@ -11,9 +11,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-import _cbls_core as cbls
 import numpy as np
 import pytest
+from cbls import _cbls_core as cbls
 
 if TYPE_CHECKING:
     from collections.abc import Callable

@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-# Add the build directory to the path so we can import _cbls_core
+# The build tree's package (build/python/cbls, with _cbls_core inside, #463).
 build_dir = os.path.join(os.path.dirname(__file__), "..", "..", "build", "python")
 if os.path.exists(build_dir):
     sys.path.insert(0, build_dir)
@@ -22,8 +22,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 # CBLS_REQUIRE_BINDINGS=1 (set by the ```test fence in CLAUDE.md) makes it a hard error.
 _ignored_binding_tests: list[str] = []
 
-#: The compiled module a binding test needs.
-BINDING_MODULE = "_cbls_core"
+#: The package a binding test needs: `cbls` and its compiled `cbls._cbls_core`.
+BINDING_MODULE = "cbls"
 
 
 @pytest.fixture(autouse=True)
@@ -44,10 +44,11 @@ def imports_module(text: str, module: str) -> bool:
     """Whether this source really imports `module` -- by AST, not by substring.
 
     A whole-file substring match ignores a pure-Python test whose docstring names
-    the module; the narrower `import _cbls_core` misses `from _cbls_core import X`
-    and `importlib.import_module("_cbls_core")`, and a missed binding test raises
+    the module; the narrower `import cbls` misses `from cbls import X`
+    and `importlib.import_module("cbls")`, and a missed binding test raises
     ImportError at collection, aborting the whole session. Docstrings and
-    comments are not in the AST; all three import spellings are recognised.
+    comments are not in the AST; all three import spellings are recognised, of
+    the module or a submodule.
     """
     try:
         tree = ast.parse(text)
@@ -55,25 +56,30 @@ def imports_module(text: str, module: str) -> bool:
         # Let pytest report an unparseable file itself; guessing from a broken
         # parse is how a binding test would be ignored for a typo.
         return False
-    prefix = f"{module}."
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            if any(a.name == module or a.name.startswith(prefix) for a in node.names):
-                return True
-        elif isinstance(node, ast.ImportFrom):
-            name = node.module or ""
-            if name == module or name.startswith(prefix):
-                return True
-        elif isinstance(node, ast.Call):
-            # importlib.import_module("_cbls_core"), which no `import` statement
-            # spelling would catch.
-            func = node.func
-            called = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
-            if called == "import_module" and node.args:
-                first = node.args[0]
-                if isinstance(first, ast.Constant) and first.value == module:
-                    return True
-    return False
+    return any(
+        name == module or name.startswith(f"{module}.")
+        for node in ast.walk(tree)
+        for name in imported_names(node)
+    )
+
+
+def imported_names(node: ast.AST) -> list[str]:
+    """The module names `node` imports, if it is an import of any spelling."""
+    if isinstance(node, ast.Import):
+        return [alias.name for alias in node.names]
+    if isinstance(node, ast.ImportFrom):
+        return [node.module or ""]
+    if isinstance(node, ast.Call) and node.args:
+        # importlib.import_module("cbls"), which no `import` statement
+        # spelling would catch.
+        func = node.func
+        called = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+        first = node.args[0]
+        if called != "import_module" or not isinstance(first, ast.Constant):
+            return []
+        if isinstance(first.value, str):
+            return [first.value]
+    return []
 
 
 def binding_test_files(directory: Path) -> list[str]:
@@ -86,14 +92,14 @@ def binding_test_files(directory: Path) -> list[str]:
 
 
 try:
-    import _cbls_core  # noqa: F401
+    import cbls._cbls_core  # noqa: F401
 except ImportError:
     _ignored_binding_tests = binding_test_files(Path(__file__).parent)
     collect_ignore = _ignored_binding_tests
 
     if os.environ.get("CBLS_REQUIRE_BINDINGS") == "1":
         raise pytest.UsageError(
-            "CBLS_REQUIRE_BINDINGS=1, but _cbls_core is not importable, so these "
+            "CBLS_REQUIRE_BINDINGS=1, but cbls._cbls_core is not importable, so these "
             f"binding test files would not run: {', '.join(_ignored_binding_tests)}. "
             "Build them with:\n"
             '  cmake -B build -DCBLS_BUILD_PYTHON=ON -DPython_EXECUTABLE="$PWD/.venv/bin/python"\n'
@@ -188,7 +194,7 @@ def pytest_terminal_summary(terminalreporter: pytest.TerminalReporter) -> None:
     """
     if _ignored_binding_tests:
         terminalreporter.write_line(
-            f"WARNING: _cbls_core not built — skipped {len(_ignored_binding_tests)} binding "
+            f"WARNING: cbls._cbls_core not built — skipped {len(_ignored_binding_tests)} binding "
             f"test file(s): {', '.join(_ignored_binding_tests)}. "
             "Set CBLS_REQUIRE_BINDINGS=1 to make this an error.",
             yellow=True,

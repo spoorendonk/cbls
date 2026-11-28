@@ -16,8 +16,8 @@ import operator
 from collections.abc import Callable
 from typing import Any
 
-import _cbls_core as cbls
 import pytest
+from cbls import _cbls_core as cbls
 from support import vid
 
 

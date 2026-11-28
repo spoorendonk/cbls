@@ -11,9 +11,9 @@ interpreter (as `test_model_handles.py`).
 
 import sys
 
-import _cbls_core as cbls
 import numpy as np
 import pytest
+from cbls import _cbls_core as cbls
 from support import run_scenario, vid
 
 CHILD_TIMEOUT_SECONDS = 30.0

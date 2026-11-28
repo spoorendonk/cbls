@@ -4,10 +4,10 @@
 # wants the C++ library. Degrading is safe because the skip is no longer silent:
 # tests/python/conftest.py announces the dropped binding tests, and the gate sets
 # CBLS_REQUIRE_BINDINGS=1 so a build that quietly produced no module fails there.
-find_package(Python 3.11 COMPONENTS Interpreter Development.Module)
+find_package(Python 3.12 COMPONENTS Interpreter Development.Module)
 
 if(NOT Python_FOUND)
-    message(WARNING "Python 3.11+ with development headers not found, skipping Python bindings.")
+    message(WARNING "Python 3.12+ with development headers not found, skipping Python bindings.")
     return()
 endif()
 
@@ -59,8 +59,32 @@ if(NB_DIR_RESULT EQUAL 0 AND NB_DIR)
     endif()
     target_include_directories(_cbls_core SYSTEM PRIVATE "${NB_INCLUDE_DIR}")
 
+    # build/python/cbls is the package as the wheel lays it out, so the tests
+    # import `cbls` and `cbls._cbls_core` from the build tree (#463).
+    set_target_properties(_cbls_core PROPERTIES
+        LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/cbls")
+    file(GLOB _cbls_package_files LIST_DIRECTORIES false CONFIGURE_DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/cbls/*")
+    foreach(_file IN LISTS _cbls_package_files)
+        get_filename_component(_name "${_file}" NAME)
+        configure_file("${_file}" "${CMAKE_CURRENT_BINARY_DIR}/cbls/${_name}" COPYONLY)
+    endforeach()
+
+    # Its own component: the wheel installs only this (pyproject.toml).
     if(CBLS_INSTALL)  # the root's top-level-only default (#447)
-        install(TARGETS _cbls_core LIBRARY DESTINATION cbls)
+        install(TARGETS _cbls_core LIBRARY DESTINATION cbls COMPONENT python)
+    endif()
+
+    # Builds the wheel, installs it into a fresh venv and imports and solves
+    # there (#463, tests/wheel/smoke.py). A whole second build, hence slow.
+    if(CBLS_BUILD_TESTS)
+        add_test(NAME wheel_smoke
+            COMMAND "${Python_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/wheel/smoke.py"
+                    --source "${PROJECT_SOURCE_DIR}"
+                    --work "${PROJECT_BINARY_DIR}/wheel_smoke"
+                    --json-src "${json_SOURCE_DIR}" --jobs 2)
+        set_tests_properties(wheel_smoke
+            PROPERTIES LABELS "slow" PROCESSORS 2 TIMEOUT 900)
     endif()
 else()
     message(WARNING "nanobind not found, skipping Python bindings. Install with: pip install nanobind")

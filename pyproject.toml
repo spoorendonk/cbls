@@ -1,5 +1,5 @@
 [build-system]
-requires = ["scikit-build-core>=0.5", "nanobind>=2.0,!=3.0.*"]
+requires = ["scikit-build-core>=0.10", "nanobind>=2.0,!=3.0.*"]
 build-backend = "scikit_build_core.build"
 
 [project]
@@ -7,6 +7,30 @@ name = "cbls"
 version = "0.1.0"
 description = "Constraint-Based Local Search engine (C++ core with Python bindings)"
 requires-python = ">=3.12"
+
+# The wheel is the Python package alone: `cbls/__init__.py` from python/cbls and
+# `_cbls_core` from the `python` install component. The C++ library, headers,
+# CMake config and `cbls` binary stay with a CMake install, so the wheel puts no
+# second `cbls` on PATH (#463). Only the extension is built.
+[tool.scikit-build]
+cmake.build-type = "Release"
+build.targets = ["_cbls_core"]
+install.components = ["python"]
+wheel.packages = ["python/cbls"]
+
+[tool.scikit-build.cmake.define]
+CBLS_BUILD_PYTHON = "ON"
+CBLS_BUILD_TESTS = "OFF"
+CBLS_BUILD_EXAMPLES = "OFF"
+CBLS_BUILD_BENCHMARKS = "OFF"
+CBLS_INSTALL_GIT_HOOKS = "OFF"
+
+# This checkout's venv holds the tools and dependencies only, not cbls itself:
+# the tests import the module the gated build puts in build/python, and an
+# installed copy would be a second, staler one (and every `uv sync` a full engine
+# build). The package is installed only as a wheel (#463).
+[tool.uv]
+package = false
 
 [project.optional-dependencies]
 dev = [
@@ -48,6 +72,9 @@ dev = [
     # in both places: it has neither keep_alive entry point python/bindings.cpp
     # calls (see expr_object there).
     "nanobind>=2.0,!=3.0.*",
+    # The wheel smoke test (tests/wheel/smoke.py) builds the wheel without build
+    # isolation, so offline, from this venv; the floor is [build-system]'s.
+    "scikit-build-core>=0.10",
 ]
 benchmarks = [
     # CP-SAT's violation_ls worker, the MIPfeas baseline. 9.7 is when the
@@ -131,12 +158,12 @@ exclude = ['^build/']
 module = ["data", "pyscipopt", "ortools.constraint_solver"]
 ignore_missing_imports = true
 
-# _cbls_core is a compiled nanobind extension with no stubs, so mypy cannot
+# cbls._cbls_core is a compiled nanobind extension with no stubs, so mypy cannot
 # resolve it and reported import-not-found on every run -- including when the
 # module was built and importable. Scoped to this one module rather than set
 # globally: `ignore_missing_imports = true` at top level would also swallow a
 # genuine typo in a real dependency, which is the failure this repo's "don't
 # ignore type errors" rule is aimed at.
 [[tool.mypy.overrides]]
-module = "_cbls_core"
+module = "cbls._cbls_core"
 ignore_missing_imports = true

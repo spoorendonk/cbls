@@ -12,8 +12,8 @@ an unchecked index (#156).
 import sys
 from typing import Any
 
-import _cbls_core as cbls
 import pytest
+from cbls import _cbls_core as cbls
 from support import vid
 
 

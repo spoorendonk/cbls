@@ -9,7 +9,7 @@ Every run is iteration-budgeted with `time_limit = 0.0`, where
 fails a test instead of costing determinism.
 """
 
-import _cbls_core as cbls
+from cbls import _cbls_core as cbls
 
 ITERATIONS = 5000
 

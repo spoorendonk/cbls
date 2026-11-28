@@ -52,7 +52,7 @@ m.close();
 ```bash
 cmake -B build
 cmake --build build
-ctest --test-dir build    # 899 C++ tests (add -LE slow for the fast 888, ~12s)
+ctest --test-dir build    # 900 C++ tests (add -LE slow for the fast 888, ~12s)
 ```
 
 CMake 3.15 or newer (3.20 for `ctest --test-dir`), a C++17 compiler and zlib
@@ -70,13 +70,14 @@ Two off-by-default measurement builds, each into its own directory:
 See [docs/profiling.md](docs/profiling.md) for the heap and CPU profiling
 recipes that use them.
 
-With Python bindings (the venv first, which also builds the package into it):
+With Python bindings (the venv first: it holds the tools and dependencies, not
+cbls, and the tests import the module the build puts in `build/python/cbls`):
 
 ```bash
 uv sync --extra dev
 cmake -B build -DCBLS_BUILD_PYTHON=ON -DPython_EXECUTABLE="$PWD/.venv/bin/python"
 cmake --build build
-.venv/bin/pytest          # 1772 tests, 258 of them for the bindings
+.venv/bin/pytest          # 1777 tests, 258 of them for the bindings
 ```
 
 Tests of the benchmark baselines skip themselves when `ortools` or `pyscipopt` is
@@ -87,12 +88,16 @@ uv sync --extra dev --extra benchmarks   # names both: uv sync drops an unnamed 
 CBLS_REQUIRE_BENCHMARKS=1 .venv/bin/pytest   # turns that skip into an error
 ```
 
-To use CBLS from another Python project, install it as a package
-(this repository's own venv is managed by `uv sync` only):
+To use CBLS from another Python project (Python 3.12+), install it as a package.
+pip compiles the extension, so it needs CMake 3.15+, a C++17 compiler and zlib:
 
 ```bash
-pip install .
+pip install git+https://github.com/spoorendonk/cbls   # or `pip install .` in a checkout
 ```
+
+The wheel holds the `cbls` Python package only. The C++ library, headers and
+`cbls` binary come from a CMake install (below). `ctest -R wheel_smoke` builds a
+wheel, installs it into a fresh venv and solves a model there.
 
 ## Use from C++
 

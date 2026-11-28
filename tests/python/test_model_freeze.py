@@ -10,8 +10,8 @@ exception, which is what makes it testable at all rather than a crash.
 
 from __future__ import annotations
 
-import _cbls_core as cbls
 import pytest
+from cbls import _cbls_core as cbls
 from support import vid
 
 

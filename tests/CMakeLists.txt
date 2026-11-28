@@ -89,12 +89,13 @@ include(Catch)
 # the tag -- "measure both ways before tagging" applies to KEEPING a tag as
 # much as to adding one.
 #
-# The roster is therefore 899 ctest tests: 885 discovered here, the 10
-# hand-registered ones below, and the 2 non-Catch2 shell gate tests and 2
-# consumer tests (#447) the root CMakeLists.txt registers. The 895 Catch2 ones are four more than the 891
+# The roster is therefore 900 ctest tests: 885 discovered here, the 10
+# hand-registered ones below, the 2 non-Catch2 shell gate tests and 2
+# consumer tests (#447) the root CMakeLists.txt registers, and the wheel_smoke
+# test (#463) python/CMakeLists.txt registers. The 895 Catch2 ones are four more than the 891
 # TEST_CASEs in tests/*.cpp, because the four hang_guard_* tests are both
-# discovered and hand-registered -- see their notes below. `ctest -N -L slow` reports 11, not 4 --
-# the two consumer tests, the three #125 throughput floors and #191's and #461's
+# discovered and hand-registered -- see their notes below. `ctest -N -L slow` reports 12, not 4 --
+# wheel_smoke, the two consumer tests, the three #125 throughput floors and #191's and #461's
 # deadlines carry the slow LABEL without the Catch2 [slow] TAG. Re-derive with `ctest -N`, never by incrementing.
 #
 # SKIP_RETURN_CODE 4 maps Catch2's SKIP() onto ctest's "Skipped" rather than a

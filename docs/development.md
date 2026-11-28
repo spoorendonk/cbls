@@ -39,7 +39,7 @@ evaluates each fence under `set -e`. Keep the fences runnable in both places.
 
 **The gated build turns the Python bindings on, and the gated test run requires
 them.** `CBLS_BUILD_PYTHON` defaults to `OFF` and `tests/python/conftest.py`
-skips every test that imports `_cbls_core` when the module is missing, so a build
+skips every test that imports `cbls` when its compiled `cbls._cbls_core` is missing, so a build
 without the flag would leave 258 binding tests silently unrun.
 `CBLS_REQUIRE_BINDINGS=1` turns that skip into a hard error. Bindings cost ~2.4s
 of build and ~6s of pytest against a suite that already spends ~25s in `ctest` —
@@ -66,13 +66,14 @@ fence fails on `CBLS_REQUIRE_BINDINGS=1`.
 and never symlinks another checkout's:
 
 ```bash
-CMAKE_BUILD_PARALLEL_LEVEL=4 xk lock -- uv sync --extra dev --extra benchmarks
+uv sync --extra dev --extra benchmarks
 ```
 
 `--extra benchmarks` is what the ```test fence requires; leave it out only for a
-clone that runs no gate. This builds `cbls` into `.venv` once, a C++ build, hence
-the lock and the job cap, and writes an untracked `uv.lock`, which `.gitignore`
-ignores. No symlink to another clone's venv: it points outside the session's
+clone that runs no gate. It installs the tools and dependencies only, not
+`cbls` itself (`[tool.uv] package = false`): the tests import the gated build's
+`build/python/cbls`, and the package is installed only as a wheel (#463). It
+writes an untracked `uv.lock`, which `.gitignore` ignores. No symlink to another clone's venv: it points outside the session's
 working directory, so every command touching `.venv` raises a permission prompt,
 and it forces one set of extras on every clone that shares it.
 
@@ -86,7 +87,7 @@ ln -sfn /path/to/this/checkout/.venv .venv && .venv/bin/pytest --tb=short -q; rm
 
 ### Fast vs. slow tests
 
-The C++ suite is **899 ctest tests**: 895 Catch2 ones over **891 `TEST_CASE`s**
+The C++ suite is **900 ctest tests**: 895 Catch2 ones over **891 `TEST_CASE`s**
 — 885 registered by `catch_discover_tests` plus **10 registered by hand**, the 6
 `[timing]` cases and the four hang guards `hang_guard_iteration_only_portfolio`,
 `hang_guard_novelty_zero_move_batch`, `hang_guard_nonpositive_batch_iterations`
@@ -98,7 +99,10 @@ ctest tests — plus **2 shell tests that are not Catch2 at all**,
 `CMakeLists.txt` (they pin the clang-tidy gate and the hook filters, #171) —
 plus **2 consumer tests**, `consumer_find_package` and
 `consumer_add_subdirectory`, also registered there with `LABELS "slow"`: each
-builds `tests/consumer/` against cbls as a downstream project would (#447). Of the 885,
+builds `tests/consumer/` against cbls as a downstream project would (#447) —
+plus **1 wheel test**, `wheel_smoke`, registered in `python/CMakeLists.txt` with
+`LABELS "slow"`: it builds the wheel, installs it into a fresh venv and imports
+and solves there (#463, `tests/wheel/smoke.py`). Of the 885,
 **4 carry the
 Catch2 `[slow]` tag** — the UC-CHPED benchmark solves. `tests/CMakeLists.txt` discovers them in a second
 `catch_discover_tests` call with `LABELS "slow"`, so:
@@ -114,8 +118,8 @@ Catch2 `[slow]` tag** — the UC-CHPED benchmark solves. `tests/CMakeLists.txt` 
   reason.
 
 **The Catch2 `[slow]` tag and the ctest `slow` label are not the same set here**,
-and both numbers appear above: 4 tests carry the *tag*, 11 carry the *label*
-(`ctest -N -L slow` says 11): the 4 tagged ones, the 2 consumer tests and 5
+and both numbers appear above: 4 tests carry the *tag*, 12 carry the *label*
+(`ctest -N -L slow` says 12): the 4 tagged ones, `wheel_smoke`, the 2 consumer tests and 5
 `[timing]` ones. The three throughput floors and #191's and
 #461's deadline tests are tagged `[timing]`
 — which is what keeps them out of both `catch_discover_tests` calls, since the
@@ -133,7 +137,7 @@ agree:
 1. this section,
 2. the comment above `catch_discover_tests` in `tests/CMakeLists.txt`,
 3. the build section of `README.md`,
-4. the `.venv/bin/pytest` line in `README.md` for the Python side (1772 tests, 258
+4. the `.venv/bin/pytest` line in `README.md` for the Python side (1777 tests, 258
    of them binding tests, echoed in prose by `pyproject.toml`),
 5. the `-LE slow` guidance and the ~25s/~490s figures in `docs/profiling.md`.
    Note its "302/302 green" sanitizer line is a **dated record of one run at a

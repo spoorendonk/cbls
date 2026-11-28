@@ -1,0 +1,110 @@
+"""Wheel smoke test (#463), registered in ctest as `wheel_smoke`.
+
+Builds the wheel from the checkout, installs it into a fresh venv and uses it
+there, isolated from the source and build trees. Offline: the build runs
+without isolation in the calling interpreter (the dev venv carries
+scikit-build-core and nanobind), and json comes from the gated build's copy.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import shutil
+import subprocess
+import sys
+import venv
+import zipfile
+from pathlib import Path
+
+# Run in the fresh venv under -I, so only the installed wheel can satisfy it.
+USE_INSTALLED = """
+import pathlib, sys
+import cbls
+
+installed = pathlib.Path(cbls.__file__).resolve()
+assert pathlib.Path(sys.prefix).resolve() in installed.parents, installed
+
+m = cbls.Model()
+x = m.int_var(0, 10, "x")
+m.add_constraint(m.sum([m.constant(3.0), m.prod(m.constant(-1.0), x)]))  # x >= 3
+m.minimize(m.sum([x]))
+m.close()
+result = cbls.solve(m, 1.0, 42)
+assert result.feasible, "tiny model not solved"
+value = m.var(-(x + 1)).value
+assert value == 3.0, value
+print("OK", installed)
+"""
+
+
+def build_wheel(source: Path, work: Path, json_src: str, jobs: int) -> Path:
+    """The PEP 517 hook pip would call, without isolation; returns the wheel."""
+    dist = work / "dist"
+    dist.mkdir(parents=True)
+    settings = {"build-dir": str(work / "build")}
+    if json_src:
+        settings["cmake.define.FETCHCONTENT_SOURCE_DIR_JSON"] = json_src
+    hook = (
+        "import sys\n"
+        "from scikit_build_core.build import build_wheel\n"
+        "print(build_wheel(sys.argv[1], dict(a.split('=', 1) for a in sys.argv[2:])))\n"
+    )
+    env = dict(os.environ, CMAKE_BUILD_PARALLEL_LEVEL=str(jobs))
+    subprocess.run(
+        [sys.executable, "-c", hook, str(dist), *(f"{k}={v}" for k, v in settings.items())],
+        cwd=source,
+        env=env,
+        check=True,
+    )
+    wheels = sorted(dist.glob("cbls-*.whl"))
+    if len(wheels) != 1:
+        sys.exit(f"expected one wheel in {dist}, found {wheels}")
+    return wheels[0]
+
+
+def check_contents(wheel: Path) -> None:
+    """The package and its metadata only: no C++ binary, headers or CMake files."""
+    with zipfile.ZipFile(wheel) as archive:
+        names = archive.namelist()
+    stray = [
+        n
+        for n in names
+        if not n.startswith("cbls/") and not n.split("/", 1)[0].endswith(".dist-info")
+    ]
+    if stray:
+        sys.exit(f"wheel carries files outside the package: {stray}")
+    if "cbls/__init__.py" not in names:
+        sys.exit(f"wheel has no cbls/__init__.py: {names}")
+    if not any(n.startswith("cbls/_cbls_core.") for n in names):
+        sys.exit(f"wheel has no compiled cbls/_cbls_core: {names}")
+
+
+def install_and_use(wheel: Path, work: Path) -> None:
+    env_dir = work / "venv"
+    venv.create(env_dir, with_pip=True, clear=True)
+    python = env_dir / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    subprocess.run(
+        [str(python), "-m", "pip", "install", "-q", "--no-index", "--no-deps", str(wheel)],
+        check=True,
+    )
+    subprocess.run([str(python), "-I", "-c", USE_INSTALLED], cwd=work, check=True)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--source", type=Path, required=True)
+    parser.add_argument("--work", type=Path, required=True)
+    parser.add_argument("--json-src", default="", help="FETCHCONTENT_SOURCE_DIR_JSON")
+    parser.add_argument("--jobs", type=int, default=2)
+    args = parser.parse_args()
+
+    shutil.rmtree(args.work, ignore_errors=True)
+    args.work.mkdir(parents=True)
+    wheel = build_wheel(args.source.resolve(), args.work, args.json_src, args.jobs)
+    check_contents(wheel)
+    install_and_use(wheel, args.work)
+
+
+if __name__ == "__main__":
+    main()

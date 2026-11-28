@@ -5,7 +5,7 @@ left for here is what only the binding can get wrong: a field missing,
 misnamed, defaulting on, or not reaching the solve it is handed to.
 """
 
-import _cbls_core as cbls
+from cbls import _cbls_core as cbls
 
 
 def _scan_model() -> tuple["cbls.Model", int]:
