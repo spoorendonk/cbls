@@ -660,9 +660,10 @@ void bind_io(nb::module_& m) {
           "and must not be solved.");
 }
 
-// One of src/cli.cpp's formatters, writing to a Python text stream, so the
-// console script (#465) prints exactly what the C++ CLI does. One buffer for the
-// formatter's life, as std::cout there, so the iomanip state it leaves carries.
+// One of src/cli.cpp's formatters, writing to a Python binary stream, so the
+// console script (#465) prints exactly what the C++ CLI does: the bytes as they
+// are, whatever the locale or a name's encoding. One buffer for the formatter's
+// life, as std::cout there, so the iomanip state it leaves carries.
 template <class Formatter>
 class StreamFormatter : public SolveCallback {
 public:
@@ -688,7 +689,7 @@ private:
         const std::string text = buffer_.str();
         buffer_.str({});
         const nb::gil_scoped_acquire gil;
-        stream_.attr("write")(text);
+        stream_.attr("write")(nb::bytes(text.data(), text.size()));
         stream_.attr("flush")();
     }
 
@@ -723,29 +724,38 @@ const char* parse_status_name(ParseStatus status) {
 void bind_cli(nb::module_& m) {
     bind_stream_formatter<HumanFormatter>(
         m, "HumanFormatter",
-        "The `cbls` CLI's human format, written to `stream` (write and flush) as a "
-        "SolveCallback.");
+        "The `cbls` CLI's human format as a SolveCallback, written as bytes to the "
+        "binary `stream` (write and flush), such as sys.stdout.buffer.");
     bind_stream_formatter<JsonlFormatter>(
         m, "JsonlFormatter",
-        "The `cbls` CLI's JSON-lines format, written to `stream` (write and flush) as a "
-        "SolveCallback.");
+        "The `cbls` CLI's JSON-lines format as a SolveCallback, written as bytes to the "
+        "binary `stream` (write and flush), such as sys.stdout.buffer.");
     // cbls/arg_parse.h's rule, so the console script accepts what src/cli.cpp
     // does: (status, value), status "ok", "malformed" or "out_of_range".
-    m.def("_parse_double", [](const std::string& text) {
-        double value = 0.0;
-        const ParseStatus status = parse_double_status(text, value);
-        return std::make_pair(std::string(parse_status_name(status)), value);
-    });
-    m.def("_parse_int64", [](const std::string& text) {
-        int64_t value = 0;
-        const ParseStatus status = parse_int64_status(text, value);
-        return std::make_pair(std::string(parse_status_name(status)), value);
-    });
-    m.def("_parse_uint64", [](const std::string& text) {
-        uint64_t value = 0;
-        const ParseStatus status = parse_uint64_status(text, value);
-        return std::make_pair(std::string(parse_status_name(status)), value);
-    });
+    m.def(
+        "_parse_double",
+        [](const std::string& text) {
+            double value = 0.0;
+            const ParseStatus status = parse_double_status(text, value);
+            return std::make_pair(std::string(parse_status_name(status)), value);
+        },
+        nb::arg("text"));
+    m.def(
+        "_parse_int64",
+        [](const std::string& text) {
+            int64_t value = 0;
+            const ParseStatus status = parse_int64_status(text, value);
+            return std::make_pair(std::string(parse_status_name(status)), value);
+        },
+        nb::arg("text"));
+    m.def(
+        "_parse_uint64",
+        [](const std::string& text) {
+            uint64_t value = 0;
+            const ParseStatus status = parse_uint64_status(text, value);
+            return std::make_pair(std::string(parse_status_name(status)), value);
+        },
+        nb::arg("text"));
 }
 
 }  // namespace

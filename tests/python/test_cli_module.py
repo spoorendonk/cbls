@@ -13,6 +13,7 @@ import io
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -191,13 +192,14 @@ def _result_record(stdout: str) -> dict[str, object]:
     return dict(record)
 
 
-@pytest.mark.parametrize("name", ["tiny.mps", "tiny.mps.gz", "TINY.MPS"])
+def _write_mps(path: Path, text: bytes = TINY_MPS.encode()) -> None:
+    path.write_bytes(gzip.compress(text) if path.name.lower().endswith(".gz") else text)
+
+
+@pytest.mark.parametrize("name", ["tiny.mps", "tiny.mps.gz"])
 def test_an_mps_file_is_read_by_its_extension(name: str, tmp_path: Path) -> None:
     path = tmp_path / name
-    if name.endswith(".gz"):
-        path.write_bytes(gzip.compress(TINY_MPS.encode()))
-    else:
-        path.write_text(TINY_MPS)
+    _write_mps(path)
     result = _run_python(str(path), "--threads", "1", "--time-limit", "1", "--format", "jsonl")
 
     assert result.returncode == 0, result.stderr
@@ -209,6 +211,34 @@ def test_an_mps_file_is_read_by_its_extension(name: str, tmp_path: Path) -> None
     assert _run_cpp(str(path), "--threads", "1", "--time-limit", "1").returncode == 1
 
 
+@pytest.mark.parametrize("name", ["TINY.MPS", "TINY.MPS.GZ"])
+def test_an_upper_case_extension_is_not_taken_for_mps(name: str, tmp_path: Path) -> None:
+    # read_mps's .gz test is case-sensitive: a .MPS.GZ read as MPS was read as
+    # text, and an empty model reported feasible. Read as .cbls, it fails.
+    path = tmp_path / name
+    _write_mps(path)
+    result = _run_python(str(path), "--threads", "1", "--time-limit", "1")
+
+    assert result.returncode == 1, result.stdout
+    assert result.stderr.startswith("Error loading model: "), result.stderr
+
+
+def test_a_name_that_is_not_utf8_is_printed_as_its_bytes(tmp_path: Path) -> None:
+    # MPS names are raw bytes; decoding them for a text stream raised after the solve.
+    path = tmp_path / "latin1.mps"
+    _write_mps(path, TINY_MPS.replace("    X  ", "    X\xe9 ").encode("latin-1"))
+    env = dict(os.environ, PYTHONPATH=str(Path(cbls.__file__).resolve().parents[1]))
+    result = subprocess.run(
+        [sys.executable, "-m", "cbls", str(path), "--threads", "1", "--time-limit", "0.5"],
+        capture_output=True,
+        timeout=60,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert b"\n  X\xe9 = " in result.stdout, result.stdout
+
+
 def test_an_nl_file_is_read_by_its_extension() -> None:
     result = _run_python(str(FILTER_NL), "--threads", "1", "--time-limit", "1", "--format", "jsonl")
 
@@ -216,31 +246,93 @@ def test_an_nl_file_is_read_by_its_extension() -> None:
     assert _result_record(result.stdout)["status"] == "feasible"
 
 
+def test_a_locale_that_cannot_encode_the_header_changes_nothing() -> None:
+    # The human header's em dash: encoded for a latin-1 stdout, it raised.
+    env = dict(
+        os.environ,
+        PYTHONPATH=str(Path(cbls.__file__).resolve().parents[1]),
+        PYTHONIOENCODING="latin-1",
+    )
+    args = [str(NQUEENS), "--threads", "1"]
+    py = subprocess.run(
+        [sys.executable, "-m", "cbls", *args], capture_output=True, timeout=60, env=env
+    )
+
+    assert py.returncode == 0, py.stderr
+    assert py.stdout.startswith(f"cbls {cbls.__version__} — ".encode()), py.stdout
+
+
+def _start_python(*args: str) -> subprocess.Popen[bytes]:
+    env = dict(os.environ, PYTHONPATH=str(Path(cbls.__file__).resolve().parents[1]))
+    return subprocess.Popen(
+        [sys.executable, "-m", "cbls", *args],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+    )
+
+
+@pytest.mark.skipif(not hasattr(signal, "SIGPIPE"), reason="POSIX signals")
+def test_ctrl_c_ends_the_run_at_once_as_the_cpp_cli() -> None:
+    # The search runs with the GIL released, so Python's SIGINT handler never ran
+    # on the main thread; the portfolio's progress rows come from its workers.
+    args = [str(SIMPLE), "--threads", "2", "--time-limit", "60", "--format", "jsonl"]
+    proc = _start_python(*args)
+    try:
+        assert proc.stdout is not None
+        assert b'"start"' in proc.stdout.readline()  # main has run; the solve is next
+        proc.send_signal(signal.SIGINT)
+        _, err = proc.communicate(timeout=10)
+    finally:
+        proc.kill()
+    assert proc.returncode == -signal.SIGINT, err
+
+
+@pytest.mark.skipif(not hasattr(signal, "SIGPIPE"), reason="POSIX signals")
+def test_a_closed_pipe_ends_the_run_quietly_as_the_cpp_cli() -> None:
+    # As `cbls ... | head -n 0`: the reader is gone before the result is written.
+    proc = _start_python(str(SIMPLE), "--threads", "1", "--time-limit", "1", "--format", "jsonl")
+    try:
+        assert proc.stdout is not None and proc.stderr is not None
+        proc.stdout.close()
+        err = proc.stderr.read()
+        proc.wait(timeout=30)
+    finally:
+        proc.kill()
+    assert proc.returncode == -signal.SIGPIPE, err
+    assert err == b""
+
+
+def _binary_stdout(monkeypatch: pytest.MonkeyPatch, raw: io.BytesIO) -> None:
+    monkeypatch.setattr(sys, "stdout", io.TextIOWrapper(raw, encoding="utf-8"))
+
+
 def test_main_writes_to_the_python_stream(monkeypatch: pytest.MonkeyPatch) -> None:
-    # The formatters write through sys.stdout, not the process's fd 1.
-    out = io.StringIO()
-    monkeypatch.setattr(sys, "stdout", out)
+    # The formatters write through sys.stdout's buffer, not the process's fd 1.
+    raw = io.BytesIO()
+    _binary_stdout(monkeypatch, raw)
     code = cli.main([str(NQUEENS), "--threads", "1", "--format", "jsonl"])
 
     assert code == 0
-    events = [json.loads(line)["event"] for line in out.getvalue().splitlines()]
-    assert events[0] == "start" and events[-1] == "result", out.getvalue()
+    events = [json.loads(line)["event"] for line in raw.getvalue().splitlines()]
+    assert events[0] == "start" and events[-1] == "result", raw.getvalue()
 
 
-class _FailingStream(io.StringIO):
+class _FailingStream(io.BytesIO):
     """Fails on the first progress row: the header is written first."""
 
-    def write(self, text: str) -> int:
-        if '"progress"' in text:
+    def write(self, data: object) -> int:
+        assert isinstance(data, bytes)
+        if b'"progress"' in data:
             raise OSError("stream closed")
-        return super().write(text)
+        return super().write(data)
 
 
 def test_a_failing_stream_ends_the_run_with_its_error(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     # The write runs under the solve's released GIL; its error ends the solve.
-    monkeypatch.setattr(sys, "stdout", _FailingStream())
+    _binary_stdout(monkeypatch, _FailingStream())
     code = cli.main([str(NQUEENS), "--threads", "1", "--format", "jsonl"])
 
     assert code == 1

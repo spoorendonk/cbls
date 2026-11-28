@@ -8,6 +8,7 @@ also be MPS (`.mps`, `.mps.gz`) or AMPL `.nl`, chosen by extension.
 from __future__ import annotations
 
 import math
+import signal
 import sys
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -150,11 +151,14 @@ class _LoadError(Exception):
 
 
 def _load(path: str) -> _core.Model:
-    """The model in `path`, read by its extension; anything else is .cbls, as the CLI."""
-    name = path.lower()
-    if name.endswith((".mps", ".mps.gz")):
+    """The model in `path`, read by its extension; anything else is .cbls, as the CLI.
+
+    Case-sensitive, as read_mps's own `.gz` test: `.MPS.GZ` read as MPS would be
+    read as plain text, an empty model reported feasible.
+    """
+    if path.endswith((".mps", ".mps.gz")):
         return _core.mps_to_model(_core.read_mps(path)).model
-    if name.endswith(".nl"):
+    if path.endswith(".nl"):
         converted = _core.nl_to_model(_core.read_nl(path))
         if not converted.supported:
             raise _LoadError("unsupported .nl model: " + "; ".join(converted.skipped_reasons))
@@ -172,11 +176,13 @@ def _run(opt: _Options) -> int:
         sys.stderr.write(f"Error loading model: {e}\n")
         return 1
 
+    # The C++ bytes as they are, to the binary stream under sys.stdout.
+    sys.stdout.flush()
     formatter: _core.HumanFormatter | _core.JsonlFormatter
     if opt.format == "human":
-        formatter = _core.HumanFormatter(sys.stdout)
+        formatter = _core.HumanFormatter(sys.stdout.buffer)
     else:
-        formatter = _core.JsonlFormatter(sys.stdout)
+        formatter = _core.JsonlFormatter(sys.stdout.buffer)
     if not opt.quiet:
         formatter.print_header(opt.model_path, model, opt.seed, opt.time_limit)
 
@@ -211,8 +217,26 @@ def _run(opt: _Options) -> int:
     return 0 if result.feasible else 1
 
 
+def _default_signals() -> None:
+    """SIGINT and SIGPIPE kill the process, as they do the C++ CLI.
+
+    Python's SIGINT handler only sets a flag, which nothing reads while the
+    search runs with the GIL released, so Ctrl-C would wait out the time
+    limit; an ignored SIGPIPE turns `| head` into a BrokenPipeError.
+    """
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
+    if hasattr(signal, "SIGPIPE"):  # POSIX only
+        signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
-    """Run the CLI on `argv` (default: the process's arguments); returns the exit code."""
+    """Run the CLI on `argv`; returns the exit code.
+
+    With no `argv` it is the process (the console script, `python -m cbls`):
+    it reads sys.argv and takes the default SIGINT and SIGPIPE handling.
+    """
+    if argv is None:
+        _default_signals()
     args = sys.argv[1:] if argv is None else argv
     try:
         opt = _parse_args(args)
