@@ -24,7 +24,7 @@ What every session needs; the rest is read on demand:
 |---|---|
 | `docs/architecture.md` (its **Source Map** first) | engine internals: pipeline, files, defaults, extension points, build targets |
 | `docs/git-hooks.md` | a hook refuses; editing a hook, `.clang-tidy` or the Python gate; review receipts; wcp's files |
-| `docs/development.md` | why the fences look as they do, venv setup, the test roster and its six pinned counts, git workflow, agent-team runs, writing issues |
+| `docs/development.md` | why the fences look as they do, venv setup, the six pinned test counts, the docs site, git workflow, agent-team runs, writing issues |
 | `docs/measuring.md` | any timing, A/B, published number or table |
 | `docs/profiling.md` | heap/CPU profiling, sanitizers |
 | `docs/benchmarks/README.md` | benchmark layout, priority rationale, structured-variable evidence, benchmark workflow, retiring one |
@@ -122,8 +122,8 @@ target (library, CLI, examples, benchmark runners) in the root
 checks, never rewrites: ruff, mypy, clang-format over the tree; runs no tests.
 `commit-msg`: Conventional Commits, subject ≤72, no `fixup!`/`squash!`.
 `pre-push`: no merge commits on main, review receipt required, then the
-`clean`/`build`/`test` fences below as local CI, the only gate (no GitHub
-Actions). Internals: `docs/git-hooks.md`.
+`clean`/`build`/`test` fences below as local CI, the only gate (Actions: docs
+only). Internals: `docs/git-hooks.md`.
 
 **Checked by hand before every push** (no hook does): zero
 clang-tidy warnings (`.venv/bin/clang-tidy -p build <changed files>`) and zero
@@ -205,7 +205,7 @@ above it and add `NOLINTNEXTLINE(readability-function-cognitive-complexity)`.
 
 ## Common Mistakes
 
-- Don't invent APIs, flags or methods; verify they exist. Check current docs.
+- Don't invent APIs, flags or methods; verify they exist in current docs.
 - Don't suppress type errors or lint; fix the root cause.
 - Comments state the contract and why in one or two lines, with the issue
   number for history; no incident retelling, no story repeated across files

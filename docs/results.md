@@ -1,12 +1,12 @@
 # Benchmark results
 
-The full-benchmark tables of the four sets in [docs/benchmarks/README.md](benchmarks/README.md):
+The full-benchmark tables of the four sets in [docs/benchmarks/README.md](https://github.com/spoorendonk/cbls/blob/main/docs/benchmarks/README.md):
 MIPfeas, MINLPLib, UC-CHPED and CVRP. Each table is copied from the issue
 comment that scored it, with that comment's run record and caveats. The comment
 is linked, so the rest of its record is one click away.
 
 **Read each table at its engine commit.** A search-trajectory change
-invalidates every table ([measuring.md](measuring.md)). Since MIPfeas's
+invalidates every table ([measuring.md](https://github.com/spoorendonk/cbls/blob/main/docs/measuring.md)). Since MIPfeas's
 `8246efd`, 112 commits have touched `src/` or `include/`. Since `02c78ad`, the
 engine of the MINLPLib tables and of #257's UC-CHPED runs, none has, as of
 `13a793d`; #442's cbls runs at `2eb27278` have the same `src/` and `include/`.
@@ -14,7 +14,7 @@ engine of the MINLPLib tables and of #257's UC-CHPED runs, none has, as of
 **The per-row files are not in the repository.** They stay with each run's
 results directory on simon-workstation. The sha256 of each file is given
 where its source comment states one. Every table is an output, regenerable from
-those records ([measuring.md](measuring.md)).
+those records ([measuring.md](https://github.com/spoorendonk/cbls/blob/main/docs/measuring.md)).
 
 Every comparison solver ran at its own defaults, unless a table says otherwise
 (Simon, 2026-11-01,
@@ -31,7 +31,7 @@ Every comparison solver ran at its own defaults, unless a table says otherwise
 
 Source: [#255, comment 6566503731](https://github.com/spoorendonk/cbls/issues/255#issuecomment-6566503731)
 (2026-11-02). The runner and the scoring rules are in
-[benchmarks/instances/mipfeas/README.md](../benchmarks/instances/mipfeas/README.md).
+[benchmarks/instances/mipfeas/README.md](https://github.com/spoorendonk/cbls/blob/main/benchmarks/instances/mipfeas/README.md).
 
 **Result: CP-SAT at its defaults is ahead of cbls on this roster; parity is not reached.**
 
@@ -83,7 +83,7 @@ Source: [#255, comment 6566503731](https://github.com/spoorendonk/cbls/issues/25
 
 Two tables, both at engine `02c78ad`, 60 s, seed 1, 16 threads on cores 0-15.
 The runner and its rules are in
-[benchmarks/instances/minlplib/README.md](../benchmarks/instances/minlplib/README.md).
+[benchmarks/instances/minlplib/README.md](https://github.com/spoorendonk/cbls/blob/main/benchmarks/instances/minlplib/README.md).
 
 ### cbls against SCIP, Mittelmann's nontrivial roster
 
@@ -123,7 +123,7 @@ integral: the SCIP shards record no trace.
 Run record:
 - **Roster:** Mittelmann's `nontrivial.txt` (200 names, sha256 `4a754551…97e8`, fetched 2026-11-26), matched against the pinned 2026-11-01 MINLPLib archive: 196 modelled (`bounds.csv` sha256 `2a06e488…fdda`). `cardqp_inlp` and `netmod_kar2` are gone from MINLPLib. `ball_mk3_10` and `powerflow0057r` have no known primal bound, so no gap to score; they are in the next table.
 - **cbls:** the engine's defaults at `02c78ad` (`float_hook=on;lns=on;lns_interval=3;compound_moves=on;novelty_prob=0.5;unproductive_iters=300;perturbation_period=100`). Nothing was tuned on this roster. Run 2026-11-25 23:40Z to 2026-11-26 02:58Z on simon-workstation, in run unit `cbls-gefjon-256-chain`. Every one of the 196 calls exited 0, and SCIP checked all 196 rows, demoting none. Memory cap: a 110G cgroup.
-- **SCIP:** reused from the 2026-11-01 run on the same host, not re-run: SCIP 10.0.2 / PySCIPOpt 6.3.0 at its defaults, seed 0, 60 s, single-threaded, 16 solves at once, one per physical core. SCIP's default clock is wall time: `timing/clocktype` defaults to 2, measured ([benchmarks/instances/minlplib/README.md](../benchmarks/instances/minlplib/README.md)). The source comment calls it CPU time; that is wrong.
+- **SCIP:** reused from the 2026-11-01 run on the same host, not re-run: SCIP 10.0.2 / PySCIPOpt 6.3.0 at its defaults, seed 0, 60 s, single-threaded, 16 solves at once, one per physical core. SCIP's default clock is wall time: `timing/clocktype` defaults to 2, measured ([benchmarks/instances/minlplib/README.md](https://github.com/spoorendonk/cbls/blob/main/benchmarks/instances/minlplib/README.md)). The source comment calls it CPU time; that is wrong.
 - **Files:** `~/data/cbls-gefjon/256-scip8/` on simon-workstation (`table.md`; `summary.json`, sha256 `4cbcb37e…2f23`; cbls staging, SCIP shards, `.nl` files, run scripts and logs).
 
 ### cbls against MINLPLib's best known, open and no-known instances
@@ -687,9 +687,9 @@ Run record:
 
 Pedroso et al. 2014's unit-commitment instances with the valve-point cost
 `|d·sin(e·(Pmin−P))|`. The model, its fidelity audit and the SCIP references
-are in [docs/benchmarks/uc-chped/README.md](benchmarks/uc-chped/README.md),
-[benchmarks/uc-chped/FIDELITY.md](../benchmarks/uc-chped/FIDELITY.md) and
-[benchmarks/uc-chped/pedroso/README.md](../benchmarks/uc-chped/pedroso/README.md).
+are in [docs/benchmarks/uc-chped/README.md](https://github.com/spoorendonk/cbls/blob/main/docs/benchmarks/uc-chped/README.md),
+[benchmarks/uc-chped/FIDELITY.md](https://github.com/spoorendonk/cbls/blob/main/benchmarks/uc-chped/FIDELITY.md) and
+[benchmarks/uc-chped/pedroso/README.md](https://github.com/spoorendonk/cbls/blob/main/benchmarks/uc-chped/pedroso/README.md).
 
 Two models appear below. The source's demand row is an equality. The first
 three tables solve it as one: cbls runs with `--demand-equality`. The last two,

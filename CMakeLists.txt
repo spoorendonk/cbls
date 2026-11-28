@@ -410,6 +410,39 @@ if(CBLS_BUILD_TESTS)
         set_tests_properties(consumer_${_mode}
             PROPERTIES LABELS "slow" PROCESSORS 2 TIMEOUT 900)
     endforeach()
+
+    # The documentation site builds warning-free (docs_build, label `docs`,
+    # #466): the docs workflow's build, `-W` included; `-E` re-reads every page,
+    # so a warning in one that did not change is not lost to Sphinx's cache.
+    # Registered when configure finds doxygen and a Python (the build fence's
+    # Python_EXECUTABLE, else a .venv's as for clang-tidy above) with the `docs`
+    # group; a warning otherwise, since the gate installs nothing.
+    find_program(CBLS_DOXYGEN doxygen NO_CACHE)
+    set(_cbls_docs_python "${Python_EXECUTABLE}")
+    if(NOT _cbls_docs_python)
+        find_program(_cbls_docs_python python HINTS ${_cbls_tidy_hints}
+            NO_DEFAULT_PATH NO_CACHE)
+    endif()
+    set(_cbls_docs_ok 1)
+    if(CBLS_DOXYGEN AND _cbls_docs_python)
+        execute_process(COMMAND "${_cbls_docs_python}" -c
+            "import breathe, furo, myst_parser, autoapi, sphinx, sphinx_llms_txt, sphinxext.opengraph"
+            RESULT_VARIABLE _cbls_docs_ok OUTPUT_QUIET ERROR_QUIET)
+    endif()
+    if(_cbls_docs_ok EQUAL 0)
+        add_test(NAME docs_build
+            COMMAND "${_cbls_docs_python}" -m sphinx -W -E -q -b html
+                "${PROJECT_SOURCE_DIR}/docs" "${PROJECT_BINARY_DIR}/docs/html")
+        set_tests_properties(docs_build PROPERTIES
+            LABELS docs
+            ENVIRONMENT "CBLS_DOXYGEN=${CBLS_DOXYGEN};CBLS_DOXYGEN_OUT=${PROJECT_BINARY_DIR}/docs/doxygen")
+    else()
+        message(WARNING "No doxygen, or no Python with the docs group, found: "
+                        "docs_build is not registered, so the gate skips the "
+                        "Sphinx build of docs/. Install doxygen (brew install "
+                        "doxygen), and the group with: uv sync --extra dev "
+                        "--extra benchmarks")
+    endif()
 endif()
 
 # Examples

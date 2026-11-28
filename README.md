@@ -52,7 +52,7 @@ m.close();
 ```bash
 cmake -B build
 cmake --build build
-ctest --test-dir build    # 900 C++ tests with -DCBLS_BUILD_PYTHON=ON, 899 without (add -LE slow for the fast 888, ~12s)
+ctest --test-dir build    # 901 C++ tests with -DCBLS_BUILD_PYTHON=ON, 900 without (add -LE slow for the fast 889, ~12s)
 ```
 
 CMake 3.15 or newer (3.20 for `ctest --test-dir`), a C++17 compiler and zlib
@@ -67,7 +67,7 @@ which makes a clean rebuild of the same directory near-instant.
 Two off-by-default measurement builds, each into its own directory:
 `-DCBLS_PROFILE=ON` adds symbols and frame pointers on top of Release, and
 `-DCBLS_SANITIZE=address,undefined,float-cast-overflow` builds under ASan/UBSan.
-See [docs/profiling.md](docs/profiling.md) for the heap and CPU profiling
+See [docs/profiling.md](https://github.com/spoorendonk/cbls/blob/main/docs/profiling.md) for the heap and CPU profiling
 recipes that use them.
 
 With Python bindings (the venv first: it holds the tools and dependencies, not
@@ -183,8 +183,8 @@ benchmarks below measure.
 
 - Local search, with no LP relaxation and no cutting planes, so no bound and no proof of optimality or infeasibility. Propagation is limited to the linear rows: implied variable bounds at MPS and `.nl` load (on by default). Propagation inside compound moves and a load-time presolve with postsolve did not help on [#331](https://github.com/spoorendonk/cbls/issues/331)'s dev rosters and were removed (#380, in git history at `57cdbfba`; #379, at `b10da9d2`).
 - Tightly coupled equality rows are slow to satisfy with single-variable jumps. The removed presolve (#379), which included doubleton-equality aggregation, did not fix this on #331's dev rosters (measured as a whole; aggregation was not run alone). On 22 MIPLIB instances its pooled primal-integral ratio was 0.93, inside the 1.30 noise floor. On 25 MINLPLib instances it solved one instance fewer at one seed (23 against 24 of 25; ex8_3_2, whose residuals are on equality rows), and ex8_3_4 stayed infeasible at two seeds in every arm.
-- Benchmark models may be simplified relative to their source papers, so a "BKS gap" is not always apples-to-apples; where that applies (uc-chped) the deviation is audited equation by equation in [`benchmarks/uc-chped/FIDELITY.md`](benchmarks/uc-chped/FIDELITY.md), and the comparison table states what it may and may not claim.
-- **`Set` variables are expressible, not competitive; `List` variables have no published result.** On weighted OR-Library set covering the `Set` encoding lands at several times the optimum, while the same model in Bools is within 4-9% of it. No `List` result is published until the CVRP campaign (#204). The evidence and its mechanical cause are in [docs/benchmarks/README.md](docs/benchmarks/README.md#structured-variables-the-claim-is-currently-unsupported).
+- Benchmark models may be simplified relative to their source papers, so a "BKS gap" is not always apples-to-apples; where that applies (uc-chped) the deviation is audited equation by equation in [`benchmarks/uc-chped/FIDELITY.md`](https://github.com/spoorendonk/cbls/blob/main/benchmarks/uc-chped/FIDELITY.md), and the comparison table states what it may and may not claim.
+- **`Set` variables are expressible, not competitive; `List` variables have no published result.** On weighted OR-Library set covering the `Set` encoding lands at several times the optimum, while the same model in Bools is within 4-9% of it. No `List` result is published until the CVRP campaign (#204). The evidence and its mechanical cause are in [docs/benchmarks/README.md](https://github.com/spoorendonk/cbls/blob/main/docs/benchmarks/README.md#structured-variables-the-claim-is-currently-unsupported).
 
 ## Benchmarks
 
@@ -227,15 +227,15 @@ The other directories under `benchmarks/` are **not** comparative benchmarks:
 
 Each benchmark's data, rosters and results write-up live in
 `benchmarks/instances/<name>/` (UC-CHPED's write-up is
-[docs/benchmarks/uc-chped/README.md](docs/benchmarks/uc-chped/README.md)); [docs/benchmarks/README.md](docs/benchmarks/README.md)
+[docs/benchmarks/uc-chped/README.md](https://github.com/spoorendonk/cbls/blob/main/docs/benchmarks/uc-chped/README.md)); [docs/benchmarks/README.md](https://github.com/spoorendonk/cbls/blob/main/docs/benchmarks/README.md)
 is the index.
 
 ## Architecture
 
-See [docs/architecture.md](docs/architecture.md) for solver internals: expression DAG, ViolationLS outer loop, Generalised Feasibility Jump, move generation, inner solver, LNS, threading.
+See [docs/architecture.md](https://github.com/spoorendonk/cbls/blob/main/docs/architecture.md) for solver internals: expression DAG, ViolationLS outer loop, Generalised Feasibility Jump, move generation, inner solver, LNS, threading.
 
 ## License
 
-[MIT](LICENSE), except [`benchmarks/uc-chped/pedroso/`](benchmarks/uc-chped/pedroso/README.md),
+[MIT](https://github.com/spoorendonk/cbls/blob/main/LICENSE), except [`benchmarks/uc-chped/pedroso/`](https://github.com/spoorendonk/cbls/blob/main/benchmarks/uc-chped/pedroso/README.md),
 which is GPL-3.0-or-later as a port of Pedroso et al.'s GPL code. Nothing outside
 that directory imports it.

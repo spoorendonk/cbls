@@ -89,7 +89,7 @@ ln -sfn /path/to/this/checkout/.venv .venv && .venv/bin/pytest --tb=short -q; rm
 
 ### Fast vs. slow tests
 
-The C++ suite is **900 ctest tests**: 895 Catch2 ones over **891 `TEST_CASE`s**
+The C++ suite is **901 ctest tests**: 895 Catch2 ones over **891 `TEST_CASE`s**
 — 885 registered by `catch_discover_tests` plus **10 registered by hand**, the 6
 `[timing]` cases and the four hang guards `hang_guard_iteration_only_portfolio`,
 `hang_guard_novelty_zero_move_batch`, `hang_guard_nonpositive_batch_iterations`
@@ -106,12 +106,15 @@ plus **1 wheel test**, `wheel_smoke`, registered in `python/CMakeLists.txt` with
 `LABELS "slow"`: it builds the wheel, installs it into a fresh venv and imports
 and solves there (#463, `tests/wheel/smoke.py`). Like the consumer tests it is a
 ctest script, not pytest: a test that builds a whole project belongs in the
-`slow` label, which pytest has no counterpart for. Of the 885,
+`slow` label, which pytest has no counterpart for — plus **1 docs test**,
+`docs_build` (label `docs`), registered in the root `CMakeLists.txt` when
+configure finds doxygen and a Python with the `docs` group (**Documentation
+site** below). Of the 885,
 **4 carry the
 Catch2 `[slow]` tag** — the UC-CHPED benchmark solves. `tests/CMakeLists.txt` discovers them in a second
 `catch_discover_tests` call with `LABELS "slow"`, so:
 
-- `ctest -LE slow` — the other 888 tests, ~12s with `-j`. The fast inner loop; run it yourself before committing (the hook no longer does).
+- `ctest -LE slow` — the other 889 tests, ~12s with `-j`. The fast inner loop; run it yourself before committing (the hook no longer does).
 - `ctest` — everything. This is what **pre-push**'s local CI runs.
 - `ctest -L timing` — 6 tests: `timing_structural_batch_deadline`, the three
   `timing_throughput_*` floors added for #125,
@@ -185,6 +188,39 @@ Skips change no roster count: a skipped test is still listed.
 The benchmark runners themselves stay Linux-only, as runs belong on Linux
 machines: a memory cap (`--mem-limit-gb`, `ulimit -v`) fails every job on
 macOS, a CPU pin needs `taskset`, and off Linux `allowed_cpus()` is every CPU, not a measured affinity.
+
+### Documentation site
+
+The site at <https://spoorendonk.dk/cbls/> is built with Sphinx (MyST, Furo)
+from `docs/` (#451): `docs/index.md` includes the README, beside the results,
+a C++ reference (Doxygen XML of the headers in `CPP_HEADERS` in `docs/conf.py`,
+rendered by Breathe) and a Python reference (sphinx-autoapi, read statically
+from `python/cbls/` and the committed `_cbls_core.pyi`, so nothing is
+compiled). It also writes `llms.txt` and `llms-full.txt`. The other files in
+`docs/` are for working on cbls: `exclude_patterns` keeps them off the site,
+so a site page or the README links them by absolute GitHub URL, as it does any
+other repository file. Build it with `doxygen` on PATH:
+
+```bash
+uv run --only-group docs sphinx-build -W -b html docs build/docs/html
+```
+
+`-W` turns warnings into errors. The `docs` dependency group holds the Sphinx
+packages; `default-groups` in `pyproject.toml` makes the usual `uv sync` keep it.
+
+The gate keeps it warning-free: the ctest test `docs_build` (label `docs`) runs
+the same build into the build directory, when configure finds `doxygen` (on
+macOS `brew install doxygen`) and a Python with the `docs` group; without
+either, configure warns and the test is not registered. A push that changes
+the README or a file under `docs/` runs the gate. The `docs` workflow
+(`.github/workflows/docs.yml`) builds and deploys the site to GitHub Pages on a
+push to `main` that changes what the site is built from (`docs/`, the README,
+`CMakeLists.txt`, the headers in `CPP_HEADERS`, `python/cbls/`, the workflow),
+on a release tag (`v[0-9]*`), or by hand (`gh workflow run docs.yml`). It runs
+no tests, and never on another branch or a pull request. A header added to
+`CPP_HEADERS` goes into the workflow's `paths` too. The sidebar and `llms.txt`
+name the version from `git describe` over the release tags: the tag, or
+`main (after v0.1.0, abc1234)`, or `main (abc1234)` before the first tag.
 
 ## LSP
 

@@ -33,6 +33,22 @@ CBLS_INSTALL_GIT_HOOKS = "OFF"
 # build). The package is installed only as a wheel (#463).
 [tool.uv]
 package = false
+# docs too, so the `uv sync --extra dev --extra benchmarks` CLAUDE.md asks for
+# keeps the venv able to run the docs_build test rather than removing its packages.
+default-groups = ["docs"]
+
+# The documentation site (docs/conf.py, #466): `uv run --only-group docs
+# sphinx-build -W -b html docs build/docs/html`, and the docs_build test.
+[dependency-groups]
+docs = [
+    "breathe>=5.1.0",
+    "furo>=2025.12.19",
+    "myst-parser>=4.0.1",
+    "sphinx>=8.1.3",
+    "sphinx-autoapi>=3.9.0",
+    "sphinx-llms-txt>=0.7.1",
+    "sphinxext-opengraph>=0.13.0",
+]
 
 [project.optional-dependencies]
 dev = [

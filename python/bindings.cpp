@@ -1698,7 +1698,7 @@ NB_MODULE(_cbls_core, m) {
         "runs, from any thread, a SolveCallback included. A raw Python function passed to "
         "lambda_sum or "
         "pair_lambda_sum also re-acquires the GIL on every evaluation now; use the "
-        "*_table_sum forms where the function is a table.\n"
+        "lambda_table_sum or pair_table_sum forms where the function is a table.\n"
         "\n"
         "An exception raised by callback.on_progress ends the "
         "search and propagates out of this call unchanged -- no result is returned, "

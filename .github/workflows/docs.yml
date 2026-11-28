@@ -1,0 +1,70 @@
+# Builds the Sphinx site (docs/) and deploys it to GitHub Pages, served at
+# https://spoorendonk.dk/cbls/ (#466). It runs by hand, on a release tag, or on
+# a push to main that changes what the site is built from. It only builds and
+# deploys the site, never runs tests, and never runs on another branch or a
+# pull request: the local gate is the CI (shared rule 18's Pages exception).
+name: docs
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    # Release tags, the ones docs/conf.py names the version from. GitHub
+    # does not apply the path filter below to tag pushes.
+    tags: ["v[0-9]*"]
+    # What the site is built from: the pages, the README they include,
+    # CMakeLists.txt (conf.py's fallback version), the C++ headers in
+    # conf.py's CPP_HEADERS, the Python package autoapi reads, and this file.
+    paths:
+      - "docs/**"
+      - "README.md"
+      - "CMakeLists.txt"
+      - "include/cbls/model.h"
+      - "include/cbls/expr.h"
+      - "include/cbls/search.h"
+      - "include/cbls/pool.h"
+      - "include/cbls/stop.h"
+      - "include/cbls/io.h"
+      - "include/cbls/io_mps.h"
+      - "include/cbls/io_nl.h"
+      - "include/cbls/verify.h"
+      - "python/cbls/**"
+      - ".github/workflows/docs.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      # The full history, tags included: docs/conf.py names the version from
+      # `git describe` over those release tags.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Install Doxygen
+        run: sudo apt-get update && sudo apt-get install -y doxygen
+      - uses: astral-sh/setup-uv@v10.4.0
+      - name: Build the site
+        run: uv run --only-group docs sphinx-build -W -b html docs build/docs/html
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: build/docs/html
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5

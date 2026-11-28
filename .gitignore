@@ -7,6 +7,8 @@ build*/
 # its dependencies in pyproject.toml, not in a lock.
 uv.lock
 *.egg-info/
+# sphinx-autoapi's pages, written during a docs build and removed after it.
+docs/autoapi/
 __pycache__/
 *.pyc
 *.so

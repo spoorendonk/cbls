@@ -75,12 +75,12 @@ include(Catch)
 # slow solves into one serial invocation would make the full suite far slower
 # than it is.
 #
-# The 4 [slow]-tagged tests are the UC-CHPED benchmark solves. The remaining 888 (881 discovered, plus the
-# seven hand-registered tests that carry no slow label --
+# The 4 [slow]-tagged tests are the UC-CHPED benchmark solves. The remaining 889 (881 discovered, plus the
+# eight hand-registered tests that carry no slow label --
 # timing_structural_batch_deadline, hang_guard_iteration_only_portfolio,
 # hang_guard_novelty_zero_move_batch, hang_guard_nonpositive_batch_iterations
 # and hang_guard_nl_placement_counts here, and the two shell gate tests clang_tidy_gate_probe and
-# gate_lib_shell_test in the root CMakeLists.txt)
+# gate_lib_shell_test and the docs_build test (#466) in the root CMakeLists.txt)
 # finish in ~12s with `-j`, the `ctest -LE slow` loop to run before committing (no hook runs it).
 # pre-push still runs everything.
 #
@@ -89,9 +89,9 @@ include(Catch)
 # the tag -- "measure both ways before tagging" applies to KEEPING a tag as
 # much as to adding one.
 #
-# The roster is therefore 900 ctest tests: 885 discovered here, the 10
-# hand-registered ones below, the 2 non-Catch2 shell gate tests and 2
-# consumer tests (#447) the root CMakeLists.txt registers, and the wheel_smoke
+# The roster is therefore 901 ctest tests: 885 discovered here, the 10
+# hand-registered ones below, the 2 non-Catch2 shell gate tests, 2
+# consumer tests (#447) and docs_build (#466) the root CMakeLists.txt registers, and the wheel_smoke
 # test (#463) python/CMakeLists.txt registers. The 895 Catch2 ones are four more than the 891
 # TEST_CASEs in tests/*.cpp, because the four hang_guard_* tests are both
 # discovered and hand-registered -- see their notes below. `ctest -N -L slow` reports 12, not 4 --
