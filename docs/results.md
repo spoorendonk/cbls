@@ -24,7 +24,7 @@ Every comparison solver ran at its own defaults, unless a table says otherwise
 |---|---|---|
 | [MIPfeas](#mipfeas) | CP-SAT at its defaults | CP-SAT is ahead: 175 feasible against cbls's 140 of 211; primal integral 0.168 against 0.390 |
 | [MINLPLib](#minlplib) | SCIP 10 at its defaults; MINLPLib's best known | SCIP is ahead: GM(gap+1) ratio cbls/SCIP 1.68; 169 feasible against 187 of 195. On open instances, 3 clear improvements on MINLPLib's best known |
-| [UC-CHPED](#uc-chped) | Pedroso et al. 2014's method ported to SCIP 11; SCIP's exact MINLP | at equal time and threads, cbls has the lowest primal integral on 19 of 20 rows; Pedroso's method ends with the best final gap |
+| [UC-CHPED](#uc-chped) | Pedroso et al. 2014's method ported to SCIP 11; SCIP's exact MINLP | at equal time and threads, cbls has the lowest primal integral on 23 of 24 rows; Pedroso's method ends with the best final gap on 21, cbls on the 3 largest |
 | [CVRP](#cvrp) | - | not run: no table |
 
 ## MIPfeas
@@ -701,6 +701,9 @@ optimum (FIDELITY.md, section 1.4), while their SCIP references keep the `=`.
 Source: [#442, comment 7227877261](https://github.com/spoorendonk/cbls/issues/442#issuecomment-7227877261)
 (2026-11-27), the corrected 20-row table. It replaces the table in
 [comment 7225825260](https://github.com/spoorendonk/cbls/issues/442#issuecomment-7225825260).
+The 4 long rows (T=48 and T=168, 600 s) are from
+[comment 7237031246](https://github.com/spoorendonk/cbls/issues/442#issuecomment-7237031246)
+(2026-11-28).
 
 | instance | T | budget (s) | reference | cbls PI | cbls final gap % | pwl PI | pwl final gap % | exact PI | exact final gap % |
 |---|---|---|---|---|---|---|---|---|---|
@@ -724,25 +727,33 @@ Source: [#442, comment 7227877261](https://github.com/spoorendonk/cbls/issues/44
 | ucp200 | 6 | 60 | 2079415.51 | 0.0226 [0.0219, 0.0282] | 1.66 [1.32, 1.93] | 0.2307 | 0.00 | 0.9627 | 17.49 † |
 | ucp200 | 12 | 120 | 5554265.66 | 0.0425 [0.0414, 0.0456] | 3.36 [3.16, 3.58] | 0.7539 | 0.00 | 0.6402 | 0.74 |
 | ucp200 | 24 | 300 | 11153209.99 | 0.0699 [0.0673, 0.0703] | 6.04 [5.71, 6.78] | 0.8342 | 0.00 | 1.0674 | 0.77 |
+| ucp100 | 48 | 600 | 11054925.07 | 0.0645 | 5.95 | 1.9715 | 0.00 | 0.4995 | 12.37 |
+| ucp100 | 168 | 600 | 40872386.61 | 0.0024 | 0.00 | 0.5494 | 2.66 | 2.0000 ‡ | - |
+| ucp200 | 48 | 600 | 23285086.42 | 0.0029 | 0.00 | 2.0000 § | - | 2.0000 | - |
+| ucp200 | 168 | 600 | 80302761.40 | 0.0079 | 0.00 | 2.0000 ‡ | - | 2.0000 | - |
 
-- rule: benchmarks/common/primal_integral.py's MIPfeas primal gap |z - ref| / max(|z|, |ref|), 2 before the first incumbent, and PI its time average over [0, budget]. cbls is median [min, max] over 3 seeds; its PI is over every seed, its final gap over the seeds that solved it. pwl and exact are one run each. The reference is the lowest of Pedroso's UB, every final objective and every trajectory point, over all seeds and methods.
+- rule: benchmarks/common/primal_integral.py's MIPfeas primal gap |z - ref| / max(|z|, |ref|), 2 before the first incumbent, and PI its time average over [0, budget]. cbls is median [min, max] over 3 seeds on the 20 short rows; its PI is over every seed, its final gap over the seeds that solved it. **The 4 long rows are one cbls seed (42)**, so they show one value and no range. pwl and exact are one run each. The reference is the lowest of Pedroso's UB, every final objective and every trajectory point, over all seeds and methods.
 - cbls: its `--trace`, seconds from the solve's start. SCIP: the driver's running best, wall seconds from the method's start (model build and file I/O included). exact's points are SCIP's objective, an upper bound on that incumbent's true cost; its final gap uses the true cost.
 - † marks the 7 exact rows whose best came after the budget (SCIP's overshoot). Their final gap uses the last in-budget SCIP objective.
+- `-`: no in-budget incumbent, so PI is 2 and there is no final gap. Neither exact ucp200 long row has one; their SCIP LBs are 21319401.65 (T=48, which leaves cbls within 9.22 % of a proven bound) and 122548.65 (T=168).
+- ‡ no SCIP record: exact ucp100 T=168 and pwl ucp200 T=168 had no primal bound when stopped (at 591 s and 583 s), the driver hung in SCIP's concurrent stop and was killed before writing ([#442, comment 7226835568](https://github.com/spoorendonk/cbls/issues/442#issuecomment-7226835568)). Each is scored as no incumbent, through a stand-in record (`ub` and `lb` null, no trajectory) that changes no other method's numbers.
+- § pwl ucp200 T=48's only solution, 21703629.70, came at 605.4 s, after the budget. cbls's in-budget 23285086.42 is 7.3 % above it.
+- pwl's LB is 0 on all 4 long rows, and it is not a bound there: some unit breaks `c <= e*f^2/2`. pwl found its ucp100 solutions at 591.5 s (T=48, hence its PI near 2) and 158.9 s (T=168).
 
 **Read-out:**
-- **Primal integral:** cbls is lowest on 19 of 20 rows. It is not lowest on ucp40 T=3: pwl's 0.0210 is below cbls's median 0.0214 and inside cbls's seed range [0.0189, 0.0223].
-- **Final gap:** pwl is 0.00 on 19 rows and 0.05 % on ucp40 T=6. exact is best on none. ucp13 T=1/T=3 and ucp40 T=1 are 0.00 for all three methods.
-- At equal time and threads, cbls gets good solutions fastest, and Pedroso's pwl ends best.
+- **Primal integral:** cbls is lowest on 23 of 24 rows. It is not lowest on ucp40 T=3: pwl's 0.0210 is below cbls's median 0.0214 and inside cbls's seed range [0.0189, 0.0223].
+- **Final gap:** on the 20 short rows, pwl is 0.00 on 19 and 0.05 % on ucp40 T=6; ucp13 T=1/T=3 and ucp40 T=1 are 0.00 for all three methods. On the long rows, pwl ends best on ucp100 T=48, and cbls on the other three (ucp100 T=168, ucp200 T=48 and T=168); on the two ucp200 rows, cbls is the only method with an in-budget incumbent. exact is best on none.
+- At equal time and threads, cbls gets good solutions fastest on every size. Pedroso's pwl ends best on the 20 short rows and ucp100 T=48; on the three largest rows, cbls does, and SCIP finds no in-budget incumbent on ucp200 at T=48 or T=168 with either method.
+- **Caveat:** the long rows are one cbls seed; the short rows are three.
 
 Run record:
-- **Arms**, all at 16 threads and the same wall budget per horizon (10/30/60/120/300 s), on simon-workstation cores 0-15, one row per `xk lock`, nothing else timed on those cores:
-  - **cbls:** [#445](https://github.com/spoorendonk/cbls/issues/445)'s baseline runs, engine at main `2eb27278`, `--demand-equality --trace`, seeds 1, 2 and 42. No commit has touched `src/` or `include/` between `02c78ad` and `2eb27278`.
+- **Arms**, all at 16 threads and the same wall budget per horizon (10/30/60/120/300 s; 600 s at T=48 and T=168), on simon-workstation cores 0-15, one row per `xk lock`, nothing else timed on those cores:
+  - **cbls:** [#445](https://github.com/spoorendonk/cbls/issues/445)'s baseline runs, engine at main `2eb27278`, `--demand-equality --trace`, seeds 1, 2 and 42 on the short rows, seed 42 only on the long rows. No commit has touched `src/` or `include/` between `02c78ad` and `2eb27278`.
   - **pwl:** Pedroso et al.'s Algorithm 1 ported to SCIP, `ucp_valve_scip.py --backend driver --threads 16`, rerun at `13a793d`: points are stamped when SCIP finds them, and `ub` counts only in-budget finds.
-  - **exact:** SCIP's MINLP with the true valve-point term, run at `f252ac51` and re-derived at `13a793d`'s in-budget rule from those records.
+  - **exact:** SCIP's MINLP with the true valve-point term, run at `f252ac51` and re-derived at `13a793d`'s in-budget rule from those records; exact ucp200 T=168 was run at `13a793d`.
   - **SCIP:** 11 preview at pinned commit `124040dbc` (unreleased master, opportunistic concurrent mode), through the `cbls_scip_traj` driver. SCIP's own concurrent default is 10 threads; these runs use 16 (Simon, [#442, comment 7220251785](https://github.com/spoorendonk/cbls/issues/442#issuecomment-7220251785)).
-- **Scored by:** `benchmarks/uc-chped/score.py --roster <20 rows> --scip pwl-small --scip exact-small --trace ...`.
-- **Files:** `~/data/cbls-gefjon/442-step3/` on simon-workstation (`pwl-13a793d.jsonl`, `exact-rederived.jsonl`, `score2/small.md`).
-- **Not scored yet: the 4 long rows** (ucp100 and ucp200 at T=48 and T=168, 600 s). Three of their SCIP runs have no incumbent within 600 s (pwl ucp200 T=168, exact ucp100 T=168, exact ucp200 T=168), and pwl ucp200 T=48 has no record yet. They are open on [#442](https://github.com/spoorendonk/cbls/issues/442).
+- **Scored by:** `benchmarks/uc-chped/score.py --roster <20 rows> --scip pwl-small --scip exact-small --trace ...`. The long rows were scored one row at a time (`--roster <row>:<T>`, the cbls table and trace cut to that row), since `score.py --trace` refuses a SCIP set that misses any (row, method) pair and three of them miss one.
+- **Files:** `~/data/cbls-gefjon/442-step3/` on simon-workstation (`pwl-13a793d.jsonl`, `exact-rederived.jsonl`, `exact-13a793d.jsonl`, `base_long_s42.{csv,trace.csv}`, `score2/small.md`, `score3/<row>.md`).
 
 ### Best known bounds
 
