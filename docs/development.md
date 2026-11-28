@@ -40,7 +40,7 @@ evaluates each fence under `set -e`. Keep the fences runnable in both places.
 **The gated build turns the Python bindings on, and the gated test run requires
 them.** `CBLS_BUILD_PYTHON` defaults to `OFF` and `tests/python/conftest.py`
 skips every test that imports `cbls` when its compiled `cbls._cbls_core` is missing, so a build
-without the flag would leave 258 binding tests silently unrun.
+without the flag would leave 291 binding tests silently unrun.
 `CBLS_REQUIRE_BINDINGS=1` turns that skip into a hard error. Bindings cost ~2.4s
 of build and ~6s of pytest against a suite that already spends ~25s in `ctest` —
 always build them. The cost argument is the weaker one: the reason is that
@@ -72,7 +72,9 @@ uv sync --extra dev --extra benchmarks
 `--extra benchmarks` is what the ```test fence requires; leave it out only for a
 clone that runs no gate. It installs the tools and dependencies only, not
 `cbls` itself (`[tool.uv] package = false`): the tests import the gated build's
-`build/python/cbls`, and the package is installed only as a wheel (#463). It
+`build/python/cbls`, and the package is installed only as a wheel (#463). A
+binding change regenerates the committed stub `python/cbls/_cbls_core.pyi`: the
+command is in `tests/python/test_stub.py`, whose drift test fails otherwise. `uv sync`
 writes an untracked `uv.lock`, which `.gitignore` ignores. No symlink to another clone's venv: it points outside the session's
 working directory, so every command touching `.venv` raises a permission prompt,
 and it forces one set of extras on every clone that shares it.
@@ -139,14 +141,14 @@ agree:
 1. this section,
 2. the comment above `catch_discover_tests` in `tests/CMakeLists.txt`,
 3. the build section of `README.md`,
-4. the `.venv/bin/pytest` line in `README.md` for the Python side (1777 tests, 258
+4. the `.venv/bin/pytest` line in `README.md` for the Python side (1810 tests, 291
    of them binding tests, echoed in prose by `pyproject.toml`),
 5. the `-LE slow` guidance and the ~25s/~490s figures in `docs/profiling.md`.
    Note its "302/302 green" sanitizer line is a **dated record of one run at a
    named commit**, not a current count — it says so inline. Leave it alone
    apart from the parenthetical restating the current fast-set size.
 6. the binding count in **Build & Test, in detail** above, in the paragraph explaining
-   why the gated build turns `CBLS_BUILD_PYTHON` on ("258 binding tests silently
+   why the gated build turns `CBLS_BUILD_PYTHON` on ("291 binding tests silently
    unrun"). It is in this file, but not in this section, so a search that stops
    at this enumeration misses it.
 

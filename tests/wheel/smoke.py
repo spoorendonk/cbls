@@ -19,6 +19,7 @@ import zipfile
 from pathlib import Path
 
 # Run in the fresh venv under -I, so only the installed wheel can satisfy it.
+# argv: a .cbls, an MPS and an .nl file, each solved through cbls.solve (#464).
 USE_INSTALLED = """
 import pathlib, sys
 import cbls
@@ -31,11 +32,42 @@ x = m.int_var(0, 10, "x")
 m.add_constraint(m.sum([m.constant(3.0), m.prod(m.constant(-1.0), x)]))  # x >= 3
 m.minimize(m.sum([x]))
 m.close()
-result = cbls.solve(m, 1.0, 42)
+result = cbls.solve(m, 1.0, 42, threads=1)
 assert result.feasible, "tiny model not solved"
-value = m.var(-(x + 1)).value
-assert value == 3.0, value
+assert result.value(x) == m.var(-(x + 1)).value == 3.0, result.values
+
+cbls_file, mps_file, nl_file = sys.argv[1:]
+models = {
+    "cbls": cbls.load_model(cbls_file),
+    "mps": cbls.mps_to_model(cbls.read_mps(mps_file)).model,
+    "nl": cbls.nl_to_model(cbls.read_nl(nl_file)).model,
+}
+for kind, model in models.items():
+    solved = cbls.solve(model, 1.0, 42, threads=1)
+    assert solved.feasible, kind + " model not solved"
+    print(kind, solved.objective)
 print("OK", installed)
+"""
+
+# min x + 2y over integers, x + y >= 3, x <= 2: optimum (2, 1).
+TINY_MPS = """\
+NAME          TINY
+ROWS
+ N  COST
+ G  C1
+ L  C2
+COLUMNS
+    MARKER    'MARKER'    'INTORG'
+    X         COST        1.0   C1   1.0
+    X         C2          1.0
+    Y         COST        2.0   C1   1.0
+    MARKER    'MARKER'    'INTEND'
+RHS
+    RHS       C1          3.0   C2   2.0
+BOUNDS
+ UP BND       X           10.0
+ UP BND       Y           10.0
+ENDATA
 """
 
 
@@ -83,8 +115,9 @@ def check_contents(wheel: Path) -> None:
     ]
     if stray:
         sys.exit(f"wheel carries files outside the package: {stray}")
-    if "cbls/__init__.py" not in names:
-        sys.exit(f"wheel has no cbls/__init__.py: {names}")
+    for required in ("__init__.py", "_solve.py", "_cbls_core.pyi", "py.typed"):
+        if f"cbls/{required}" not in names:
+            sys.exit(f"wheel has no cbls/{required}: {names}")
     if not any(n.startswith("cbls/_cbls_core.") for n in names):
         sys.exit(f"wheel has no compiled cbls/_cbls_core: {names}")
 
@@ -116,9 +149,12 @@ def install(wheel: Path, env_dir: Path) -> Path:
     return python
 
 
-def install_and_use(wheel: Path, work: Path) -> None:
+def install_and_use(wheel: Path, work: Path, source: Path) -> None:
     python = install(wheel, work / "venv")
-    subprocess.run([str(python), "-I", "-c", USE_INSTALLED], cwd=work, check=True)
+    mps = work / "tiny.mps"
+    mps.write_text(TINY_MPS)
+    files = [source / "examples" / "simple.cbls", mps, source / "tests" / "data" / "filter.nl"]
+    subprocess.run([str(python), "-I", "-c", USE_INSTALLED, *map(str, files)], cwd=work, check=True)
 
 
 def main() -> None:
@@ -134,7 +170,7 @@ def main() -> None:
     args.work.mkdir(parents=True)
     wheel = build_wheel(args.source.resolve(), args.work, args)
     check_contents(wheel)
-    install_and_use(wheel, args.work)
+    install_and_use(wheel, args.work, args.source.resolve())
 
 
 if __name__ == "__main__":

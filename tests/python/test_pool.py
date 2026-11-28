@@ -368,7 +368,7 @@ def _scenario_hook_factory() -> None:
     # by a thread already holding it: each worker builds its own and releases it
     # after the factory has returned. A future scenario that drops one inside a
     # `with lock:` block would self-deadlock and be reported as a 20s timeout.
-    class CountingHook(cbls.FloatIntensifyHook):  # type: ignore[misc]
+    class CountingHook(cbls.FloatIntensifyHook):
         def __del__(self) -> None:
             nonlocal destroyed
             with lock:
@@ -405,7 +405,7 @@ def _scenario_lns_factory() -> None:
     calls = 0
     destroyed = 0
 
-    class CountingLNS(cbls.LNS):  # type: ignore[misc]
+    class CountingLNS(cbls.LNS):
         def __del__(self) -> None:
             nonlocal destroyed
             with lock:
@@ -481,7 +481,7 @@ def _scenario_callback() -> None:
     # in it as Any and strict mode refuses to subclass one. Scoped to this line
     # rather than relaxed in pyproject.toml, which would drop the check for every
     # base class in the suite.
-    class Recorder(cbls.SolveCallback):  # type: ignore[misc]
+    class Recorder(cbls.SolveCallback):
         def on_progress(self, progress: "cbls.SolveProgress") -> None:
             idents.append(threading.get_ident())
 
@@ -523,7 +523,7 @@ def _run_raising_callback(
         def __del__(self) -> None:
             destroyed.append(threading.get_ident())
 
-    class Raiser(cbls.SolveCallback):  # type: ignore[misc]
+    class Raiser(cbls.SolveCallback):
         def on_progress(self, progress: "cbls.SolveProgress") -> None:
             nonlocal calls
             thread = threading.get_ident()

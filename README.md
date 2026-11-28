@@ -77,7 +77,7 @@ cbls, and the tests import the module the build puts in `build/python/cbls`):
 uv sync --extra dev
 cmake -B build -DCBLS_BUILD_PYTHON=ON -DPython_EXECUTABLE="$PWD/.venv/bin/python"
 cmake --build build
-.venv/bin/pytest          # 1777 tests, 258 of them for the bindings
+.venv/bin/pytest          # 1810 tests, 291 of them for the bindings
 ```
 
 Tests of the benchmark baselines skip themselves when `ortools` or `pyscipopt` is
@@ -98,6 +98,31 @@ pip install git+https://github.com/spoorendonk/cbls   # or `pip install .` in a 
 The wheel holds the `cbls` Python package only. The C++ library, headers and
 `cbls` binary come from a CMake install (below). `ctest -R wheel_smoke` builds a
 wheel, installs it into a fresh venv and solves a model there.
+
+## Use from Python
+
+```python
+import cbls
+
+m = cbls.Model()
+x = m.Float(0, 10, "x")
+y = m.Float(0, 10, "y")
+m.add_constraint(x + y >= 5.0)
+m.minimize(x**2 + y**2)
+m.close()
+
+result = cbls.solve(m, time_limit=5.0)  # threads=0: one portfolio worker per core
+print(result.feasible, result.objective, result.value(x), result.value(y))
+```
+
+`cbls.solve` takes the CLI's options and defaults (`time_limit=10.0`, `seed=42`,
+`threads=0`, `lns=None`, `intensify=False`) plus a `SolveCallback`, a
+`StopToken` and a `SearchConfig`, and leaves the model at the best point found.
+Models also come from files: `load_model`/`save_model` (`.cbls`),
+`mps_to_model(read_mps(path))` and `nl_to_model(read_nl(path))`, whose results
+carry the model as `.model`. The public names are `cbls.__all__`, typed by the
+shipped stub; the engine internals stay in `cbls._cbls_core`.
+`examples/simple.py` is the Python twin of `examples/simple.cpp`.
 
 ## Use from C++
 

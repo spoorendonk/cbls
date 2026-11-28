@@ -87,7 +87,7 @@ def test_a_frozen_model_still_does_everything_a_search_does() -> None:
     xid = vid(x)
 
     m.var_mut(xid).value = 4.0
-    cbls.delta_evaluate(m, [xid])
+    cbls.delta_evaluate(m, {xid})
     assert m.node_value(row) == pytest.approx(4.0 - 10.0)
 
     state = m.copy_state()
@@ -149,7 +149,7 @@ def test_a_cached_walk_computes_what_an_uncached_one_does() -> None:
     for value in (3.0, 7.0, 0.0, 12.0):
         for m in (cached, uncached):
             m.var_mut(xid).value = value
-            cbls.delta_evaluate(m, [xid])
+            cbls.delta_evaluate(m, {xid})
         assert [cached.node_value(i) for i in range(cached.num_nodes())] == [
             uncached.node_value(i) for i in range(uncached.num_nodes())
         ]

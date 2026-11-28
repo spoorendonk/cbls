@@ -27,9 +27,11 @@ def set_cover_model(columns: int = 40, rows: int = 12) -> tuple[Any, int]:
     m = cbls.Model()
     chosen = m.set_var(columns, 1, rows, "chosen")
     for r in range(rows):
-        covered = m.lambda_sum(
-            chosen, lambda e, base=r: 1.0 if (e * 7 + base) % 5 == 0 or e % rows == base else 0.0
-        )
+
+        def covers(e: int, base: int = r) -> float:
+            return 1.0 if (e * 7 + base) % 5 == 0 or e % rows == base else 0.0
+
+        covered = m.lambda_sum(chosen, covers)
         m.add_constraint(m.geq(covered, m.constant(1.0)))
     m.minimize(m.lambda_sum(chosen, lambda e: 1.0 + float((e * 13) % 19)))
     m.close()
@@ -118,9 +120,9 @@ class TestNeighbourList:
         assert nl.offsets[0] == 0
         assert len(nl.ids) == nl.offsets[-1]
         with pytest.raises(AttributeError):
-            nl.ids = [99]
+            nl.ids = [99]  # type: ignore[misc]  # read-only, on purpose
         with pytest.raises(AttributeError):
-            nl.offsets = [0, 1]
+            nl.offsets = [0, 1]  # type: ignore[misc]  # read-only, on purpose
 
     def test_config_round_trips_a_neighbour_list(self) -> None:
         nl = cbls.nearest_neighbours(6, 2, lambda a, b: abs(a - b))

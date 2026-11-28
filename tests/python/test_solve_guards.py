@@ -92,7 +92,7 @@ def _scenario_structural_writes_are_refused_during_a_solve() -> None:
     cbls.solve(m, time_limit=0.0, seed=1, config=cfg)
     attempts: list[tuple[str, str]] = []
 
-    class Probe(cbls.SolveCallback):  # type: ignore[misc]
+    class Probe(cbls.SolveCallback):
         done = False
 
         def on_progress(self, p: Any) -> None:
@@ -152,7 +152,7 @@ def _scenario_solve_master_registers_the_master() -> None:
     attempts: list[tuple[str, str]] = []
     lock = threading.Lock()
 
-    class Probe(cbls.SolveCallback):  # type: ignore[misc]
+    class Probe(cbls.SolveCallback):
         def on_progress(self, p: Any) -> None:
             with lock:
                 if attempts:
@@ -246,7 +246,7 @@ def _scenario_solve_master_round_trips_and_reraises() -> None:
     class CallbackError(ValueError):
         pass
 
-    class Raiser(cbls.SolveCallback):  # type: ignore[misc]
+    class Raiser(cbls.SolveCallback):
         def on_progress(self, p: Any) -> None:
             raise CallbackError("every worker")
 

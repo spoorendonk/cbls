@@ -45,7 +45,7 @@ class TestSolver:
         class ProgressError(KeyError):
             pass
 
-        class Raiser(cbls.SolveCallback):  # type: ignore[misc]
+        class Raiser(cbls.SolveCallback):
             def on_progress(self, progress: "cbls.SolveProgress") -> None:
                 raise ProgressError("logging failed")
 

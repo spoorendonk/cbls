@@ -92,7 +92,7 @@ class TestMoves:
         ]
         assert move.move_type == ""
         with pytest.raises(AttributeError):
-            move.move_type = "mine"
+            move.move_type = "mine"  # type: ignore[misc]  # read-only, on purpose
 
         saved = cbls.save_move_values(m, move)
         cbls.apply_move(m, move)

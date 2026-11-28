@@ -1,4 +1,5 @@
 #include <cbls/cbls.h>
+#include <cbls/io_nl.h>
 #include <cmath>
 #include <memory>
 #include <mutex>
@@ -284,7 +285,9 @@ auto guarded(R (Model::*method)(A...), const char* what) {
 // 3.0.x has neither, so `pyproject.toml` excludes it.
 //
 // A model with no Python object (none is reachable from Python) stays untied.
-nb::object expr_object(const Expr& e) {
+// Typed so the stub says `Expr`, not `object` (#464).
+using ExprObject = nb::typed<nb::object, Expr>;
+ExprObject expr_object(const Expr& e) {
     const nb::object owner = nb::find(*e.model);
     nb::object out = nb::cast(e, nb::rv_policy::copy);
     if (owner.is_valid()) {
@@ -299,7 +302,7 @@ nb::object expr_object(const Expr& e) {
 
 template <typename... A>
 auto guarded_expr(Expr (Model::*method)(A...), const char* what) {
-    return [method, what](Model& self, A... args) -> nb::object {
+    return [method, what](Model& self, A... args) -> ExprObject {
         refuse_if_solving(self, what);
         return expr_object((self.*method)(std::forward<A>(args)...));
     };
@@ -308,14 +311,14 @@ auto guarded_expr(Expr (Model::*method)(A...), const char* what) {
 // Build an Expr through `anchor`'s model: refused while it is being solved, and
 // tied to it on the way out.
 template <typename F>
-nb::object build_expr(const Expr& anchor, const char* what, F&& build) {
+ExprObject build_expr(const Expr& anchor, const char* what, F&& build) {
     refuse_if_solving(*anchor.model, what);
     return expr_object(std::forward<F>(build)());
 }
 
 // The same for an Expr list. An empty list reaches cbls::min/max, which reject it.
 template <typename F>
-nb::object build_expr_list(const std::vector<Expr>& args, const char* what, F&& build) {
+ExprObject build_expr_list(const std::vector<Expr>& args, const char* what, F&& build) {
     for (const Expr& a : args) {
         refuse_if_solving(*a.model, what);
     }
@@ -451,7 +454,7 @@ int32_t pair_lambda_sum_extra(Model& model, int32_t list_var, ExtraCallable2 fun
 
 // `round(x)`. `round(x, n)` (decimal places, which the op lacks) is refused,
 // not silently rounded to an integer.
-nb::object round_dunder(const Expr& a, std::optional<int> ndigits) {
+ExprObject round_dunder(const Expr& a, std::optional<int> ndigits) {
     if (ndigits.has_value()) {
         throw std::invalid_argument(
             "Expr.__round__: ndigits is not supported; round(x) rounds to an integer");
@@ -571,6 +574,87 @@ void set_move_changes(Move& move, const std::vector<Move::Change>& changes) {
     for (const Move::Change& change : changes) {
         move.changes.push_back(change);
     }
+}
+
+// The adapters' result types (#464). `model` is the result's own, by
+// reference_internal: a plain member, never reallocated, and the keep-alive
+// holds the result while the model is in use. `original_values` reads that
+// model, so it cannot be handed one with a different column count.
+template <typename Result>
+void bind_adapter_result(nb::class_<Result>& cls) {
+    cls.def_prop_ro(
+           "model", [](Result& r) -> Model& { return r.model; }, nb::rv_policy::reference_internal)
+        .def_ro("var_handles", &Result::var_handles)
+        .def_ro("constraint_node_ids", &Result::constraint_node_ids)
+        .def_ro("objective_node_id", &Result::objective_node_id)
+        .def_ro("bound_stats", &Result::bound_stats)
+        .def_ro("n_clamped_columns", &Result::n_clamped_columns)
+        .def(
+            "original_values", [](const Result& r) { return r.original_values(r.model); },
+            "The model's current point as one value per source column.");
+}
+
+void bind_io(nb::module_& m) {
+    m.def("load_model", nb::overload_cast<const std::string&>(&load_model), nb::arg("path"),
+          "Read a .cbls (JSON lines) model file.");
+    m.def("save_model", nb::overload_cast<const Model&, const std::string&>(&save_model),
+          nb::arg("model"), nb::arg("path"), "Write `model` as a .cbls (JSON lines) file.");
+
+    nb::class_<BoundPropagationStats>(m, "BoundPropagationStats")
+        .def_ro("passes", &BoundPropagationStats::passes)
+        .def_ro("n_tightened", &BoundPropagationStats::n_tightened)
+        .def_ro("n_finitized", &BoundPropagationStats::n_finitized)
+        .def_ro("n_fixed", &BoundPropagationStats::n_fixed)
+        .def_ro("infeasible", &BoundPropagationStats::infeasible)
+        .def_ro("hit_pass_limit", &BoundPropagationStats::hit_pass_limit);
+
+    // The parsed problems are opaque beyond their header: an adapter input.
+    nb::class_<MpsProblem>(m, "MpsProblem")
+        .def_ro("name", &MpsProblem::name)
+        .def_ro("objective_row_name", &MpsProblem::objective_row_name)
+        .def_ro("objective_offset", &MpsProblem::objective_offset)
+        .def_ro("maximize", &MpsProblem::maximize)
+        .def_prop_ro("num_vars", [](const MpsProblem& p) { return p.vars.size(); })
+        .def_prop_ro("num_rows", [](const MpsProblem& p) { return p.rows.size(); })
+        .def_prop_ro("num_nonzeros", [](const MpsProblem& p) { return p.nonzeros.size(); });
+    m.def("read_mps", &read_mps, nb::arg("filename"),
+          "Read an MPS file, fixed or free format; `.gz` is decompressed.");
+
+    nb::class_<MpsToModelOptions>(m, "MpsToModelOptions")
+        .def(nb::init<>())
+        .def_rw("inf_clamp", &MpsToModelOptions::inf_clamp)
+        .def_rw("propagate_bounds", &MpsToModelOptions::propagate_bounds)
+        .def_rw("max_propagation_passes", &MpsToModelOptions::max_propagation_passes);
+    nb::class_<MpsToModelResult> mps_result(m, "MpsToModelResult");
+    bind_adapter_result(mps_result);
+    m.def("mps_to_model", &mps_to_model, nb::arg("problem"),
+          nb::arg("options") = MpsToModelOptions{},
+          "Build a closed Model from a read_mps problem: one variable per column, one "
+          "linear constraint per row.");
+
+    nb::class_<NlProblem>(m, "NlProblem")
+        .def_ro("name", &NlProblem::name)
+        .def_ro("n_vars", &NlProblem::n_vars)
+        .def_ro("n_cons", &NlProblem::n_cons)
+        .def_ro("n_objs", &NlProblem::n_objs)
+        .def_ro("n_defined_vars", &NlProblem::n_defined_vars)
+        .def_ro("n_discrete_vars", &NlProblem::n_discrete_vars);
+    m.def("read_nl", &read_nl, nb::arg("filename"), "Read an AMPL .nl file, text or binary.");
+
+    nb::class_<NlToModelOptions>(m, "NlToModelOptions")
+        .def(nb::init<>())
+        .def_rw("propagate_bounds", &NlToModelOptions::propagate_bounds)
+        .def_rw("max_propagation_passes", &NlToModelOptions::max_propagation_passes)
+        .def_rw("inf_clamp", &NlToModelOptions::inf_clamp)
+        .def_rw("int_inf_clamp", &NlToModelOptions::int_inf_clamp);
+    nb::class_<NlToModelResult> nl_result(m, "NlToModelResult");
+    bind_adapter_result(nl_result);
+    nl_result.def_ro("supported", &NlToModelResult::supported)
+        .def_ro("skipped_reasons", &NlToModelResult::skipped_reasons);
+    m.def("nl_to_model", &nl_to_model, nb::arg("problem"), nb::arg("options") = NlToModelOptions{},
+          "Build a Model from a read_nl problem. An unsupported operator does not raise: "
+          "`supported` is False, `skipped_reasons` says why, and the model is not closed "
+          "and must not be solved.");
 }
 
 }  // namespace
@@ -814,7 +898,10 @@ NB_MODULE(_cbls_core, m) {
         .def_ro("workers_completed", &SearchResult::workers_completed)
         .def_ro("worker_failures", &SearchResult::worker_failures)
         // By reference, not copied per read: an aggregate holding a vector.
-        .def_ro("counters", &SearchResult::counters, nb::rv_policy::reference_internal);
+        .def_ro("counters", &SearchResult::counters, nb::rv_policy::reference_internal)
+        // The winner's assignment (#464): ParallelSearch leaves its master's
+        // untouched, so cbls.solve restores this one. A copy per read.
+        .def_prop_ro("best_state", [](const SearchResult& r) { return r.best_state; });
 
     // Model
     nb::class_<Model>(m, "Model")
@@ -1110,16 +1197,18 @@ NB_MODULE(_cbls_core, m) {
              [](const Expr& a, const Expr& b) {
                  return build_expr(a, "Expr.__pow__", [&] { return a.pow(b); });
              })
-        .def("__pow__",
-             [](const Expr& a, double b) {
-                 return build_expr(a, "Expr.__pow__",
-                                   [&] { return a.pow(Expr{a.model, a.model->constant(b)}); });
-             })
+        // int before double: the stub's overloads read in this order, and an int
+        // overload after a double one is unreachable to a type checker (#464).
         .def("__pow__",
              [](const Expr& a, int b) {
                  return build_expr(a, "Expr.__pow__", [&] {
                      return a.pow(Expr{a.model, a.model->constant(static_cast<double>(b))});
                  });
+             })
+        .def("__pow__",
+             [](const Expr& a, double b) {
+                 return build_expr(a, "Expr.__pow__",
+                                   [&] { return a.pow(Expr{a.model, a.model->constant(b)}); });
              })
         .def("__rpow__",
              [](const Expr& a, double b) {
@@ -1499,6 +1588,8 @@ NB_MODULE(_cbls_core, m) {
             nb::arg("config") = SearchConfig{}, nb::arg("hook_factory") = nb::none(),
             nb::arg("lns_factory") = nb::none(), nb::arg("callback") = nullptr,
             nb::arg("par_config") = ParallelConfig{}, kSolveMasterDoc);
+
+    bind_io(m);
 
     // Free functions
     // Exposed so "adjacent base seeds do not share worker streams" is testable

@@ -23,7 +23,7 @@ from cbls import _cbls_core as cbls
 from support import run_scenario, vid
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Sequence
 
 CHILD_TIMEOUT_SECONDS = 20.0
 
@@ -60,7 +60,7 @@ def test_element_accepts_a_numpy_table_and_a_two_index_form() -> None:
     r = m.int_var(0, 1)
     c = m.int_var(0, 2)
     table = np.arange(6, dtype=np.float64).reshape(2, 3)
-    e = m.element(table, r, c)
+    e = m.element(table, r, c)  # type: ignore[call-overload]  # an ndarray, on purpose
     assert _value_at(m, e, {vid(r): 1, vid(c): 2}) == 5.0
 
 
@@ -136,7 +136,7 @@ def test_lambda_sum_hands_the_functor_the_extras_current_values() -> None:
     vtype = m.int_var(0, 2)
     seen: list[list[float]] = []
 
-    def stop_cost(i: int, x: list[float]) -> float:
+    def stop_cost(i: int, x: Sequence[float]) -> float:
         seen.append(list(x))
         return STOP_COST[i][int(x[0])]
 
@@ -157,7 +157,7 @@ def test_pair_lambda_sum_takes_extra_by_keyword_and_closes_the_cycle() -> None:
     route = m.list_var(3)
     speed = m.int_var(1, 3)
 
-    def leg(a: int, b: int, x: list[float]) -> float:
+    def leg(a: int, b: int, x: Sequence[float]) -> float:
         return (10.0 * a + b) / x[0]
 
     open_node = m.pair_lambda_sum(route, leg, extra=[speed])
@@ -177,7 +177,7 @@ def test_an_empty_extra_hands_the_functor_an_empty_list() -> None:
     route = m.list_var(3)
     seen: list[list[float]] = []
 
-    def cost(i: int, x: list[float]) -> float:
+    def cost(i: int, x: Sequence[float]) -> float:
         seen.append(list(x))
         return float(i)
 
@@ -196,9 +196,9 @@ def test_extra_is_keyword_only_in_both_lambda_forms() -> None:
     route = m.list_var(3)
     t = m.int_var(0, 2)
     with pytest.raises(TypeError):
-        m.lambda_sum(route, lambda i, x: float(i), [t])
+        m.lambda_sum(route, lambda i, x: float(i), [t])  # type: ignore[call-overload]
     with pytest.raises(TypeError):
-        m.pair_lambda_sum(route, lambda a, b, x: float(a), [t])
+        m.pair_lambda_sum(route, lambda a, b, x: float(a), [t])  # type: ignore[call-overload]
 
 
 def test_the_node_op_enum_names_pair_lambda() -> None:
@@ -275,10 +275,10 @@ def _scenario_bad_lambda_extra() -> None:
     other = m.list_var(3)
     t = m.int_var(0, 2)
 
-    def f1(i: int, x: list[float]) -> float:
+    def f1(i: int, x: Sequence[float]) -> float:
         return i * x[0]
 
-    def f2(a: int, b: int, x: list[float]) -> float:
+    def f2(a: int, b: int, x: Sequence[float]) -> float:
         return (a + b) * x[0]
 
     _expect(ValueError, lambda: m.lambda_sum(t, f1, extra=[t]), "scalar as list")
@@ -288,7 +288,7 @@ def _scenario_bad_lambda_extra() -> None:
     for bad in (5, 100_000, -100_000):
         _expect(IndexError, partial(m.lambda_sum, lst, f1, extra=[bad]), f"extra {bad}")
         _expect(IndexError, partial(m.pair_lambda_sum, lst, f2, extra=[bad]), f"pair {bad}")
-    _expect(TypeError, lambda: m.lambda_sum(lst, None, extra=[t]), "None functor")
+    _expect(TypeError, lambda: m.lambda_sum(lst, None, extra=[t]), "None functor")  # type: ignore[call-overload]
     node = m.lambda_sum(lst, f1, extra=[t])
     m.minimize(node)
     m.close()

@@ -65,12 +65,14 @@ if(NB_DIR_RESULT EQUAL 0 AND NB_DIR)
     # per-config subdirectory.
     set_target_properties(_cbls_core PROPERTIES
         LIBRARY_OUTPUT_DIRECTORY "$<1:${CMAKE_CURRENT_BINARY_DIR}/cbls>")
-    file(GLOB _cbls_package_files LIST_DIRECTORIES false CONFIGURE_DEPENDS
-        "${CMAKE_CURRENT_SOURCE_DIR}/cbls/*")
-    foreach(_file IN LISTS _cbls_package_files)
-        get_filename_component(_name "${_file}" NAME)
-        configure_file("${_file}" "${CMAKE_CURRENT_BINARY_DIR}/cbls/${_name}" COPYONLY)
-    endforeach()
+    # The Python sources are mirrored on every build, stale files dropped
+    # (sync_package.cmake); always out of date, and a no-op when nothing changed.
+    add_custom_target(cbls_python_package ALL
+        COMMAND "${CMAKE_COMMAND}" -DSRC=${CMAKE_CURRENT_SOURCE_DIR}/cbls
+                -DDST=${CMAKE_CURRENT_BINARY_DIR}/cbls
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/sync_package.cmake"
+        COMMENT "Mirroring python/cbls into the build tree" VERBATIM)
+    add_dependencies(_cbls_core cbls_python_package)
 
     # Its own component: the wheel installs only this (pyproject.toml).
     if(CBLS_INSTALL)  # the root's top-level-only default (#447)

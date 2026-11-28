@@ -195,7 +195,7 @@ def test_counters_are_read_only() -> None:
 
     result = cbls.solve(_quadratic(), 0.0, 42, config=_config())
     with pytest.raises(AttributeError):
-        result.counters.batches = 0
+        result.counters.batches = 0  # type: ignore[misc]  # read-only, on purpose
 
 
 def test_novelty_engagement_is_readable() -> None:
