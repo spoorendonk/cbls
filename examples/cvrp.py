@@ -43,14 +43,18 @@ def read_vrp(path: str) -> Instance:
             coords.append((float(x), float(y)))
         else:
             demands.append(int(line.split()[1]))
+    capacity = int(header.get("CAPACITY", "0"))
     if (
         header.get("EDGE_WEIGHT_TYPE") != "EUC_2D"
+        or capacity <= 0
         or not demands
         or demands[0] != 0
         or len(coords) != len(demands)
     ):
-        raise ValueError(f"{path}: expected EUC_2D distances and the depot at node 1")
-    return Instance(header["NAME"], int(header["CAPACITY"]), coords, demands)
+        raise ValueError(
+            f"{path}: expected EUC_2D distances, a positive capacity and the depot at node 1"
+        )
+    return Instance(header.get("NAME", Path(path).stem), capacity, coords, demands)
 
 
 def distances(inst: Instance) -> np.ndarray:

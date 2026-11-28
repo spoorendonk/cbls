@@ -28,8 +28,8 @@ cmake --build build --target cbls_example_cvrp
 build/cbls_example_cvrp benchmarks/instances/cvrp/X/X-n115-k10.vrp
 ```
 
-Both solve for 5 s on one thread with seed 1. In one run, at commit
-`aedfded8`, the Python script printed:
+Both solve for 5 s on one thread with seed 1. In one run, with the
+engine as at commit `ff2be29e`, the Python script printed:
 
 ```text
 X-n115-k10: 114 customers, capacity 169, fleet 13
@@ -49,7 +49,9 @@ Route #11: 16 5 66 89
 verify: PASS
 ```
 
-The C++ program printed the same, with `true` in place of `True`. Those routes are 6.8 %
+The C++ program prints the same lines, with `true` in place of `True`; its
+model reads the data through callables rather than tables, so its routes need
+not match the Python run's. Those routes are 6.8 %
 above the best-known cost, with 11 vehicles where the best-known solution uses
 10. The solve stops on wall-clock time, so the routes can differ from run to
 run, or on a slower machine; the tests check that they are feasible and

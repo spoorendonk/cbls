@@ -28,6 +28,45 @@ struct Instance {
     [[nodiscard]] int customers() const { return static_cast<int>(demands.size()) - 1; }
 };
 
+/// A header line `KEY : value`; `weight` takes EDGE_WEIGHT_TYPE.
+void read_header_line(const std::string& line, Instance& inst, std::string& weight) {
+    const auto colon = line.find(':');
+    if (colon == std::string::npos) {
+        return;
+    }
+    std::istringstream key_stream(line.substr(0, colon));
+    std::istringstream value(line.substr(colon + 1));
+    std::string key;
+    key_stream >> key;
+    if (key == "NAME") {
+        value >> inst.name;
+    } else if (key == "CAPACITY") {
+        value >> inst.capacity;
+    } else if (key == "EDGE_WEIGHT_TYPE") {
+        value >> weight;
+    }
+}
+
+/// One `id x y` or `id demand` line, its id already read from `ss`; false
+/// when the rest does not parse.
+bool read_section_line(const std::string& section, std::istringstream& ss, Instance& inst) {
+    if (section == "NODE_COORD_SECTION") {
+        double x = 0.0;
+        double y = 0.0;
+        if (!(ss >> x >> y)) {
+            return false;
+        }
+        inst.coords.emplace_back(x, y);
+    } else if (section == "DEMAND_SECTION") {
+        int d = 0;
+        if (!(ss >> d)) {
+            return false;
+        }
+        inst.demands.push_back(d);
+    }
+    return true;
+}
+
 /// A TSPLIB CVRP file as CVRPLIB's X set writes it: EUC_2D, depot at node 1.
 Instance read_vrp(const std::string& path) {
     std::ifstream in(path);
@@ -48,30 +87,15 @@ Instance read_vrp(const std::string& path) {
             first == "DEPOT_SECTION" || first == "EOF") {
             section = first;
         } else if (section.empty()) {
-            const auto colon = line.find(':');
-            std::istringstream value(colon == std::string::npos ? "" : line.substr(colon + 1));
-            const std::string key = first.substr(0, first.find(':'));
-            if (key == "NAME") {
-                value >> inst.name;
-            } else if (key == "CAPACITY") {
-                value >> inst.capacity;
-            } else if (key == "EDGE_WEIGHT_TYPE") {
-                value >> weight;
-            }
-        } else if (section == "NODE_COORD_SECTION") {
-            double x = 0.0;
-            double y = 0.0;
-            ss >> x >> y;
-            inst.coords.emplace_back(x, y);
-        } else if (section == "DEMAND_SECTION") {
-            int d = 0;
-            ss >> d;
-            inst.demands.push_back(d);
+            read_header_line(line, inst, weight);
+        } else if (!read_section_line(section, ss, inst)) {
+            throw std::runtime_error("a coordinate or demand line does not parse in " + path);
         }
     }
-    if (weight != "EUC_2D" || inst.demands.empty() || inst.demands[0] != 0 ||
+    if (weight != "EUC_2D" || inst.capacity <= 0 || inst.demands.empty() || inst.demands[0] != 0 ||
         inst.coords.size() != inst.demands.size()) {
-        throw std::runtime_error(path + ": expected EUC_2D distances and the depot at node 1");
+        throw std::runtime_error(
+            path + ": expected EUC_2D distances, a positive capacity and the depot at node 1");
     }
     return inst;
 }
