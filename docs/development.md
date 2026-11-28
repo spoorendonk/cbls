@@ -42,7 +42,7 @@ them.** `CBLS_BUILD_PYTHON` defaults to `OFF` and `tests/python/conftest.py`
 skips every test that imports `cbls` when its compiled `cbls._cbls_core` is missing, so a build
 without the flag would leave 351 binding tests silently unrun.
 `CBLS_REQUIRE_BINDINGS=1` turns that skip into a hard error. Bindings cost ~2.4s
-of build and ~6s of pytest against a suite that already spends ~25s in `ctest` —
+of build and the binding tests' pytest time, against a suite that already spends ~25s in `ctest` —
 always build them. The cost argument is the weaker one: the reason is that
 without the flag those binding tests do not run at all.
 

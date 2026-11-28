@@ -85,15 +85,14 @@ def _human_result(names: list[str]) -> str:
         ("mip.md", f"{_NEOS5_CLI} --quiet", _NEOS5_NAMES, None),
         ("mip.md", f"{_NEOS5_CLI} --format jsonl --quiet", _NEOS5_NAMES, None),
     ],
+    ids=["st_e38-human", "st_e38-jsonl", "neos5-human", "neos5-jsonl"],
 )
 def test_an_example_page_cli_command_runs_as_written(
     page: str, command: str, names: list[str], reference: float | None
 ) -> None:
     # The page shows this exact line; `python -m cbls` is the console script's entry.
     assert f"\n{command}\n" in (ROOT / "docs" / "examples" / page).read_text()
-    program, *args = command.split()
-    assert program == "cbls"
-    result = _run(["-m", "cbls", *args])
+    result = _run(["-m", *command.split()])
 
     assert result.returncode == 0, result.stdout + result.stderr
     if "--format jsonl" in command:

@@ -64,8 +64,8 @@ Solution:
 
 It prints a blank line first. `--quiet` prints the result only. Without it, a
 header and progress lines come first: a line for each new best point, marked
-`*`, and one about every second between them. `--format jsonl` prints the result as one JSON line,
-with the values at full precision:
+`*`, and one about every second between them. `--format jsonl` prints the
+result as one JSON line, with the values at full precision:
 
 ```sh
 cbls benchmarks/instances/minlplib/st_e38.nl --time-limit 2 --threads 1 --seed 42 --format jsonl --quiet
@@ -75,9 +75,9 @@ cbls benchmarks/instances/minlplib/st_e38.nl --time-limit 2 --threads 1 --seed 4
 {"event":"result","feasible":true,"iterations":194360,"objective":7197.727148524341,"solution":{"x0":58.2901554404145,"x1":43.692654445213535,"x2":18.0,"x3":10.0},"status":"feasible","termination":"time_limit","time":2.0}
 ```
 
-The iteration count depends on the machine. The command exits with 0 when it
-found a feasible point, else 1. It does not run the checks of
-[Verifying it](#verifying-it); the scripts do.
+The iteration count depends on the machine, and as above the digits can too.
+The command exits with 0 when it found a feasible point, else 1. It does not
+run the checks of [Verifying it](#verifying-it); the scripts do.
 
 This is the `cbls` a pip install provides, also run as `python -m cbls`. It
 reads `.cbls`, MPS and `.nl` files. The `cbls` binary of a CMake build or
@@ -85,7 +85,8 @@ install (`build/cbls`, `<prefix>/bin/cbls`) reads `.cbls` files only and stops
 on this file with `Error loading model`. With both installed, the first on
 `PATH` runs, and `cbls --help` lists the formats it reads (see
 [Command line](https://github.com/spoorendonk/cbls#command-line)).
-`tests/python/test_examples.py` runs both commands as `python -m cbls`.
+`tests/python/test_examples.py` runs the two `cbls` commands above as
+`python -m cbls`.
 
 ## The code
 
