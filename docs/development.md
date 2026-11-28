@@ -215,7 +215,7 @@ The gate keeps it warning-free: the ctest test `docs_build` (label `docs`) runs
 the same build into the build directory, when configure finds `doxygen` (on
 macOS `brew install doxygen`) and a Python with the `docs` group; without
 either, configure warns and the test is not registered, and the roster above
-is one short (900, and 888 in the fast set). A push that changes
+is one short (902, and 890 in the fast set). A push that changes
 the README or a file under `docs/` runs the gate. The `docs` workflow
 (`.github/workflows/docs.yml`) builds and deploys the site to GitHub Pages on a
 push to `main` that changes what the site is built from (`docs/`, the README,

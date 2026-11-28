@@ -36,8 +36,8 @@ verify: PASS
 The C++ program prints `true` in place of `True` and only the count of nonzero
 columns. The solve stops on wall-clock time, so the point can differ from run
 to run, or on a slower machine; the tests check that it is feasible and
-verifies. The test suite runs both commands as written here: `example_mip` in
-ctest, and `tests/python/test_examples.py`.
+verifies. The test suite runs both commands against the build tree:
+`example_mip` in ctest, and `tests/python/test_examples.py`.
 
 ## The code
 

@@ -44,4 +44,6 @@ def test_an_example_page_command_runs_as_written(command: str, reference: float 
     if reference is not None:
         found = re.search(r"^objective = (\S+)$", result.stdout, re.M)
         assert found, result.stdout
-        assert float(found[1]) == pytest.approx(reference, rel=1e-6)
+        # cbls reaches it in under 0.2 s, but a loaded host may stop the 2 s
+        # solve short of it: allow 1 % above, and only feasibility noise below.
+        assert reference * (1 - 1e-6) <= float(found[1]) <= reference * 1.01

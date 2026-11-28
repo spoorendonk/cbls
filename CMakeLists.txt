@@ -469,6 +469,8 @@ if(CBLS_BUILD_EXAMPLES)
             WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
         # Each exits nonzero unless the point is feasible and verifies; a
         # PASS_REGULAR_EXPRESSION would make ctest ignore that exit status.
+        # Each solves for 2 s; the timeout catches one that ignores its limit.
+        set_tests_properties(example_minlplib example_mip PROPERTIES TIMEOUT 60)
     endif()
 endif()
 

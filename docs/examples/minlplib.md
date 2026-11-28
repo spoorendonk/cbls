@@ -37,10 +37,10 @@ verify: PASS
 ```
 
 The C++ program prints `true` in place of `True`. The solve stops on
-wall-clock time, so the digits can differ on a slower machine; the Python test
-also checks the objective against the best known. The test suite runs both
-commands as written here: `example_minlplib` in ctest, and
-`tests/python/test_examples.py`.
+wall-clock time, so the digits can differ on a slower machine. The test suite
+runs both commands against the build tree: `example_minlplib` in ctest, and
+`tests/python/test_examples.py`, which also checks the objective against the
+best known.
 
 ## The code
 
@@ -76,8 +76,10 @@ It then prints `verify: PASS`, or each failure. The Python `verify` function
 makes the first two checks through the public `Model` accessors.
 
 A second check is against the instance's reference value. 7197.727149 is
-MINLPLib's best known (`bounds.csv` in the instance directory), so a lower
-feasible objective would mean a verification bug, not a record.
+MINLPLib's best known and proved optimal (`bounds.csv` in the instance
+directory). A point feasible within 1e-6 can land a hair below it, as SCIP's
+7197.727140 does; an objective clearly below would mean a verification bug,
+not a record.
 
 ## Where cbls stands
 
