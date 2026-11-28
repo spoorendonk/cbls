@@ -52,7 +52,7 @@ m.close();
 ```bash
 cmake -B build
 cmake --build build
-ctest --test-dir build    # 900 C++ tests (add -LE slow for the fast 888, ~12s)
+ctest --test-dir build    # 900 C++ tests with -DCBLS_BUILD_PYTHON=ON, 899 without (add -LE slow for the fast 888, ~12s)
 ```
 
 CMake 3.15 or newer (3.20 for `ctest --test-dir`), a C++17 compiler and zlib

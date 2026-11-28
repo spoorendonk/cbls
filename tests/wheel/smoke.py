@@ -9,6 +9,7 @@ scikit-build-core and nanobind), and json comes from the gated build's copy.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import os
 import shutil
 import subprocess
@@ -38,13 +39,21 @@ print("OK", installed)
 """
 
 
-def build_wheel(source: Path, work: Path, json_src: str, jobs: int) -> Path:
+def build_wheel(source: Path, work: Path, args: argparse.Namespace) -> Path:
     """The PEP 517 hook pip would call, without isolation; returns the wheel."""
+    if importlib.util.find_spec("scikit_build_core") is None:
+        sys.exit(
+            f"scikit-build-core is not installed in {sys.prefix}; "
+            "run `uv sync --extra dev --extra benchmarks`"
+        )
     dist = work / "dist"
     dist.mkdir(parents=True)
     settings = {"build-dir": str(work / "build")}
-    if json_src:
-        settings["cmake.define.FETCHCONTENT_SOURCE_DIR_JSON"] = json_src
+    if args.json_src:
+        settings["cmake.define.FETCHCONTENT_SOURCE_DIR_JSON"] = args.json_src
+    if args.cxx:  # the gated build's compiler, not whatever `c++` is
+        settings["cmake.define.CMAKE_CXX_COMPILER"] = args.cxx
+    jobs = args.jobs
     hook = (
         "import sys\n"
         "from scikit_build_core.build import build_wheel\n"
@@ -80,14 +89,35 @@ def check_contents(wheel: Path) -> None:
         sys.exit(f"wheel has no compiled cbls/_cbls_core: {names}")
 
 
-def install_and_use(wheel: Path, work: Path) -> None:
-    env_dir = work / "venv"
-    venv.create(env_dir, with_pip=True, clear=True)
+def install(wheel: Path, env_dir: Path) -> Path:
+    """Install into a fresh venv; returns its interpreter.
+
+    With pip when the base interpreter has ensurepip. A Debian python3 without
+    python3-venv lacks it, and there the wheel, which check_contents has shown
+    to be the package and its dist-info only, is unpacked into site-packages.
+    """
     python = env_dir / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    try:
+        venv.create(env_dir, with_pip=True, clear=True)
+    except subprocess.CalledProcessError:
+        print("ensurepip unavailable: unpacking the wheel instead of pip-installing it")
+        venv.create(env_dir, with_pip=False, clear=True)
+        query = "import sysconfig; print(sysconfig.get_paths()['platlib'])"
+        site = subprocess.run(
+            [str(python), "-I", "-c", query], capture_output=True, text=True, check=True
+        ).stdout.strip()
+        with zipfile.ZipFile(wheel) as archive:
+            archive.extractall(site)
+        return python
     subprocess.run(
         [str(python), "-m", "pip", "install", "-q", "--no-index", "--no-deps", str(wheel)],
         check=True,
     )
+    return python
+
+
+def install_and_use(wheel: Path, work: Path) -> None:
+    python = install(wheel, work / "venv")
     subprocess.run([str(python), "-I", "-c", USE_INSTALLED], cwd=work, check=True)
 
 
@@ -96,12 +126,13 @@ def main() -> None:
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--work", type=Path, required=True)
     parser.add_argument("--json-src", default="", help="FETCHCONTENT_SOURCE_DIR_JSON")
+    parser.add_argument("--cxx", default="", help="CMAKE_CXX_COMPILER")
     parser.add_argument("--jobs", type=int, default=2)
     args = parser.parse_args()
 
     shutil.rmtree(args.work, ignore_errors=True)
     args.work.mkdir(parents=True)
-    wheel = build_wheel(args.source.resolve(), args.work, args.json_src, args.jobs)
+    wheel = build_wheel(args.source.resolve(), args.work, args)
     check_contents(wheel)
     install_and_use(wheel, args.work)
 

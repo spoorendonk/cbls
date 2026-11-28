@@ -61,8 +61,10 @@ if(NB_DIR_RESULT EQUAL 0 AND NB_DIR)
 
     # build/python/cbls is the package as the wheel lays it out, so the tests
     # import `cbls` and `cbls._cbls_core` from the build tree (#463).
+    # The generator expression keeps multi-config generators from appending a
+    # per-config subdirectory.
     set_target_properties(_cbls_core PROPERTIES
-        LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/cbls")
+        LIBRARY_OUTPUT_DIRECTORY "$<1:${CMAKE_CURRENT_BINARY_DIR}/cbls>")
     file(GLOB _cbls_package_files LIST_DIRECTORIES false CONFIGURE_DEPENDS
         "${CMAKE_CURRENT_SOURCE_DIR}/cbls/*")
     foreach(_file IN LISTS _cbls_package_files)
@@ -82,7 +84,8 @@ if(NB_DIR_RESULT EQUAL 0 AND NB_DIR)
             COMMAND "${Python_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/wheel/smoke.py"
                     --source "${PROJECT_SOURCE_DIR}"
                     --work "${PROJECT_BINARY_DIR}/wheel_smoke"
-                    --json-src "${json_SOURCE_DIR}" --jobs 2)
+                    --json-src "${json_SOURCE_DIR}"
+                    --cxx "${CMAKE_CXX_COMPILER}" --jobs 2)
         set_tests_properties(wheel_smoke
             PROPERTIES LABELS "slow" PROCESSORS 2 TIMEOUT 900)
     endif()

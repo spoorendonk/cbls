@@ -102,7 +102,9 @@ plus **2 consumer tests**, `consumer_find_package` and
 builds `tests/consumer/` against cbls as a downstream project would (#447) —
 plus **1 wheel test**, `wheel_smoke`, registered in `python/CMakeLists.txt` with
 `LABELS "slow"`: it builds the wheel, installs it into a fresh venv and imports
-and solves there (#463, `tests/wheel/smoke.py`). Of the 885,
+and solves there (#463, `tests/wheel/smoke.py`). Like the consumer tests it is a
+ctest script, not pytest: a test that builds a whole project belongs in the
+`slow` label, which pytest has no counterpart for. Of the 885,
 **4 carry the
 Catch2 `[slow]` tag** — the UC-CHPED benchmark solves. `tests/CMakeLists.txt` discovers them in a second
 `catch_discover_tests` call with `LABELS "slow"`, so:
