@@ -8,6 +8,7 @@ wall times; the formats the C++ CLI cannot read are checked on their own.
 
 from __future__ import annotations
 
+import contextlib
 import gzip
 import io
 import json
@@ -213,8 +214,8 @@ def test_an_mps_file_is_read_by_its_extension(name: str, tmp_path: Path) -> None
 
 @pytest.mark.parametrize("name", ["TINY.MPS", "TINY.MPS.GZ"])
 def test_an_upper_case_extension_is_not_taken_for_mps(name: str, tmp_path: Path) -> None:
-    # read_mps's .gz test is case-sensitive: a .MPS.GZ read as MPS was read as
-    # text, and an empty model reported feasible. Read as .cbls, it fails.
+    # Extensions are case-sensitive, as read_mps's .gz test: an upper-case name
+    # is read as .cbls and fails to load (#465).
     path = tmp_path / name
     _write_mps(path)
     result = _run_python(str(path), "--threads", "1", "--time-limit", "1")
@@ -223,20 +224,43 @@ def test_an_upper_case_extension_is_not_taken_for_mps(name: str, tmp_path: Path)
     assert result.stderr.startswith("Error loading model: "), result.stderr
 
 
-def test_a_name_that_is_not_utf8_is_printed_as_its_bytes(tmp_path: Path) -> None:
-    # MPS names are raw bytes; decoding them for a text stream raised after the solve.
-    path = tmp_path / "latin1.mps"
-    _write_mps(path, TINY_MPS.replace("    X  ", "    X\xe9 ").encode("latin-1"))
+def _run_python_bytes(*args: str | bytes) -> subprocess.CompletedProcess[bytes]:
     env = dict(os.environ, PYTHONPATH=str(Path(cbls.__file__).resolve().parents[1]))
-    result = subprocess.run(
-        [sys.executable, "-m", "cbls", str(path), "--threads", "1", "--time-limit", "0.5"],
-        capture_output=True,
-        timeout=60,
-        env=env,
+    return subprocess.run(
+        [sys.executable, "-m", "cbls", *args], capture_output=True, timeout=60, env=env
     )
 
+
+@pytest.mark.parametrize(
+    ("fmt", "printed"), [("human", b"\n  X\xe9 = "), ("jsonl", '"X�":'.encode())]
+)
+def test_a_name_that_is_not_utf8_is_printed(fmt: str, printed: bytes, tmp_path: Path) -> None:
+    # MPS names are raw bytes: the human format prints them as they are, JSON
+    # lines as U+FFFD, so the output stays JSON (#465).
+    path = tmp_path / "latin1.mps"
+    _write_mps(path, TINY_MPS.replace("    X  ", "    X\xe9 ").encode("latin-1"))
+    result = _run_python_bytes(str(path), "--threads", "1", "--time-limit", "0.5", "--format", fmt)
+
     assert result.returncode == 0, result.stderr
-    assert b"\n  X\xe9 = " in result.stdout, result.stdout
+    assert printed in result.stdout, result.stdout
+
+
+@pytest.mark.skipif(os.name == "nt", reason="a POSIX argv is bytes")
+@pytest.mark.parametrize(
+    ("args", "error"),
+    [
+        ([b"q\xe9.cbls"], b"Error loading model: the path is not valid UTF-8"),
+        ([b"--time-limit", b"\xff"], b"Error: --time-limit: '"),
+    ],
+)
+def test_an_argument_that_is_not_utf8_is_an_error_not_a_crash(
+    args: list[bytes], error: bytes
+) -> None:
+    result = _run_python_bytes(*args)
+
+    assert result.returncode == 1, result.stderr
+    assert result.stderr.startswith(error), result.stderr
+    assert b"Traceback" not in result.stderr and b"incompatible" not in result.stderr
 
 
 def test_an_nl_file_is_read_by_its_extension() -> None:
@@ -247,7 +271,7 @@ def test_an_nl_file_is_read_by_its_extension() -> None:
 
 
 def test_a_locale_that_cannot_encode_the_header_changes_nothing() -> None:
-    # The human header's em dash: encoded for a latin-1 stdout, it raised.
+    # The header's em dash goes out as UTF-8 bytes, whatever stdout's encoding (#465).
     env = dict(
         os.environ,
         PYTHONPATH=str(Path(cbls.__file__).resolve().parents[1]),
@@ -274,8 +298,8 @@ def _start_python(*args: str) -> subprocess.Popen[bytes]:
 
 @pytest.mark.skipif(not hasattr(signal, "SIGPIPE"), reason="POSIX signals")
 def test_ctrl_c_ends_the_run_at_once_as_the_cpp_cli() -> None:
-    # The search runs with the GIL released, so Python's SIGINT handler never ran
-    # on the main thread; the portfolio's progress rows come from its workers.
+    # SIGINT kills, as the C++ CLI (#465). On the portfolio no Python runs on the
+    # main thread mid-search, so a Python handler would wait out the budget.
     args = [str(SIMPLE), "--threads", "2", "--time-limit", "60", "--format", "jsonl"]
     proc = _start_python(*args)
     try:
@@ -316,6 +340,17 @@ def test_main_writes_to_the_python_stream(monkeypatch: pytest.MonkeyPatch) -> No
     assert code == 0
     events = [json.loads(line)["event"] for line in raw.getvalue().splitlines()]
     assert events[0] == "start" and events[-1] == "result", raw.getvalue()
+
+
+def test_main_writes_to_a_text_only_stdout() -> None:
+    # A StringIO has no binary buffer; the bytes are decoded into it.
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        code = cli.main([str(NQUEENS), "--threads", "1"])
+
+    assert code == 0
+    assert out.getvalue().startswith(f"cbls {cbls.__version__} — "), out.getvalue()
+    assert "Status:     feasible" in out.getvalue()
 
 
 class _FailingStream(io.BytesIO):

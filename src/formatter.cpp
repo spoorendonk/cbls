@@ -109,6 +109,12 @@ void HumanFormatter::print_result(const SearchResult& result, const Model& model
 
 // --- JsonlFormatter ---
 
+// Names and paths are bytes (MPS and .nl names, a POSIX argv): invalid UTF-8
+// becomes U+FFFD rather than a throw after the solve (#465).
+static std::string dump(const json& j) {
+    return j.dump(-1, ' ', false, json::error_handler_t::replace);
+}
+
 void JsonlFormatter::print_header(const std::string& model_path, const Model& model, uint64_t seed,
                                   double time_limit) {
     json j;
@@ -121,7 +127,7 @@ void JsonlFormatter::print_header(const std::string& model_path, const Model& mo
     j["seed"] = seed;
     j["time_limit"] = time_limit;
     maximizing_ = model.objective_id() >= 0 && model.is_maximizing();
-    out_ << j.dump() << "\n";
+    out_ << dump(j) << "\n";
 }
 
 void JsonlFormatter::on_progress(const SolveProgress& p) {
@@ -138,7 +144,7 @@ void JsonlFormatter::on_progress(const SolveProgress& p) {
     j["feasible"] = p.feasible;
     j["perturbations"] = p.perturbations;
     j["new_best"] = p.new_best;
-    out_ << j.dump() << "\n";
+    out_ << dump(j) << "\n";
 }
 
 void JsonlFormatter::print_result(const SearchResult& result, const Model& model) {
@@ -169,7 +175,7 @@ void JsonlFormatter::print_result(const SearchResult& result, const Model& model
         }
     }
     j["solution"] = sol;
-    out_ << j.dump() << "\n";
+    out_ << dump(j) << "\n";
 }
 
 }  // namespace cbls

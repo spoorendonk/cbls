@@ -10,6 +10,7 @@ from __future__ import annotations
 import math
 import signal
 import sys
+import threading
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -18,6 +19,7 @@ from ._solve import _effective_threads, solve
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+    from typing import TextIO
 
 HELP = """\
 Usage: cbls [OPTIONS] MODEL
@@ -69,8 +71,17 @@ def _out_of_range(flag: str, text: str) -> _UsageError:
     return _UsageError(f"{flag}: '{text}' is out of range")
 
 
+def _is_utf8(text: str) -> bool:
+    """False for a POSIX argv's undecodable bytes (surrogateescape), which no binding takes."""
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
 def _number(flag: str, text: str) -> float:
-    status, value = _core._parse_double(text)
+    status, value = _core._parse_double(text) if _is_utf8(text) else ("malformed", 0.0)
     if status == "ok" and not math.isnan(value):  # nan reads as malformed, as the CLI
         return value
     if status == "out_of_range":
@@ -79,7 +90,10 @@ def _number(flag: str, text: str) -> float:
 
 
 def _integer(flag: str, text: str, unsigned: bool = False) -> int:
-    status, value = _core._parse_uint64(text) if unsigned else _core._parse_int64(text)
+    if not _is_utf8(text):
+        status, value = "malformed", 0
+    else:
+        status, value = _core._parse_uint64(text) if unsigned else _core._parse_int64(text)
     if status == "ok":
         return value
     if status == "out_of_range":
@@ -153,9 +167,10 @@ class _LoadError(Exception):
 def _load(path: str) -> _core.Model:
     """The model in `path`, read by its extension; anything else is .cbls, as the CLI.
 
-    Case-sensitive, as read_mps's own `.gz` test: `.MPS.GZ` read as MPS would be
-    read as plain text, an empty model reported feasible.
+    Case-sensitive, as read_mps's own `.gz` test (#465).
     """
+    if not _is_utf8(path):
+        raise _LoadError("the path is not valid UTF-8, which cbls cannot open")
     if path.endswith((".mps", ".mps.gz")):
         return _core.mps_to_model(_core.read_mps(path)).model
     if path.endswith(".nl"):
@@ -164,6 +179,19 @@ def _load(path: str) -> _core.Model:
             raise _LoadError("unsupported .nl model: " + "; ".join(converted.skipped_reasons))
         return converted.model
     return _core.load_model(path)
+
+
+class _TextSink:
+    """The formatters' bytes into a text-only sys.stdout (a StringIO under redirect_stdout)."""
+
+    def __init__(self, text: TextIO) -> None:
+        self._text = text
+
+    def write(self, data: bytes) -> None:
+        self._text.write(data.decode("utf-8", "replace"))
+
+    def flush(self) -> None:
+        self._text.flush()
 
 
 def _run(opt: _Options) -> int:
@@ -178,11 +206,12 @@ def _run(opt: _Options) -> int:
 
     # The C++ bytes as they are, to the binary stream under sys.stdout.
     sys.stdout.flush()
+    stream = getattr(sys.stdout, "buffer", None) or _TextSink(sys.stdout)
     formatter: _core.HumanFormatter | _core.JsonlFormatter
     if opt.format == "human":
-        formatter = _core.HumanFormatter(sys.stdout.buffer)
+        formatter = _core.HumanFormatter(stream)
     else:
-        formatter = _core.JsonlFormatter(sys.stdout.buffer)
+        formatter = _core.JsonlFormatter(stream)
     if not opt.quiet:
         formatter.print_header(opt.model_path, model, opt.seed, opt.time_limit)
 
@@ -222,8 +251,11 @@ def _default_signals() -> None:
 
     Python's SIGINT handler only sets a flag, which nothing reads while the
     search runs with the GIL released, so Ctrl-C would wait out the time
-    limit; an ignored SIGPIPE turns `| head` into a BrokenPipeError.
+    limit; an ignored SIGPIPE turns `| head` into a BrokenPipeError. Only the
+    main thread may set a handler.
     """
+    if threading.current_thread() is not threading.main_thread():
+        return
     signal.signal(signal.SIGINT, signal.SIG_DFL)
     if hasattr(signal, "SIGPIPE"):  # POSIX only
         signal.signal(signal.SIGPIPE, signal.SIG_DFL)
