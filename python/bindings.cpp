@@ -1492,9 +1492,11 @@ NB_MODULE(_cbls_core, m) {
     nb::class_<SearchConfig>(m, "SearchConfig")
         .def(nb::init<>())
         // copy.copy(config), so cbls.solve attaches its stop= to a copy, never to
-        // the caller's config (#464). A copied `stop` is the same non-owning view;
-        // the original's keep-alive still holds that token.
-        .def("__copy__", [](const SearchConfig& c) { return c; })
+        // the caller's config (#464). A copied `stop` is the same non-owning view,
+        // and only the original's keep-alive holds that token: the copy keeps the
+        // original alive, else it reads a freed token (#156).
+        .def(
+            "__copy__", [](const SearchConfig& c) { return c; }, nb::keep_alive<0, 1>())
         .def_rw("skip_init", &SearchConfig::skip_init)
         .def_rw("max_iterations", &SearchConfig::max_iterations)
         .def_rw("lns_interval", &SearchConfig::lns_interval)

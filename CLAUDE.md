@@ -62,9 +62,9 @@ whichever tool produces it.
 
 ## Python
 
-- `ruff` (format + lint) and `mypy --strict`, configured and **pinned exactly**
-  in `pyproject.toml`; full annotations, `list[int]`, `X | None`.
-- Dependencies get `>=` lower bounds; use `uv`.
+- `ruff` (format + lint), `mypy --strict` and dev nanobind are
+  **pinned exactly** in `pyproject.toml`; full annotations, `list[int]`, `X | None`.
+- Other dependencies get `>=` floors; use `uv`.
 - pre-commit gates the **whole tree**. The only mypy exclusion is `^build/`;
   never widen it. Naming waivers are per file and per rule in
   `[tool.ruff.lint.per-file-ignores]` (published-formulation symbols); a new
@@ -105,7 +105,7 @@ whichever tool produces it.
   strips them (#160). Don't work around it.
 - Pass terse flags yourself: `ctest --progress`, pytest `--tb=short -q`.
 - `ctest -LE slow` is the fast loop (run it before committing; no hook does);
-  `ctest` runs everything. Don't tag `[timing]` without a concrete reason.
+  `ctest` runs everything. Tag `[timing]` only for a concrete reason.
 - **Test counts are hard-coded in six places** (`docs/development.md`, **Fast
   vs. slow tests**). Any roster change updates all six in the same commit,
   re-derived from `ctest -N` / `pytest --collect-only`.

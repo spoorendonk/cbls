@@ -108,15 +108,20 @@ never a silent widening. (Until the move to wcp's hooks this gate lived in
 Because they block, `ruff` and `mypy` are **pinned exactly** in
 `pyproject.toml`, on the same argument the clang tools are: a floating version
 turns "these files are at zero" into "at zero on whichever version this checkout
-resolved".
+resolved". The dev extra's nanobind is pinned exactly too, though it gates no
+lint: `tests/python/test_stub.py` holds the committed stub to that release's
+stubgen output (#464), and the stub's E501/N802 waiver is beside it in
+`per-file-ignores`.
 
-**One naming waiver exists, scoped per file and per rule** in
+**Two naming waivers exist, scoped per file and per rule** in
 `pyproject.toml`'s `[tool.ruff.lint.per-file-ignores]`: `N806` on
 `benchmarks/instances/uc-chped/data.py`. `base_T` is the published
 unit-commitment formulation's own symbol, and that data exists to be audited
 line-by-line against the paper whose numbers it reproduces. Same argument, and
 the same shape, as `src/io/.clang-tidy` waiving the naming check for the
-vendored readers. A second waiver needs the same standard. A directory
+vendored readers. The second is `N802` (with `E501`) on the generated
+`python/cbls/_cbls_core.pyi`, whose names are the bound C++ API's (#464). A
+third waiver needs the same standard. A directory
 exclusion is no substitute: `mypy` follows imports, so an excluded module that a
 gated file imports is checked anyway (#154, #155).
 

@@ -1,12 +1,11 @@
 """CBLS: Constraint-Based Local Search engine (C++ core)"""
 
-from collections.abc import Callable, Sequence, Set
 import enum
+from collections.abc import Callable, Sequence, Set
 from typing import Annotated, overload
 
 import numpy
 from numpy.typing import NDArray
-
 
 class VarType(enum.Enum):
     Bool = 0
@@ -91,43 +90,30 @@ class NodeOp(enum.Enum):
 class Variable:
     @property
     def id(self) -> int: ...
-
     @property
     def type(self) -> VarType: ...
-
     @property
     def value(self) -> float: ...
-
     @value.setter
     def value(self, arg: float, /) -> None: ...
-
     @property
     def lb(self) -> float: ...
-
     @property
     def ub(self) -> float: ...
-
     @property
     def name(self) -> str: ...
-
     @property
     def elements(self) -> list[int]: ...
-
     @elements.setter
     def elements(self, arg: Sequence[int], /) -> None: ...
-
     @property
     def universe_size(self) -> int: ...
-
     @property
     def min_size(self) -> int: ...
-
     @property
     def max_size(self) -> int: ...
-
     @property
     def list_init(self) -> ListInit: ...
-
     @property
     def partitioned(self) -> bool: ...
 
@@ -146,17 +132,14 @@ class Cover(enum.Enum):
 class ListPartition:
     @property
     def list_ids(self) -> list[int]: ...
-
     @property
     def cover(self) -> Cover: ...
-
     @property
     def universe_size(self) -> int: ...
 
 class ExprNode:
     @property
     def id(self) -> int: ...
-
     @property
     def op(self) -> NodeOp: ...
 
@@ -175,7 +158,6 @@ class TerminationReason(enum.Enum):
 
 class StopToken:
     def __init__(self) -> None: ...
-
     def request(self) -> None:
         """
         Ask the solve to stop. Safe to call from any thread, including while
@@ -206,7 +188,6 @@ class StructuralSelection(enum.Enum):
 class NeighbourList:
     @overload
     def __init__(self) -> None: ...
-
     @overload
     def __init__(self, rows: Sequence[Sequence[int]]) -> None:
         """
@@ -214,7 +195,6 @@ class NeighbourList:
         """
 
     def universe(self) -> int: ...
-
     def neighbours_of(self, element: int) -> list[int]:
         """
         Element's neighbours, nearest first. Empty for an out-of-range element.
@@ -222,10 +202,8 @@ class NeighbourList:
 
     @property
     def offsets(self) -> list[int]: ...
-
     @property
     def ids(self) -> list[int]: ...
-
     def __len__(self) -> int: ...
 
 def nearest_neighbours(universe: int, k: int, cost: Callable[[int, int], float]) -> NeighbourList:
@@ -247,145 +225,113 @@ class BatchKind(enum.Enum):
 class GeneratorCounters:
     @property
     def name(self) -> str: ...
-
     @property
     def moves_tried(self) -> int: ...
-
     @property
     def moves_accepted(self) -> int: ...
 
 class SearchCounters:
     @property
     def batches(self) -> int: ...
-
     @property
     def fj_batches(self) -> int: ...
-
     @property
     def novelty_batches(self) -> int: ...
-
     @property
     def novelty_moves(self) -> int: ...
-
     @property
     def novelty_commits(self) -> int: ...
-
     @property
     def novelty_weight_bumps(self) -> int: ...
-
     @property
     def structural_batches(self) -> int: ...
-
     @property
     def fpr_batches(self) -> int: ...
-
     @property
     def fpr_setup_seconds(self) -> float: ...
-
     @property
     def structural_moves_tried(self) -> int: ...
-
     @property
     def structural_moves_accepted(self) -> int: ...
-
     @property
     def by_generator(self) -> list[GeneratorCounters]: ...
-
     @property
     def inner_solver_calls(self) -> int: ...
-
     @property
     def inner_solver_seconds(self) -> float: ...
-
     @property
     def inner_solver_infeasible_calls(self) -> int: ...
-
     @property
     def portfolio_restarts(self) -> int: ...
-
     @property
     def cone_cache_walks(self) -> int: ...
-
     @property
     def cone_fallback_walks(self) -> int: ...
-
     @property
     def shared_bound_tightenings(self) -> int: ...
-
     @property
     def own_best_behind_global(self) -> int: ...
-
     @property
     def bound_behind_global_batches(self) -> int: ...
-
     @property
     def bound_behind_global_seconds(self) -> float: ...
 
 class WorkerFailure:
     @property
     def worker(self) -> int: ...
-
     @property
     def produced_result(self) -> bool: ...
-
     @property
     def reason(self) -> str: ...
 
 class SearchResult:
     @property
     def objective(self) -> float: ...
-
     @property
     def feasible(self) -> bool: ...
-
     @property
     def iterations(self) -> int: ...
-
     @property
     def time_seconds(self) -> float: ...
-
     @property
     def termination(self) -> TerminationReason: ...
-
     @property
     def workers_launched(self) -> int: ...
-
     @property
     def workers_completed(self) -> int: ...
-
     @property
     def worker_failures(self) -> list[WorkerFailure]: ...
-
     @property
     def counters(self) -> SearchCounters: ...
-
     @property
     def best_state(self) -> ModelState: ...
 
 class Model:
     def __init__(self) -> None: ...
-
-    def bool_var(self, name: str = '') -> int: ...
-
-    def int_var(self, lb: int, ub: int, name: str = '') -> int: ...
-
-    def float_var(self, lb: float, ub: float, name: str = '') -> int: ...
-
+    def bool_var(self, name: str = "") -> int: ...
+    def int_var(self, lb: int, ub: int, name: str = "") -> int: ...
+    def float_var(self, lb: float, ub: float, name: str = "") -> int: ...
     @overload
-    def list_var(self, n: int, name: str = '') -> int:
+    def list_var(self, n: int, name: str = "") -> int:
         """
         A fixed-length permutation of {0..n-1}: universe == min_len == max_len.
         """
 
     @overload
-    def list_var(self, universe: int, min_len: int, max_len: int, init: ListInit = ListInit.Empty, name: str = '') -> int:
+    def list_var(
+        self,
+        universe: int,
+        min_len: int,
+        max_len: int,
+        init: ListInit = ListInit.Empty,
+        name: str = "",
+    ) -> int:
         """
         An ordered sequence of distinct elements of {0..universe-1} whose
         length stays within [min_len, max_len].
         """
 
-    def set_var(self, n: int, min_size: int = 0, max_size: int = -1, name: str = '') -> int: ...
-
+    def set_var(self, n: int, min_size: int = 0, max_size: int = -1, name: str = "") -> int: ...
     @overload
     def add_list_partition(self, lists: Sequence[int], cover: Cover = Cover.Exact) -> int:
         """
@@ -396,7 +342,6 @@ class Model:
 
     @overload
     def add_list_partition(self, lists: Sequence[int], cover: str) -> int: ...
-
     def partition_of_list(self, var_id: int) -> int:
         """
         Index into list_partitions() of the partition this variable id belongs
@@ -405,47 +350,26 @@ class Model:
 
     @property
     def list_partitions(self) -> list[ListPartition]: ...
-
     def constant(self, arg: float, /) -> int: ...
-
     def neg(self, arg: int, /) -> int: ...
-
     def sum(self, arg: Sequence[int], /) -> int: ...
-
     def prod(self, arg0: int, arg1: int, /) -> int: ...
-
     def div_expr(self, arg0: int, arg1: int, /) -> int: ...
-
     def pow_expr(self, arg0: int, arg1: int, /) -> int: ...
-
     def min_expr(self, arg: Sequence[int], /) -> int: ...
-
     def max_expr(self, arg: Sequence[int], /) -> int: ...
-
     def abs_expr(self, arg: int, /) -> int: ...
-
     def sin_expr(self, arg: int, /) -> int: ...
-
     def cos_expr(self, arg: int, /) -> int: ...
-
     def tan_expr(self, arg: int, /) -> int: ...
-
     def exp_expr(self, arg: int, /) -> int: ...
-
     def log_expr(self, arg: int, /) -> int: ...
-
     def sqrt_expr(self, arg: int, /) -> int: ...
-
     def signpower_expr(self, arg0: int, arg1: int, /) -> int: ...
-
     def tanh_expr(self, arg: int, /) -> int: ...
-
     def if_then_else(self, arg0: int, arg1: int, arg2: int, /) -> int: ...
-
     def at(self, arg0: int, arg1: int, /) -> int: ...
-
     def count(self, arg: int, /) -> int: ...
-
     @overload
     def element(self, table: Sequence[float], index: int) -> int:
         """
@@ -462,24 +386,16 @@ class Model:
         """
 
     def ceil_expr(self, x: int) -> int: ...
-
     def floor_expr(self, x: int) -> int: ...
-
     def round_expr(self, x: int) -> int:
         """round half away from zero, as C's round()."""
 
     def leq(self, arg0: int, arg1: int, /) -> int: ...
-
     def eq_expr(self, arg0: int, arg1: int, /) -> int: ...
-
     def geq(self, arg0: int, arg1: int, /) -> int: ...
-
     def neq(self, arg0: int, arg1: int, /) -> int: ...
-
     def lt(self, arg0: int, arg1: int, /) -> int: ...
-
     def gt(self, arg0: int, arg1: int, /) -> int: ...
-
     @overload
     def lambda_sum(self, list_var: int, func: Callable[[int], float]) -> int:
         """
@@ -491,7 +407,9 @@ class Model:
         """
 
     @overload
-    def lambda_sum(self, list_var: int, func: Callable[[int, Sequence[float]], float], *, extra: Sequence[int]) -> int:
+    def lambda_sum(
+        self, list_var: int, func: Callable[[int, Sequence[float]], float], *, extra: Sequence[int]
+    ) -> int:
         """
         Sum `func(e, x)` over the elements of a List or Set variable, where `x`
         is the list of the CURRENT values of the `extra` handles, in order -- a
@@ -507,7 +425,13 @@ class Model:
         positional parameter is already `cyclic`.
         """
 
-    def lambda_table_sum(self, list_var: int, table: Annotated[NDArray[numpy.float64], dict(shape=(None,), order='C', device='cpu', writable=False)]) -> int:
+    def lambda_table_sum(
+        self,
+        list_var: int,
+        table: Annotated[
+            NDArray[numpy.float64], dict(shape=(None,), order="C", device="cpu", writable=False)
+        ],
+    ) -> int:
         """
         lambda_sum with the function given as a length-n float64 array over the
         variable's universe. Copied into the engine at node creation, so the
@@ -515,7 +439,14 @@ class Model:
         """
 
     @overload
-    def pair_lambda_sum(self, list_var: int, func: Callable[[int, int], float], cyclic: bool = False, head: Callable[[int], float] | None = None, tail: Callable[[int], float] | None = None) -> int:
+    def pair_lambda_sum(
+        self,
+        list_var: int,
+        func: Callable[[int, int], float],
+        cyclic: bool = False,
+        head: Callable[[int], float] | None = None,
+        tail: Callable[[int], float] | None = None,
+    ) -> int:
         """
         Sum `func(e_k, e_{k+1})` over the consecutive pairs of a List or Set
         variable's elements.
@@ -539,14 +470,37 @@ class Model:
         """
 
     @overload
-    def pair_lambda_sum(self, list_var: int, func: Callable[[int, int, Sequence[float]], float], *, extra: Sequence[int], cyclic: bool = False) -> int:
+    def pair_lambda_sum(
+        self,
+        list_var: int,
+        func: Callable[[int, int, Sequence[float]], float],
+        *,
+        extra: Sequence[int],
+        cyclic: bool = False,
+    ) -> int:
         """
         Sum `func(e_k, e_{k+1}, x)` over consecutive pairs, `x` as in the extra
         form of lambda_sum. cyclic=True adds the closing pair when n >= 2. There
         are no head/tail terms in this form. `extra` is keyword-only.
         """
 
-    def pair_table_sum(self, list_var: int, dist: Annotated[NDArray[numpy.float64], dict(shape=(None, None), order='C', device='cpu', writable=False)], cyclic: bool = False, head: Annotated[NDArray[numpy.float64], dict(shape=(None,), order='C', device='cpu', writable=False)] | None = None, tail: Annotated[NDArray[numpy.float64], dict(shape=(None,), order='C', device='cpu', writable=False)] | None = None) -> int:
+    def pair_table_sum(
+        self,
+        list_var: int,
+        dist: Annotated[
+            NDArray[numpy.float64],
+            dict(shape=(None, None), order="C", device="cpu", writable=False),
+        ],
+        cyclic: bool = False,
+        head: Annotated[
+            NDArray[numpy.float64], dict(shape=(None,), order="C", device="cpu", writable=False)
+        ]
+        | None = None,
+        tail: Annotated[
+            NDArray[numpy.float64], dict(shape=(None,), order="C", device="cpu", writable=False)
+        ]
+        | None = None,
+    ) -> int:
         """
         pair_lambda_sum with the function given as a distance matrix.
 
@@ -564,38 +518,26 @@ class Model:
 
     @overload
     def add_constraint(self, arg: int, /) -> None: ...
-
     @overload
     def add_constraint(self, arg: Expr, /) -> None: ...
-
     @overload
     def minimize(self, arg: int, /) -> None: ...
-
     @overload
     def minimize(self, arg: Expr, /) -> None: ...
-
     @overload
     def maximize(self, arg: int, /) -> None: ...
-
     @overload
     def maximize(self, arg: Expr, /) -> None: ...
-
-    def add_var_sequence(self, var_ids: Sequence[int], min_block_on: int = 1, min_block_off: int = 1) -> None: ...
-
+    def add_var_sequence(
+        self, var_ids: Sequence[int], min_block_on: int = 1, min_block_off: int = 1
+    ) -> None: ...
     def var_sequence_for(self, arg: int, /) -> tuple[int, int]: ...
-
     def close(self) -> None: ...
-
     def freeze(self, cone_cache_bytes: int = 268435456) -> None: ...
-
     def is_frozen(self) -> bool: ...
-
     def is_closed(self) -> bool: ...
-
     def num_cached_cones(self) -> int: ...
-
     def cone_cache_bytes(self) -> int: ...
-
     def var(self, arg: int, /) -> Variable:
         """
         A handle to variable `id` of this model. It holds the model and the id, not
@@ -620,167 +562,107 @@ class Model:
         """
 
     def node_value(self, id: int) -> float: ...
-
     def objective_id(self) -> int: ...
-
     def constraint_ids(self) -> list[int]: ...
-
     def num_user_constraints(self) -> int: ...
-
     def num_domain_rows(self) -> int: ...
-
     def is_domain_node(self, id: int) -> bool: ...
-
     def constraints_of_var(self, var_id: int) -> list[int]: ...
-
     def per_constraint_violation_delta(self, var_id: int, j: float) -> list[tuple[int, float]]: ...
-
     def num_vars(self) -> int: ...
-
     def num_nodes(self) -> int: ...
-
     def copy_state(self) -> ModelState: ...
-
     def restore_state(self, arg: ModelState, /) -> None: ...
-
-    def Bool(self, name: str = '') -> Expr: ...
-
-    def Int(self, lb: int, ub: int, name: str = '') -> Expr: ...
-
-    def Float(self, lb: float, ub: float, name: str = '') -> Expr: ...
-
+    def Bool(self, name: str = "") -> Expr: ...
+    def Int(self, lb: int, ub: int, name: str = "") -> Expr: ...
+    def Float(self, lb: float, ub: float, name: str = "") -> Expr: ...
     @overload
-    def List(self, n: int, name: str = '') -> Expr: ...
-
+    def List(self, n: int, name: str = "") -> Expr: ...
     @overload
-    def List(self, universe: int, min_len: int, max_len: int, init: ListInit = ListInit.Empty, name: str = '') -> Expr: ...
-
-    def Set(self, n: int, min_size: int = 0, max_size: int = -1, name: str = '') -> Expr: ...
-
+    def List(
+        self,
+        universe: int,
+        min_len: int,
+        max_len: int,
+        init: ListInit = ListInit.Empty,
+        name: str = "",
+    ) -> Expr: ...
+    def Set(self, n: int, min_size: int = 0, max_size: int = -1, name: str = "") -> Expr: ...
     def Constant(self, arg: float, /) -> Expr: ...
 
 class Expr:
     @property
     def model(self) -> Model: ...
-
     @property
     def handle(self) -> int: ...
-
     def var_id(self) -> int: ...
-
     @overload
     def __add__(self, arg: Expr, /) -> Expr: ...
-
     @overload
     def __add__(self, arg: float, /) -> Expr: ...
-
     def __radd__(self, arg: float, /) -> Expr: ...
-
     @overload
     def __mul__(self, arg: Expr, /) -> Expr: ...
-
     @overload
     def __mul__(self, arg: float, /) -> Expr: ...
-
     def __rmul__(self, arg: float, /) -> Expr: ...
-
     @overload
     def __sub__(self, arg: Expr, /) -> Expr: ...
-
     @overload
     def __sub__(self, arg: float, /) -> Expr: ...
-
     def __rsub__(self, arg: float, /) -> Expr: ...
-
     @overload
     def __truediv__(self, arg: Expr, /) -> Expr: ...
-
     @overload
     def __truediv__(self, arg: float, /) -> Expr: ...
-
     def __rtruediv__(self, arg: float, /) -> Expr: ...
-
     def __neg__(self) -> Expr: ...
-
     @overload
     def __pow__(self, arg: Expr, /) -> Expr: ...
-
     @overload
     def __pow__(self, arg: int, /) -> Expr: ...
-
     @overload
     def __pow__(self, arg: float, /) -> Expr: ...
-
     def __rpow__(self, arg: float, /) -> Expr: ...
-
     @overload
     def __le__(self, arg: Expr, /) -> Expr: ...
-
     @overload
     def __le__(self, arg: float, /) -> Expr: ...
-
     @overload
     def __ge__(self, arg: Expr, /) -> Expr: ...
-
     @overload
     def __ge__(self, arg: float, /) -> Expr: ...
-
     @overload
     def __lt__(self, arg: Expr, /) -> Expr: ...
-
     @overload
     def __lt__(self, arg: float, /) -> Expr: ...
-
     @overload
     def __gt__(self, arg: Expr, /) -> Expr: ...
-
     @overload
     def __gt__(self, arg: float, /) -> Expr: ...
-
     def __ceil__(self) -> Expr: ...
-
     def __floor__(self) -> Expr: ...
-
     def __round__(self, ndigits: int | None = None) -> Expr: ...
-
     def __abs__(self) -> Expr: ...
-
     def is_var(self) -> bool: ...
-
     def eq(self, arg: Expr, /) -> Expr: ...
-
     def neq(self, arg: Expr, /) -> Expr: ...
-
     def pow(self, arg: Expr, /) -> Expr: ...
 
 def sin(arg: Expr, /) -> Expr: ...
-
 def cos(arg: Expr, /) -> Expr: ...
-
 def tan(arg: Expr, /) -> Expr: ...
-
 def exp(arg: Expr, /) -> Expr: ...
-
 def log(arg: Expr, /) -> Expr: ...
-
 def sqrt(arg: Expr, /) -> Expr: ...
-
 def abs(arg: Expr, /) -> Expr: ...
-
 def pow(arg0: Expr, arg1: Expr, /) -> Expr: ...
-
 def min(arg: Sequence[Expr], /) -> Expr: ...
-
 def max(arg: Sequence[Expr], /) -> Expr: ...
-
 def if_then_else(arg0: Expr, arg1: Expr, arg2: Expr, /) -> Expr: ...
-
 def ceil(arg: Expr, /) -> Expr: ...
-
 def floor(arg: Expr, /) -> Expr: ...
-
 def round(arg: Expr, /) -> Expr: ...
-
 @overload
 def element(table: Sequence[float], index: Expr) -> Expr:
     """
@@ -795,55 +677,36 @@ def element(table: Sequence[Sequence[float]], row: Expr, col: Expr) -> Expr: ...
 
 class ModelState:
     def __init__(self) -> None: ...
-
     @property
     def values(self) -> list[float]: ...
-
     @values.setter
     def values(self, arg: Sequence[float], /) -> None: ...
-
     @property
     def elements(self) -> list[list[int]]: ...
-
     @elements.setter
     def elements(self, arg: Sequence[Sequence[int]], /) -> None: ...
 
 class ViolationManager:
     def __init__(self, arg: Model, /) -> None: ...
-
     def constraint_violation(self, arg: int, /) -> float: ...
-
     def total_violation(self) -> float: ...
-
     def augmented_objective(self) -> float: ...
-
     def is_feasible(self, tol: float = 1e-06) -> bool: ...
-
     def violated_constraints(self, tol: float = 1e-06) -> list[int]: ...
-
     def bump_weights(self, factor: float = 1.0) -> None: ...
-
     def weighted_violation_delta(self, var_id: int, j: float) -> float: ...
-
     def invalidate_cache(self) -> None: ...
-
     @property
     def weights(self) -> list[float]: ...
-
     @weights.setter
     def weights(self, arg: Sequence[float], /) -> None: ...
 
 class RNG:
     def __init__(self, seed: int = 42) -> None: ...
-
     def uniform(self, arg0: float, arg1: float, /) -> float: ...
-
     def integers(self, arg0: int, arg1: int, /) -> int: ...
-
     def normal(self, arg0: float, arg1: float, /) -> float: ...
-
     def random(self) -> float: ...
-
     def seed(self) -> int: ...
 
 class EditKind(enum.Enum):
@@ -866,40 +729,29 @@ class EditKind(enum.Enum):
 class ElementEdit:
     @property
     def kind(self) -> EditKind: ...
-
     @property
     def from_pos(self) -> int: ...
-
     @property
     def to_pos(self) -> int: ...
-
     @property
     def length(self) -> int: ...
-
     @property
     def element(self) -> int: ...
 
 class MoveChange:
     def __init__(self) -> None: ...
-
     @property
     def var_id(self) -> int: ...
-
     @var_id.setter
     def var_id(self, arg: int, /) -> None: ...
-
     @property
     def new_value(self) -> float: ...
-
     @new_value.setter
     def new_value(self, arg: float, /) -> None: ...
-
     @property
     def edits(self) -> list[ElementEdit]: ...
-
     @property
     def replacement(self) -> list[int]: ...
-
     def elements_after(self, elements: Sequence[int]) -> list[int]:
         """
         The elements this change produces from `elements` -- the absolute
@@ -910,105 +762,83 @@ class MoveChange:
 
 class Move:
     def __init__(self) -> None: ...
-
     @property
     def changes(self) -> list[MoveChange]: ...
-
     @changes.setter
     def changes(self, arg: Sequence[MoveChange], /) -> None: ...
-
     @property
     def move_type(self) -> str: ...
-
     @property
     def delta_F(self) -> float: ...
-
     @delta_F.setter
     def delta_F(self, arg: float, /) -> None: ...
 
 class SavedValues:
     def __init__(self) -> None: ...
-
     @property
     def values(self) -> list[float]: ...
-
     @values.setter
     def values(self, arg: Sequence[float], /) -> None: ...
-
     @property
     def elements(self) -> list[list[int]]: ...
-
     @elements.setter
     def elements(self, arg: Sequence[Sequence[int]], /) -> None: ...
 
 class LNS:
     def __init__(self, destroy_fraction: float = 0.3) -> None: ...
-
-    def destroy_repair(self, model: Model, vm: ViolationManager, rng: RNG, repair_time_limit: float = 2.0) -> bool: ...
-
-    def destroy_repair_cycle(self, model: Model, vm: ViolationManager, rng: RNG, n_rounds: int = 10, repair_time_limit: float = 2.0) -> int: ...
+    def destroy_repair(
+        self, model: Model, vm: ViolationManager, rng: RNG, repair_time_limit: float = 2.0
+    ) -> bool: ...
+    def destroy_repair_cycle(
+        self,
+        model: Model,
+        vm: ViolationManager,
+        rng: RNG,
+        n_rounds: int = 10,
+        repair_time_limit: float = 2.0,
+    ) -> int: ...
 
 class Solution:
     def __init__(self) -> None: ...
-
     @property
     def state(self) -> ModelState: ...
-
     @state.setter
     def state(self, arg: ModelState, /) -> None: ...
-
     @property
     def objective(self) -> float: ...
-
     @objective.setter
     def objective(self, arg: float, /) -> None: ...
-
     @property
     def feasible(self) -> bool: ...
-
     @feasible.setter
     def feasible(self, arg: bool, /) -> None: ...
-
     @property
     def violation(self) -> float: ...
-
     @violation.setter
     def violation(self, arg: float, /) -> None: ...
 
 class SolutionPool:
     def __init__(self, capacity: int = 10) -> None: ...
-
     def submit(self, arg: Solution, /) -> bool: ...
-
     def best(self) -> Solution | None: ...
-
     def top_k(self, arg: int, /) -> list[Solution]: ...
-
     def size(self) -> int: ...
-
     def best_feasible_objective(self) -> float: ...
 
 class ParallelConfig:
     def __init__(self) -> None: ...
-
     @property
     def n_threads(self) -> int: ...
-
     @n_threads.setter
     def n_threads(self, arg: int, /) -> None: ...
-
     @property
     def pool_capacity(self) -> int: ...
-
     @pool_capacity.setter
     def pool_capacity(self, arg: int, /) -> None: ...
-
     @property
     def share_objective_bound(self) -> bool: ...
-
     @share_objective_bound.setter
     def share_objective_bound(self, arg: bool, /) -> None: ...
-
     @property
     def stop(self) -> bool:
         """
@@ -1023,105 +853,71 @@ class ParallelConfig:
 
 class SearchConfig:
     def __init__(self) -> None: ...
-
     def __copy__(self) -> SearchConfig: ...
-
     @property
     def skip_init(self) -> bool: ...
-
     @skip_init.setter
     def skip_init(self, arg: bool, /) -> None: ...
-
     @property
     def max_iterations(self) -> int: ...
-
     @max_iterations.setter
     def max_iterations(self, arg: int, /) -> None: ...
-
     @property
     def lns_interval(self) -> int: ...
-
     @lns_interval.setter
     def lns_interval(self, arg: int, /) -> None: ...
-
     @property
     def structural_batch_probability(self) -> float: ...
-
     @structural_batch_probability.setter
     def structural_batch_probability(self, arg: float, /) -> None: ...
-
     @property
     def use_compound_moves(self) -> bool: ...
-
     @use_compound_moves.setter
     def use_compound_moves(self, arg: bool, /) -> None: ...
-
     @property
     def novelty_jump_probability(self) -> float: ...
-
     @novelty_jump_probability.setter
     def novelty_jump_probability(self, arg: float, /) -> None: ...
-
     @property
     def fpr_batch_probability(self) -> float: ...
-
     @fpr_batch_probability.setter
     def fpr_batch_probability(self, arg: float, /) -> None: ...
-
     @property
     def fpr_worker(self) -> int: ...
-
     @fpr_worker.setter
     def fpr_worker(self, arg: int, /) -> None: ...
-
     @property
     def lns_repair_fpr(self) -> bool: ...
-
     @lns_repair_fpr.setter
     def lns_repair_fpr(self, arg: bool, /) -> None: ...
-
     @property
     def fpr_dag_propagation(self) -> bool: ...
-
     @fpr_dag_propagation.setter
     def fpr_dag_propagation(self, arg: bool, /) -> None: ...
-
     @property
     def structural_selection(self) -> StructuralSelection: ...
-
     @structural_selection.setter
     def structural_selection(self, arg: StructuralSelection, /) -> None: ...
-
     @property
     def structural_sample_size(self) -> int: ...
-
     @structural_sample_size.setter
     def structural_sample_size(self, arg: int, /) -> None: ...
-
     @property
     def structural_neighbours(self) -> NeighbourList | None: ...
-
     @structural_neighbours.setter
     def structural_neighbours(self, arg: NeighbourList | None, /) -> None: ...
-
     @property
     def feasibility_tolerance(self) -> float: ...
-
     @feasibility_tolerance.setter
     def feasibility_tolerance(self, arg: float, /) -> None: ...
-
     @property
     def cone_cache_bytes(self) -> int: ...
-
     @cone_cache_bytes.setter
     def cone_cache_bytes(self, arg: int, /) -> None: ...
-
     @property
     def fj_objective_tie_break(self) -> bool: ...
-
     @fj_objective_tie_break.setter
     def fj_objective_tie_break(self, arg: bool, /) -> None: ...
-
     @property
     def stop(self) -> bool:
         """
@@ -1141,8 +937,9 @@ class SearchConfig:
 
 class ParallelSearch:
     def __init__(self, n_threads: int = 0) -> None: ...
-
-    def solve(self, model_factory: Callable[[], Model], time_limit: float = 10.0, seed: int = 42) -> SearchResult:
+    def solve(
+        self, model_factory: Callable[[], Model], time_limit: float = 10.0, seed: int = 42
+    ) -> SearchResult:
         """
         Run the parallel search and return the best result the workers found.
 
@@ -1231,7 +1028,17 @@ class ParallelSearch:
         ends the search and the exception propagates at once.)
         """
 
-    def solve_parallel(self, model_factory: Callable[[], Model], time_limit: float = 10.0, seed: int = 42, config: SearchConfig = ..., hook_factory: Callable[[Model], InnerSolverHook] | None = None, lns_factory: Callable[[], LNS] | None = None, callback: SolveCallback | None = None, par_config: ParallelConfig = ...) -> SearchResult:
+    def solve_parallel(
+        self,
+        model_factory: Callable[[], Model],
+        time_limit: float = 10.0,
+        seed: int = 42,
+        config: SearchConfig = ...,
+        hook_factory: Callable[[Model], InnerSolverHook] | None = None,
+        lns_factory: Callable[[], LNS] | None = None,
+        callback: SolveCallback | None = None,
+        par_config: ParallelConfig = ...,
+    ) -> SearchResult:
         """
         Run the parallel search and return the best result the workers found.
 
@@ -1320,7 +1127,17 @@ class ParallelSearch:
         ends the search and the exception propagates at once.)
         """
 
-    def solve_master(self, model: Model, time_limit: float = 10.0, seed: int = 42, config: SearchConfig = ..., hook_factory: Callable[[Model], InnerSolverHook] | None = None, lns_factory: Callable[[], LNS] | None = None, callback: SolveCallback | None = None, par_config: ParallelConfig = ...) -> SearchResult:
+    def solve_master(
+        self,
+        model: Model,
+        time_limit: float = 10.0,
+        seed: int = 42,
+        config: SearchConfig = ...,
+        hook_factory: Callable[[Model], InnerSolverHook] | None = None,
+        lns_factory: Callable[[], LNS] | None = None,
+        callback: SolveCallback | None = None,
+        par_config: ParallelConfig = ...,
+    ) -> SearchResult:
         """
         Run the parallel search on ONE model and return the best result.
 
@@ -1345,41 +1162,30 @@ def save_model(model: Model, path: str) -> None:
 class BoundPropagationStats:
     @property
     def passes(self) -> int: ...
-
     @property
     def n_tightened(self) -> int: ...
-
     @property
     def n_finitized(self) -> int: ...
-
     @property
     def n_fixed(self) -> int: ...
-
     @property
     def infeasible(self) -> bool: ...
-
     @property
     def hit_pass_limit(self) -> bool: ...
 
 class MpsProblem:
     @property
     def name(self) -> str: ...
-
     @property
     def objective_row_name(self) -> str: ...
-
     @property
     def objective_offset(self) -> float: ...
-
     @property
     def maximize(self) -> bool: ...
-
     @property
     def num_vars(self) -> int: ...
-
     @property
     def num_rows(self) -> int: ...
-
     @property
     def num_nonzeros(self) -> int: ...
 
@@ -1388,44 +1194,32 @@ def read_mps(filename: str) -> MpsProblem:
 
 class MpsToModelOptions:
     def __init__(self) -> None: ...
-
     @property
     def inf_clamp(self) -> float: ...
-
     @inf_clamp.setter
     def inf_clamp(self, arg: float, /) -> None: ...
-
     @property
     def propagate_bounds(self) -> bool: ...
-
     @propagate_bounds.setter
     def propagate_bounds(self, arg: bool, /) -> None: ...
-
     @property
     def max_propagation_passes(self) -> int: ...
-
     @max_propagation_passes.setter
     def max_propagation_passes(self, arg: int, /) -> None: ...
 
 class MpsToModelResult:
     @property
     def model(self) -> Model: ...
-
     @property
     def var_handles(self) -> list[int]: ...
-
     @property
     def constraint_node_ids(self) -> list[int]: ...
-
     @property
     def objective_node_id(self) -> int: ...
-
     @property
     def bound_stats(self) -> BoundPropagationStats: ...
-
     @property
     def n_clamped_columns(self) -> int: ...
-
     def original_values(self) -> list[float]:
         """The model's current point as one value per source column."""
 
@@ -1437,19 +1231,14 @@ def mps_to_model(problem: MpsProblem, options: MpsToModelOptions = ...) -> MpsTo
 class NlProblem:
     @property
     def name(self) -> str: ...
-
     @property
     def n_vars(self) -> int: ...
-
     @property
     def n_cons(self) -> int: ...
-
     @property
     def n_objs(self) -> int: ...
-
     @property
     def n_defined_vars(self) -> int: ...
-
     @property
     def n_discrete_vars(self) -> int: ...
 
@@ -1458,56 +1247,41 @@ def read_nl(filename: str) -> NlProblem:
 
 class NlToModelOptions:
     def __init__(self) -> None: ...
-
     @property
     def propagate_bounds(self) -> bool: ...
-
     @propagate_bounds.setter
     def propagate_bounds(self, arg: bool, /) -> None: ...
-
     @property
     def max_propagation_passes(self) -> int: ...
-
     @max_propagation_passes.setter
     def max_propagation_passes(self, arg: int, /) -> None: ...
-
     @property
     def inf_clamp(self) -> float: ...
-
     @inf_clamp.setter
     def inf_clamp(self, arg: float, /) -> None: ...
-
     @property
     def int_inf_clamp(self) -> float: ...
-
     @int_inf_clamp.setter
     def int_inf_clamp(self, arg: float, /) -> None: ...
 
 class NlToModelResult:
     @property
     def model(self) -> Model: ...
-
     @property
     def var_handles(self) -> list[int]: ...
-
     @property
     def constraint_node_ids(self) -> list[int]: ...
-
     @property
     def objective_node_id(self) -> int: ...
-
     @property
     def bound_stats(self) -> BoundPropagationStats: ...
-
     @property
     def n_clamped_columns(self) -> int: ...
-
     def original_values(self) -> list[float]:
         """The model's current point as one value per source column."""
 
     @property
     def supported(self) -> bool: ...
-
     @property
     def skipped_reasons(self) -> list[str]: ...
 
@@ -1522,19 +1296,12 @@ def portfolio_worker_seed(base_seed: int, worker: int, restart: int) -> int:
     """
 
 def full_evaluate(arg: Model, /) -> float: ...
-
 def delta_evaluate(arg0: Model, arg1: Set[int], /) -> float: ...
-
 def compute_partial(arg0: Model, arg1: int, arg2: int, /) -> float: ...
-
 def compute_all_partials(arg0: Model, arg1: int, /) -> list[float]: ...
-
 def generate_standard_moves(arg0: Variable, arg1: RNG, /) -> list[Move]: ...
-
 def apply_move(arg0: Model, arg1: Move, /) -> list[int]: ...
-
 def save_move_values(arg0: Model, arg1: Move, /) -> SavedValues: ...
-
 def undo_move(arg0: Model, arg1: Move, arg2: SavedValues, /) -> None: ...
 
 class InnerSolverHook:
@@ -1542,61 +1309,54 @@ class InnerSolverHook:
 
 class FloatIntensifyHook(InnerSolverHook):
     def __init__(self) -> None: ...
-
     @property
     def max_sweeps(self) -> int: ...
-
     @max_sweeps.setter
     def max_sweeps(self, arg: int, /) -> None: ...
-
     @property
     def initial_step_size(self) -> float: ...
-
     @initial_step_size.setter
     def initial_step_size(self, arg: float, /) -> None: ...
-
     @property
     def max_line_search_steps(self) -> int: ...
-
     @max_line_search_steps.setter
     def max_line_search_steps(self, arg: int, /) -> None: ...
-
     @property
     def max_multi_var_constraints(self) -> int: ...
-
     @max_multi_var_constraints.setter
     def max_multi_var_constraints(self, arg: int, /) -> None: ...
 
 class SolveProgress:
     def __init__(self) -> None: ...
-
     @property
     def iteration(self) -> int: ...
-
     @property
     def time_seconds(self) -> float: ...
-
     @property
     def objective(self) -> float: ...
-
     @property
     def total_violation(self) -> float: ...
-
     @property
     def feasible(self) -> bool: ...
-
     @property
     def new_best(self) -> bool: ...
-
     @property
     def perturbations(self) -> int: ...
 
 class SolveCallback:
     def __init__(self) -> None: ...
-
     def on_progress(self, arg: SolveProgress, /) -> None: ...
 
-def solve(model: Model, time_limit: float = 10.0, seed: int = 42, hook: InnerSolverHook | None = None, lns: LNS | None = None, lns_interval: int = 3, callback: SolveCallback | None = None, config: SearchConfig = ...) -> SearchResult:
+def solve(
+    model: Model,
+    time_limit: float = 10.0,
+    seed: int = 42,
+    hook: InnerSolverHook | None = None,
+    lns: LNS | None = None,
+    lns_interval: int = 3,
+    callback: SolveCallback | None = None,
+    config: SearchConfig = ...,
+) -> SearchResult:
     """
     Single-threaded solve.
 
@@ -1606,7 +1366,12 @@ def solve(model: Model, time_limit: float = 10.0, seed: int = 42, hook: InnerSol
     """
 
 def initialize_random(model: Model, rng: RNG) -> None: ...
-
 def initialize_structured_random(model: Model, rng: RNG) -> None: ...
-
-def fj_nl_initialize(model: Model, vm: ViolationManager, max_iterations: int = 10000, rng: RNG | None = None, time_limit: float = 2.0, tolerance: float = 1e-06) -> int: ...
+def fj_nl_initialize(
+    model: Model,
+    vm: ViolationManager,
+    max_iterations: int = 10000,
+    rng: RNG | None = None,
+    time_limit: float = 2.0,
+    tolerance: float = 1e-06,
+) -> int: ...

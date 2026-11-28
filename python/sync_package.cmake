@@ -1,12 +1,12 @@
 # Mirrors python/cbls (SRC) into the build tree's package (DST) at build time
 # (#464): copies what changed and deletes any file the source no longer has, so
-# pytest cannot import a module the wheel lacks. The compiled _cbls_core and
-# bytecode caches are the build's own and are left alone.
+# pytest cannot import a module the wheel lacks. The compiled _cbls_core (.so,
+# .pyd) and bytecode caches are the build's own and are left alone.
 #   cmake -DSRC=<dir> -DDST=<dir> -P sync_package.cmake
 file(GLOB _sources RELATIVE "${SRC}" LIST_DIRECTORIES false "${SRC}/*")
 file(GLOB _present RELATIVE "${DST}" LIST_DIRECTORIES false "${DST}/*")
 foreach(_name IN LISTS _present)
-    if(NOT _name IN_LIST _sources AND NOT _name MATCHES "^_cbls_core\\.")
+    if(NOT _name IN_LIST _sources AND NOT _name MATCHES "^_cbls_core\\..*\\.(so|pyd)$")
         file(REMOVE "${DST}/${_name}")
     endif()
 endforeach()

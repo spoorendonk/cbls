@@ -605,7 +605,8 @@ constraints except* `objective_constraint_idx()`.
 
 ### Mid-solve structural writes (Python)
 
-A bound `cbls.solve` (and `ParallelSearch.solve_master`) releases the GIL for
+A bound solve (`cbls._cbls_core.solve` and `ParallelSearch.solve_master`, the
+two paths the public `cbls.solve` wrapper picks between, #464) releases the GIL for
 the whole search, and the first solve of a model freezes it under that release.
 A `SolveCallback` or another Python thread can reach the model mid-search,
 while the search reads the node array, the CSR indices and the topological
@@ -613,7 +614,7 @@ order without a lock. So the binding keeps a registry of the models a bound
 solve is running on, and every structural write Python can reach raises
 `RuntimeError` mid-solve: the `Model` builders, `close`, `freeze`, the `Expr`
 operators and free functions, and a second solve of the same model.
-`cbls.solve` registers the model **before** it releases the GIL, in the body
+Each registers the model **before** it releases the GIL, in the body
 rather than through a `call_guard`, so another thread's builder call cannot
 pass its check in the gap. The engine's own freeze is a C++ call and never
 passes through the registry. `tests/python/test_solve_guards.py` pins these in
@@ -2884,8 +2885,8 @@ worker ran reports `Cancelled`, not `NoBudget`.
 
 From Python, `SearchConfig.stop` / `ParallelConfig.stop` accept a
 `cbls.StopToken` (`request()`, `reset()`, `requested()`) or `None`, and read
-back as a bool. The single-threaded `cbls.solve` releases the GIL for the
-whole call, so a token raised from another Python thread reaches a running
+back as a bool; `cbls.solve(..., stop=token)` attaches one to a copy of its
+config. The bound solves release the GIL for the whole call, so a token raised from another Python thread reaches a running
 solve (`tests/python/test_stop.py`, in a child process: a regression starves
 the interpreter).
 

@@ -7,8 +7,11 @@ interpreter under a timeout, as `tests/python/test_pool.py` explains.
 
 from __future__ import annotations
 
+import copy
+import gc
 import subprocess
 import sys
+from typing import Any
 
 import cbls
 import pytest
@@ -133,9 +136,9 @@ def test_solve_calls_the_callback() -> None:
         ({"lns": -0.5}, "lns"),
     ],
 )
-def test_solve_rejects_bad_arguments(kwargs: dict[str, float], message: str) -> None:
+def test_solve_rejects_bad_arguments(kwargs: dict[str, Any], message: str) -> None:
     with pytest.raises(ValueError, match=message):
-        cbls.solve(_quadratic()[0], **kwargs)  # type: ignore[arg-type]
+        cbls.solve(_quadratic()[0], **kwargs)
 
 
 def test_solve_attaches_stop_to_a_copy_not_the_callers_config() -> None:
@@ -205,6 +208,10 @@ def test_solve_with_threads_zero_takes_a_path_and_solves() -> None:
     _assert_scenario_ok("threads_zero")
 
 
+def test_a_copied_config_keeps_its_stop_token_alive() -> None:
+    _assert_scenario_ok("copy_keeps_token")
+
+
 def _scenario_parallel_restores_winner() -> None:
     m, x, y = _quadratic()
     result = cbls.solve(m, time_limit=PORTFOLIO_SECONDS, threads=2)
@@ -234,6 +241,23 @@ def _scenario_parallel_with_factories() -> None:
     assert recorder.calls > 0
 
 
+def _scenario_copy_keeps_token() -> None:
+    """A copy's stop is a view of the original's token: freed with it, a solve
+    through the copy read reused memory and reported Cancelled (#464, #156)."""
+    original = cbls.SearchConfig()
+    original.max_iterations = 2_000
+    original.stop = cbls.StopToken()
+    copied = copy.copy(original)
+    del original
+    gc.collect()
+    raised = [cbls.StopToken() for _ in range(1_000)]
+    for token in raised:
+        token.request()
+    assert copied.stop
+    result = cbls._cbls_core.solve(_quadratic()[0], 60.0, 42, config=copied)
+    assert result.termination == cbls.TerminationReason.IterationLimit, result.termination
+
+
 def _scenario_threads_zero() -> None:
     result = cbls.solve(_quadratic()[0], time_limit=PORTFOLIO_SECONDS, threads=0)
     assert result.feasible
@@ -244,6 +268,7 @@ if __name__ == "__main__":
         "parallel_restores_winner": _scenario_parallel_restores_winner,
         "parallel_with_factories": _scenario_parallel_with_factories,
         "threads_zero": _scenario_threads_zero,
+        "copy_keeps_token": _scenario_copy_keeps_token,
     }
     _scenarios[sys.argv[1]]()
     print("OK")

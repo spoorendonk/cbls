@@ -82,8 +82,10 @@ def solve(
     (None: off); `intensify` adds the float intensification hook. `stop` is
     attached to a copy of `config` (a fresh `SearchConfig` when None), which
     also holds `lns_interval`. The model is left at the best point found, which
-    the result also carries by variable id. An unclosed model raises
-    ValueError: `nl_to_model` leaves an unsupported one so.
+    the result also carries by variable id; a portfolio with no worker result
+    (cancelled before one finished) leaves it at its start, as the CLI does.
+    An unclosed model raises ValueError: `nl_to_model` leaves an unsupported
+    one so.
 
     The GIL is released while the search runs; see `cbls._cbls_core.solve` and
     `ParallelSearch.solve_master` for what that permits.

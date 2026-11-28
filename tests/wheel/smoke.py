@@ -118,7 +118,7 @@ def check_contents(wheel: Path) -> None:
     for required in ("__init__.py", "_solve.py", "_cbls_core.pyi", "py.typed"):
         if f"cbls/{required}" not in names:
             sys.exit(f"wheel has no cbls/{required}: {names}")
-    if not any(n.startswith("cbls/_cbls_core.") for n in names):
+    if not any(n.startswith("cbls/_cbls_core.") and n.endswith((".so", ".pyd")) for n in names):
         sys.exit(f"wheel has no compiled cbls/_cbls_core: {names}")
 
 
