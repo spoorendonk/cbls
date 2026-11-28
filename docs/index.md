@@ -40,4 +40,6 @@ vehicle capacity. A model of `List` variables; no `List` result is published.
 results
 cpp
 autoapi/cbls/index
+examples/minlplib
+examples/mip
 ```

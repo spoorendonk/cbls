@@ -1,0 +1,91 @@
+# MINLPLib: a nonlinear model from an `.nl` file
+
+This example solves a MINLPLib instance, prints the point found and checks it.
+The instance is [`st_e38`](https://github.com/spoorendonk/cbls/blob/main/benchmarks/instances/minlplib/st_e38.nl),
+the pressure-vessel design problem. It has four variables, two of them
+integer, and minimises a cost that is non-convex in the vessel's radius and
+length. MINLPLib's best known objective is 7197.727149, and it is proved
+optimal. The repository vendors the file.
+
+## Run it
+
+From a checkout, with the module installed (`pip install .`; see
+[Use from Python](https://github.com/spoorendonk/cbls#use-from-python)):
+
+```sh
+python examples/minlplib.py benchmarks/instances/minlplib/st_e38.nl
+```
+
+In C++, build the example and run it:
+
+```sh
+cmake -B build
+cmake --build build --target cbls_example_minlplib
+build/cbls_example_minlplib benchmarks/instances/minlplib/st_e38.nl
+```
+
+Both solve for 2 s on one thread with seed 42, and print:
+
+```text
+feasible  = True
+objective = 7197.727149
+  x0 = 58.290155
+  x1 = 43.692654
+  x2 = 18.000000
+  x3 = 10.000000
+verify: PASS
+```
+
+The C++ program prints `true` in place of `True`. The test suite runs both
+commands as written here: `example_minlplib` in ctest, and
+`tests/python/test_examples.py`.
+
+## The code
+
+```{literalinclude} ../../examples/minlplib.py
+:language: python
+```
+
+```{literalinclude} ../../examples/minlplib.cpp
+:language: cpp
+```
+
+## Reading the result
+
+- **`nl_to_model(read_nl(path))`** builds a closed model, with one variable per
+  `.nl` column. If the file uses an operator cbls does not model, `supported`
+  is false and `skipped_reasons` says why. Such a model must not be solved.
+- **`objective`** is in the minimise sense. A maximisation model reports the
+  negated objective (#472).
+- **`original_values()`** gives the point as one value per `.nl` column, in the
+  file's order. `x2` and `x3` are the integer variables.
+- **`feasible`** means every constraint holds within the engine's tolerance of
+  1e-6.
+
+## Verifying it
+
+The engine's own `feasible` flag is not the whole check. `cbls::verify_model`
+re-checks the point the model is left at:
+- each variable is within its bounds, and each integer variable is integral;
+- each constraint's violation is at most 1e-6, and a domain row allows none;
+- the stored node values match a fresh evaluation.
+
+It then prints `verify: PASS`, or each failure. The Python `verify` function
+makes the first two checks through the public `Model` accessors.
+
+A second check is against the instance's reference value. 7197.727149 is
+MINLPLib's best known (`bounds.csv` in the instance directory), so a lower
+feasible objective would mean a verification bug, not a record.
+
+## Where cbls stands
+
+cbls cannot prove optimality. SCIP reaches the same objective on `st_e38` and
+proves it optimal in 0.07 s. Over Mittelmann's nontrivial MINLPLib roster, cbls
+is behind SCIP:
+- its GM(gap+1) is **1.676 times SCIP's**;
+- it finds a feasible point on 169 instances, against SCIP's 187 of 195.
+
+That run gave cbls 16 threads and SCIP one, both for 60 s (#256). The
+[MINLPLib table](../results.md#minlplib) has the full numbers and run record,
+and it also lists the open instances where cbls improves on MINLPLib's best
+known.

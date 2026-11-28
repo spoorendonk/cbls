@@ -40,7 +40,7 @@ evaluates each fence under `set -e`. Keep the fences runnable in both places.
 **The gated build turns the Python bindings on, and the gated test run requires
 them.** `CBLS_BUILD_PYTHON` defaults to `OFF` and `tests/python/conftest.py`
 skips every test that imports `cbls` when its compiled `cbls._cbls_core` is missing, so a build
-without the flag would leave 345 binding tests silently unrun.
+without the flag would leave 347 binding tests silently unrun.
 `CBLS_REQUIRE_BINDINGS=1` turns that skip into a hard error. Bindings cost ~2.4s
 of build and ~6s of pytest against a suite that already spends ~25s in `ctest` —
 always build them. The cost argument is the weaker one: the reason is that
@@ -89,7 +89,7 @@ ln -sfn /path/to/this/checkout/.venv .venv && .venv/bin/pytest --tb=short -q; rm
 
 ### Fast vs. slow tests
 
-The C++ suite is **901 ctest tests**: 895 Catch2 ones over **891 `TEST_CASE`s**
+The C++ suite is **903 ctest tests**: 895 Catch2 ones over **891 `TEST_CASE`s**
 — 885 registered by `catch_discover_tests` plus **10 registered by hand**, the 6
 `[timing]` cases and the four hang guards `hang_guard_iteration_only_portfolio`,
 `hang_guard_novelty_zero_move_batch`, `hang_guard_nonpositive_batch_iterations`
@@ -109,12 +109,14 @@ ctest script, not pytest: a test that builds a whole project belongs in the
 `slow` label, which pytest has no counterpart for — plus **1 docs test**,
 `docs_build` (label `docs`), registered in the root `CMakeLists.txt` when
 configure finds doxygen and a Python with the `docs` group (**Documentation
-site** below). Of the 885,
+site** below) — plus **2 example tests**, `example_minlplib` and `example_mip`,
+registered in the root `CMakeLists.txt` with the examples: each runs a docs
+example page's C++ program as the page shows (#470). Of the 885,
 **4 carry the
 Catch2 `[slow]` tag** — the UC-CHPED benchmark solves. `tests/CMakeLists.txt` discovers them in a second
 `catch_discover_tests` call with `LABELS "slow"`, so:
 
-- `ctest -LE slow` — the other 889 tests, ~12s with `-j`. The fast inner loop; run it yourself before committing (the hook no longer does).
+- `ctest -LE slow` — the other 891 tests, ~12s with `-j`. The fast inner loop; run it yourself before committing (the hook no longer does).
 - `ctest` — everything. This is what **pre-push**'s local CI runs.
 - `ctest -L timing` — 6 tests: `timing_structural_batch_deadline`, the three
   `timing_throughput_*` floors added for #125,
@@ -144,14 +146,14 @@ agree:
 1. this section,
 2. the comment above `catch_discover_tests` in `tests/CMakeLists.txt`,
 3. the build section of `README.md`,
-4. the `.venv/bin/pytest` line in `README.md` for the Python side (1863 tests, 345
+4. the `.venv/bin/pytest` line in `README.md` for the Python side (1865 tests, 347
    of them binding tests, echoed in prose by `pyproject.toml`),
 5. the `-LE slow` guidance and the ~25s/~490s figures in `docs/profiling.md`.
    Note its "302/302 green" sanitizer line is a **dated record of one run at a
    named commit**, not a current count — it says so inline. Leave it alone
    apart from the parenthetical restating the current fast-set size.
 6. the binding count in **Build & Test, in detail** above, in the paragraph explaining
-   why the gated build turns `CBLS_BUILD_PYTHON` on ("345 binding tests silently
+   why the gated build turns `CBLS_BUILD_PYTHON` on ("347 binding tests silently
    unrun"). It is in this file, but not in this section, so a search that stops
    at this enumeration misses it.
 

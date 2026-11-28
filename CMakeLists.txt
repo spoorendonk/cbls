@@ -452,6 +452,24 @@ if(CBLS_BUILD_EXAMPLES)
     add_executable(cbls_simple examples/simple.cpp)
     target_link_libraries(cbls_simple PRIVATE cbls_lib)
     cbls_enable_warnings(cbls_simple)
+
+    # The C++ halves of the docs' example pages (docs/examples/, #470); each
+    # page's command runs as written in example_<name>.
+    foreach(_example minlplib mip)
+        add_executable(cbls_example_${_example} examples/${_example}.cpp)
+        target_link_libraries(cbls_example_${_example} PRIVATE cbls_lib)
+        cbls_enable_warnings(cbls_example_${_example})
+    endforeach()
+    if(CBLS_BUILD_TESTS)
+        add_test(NAME example_minlplib
+            COMMAND cbls_example_minlplib benchmarks/instances/minlplib/st_e38.nl
+            WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
+        add_test(NAME example_mip
+            COMMAND cbls_example_mip benchmarks/instances/miplib-fj/neos5.mps.gz
+            WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
+        set_tests_properties(example_minlplib example_mip PROPERTIES
+            PASS_REGULAR_EXPRESSION "feasible  = true.*verify: PASS")
+    endif()
 endif()
 
 # Benchmarks
