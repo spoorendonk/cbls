@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <stdexcept>
 
 namespace cbls {
@@ -144,6 +145,24 @@ bool ViolationManager::is_feasible(double tol) const {
     return std::all_of(cids.begin(), cids.end(), [&](int32_t cid) {
         return model_.node_value(cid) <= (model_.is_domain_node(cid) ? 0.0 : tol);
     });
+}
+
+double ViolationManager::max_real_violation() const {
+    const std::vector<int32_t>& cids = model_.constraint_ids();
+    const int32_t obj_ci = model_.objective_constraint_idx();
+    double worst = 0.0;
+    for (size_t i = 0; i < cids.size(); ++i) {
+        if (static_cast<int32_t>(i) == obj_ci) {
+            continue;
+        }
+        const double v = model_.node_value(cids[i]);
+        // NaN maps to +inf, else `value > tol` would call a NaN row satisfied.
+        if (std::isnan(v)) {
+            return std::numeric_limits<double>::infinity();
+        }
+        worst = std::max(worst, v);
+    }
+    return worst;
 }
 
 std::vector<int> ViolationManager::violated_constraints(double tol) const {

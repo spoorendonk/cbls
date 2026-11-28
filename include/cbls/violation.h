@@ -43,6 +43,13 @@ public:
     // fine for local polish, wrong for accept rules (LNS checks feasibility).
     double augmented_objective() const;
     bool is_feasible(double tol = kDefaultFeasibilityTolerance) const;
+    /// Largest unweighted violation over the real constraints, the objective
+    /// row (`obj <= bound`) excluded; 0.0 when all hold, +inf if any row is NaN.
+    /// The search's own feasibility test is `max_real_violation() <=
+    /// SearchConfig::feasibility_tolerance`; a hook classifies a point with it
+    /// (#454). `is_feasible` counts the objective row, which a non-improving
+    /// feasible point violates, and holds domain rows to 0.
+    [[nodiscard]] double max_real_violation() const;
     std::vector<int> violated_constraints(double tol = kDefaultFeasibilityTolerance) const;
     void bump_weights(double factor = 1.0);
 

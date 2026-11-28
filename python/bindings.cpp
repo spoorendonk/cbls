@@ -783,6 +783,7 @@ NB_MODULE(_cbls_core, m) {
         // 0.0 without a wall-clock budget (include/cbls/counters.h); the call
         // count above is always filled.
         .def_ro("inner_solver_seconds", &SearchCounters::inner_solver_seconds)
+        .def_ro("inner_solver_infeasible_calls", &SearchCounters::inner_solver_infeasible_calls)
         .def_ro("portfolio_restarts", &SearchCounters::portfolio_restarts)
         .def_ro("cone_cache_walks", &SearchCounters::cone_cache_walks)
         .def_ro("cone_fallback_walks", &SearchCounters::cone_fallback_walks)

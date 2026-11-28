@@ -80,12 +80,16 @@ struct SearchCounters {
     /// iteration-budgeted run's other reads are O(1) per run (per batch with a
     /// `SolveCallback`); the gate keeps such runs bit-reproducible (#169), as
     /// `last_improvement_` in `src/search.cpp` does. Timed runs pay it whether
-    /// read or not: the hook fires per new feasible point, so on the #125
+    /// read or not: the hook fires per feasible batch (and, with
+    /// `InnerSolverHook::wants_infeasible()`, per other batch), so on the #125
     /// models at 1s (pk1 201, ucp13-1p 52, chain50 0 calls) at 1359ns/read
     /// (HPET, pessimistic; ~20-25ns via vDSO/TSC) it costs 0.055%, 0.014% and
     /// 0 of the budget (count x per-read cost, not differenced timings).
     int64_t inner_solver_calls = 0;
     double inner_solver_seconds = 0.0;
+    /// Of `inner_solver_calls`, those after an infeasible batch (#454); 0
+    /// unless the hook's `wants_infeasible()` is true.
+    int64_t inner_solver_infeasible_calls = 0;
 
     /// Portfolio restarts beyond a worker's first solve, summed over workers;
     /// always 0 for `cbls::solve()`. Counts solves that produced a result, so

@@ -282,11 +282,9 @@ public:
 
 private:
     // ---- observations of the current assignment ----
-    // Largest unweighted violation over the real constraints (objective row
-    // excluded), so comparable across GLS weight changes; 0.0 when all hold. NaN
-    // maps to +inf, else `value > tol` would call a NaN row satisfied (as
-    // ViolationManager's clamped_node_violation guards).
-    [[nodiscard]] double max_real_violation() const;
+    // ViolationManager::max_real_violation(): one definition for the loop and
+    // its hook (#454).
+    [[nodiscard]] double max_real_violation() const { return vm_.max_real_violation(); }
     [[nodiscard]] bool real_feasible() const {
         return max_real_violation() <= config_.feasibility_tolerance;
     }
@@ -430,9 +428,12 @@ private:
                (kind == BatchKind::FixPropagateRepair && fpr_ran_fj_);
     }
     void note_closest_approach(double batch_violation);
-    // Steps 3-4: bank the feasible point, polish it, bank the polish. Returns
+    // Steps 3-4: bank the feasible point, polish it, bank the polish; on an
+    // infeasible batch, an opt-in hook's repair, banked if feasible. Returns
     // whether the batch produced a new best, and may set `resync`.
     bool polish_and_record(double batch_violation, bool& resync);
+    // One InnerSolverHook::solve call: counted, and timed under the clock gate.
+    void run_hook();
     // Steps 5-6. Returns false when the run is over (pure feasibility: solved).
     bool apply_batch_outcome(bool improved, bool resync, bool count_stagnation);
     void maybe_arm_escape_probe();
@@ -493,8 +494,6 @@ private:
     // only past it: a step change re-deriving the cap from the same global best
     // is no peer moving the bound (#241).
     double bound_global_ = std::numeric_limits<double>::infinity();
-    const int32_t obj_ci_;
-    const std::vector<int32_t>& cids_;
     // The structural batch has work and FJ/Novelty have none (#201). False on
     // any model without structure, even one with no movable scalar.
     const bool fj_idle_;
@@ -597,8 +596,6 @@ ViolationLSLoop::ViolationLSLoop(Model& model, ViolationManager& vm, RNG& rng, F
       budget_seconds_(budget.seconds),
       has_obj_(model.objective_id() >= 0),
       obj_integral_(has_obj_ && model.is_integral(model.objective_id())),
-      obj_ci_(model.objective_constraint_idx()),
-      cids_(model.constraint_ids()),
       fj_idle_(structural_batch_has_work(model, config) && !fj_has_work(model)),
       structural_probability_(effective_structural_probability(
           structural_batch_has_work(model, config), config.structural_batch_probability, fj_idle_)),
@@ -612,21 +609,6 @@ ViolationLSLoop::ViolationLSLoop(Model& model, ViolationManager& vm, RNG& rng, F
       last_improvement_(budget.start) {
     counters_.fpr_setup_seconds = fpr_setup_seconds_;
     sample_rho();
-}
-
-double ViolationLSLoop::max_real_violation() const {
-    double worst = 0.0;
-    for (size_t i = 0; i < cids_.size(); ++i) {
-        if (static_cast<int32_t>(i) == obj_ci_) {
-            continue;
-        }
-        double v = model_.node_value(cids_[i]);
-        if (std::isnan(v)) {
-            return std::numeric_limits<double>::infinity();
-        }
-        worst = std::max(worst, v);
-    }
-    return worst;
 }
 
 void ViolationLSLoop::emit_progress(bool new_best) {
@@ -1199,42 +1181,53 @@ void ViolationLSLoop::note_closest_approach(double batch_violation) {
 
 bool ViolationLSLoop::polish_and_record(double batch_violation, bool& resync) {
     if (batch_violation > config_.feasibility_tolerance) {
-        return false;
+        // An opt-in hook may repair an infeasible point (#454); kept only if
+        // the result is feasible. wants_infeasible() first: a default hook
+        // adds no clock read here.
+        if (hook_ == nullptr || !hook_->wants_infeasible() || past_deadline()) {
+            return false;
+        }
+        ++counters_.inner_solver_infeasible_calls;
+        run_hook();
+        resync = true;
+        return real_feasible() && record_best();
     }
     // Record before polishing: the hook can leave the feasible region, and a
     // visited feasible point must not be lost.
     bool improved = record_best();
     // The hook's time is unbounded; don't start one with no budget left.
     if (hook_ != nullptr && !past_deadline()) {
-        ++counters_.inner_solver_calls;
-        // An iteration-budgeted run reads no clock at all (#169, the determinism
-        // note in docs/architecture.md), so inner_solver_seconds reads 0.0 there.
-        // An attached tracer widens the gate: Tracer::hook carries the duration.
-        const bool time_the_hook = has_deadline_ || tracer_ != nullptr;
-        const auto hook_started = time_the_hook ? std::chrono::steady_clock::now()
-                                                : std::chrono::steady_clock::time_point{};
-        // The hook gets the loop's stop condition (#191). past_deadline() reads
-        // no clock on a clockless run, so it stays bit-reproducible.
-        const LoopStop stop{this};
-        // continuous-objective polish (mutates floats)
-        hook_->solve(model_, vm_, {}, StopRef(stop));
-        if (time_the_hook) {
-            const double hook_seconds =
-                std::chrono::duration<double>(std::chrono::steady_clock::now() - hook_started)
-                    .count();
-            if (has_deadline_) {
-                counters_.inner_solver_seconds += hook_seconds;
-            }
-            if (tracer_ != nullptr) {
-                tracer_->hook(hook_seconds);
-            }
-        }
+        run_hook();
         resync = true;
         if (real_feasible()) {  // keep the polish only if it stayed feasible
             improved = record_best() || improved;
         }
     }
     return improved;
+}
+
+void ViolationLSLoop::run_hook() {
+    ++counters_.inner_solver_calls;
+    // An iteration-budgeted run reads no clock at all (#169, the determinism
+    // note in docs/architecture.md), so inner_solver_seconds reads 0.0 there.
+    // An attached tracer widens the gate: Tracer::hook carries the duration.
+    const bool time_the_hook = has_deadline_ || tracer_ != nullptr;
+    const auto hook_started =
+        time_the_hook ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+    // The hook gets the loop's stop condition (#191). past_deadline() reads
+    // no clock on a clockless run, so it stays bit-reproducible.
+    const LoopStop stop{this};
+    hook_->solve(model_, vm_, {}, StopRef(stop));
+    if (time_the_hook) {
+        const double hook_seconds =
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - hook_started).count();
+        if (has_deadline_) {
+            counters_.inner_solver_seconds += hook_seconds;
+        }
+        if (tracer_ != nullptr) {
+            tracer_->hook(hook_seconds);
+        }
+    }
 }
 
 bool ViolationLSLoop::apply_batch_outcome(bool improved, bool resync, bool count_stagnation) {

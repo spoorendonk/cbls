@@ -1,10 +1,14 @@
 #include "test_helpers.h"
 
+#include <atomic>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include <cbls/cbls.h>
 #include <chrono>
 #include <cmath>
+#include <functional>
+#include <memory>
+#include <string>
 #include <vector>
 
 using namespace cbls;
@@ -496,4 +500,269 @@ TEST_CASE("search hands a custom hook a stop raised by a host cancel", "[inner_s
     REQUIRE(hook.raised_on_entry == 0);
     REQUIRE(hook.stopped_calls == 1);
     REQUIRE(result.termination == TerminationReason::Cancelled);
+}
+
+// ---- the infeasible-batch path (InnerSolverHook::wants_infeasible, #454) ----
+
+namespace {
+
+// min sum x_i over n Ints in [0, 10] with sum x_i >= 10n: the one feasible
+// point is every x_i at 10, n jumps from a start below it, so with one GLS
+// iteration per batch the first batches end infeasible.
+Model all_ten_model(int n) {
+    Model m;
+    std::vector<int32_t> lhs{m.constant(10.0 * n)};
+    std::vector<int32_t> xs;
+    const auto minus1 = m.constant(-1.0);
+    for (int i = 0; i < n; ++i) {
+        const auto x = m.int_var(0, 10);
+        lhs.push_back(m.prod(minus1, x));
+        xs.push_back(x);
+    }
+    m.add_constraint(m.sum(lhs));
+    m.minimize(m.sum(xs));
+    m.close();
+    return m;
+}
+
+// Variable 0 (x in [0, 1]) with x - 0.5 <= 0, then always_violated_model's n
+// rows: never feasible, while NudgeHook's two values for x flip whether its
+// row is violated, which FJ's incremental state must follow.
+Model flip_row_model(int n) {
+    Model m;
+    const auto x = m.float_var(0.0, 1.0);
+    m.add_constraint(m.sum({x, m.constant(-0.5)}));
+    const auto five = m.constant(5.0);
+    const auto minus1 = m.constant(-1.0);
+    for (int i = 0; i < n; ++i) {
+        const auto y = m.float_var(0.0, 1.0);
+        m.add_constraint(m.sum({five, m.prod(minus1, y)}));
+    }
+    m.close();
+    return m;
+}
+
+bool real_feasible(const ViolationManager& vm) {
+    return vm.max_real_violation() <= kDefaultFeasibilityTolerance;
+}
+
+// Repairs all_ten_model: every variable to 10. `per_call` > 0 repairs only
+// that many variables per call (lowest id first), so the search sees partial
+// repairs it must continue from.
+struct RepairHook : InnerSolverHook {
+    int per_call = 0;
+    int calls = 0;
+    int infeasible_entries = 0;
+    bool first_call_infeasible = false;
+    [[nodiscard]] bool wants_infeasible() const override { return true; }
+    void solve(Model& model, ViolationManager& vm,
+               const std::vector<int32_t>& /*last_changed_vars*/, StopRef /*stop*/) override {
+        ++calls;
+        if (!real_feasible(vm)) {
+            ++infeasible_entries;
+            first_call_infeasible = first_call_infeasible || calls == 1;
+        }
+        std::vector<int32_t> changed;
+        for (int32_t v = 0; v < static_cast<int32_t>(model.num_vars()); ++v) {
+            const bool room = per_call == 0 || changed.size() < static_cast<size_t>(per_call);
+            if (model.var(v).value != 10.0 && room) {
+                model.var_mut(v).value = 10.0;
+                changed.push_back(v);
+            }
+        }
+        if (!changed.empty()) {
+            delta_evaluate(model, changed);
+        }
+    }
+};
+
+// Moves variable 0 between 0.25 and 0.75 on every call; on the models it runs
+// on no assignment is feasible, so it never repairs.
+struct NudgeHook : InnerSolverHook {
+    bool wants = true;
+    int calls = 0;
+    [[nodiscard]] bool wants_infeasible() const override { return wants; }
+    void solve(Model& model, ViolationManager& /*vm*/,
+               const std::vector<int32_t>& /*last_changed_vars*/, StopRef /*stop*/) override {
+        ++calls;
+        model.var_mut(0).value = calls % 2 == 0 ? 0.25 : 0.75;
+        delta_evaluate(model, {0});
+    }
+};
+
+struct FirstBatchTracer : Tracer {
+    int batches = 0;
+    bool first_improved = false;
+    void batch_end(BatchKind /*kind*/, int64_t /*iterations*/, bool improved) override {
+        if (++batches == 1) {
+            first_improved = improved;
+        }
+    }
+};
+
+// Collects FJ's from-scratch audit before every batch: a hook's write that
+// the search did not resync to shows up as a stale incremental structure.
+struct ResyncAuditor : SearchAuditor {
+    int audits = 0;
+    std::vector<std::string> findings;
+    void audit(AuditPoint point, const FeasibilityJump& fj) override {
+        if (point != AuditPoint::BeforeBatch) {
+            return;
+        }
+        ++audits;
+        for (const std::string& f : fj.audit()) {
+            findings.push_back(f);
+        }
+    }
+};
+
+// Raises the host's stop straight after the first batch, before the loop
+// decides whether to call the hook.
+struct StopAfterBatchAuditor : SearchAuditor {
+    explicit StopAfterBatchAuditor(StopToken& t) : token(t) {}
+    StopToken& token;
+    void audit(AuditPoint point, const FeasibilityJump& /*fj*/) override {
+        if (point != AuditPoint::BeforeBatch) {
+            token.request();
+        }
+    }
+};
+
+struct WaitForStopInfeasibleHook : WaitForStopHook {
+    int started_stopped = 0;
+    [[nodiscard]] bool wants_infeasible() const override { return true; }
+    void solve(Model& model, ViolationManager& vm, const std::vector<int32_t>& last_changed_vars,
+               StopRef stop) override {
+        started_stopped += stop.requested() ? 1 : 0;
+        WaitForStopHook::solve(model, vm, last_changed_vars, stop);
+    }
+};
+
+}  // namespace
+
+TEST_CASE("a hook that wants infeasible points has its repair of the first batch recorded",
+          "[inner_solver]") {
+    // Red without the infeasible path: the first batch ends infeasible, so no
+    // hook runs and that batch records nothing.
+    Model m = all_ten_model(20);
+    RepairHook hook;
+    FirstBatchTracer tracer;
+    SearchConfig cfg;
+    cfg.batch_iterations = 1;
+    cfg.tracer = &tracer;
+    const SearchResult result = solve_deterministic(m, 50, 42, &hook, nullptr, 3, nullptr, cfg);
+    REQUIRE(hook.first_call_infeasible);
+    CHECK(tracer.first_improved);
+    REQUIRE(result.feasible);
+    CHECK(result.objective == 200.0);
+    CHECK(result.counters.inner_solver_infeasible_calls == hook.infeasible_entries);
+    CHECK(result.counters.inner_solver_calls == hook.calls);
+}
+
+TEST_CASE("a hook's infeasible result is not recorded, and the search resyncs to it",
+          "[inner_solver]") {
+    // Red without `resync` on the infeasible path: FJ's violated set still
+    // holds variable 0's row as it was before the hook moved it.
+    Model m = flip_row_model(8);
+    NudgeHook hook;
+    ResyncAuditor auditor;
+    SearchConfig cfg;
+    cfg.batch_iterations = 10;
+    cfg.auditor = &auditor;
+    const SearchResult result = solve_deterministic(m, 200, 42, &hook, nullptr, 3, nullptr, cfg);
+    REQUIRE_FALSE(result.feasible);
+    REQUIRE(hook.calls > 1);
+    CHECK(result.counters.inner_solver_calls == hook.calls);
+    CHECK(result.counters.inner_solver_infeasible_calls == hook.calls);
+    REQUIRE(auditor.audits > 1);
+    CHECK(auditor.findings.empty());
+}
+
+TEST_CASE("a default hook is never called after an infeasible batch", "[inner_solver]") {
+    Model m = always_violated_model(8);
+    NudgeHook hook;
+    hook.wants = false;
+    SearchConfig cfg;
+    cfg.batch_iterations = 10;
+    const SearchResult result = solve_deterministic(m, 200, 42, &hook, nullptr, 3, nullptr, cfg);
+    REQUIRE(result.counters.batches > 1);
+    CHECK(hook.calls == 0);
+    CHECK(result.counters.inner_solver_calls == 0);
+    CHECK(result.counters.inner_solver_infeasible_calls == 0);
+}
+
+TEST_CASE("a stop raised during an infeasible batch starts no hook", "[inner_solver]") {
+    // Red without the past_deadline() guard on the infeasible path: the hook
+    // would run once after the batch that raised the stop.
+    Model m = always_violated_model(8);
+    NudgeHook hook;
+    StopToken token;
+    StopAfterBatchAuditor auditor(token);
+    SearchConfig cfg;
+    cfg.max_iterations = 100000;
+    cfg.stop = token;
+    cfg.auditor = &auditor;
+    const SearchResult result = solve(m, 0.0, 42, &hook, nullptr, 3, nullptr, cfg);
+    CHECK(hook.calls == 0);
+    CHECK(result.termination == TerminationReason::Cancelled);
+}
+
+TEST_CASE("the infeasible path hands its hook the deadline stop", "[inner_solver]") {
+    // The guard against starting a hook past the stop is pinned by the test
+    // above; here the first call spins to the deadline and the run ends.
+    Model m = always_violated_model(5);
+    WaitForStopInfeasibleHook hook;
+    const SearchResult result = solve(m, 0.2, 42, &hook);
+    REQUIRE(hook.calls >= 1);
+    CHECK(hook.stopped_calls == hook.calls);
+    CHECK(hook.started_stopped == 0);
+    CHECK(result.counters.inner_solver_infeasible_calls == hook.calls);
+    CHECK(result.termination == TerminationReason::TimeLimit);
+}
+
+TEST_CASE("an iteration-budgeted run with an infeasible-path hook is bit-identical twice",
+          "[inner_solver]") {
+    auto run = []() {
+        Model m = all_ten_model(30);
+        RepairHook hook;
+        hook.per_call = 2;  // partial repairs the search continues from
+        SearchConfig cfg;
+        cfg.batch_iterations = 3;
+        return solve_deterministic(m, 300, 7, &hook, nullptr, 3, nullptr, cfg);
+    };
+    const SearchResult a = run();
+    const SearchResult b = run();
+    REQUIRE(a.counters.inner_solver_infeasible_calls > 0);
+    CHECK(a.objective == b.objective);
+    CHECK(a.iterations == b.iterations);
+    CHECK(a.counters.batches == b.counters.batches);
+    CHECK(a.counters.inner_solver_calls == b.counters.inner_solver_calls);
+    CHECK(a.counters.inner_solver_infeasible_calls == b.counters.inner_solver_infeasible_calls);
+    CHECK(a.best_state.values == b.best_state.values);
+}
+
+TEST_CASE("ParallelSearch workers' factory hooks take the infeasible path", "[inner_solver]") {
+    std::atomic<int64_t> calls{0};
+    struct Counting : NudgeHook {
+        explicit Counting(std::atomic<int64_t>& sink) : out(sink) {}
+        std::atomic<int64_t>& out;
+        void solve(Model& model, ViolationManager& vm,
+                   const std::vector<int32_t>& last_changed_vars, StopRef stop) override {
+            out.fetch_add(1);
+            NudgeHook::solve(model, vm, last_changed_vars, stop);
+        }
+    };
+    auto hook_factory = [&calls](Model&) -> std::shared_ptr<InnerSolverHook> {
+        return std::make_shared<Counting>(calls);
+    };
+    std::function<std::shared_ptr<LNS>()> no_lns;
+    ParallelSearch ps(2);
+    ParallelConfig pc;
+    pc.n_threads = 2;
+    const SearchResult r = ps.solve([]() { return always_violated_model(8); }, 0.3, 42,
+                                    SearchConfig{}, hook_factory, no_lns, nullptr, pc);
+    REQUIRE_FALSE(r.feasible);
+    REQUIRE(calls.load() > 0);
+    CHECK(r.counters.inner_solver_infeasible_calls == calls.load());
+    CHECK(r.counters.inner_solver_calls == calls.load());
 }

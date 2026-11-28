@@ -110,6 +110,8 @@ def test_inner_solver_is_counted_but_not_timed_without_a_clock() -> None:
     result = cbls.solve(_quadratic(), 0.0, 42, hook=cbls.FloatIntensifyHook(), config=_config())
     assert result.counters.inner_solver_calls > 0
     assert result.counters.inner_solver_seconds == 0.0
+    # FloatIntensifyHook does not opt in to infeasible batches (#454).
+    assert result.counters.inner_solver_infeasible_calls == 0
 
 
 def test_a_single_solve_reports_no_portfolio_restarts() -> None:

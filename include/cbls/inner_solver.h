@@ -9,13 +9,31 @@
 
 namespace cbls {
 
+// The extension point for a problem-specific solver (#452, #454). Contract:
+// - The search calls solve() after every batch that ends real-feasible
+//   (ViolationManager::max_real_violation() within
+//   SearchConfig::feasibility_tolerance), after that point is offered to the
+//   incumbent; with
+//   wants_infeasible() also after every other batch, uncapped, so such a hook
+//   budgets itself.
+// - It mutates the model directly and leaves it fully evaluated. The search
+//   records the result only if it is real-feasible and beats the incumbent,
+//   and never rolls back: it resyncs and continues from what the hook left.
+//   So a hook may repair an infeasible point; one that cannot should leave it.
+// - The cost to beat is model.objective_bound(); a feasible point above it
+//   is not recorded.
+// - One hook object serves every solve() it is passed to: under
+//   ParallelSearch a worker keeps its hook across pool restarts while the
+//   incumbent and bound start over, so state it carries must stay valid then.
+// - Hooks are C++ only (no nanobind trampoline). A call that does nothing still
+//   costs a resync and counts in SearchCounters::inner_solver_calls.
 class InnerSolverHook {
 public:
     virtual ~InnerSolverHook() = default;
 
-    // Called on each new feasible solution; mutates the model directly (var
-    // values + delta_evaluate). last_changed_vars: var IDs of the last accepted
-    // jump, empty when untracked (after a perturbation or LNS repair).
+    // Mutates the model directly (var values + delta_evaluate).
+    // last_changed_vars: var IDs of the last accepted jump, empty when
+    // untracked (after a perturbation or LNS repair); the search passes {}.
     //
     // stop (#191): requested once the deadline passes, a peer stops the
     // portfolio, or the host cancels. The search cannot preempt this call, so
@@ -33,6 +51,11 @@ public:
     // by -Woverloaded-virtual (GCC 15 -Wall, clang-tidy), not use-override.
     virtual void solve(Model& model, ViolationManager& vm,
                        const std::vector<int32_t>& last_changed_vars = {}, StopRef stop = {}) = 0;
+
+    // Opt-in (#454): also call solve() after a batch that ends infeasible, so a
+    // hook that can repair the point is not starved where the search rarely
+    // lands feasible. Read once per such batch, before the deadline check.
+    [[nodiscard]] virtual bool wants_infeasible() const { return false; }
 };
 
 // Generic Float intensification: coordinate-descent sweeps over all Float vars

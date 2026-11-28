@@ -35,6 +35,7 @@ void SearchCounters::merge(const SearchCounters& other) {
     structural_moves_accepted += other.structural_moves_accepted;
     inner_solver_calls += other.inner_solver_calls;
     inner_solver_seconds += other.inner_solver_seconds;
+    inner_solver_infeasible_calls += other.inner_solver_infeasible_calls;
     portfolio_restarts += other.portfolio_restarts;
     cone_cache_walks += other.cone_cache_walks;
     cone_fallback_walks += other.cone_fallback_walks;

@@ -91,7 +91,7 @@ A one-screen map of the pipeline, its files, the extension points, build targets
 
 ### Key extension points
 
-- **`InnerSolverHook`** — subclass for domain-specific continuous optimization; `FloatIntensifyHook` (`include/cbls/inner_solver.h`) is the reference. Its `solve()` gets a `StopRef stop` and **must** poll it if its work can outlast the budget, and return leaving every committed value delta-evaluated: the call cannot be pre-empted.
+- **`InnerSolverHook`** — subclass for a problem-specific solver run on the search's points; `FloatIntensifyHook` (`include/cbls/inner_solver.h`) is the generic reference, and the header states the contract. Called after every real-feasible batch, and with `wants_infeasible()` (opt-in, #454) after every other batch too, so a hook may repair; a result is recorded only if real-feasible (`ViolationManager::max_real_violation()`). Its `solve()` gets a `StopRef stop` and **must** poll it if its work can outlast the budget, and return leaving every committed value delta-evaluated: the call cannot be pre-empted.
 - **New operations** — add to `NodeOp` in `dag.h`, implement `evaluate()` in `dag.cpp`, `local_derivative()` for AD, and `delta_evaluate` support in `dag_ops.cpp`.
 
 ### Build targets
@@ -1485,7 +1485,9 @@ While time and `max_iterations` remain, each pass:
 3. **On real feasibility**, `record_best()` *first*, banking the feasible point
    before anything can move off it; then run the inner solver hook (if any) to
    polish continuous variables, and `record_best()` again only if the polish
-   stayed feasible.
+   stayed feasible. A hook whose `wants_infeasible()` is true (opt-in, #454) is
+   also run after an infeasible batch, and its result recorded only if
+   real-feasible; there is no rollback either way.
 4. **`record_best()`** keeps the assignment if it strictly improves
    `best_feasible_obj`, snapshots the state, and tightens the objective bound to
    the min of `obj - eps` and, in a portfolio, the shared cap
@@ -2347,6 +2349,9 @@ solve(model, time_limit, seed, hook, lns, lns_interval, callback, config, coord)
     │     │        [if coord->pool] share the snapshot with the other workers
     │     └── [if hook] hook->solve(model, vm)        # continuous polish; resync
     │           └── if still real_feasible(): record_best()
+    ├── else [if hook && hook->wants_infeasible()]:   # opt-in repair (#454)
+    │     └── hook->solve(model, vm); resync
+    │           └── if now real_feasible(): record_best()
     │
     ├── if new best:  stagnation=0; fj.set_escape_probe(false); fj.reset_weights()
     │                 resample rho

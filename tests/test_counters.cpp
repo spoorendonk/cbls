@@ -250,6 +250,7 @@ TEST_CASE("merge sums scalars and merges generator rows by name", "[counters]") 
     a.structural_batches = 1;
     a.inner_solver_calls = 1;
     a.inner_solver_seconds = 0.25;
+    a.inner_solver_infeasible_calls = 1;
     a.portfolio_restarts = 1;
     a.shared_bound_tightenings = 4;
     a.own_best_behind_global = 2;
@@ -268,6 +269,7 @@ TEST_CASE("merge sums scalars and merges generator rows by name", "[counters]") 
     b.fpr_setup_seconds = 0.25;
     b.inner_solver_calls = 2;
     b.inner_solver_seconds = 0.5;
+    b.inner_solver_infeasible_calls = 2;
     b.portfolio_restarts = 2;
     b.shared_bound_tightenings = 1;
     b.own_best_behind_global = 3;
@@ -287,6 +289,7 @@ TEST_CASE("merge sums scalars and merges generator rows by name", "[counters]") 
     REQUIRE(a.fpr_setup_seconds == 0.75);
     REQUIRE(a.inner_solver_calls == 3);
     REQUIRE(a.inner_solver_seconds == 0.75);
+    REQUIRE(a.inner_solver_infeasible_calls == 3);
     REQUIRE(a.portfolio_restarts == 3);
     REQUIRE(a.shared_bound_tightenings == 5);
     REQUIRE(a.own_best_behind_global == 5);
