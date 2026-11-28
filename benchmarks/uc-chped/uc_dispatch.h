@@ -23,6 +23,7 @@ inline constexpr double kDispatchInf = std::numeric_limits<double>::infinity();
 /// point, one unit absorbing). Holds scratch buffers: one per thread.
 class Dispatcher {
 public:
+    explicit Dispatcher(UCInstance&&) = delete;  // holds a reference
     explicit Dispatcher(const UCInstance& inst) : inst_(inst) {
         constexpr double kPi = 3.14159265358979323846;
         const int n = inst.n_units;
@@ -77,8 +78,9 @@ public:
         return cost_of(on, p);
     }
 
-    /// Pair-transfer descent from a dispatch of `on`, at most `max_sweeps`
-    /// sweeps; keeps sum p and the bounds, never raises the cost.
+    /// Pair-transfer descent from a dispatch of `on` (one fast() returned
+    /// finite for), at most `max_sweeps` sweeps; keeps sum p and the bounds,
+    /// never raises the cost.
     /// `window` > 0 tries only the valve points within `window` steps of p_i
     /// (the LS's cheap variant); 0 tries all of them. `jcap` > 0 tries about
     /// that many absorbing units per move, a stride through the on-set rotated
@@ -128,8 +130,10 @@ private:
         if (window > 0) {
             const auto at =
                 static_cast<size_t>(std::lower_bound(vi.begin(), vi.end(), p[i]) - vi.begin());
+            // `window` points each side; p_i on vi[at] is itself skipped below.
+            const bool on_valve = at < vi.size() && std::abs(vi[at] - p[i]) < 1e-9;
             lo = at > static_cast<size_t>(window) ? at - window : 0;
-            hi = std::min(vi.size(), at + window);
+            hi = std::min(vi.size(), at + window + (on_valve ? 1 : 0));
         }
         for (size_t k = lo; k < hi; ++k) {
             const double q = vi[k];

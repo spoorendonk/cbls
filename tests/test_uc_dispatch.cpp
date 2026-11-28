@@ -108,6 +108,28 @@ Commitment random_commitment(const UCInstance& in, RNG& rng, double on_prob) {
     return y;
 }
 
+// A row of runs: each period flips the previous value with probability 0.15.
+CommitRow random_run_row(RNG& rng, int n_periods) {
+    CommitRow row(n_periods);
+    uint8_t v = rng.random() < 0.5 ? 1 : 0;
+    for (auto& x : row) {
+        if (rng.random() < 0.15) {
+            v = static_cast<uint8_t>(1 - v);
+        }
+        x = v;
+    }
+    return row;
+}
+
+// y with every row but u's held at y_prev throughout (a row that passes alone).
+Commitment only_row(const UCInstance& in, const Commitment& y, int u) {
+    Commitment one(in.n_units);
+    for (int w = 0; w < in.n_units; ++w) {
+        one[w] = w == u ? y[u] : CommitRow(in.n_periods, static_cast<uint8_t>(in.y_prev[w]));
+    }
+    return one;
+}
+
 verify_detail::Assignment to_assignment(const UCInstance& in, const Commitment& y,
                                         const std::vector<std::vector<double>>& p_by_period) {
     verify_detail::Assignment a;
@@ -267,8 +289,8 @@ TEST_CASE("uc dispatch steps down the unit that saves most per MW", "[uc-dispatc
     // Two linear units (c = 0, a negligible valve term) with valve points
     // every 25 MW on [0, 100]. Lambda dispatch at demand 150 lands both at
     // 100, so fast() must step 50 MW down in valve steps. Lowering unit 1
-    // (50 $/MW) saves more than unit 0 (10 $/MW); the fix (review Medium 5)
-    // steps unit 1 down twice. Before it, unit 0 was stepped down: {50, 100}.
+    // (50 $/MW) saves more than unit 0 (10 $/MW), so unit 1 is stepped down
+    // twice (#455, review Medium 5).
     constexpr double kPi = 3.14159265358979323846;
     UCInstance in = subset_units(ucp13(), {3, 4});
     in.a = {0.0, 0.0};
@@ -286,6 +308,26 @@ TEST_CASE("uc dispatch steps down the unit that saves most per MW", "[uc-dispatc
     require_dispatch_valid(in, {0, 1}, 150.0, p);
     CHECK(std::abs(p[0] - 100.0) < 1e-6);
     CHECK(std::abs(p[1] - 50.0) < 1e-6);
+}
+
+TEST_CASE("uc dispatch polish window reaches the valve above a unit on a valve", "[uc-dispatch]") {
+    // Unit 0: 10 $/MW, valves every 25 MW. Unit 1: 50 $/MW, no valve term
+    // (valves only at its bounds, so it cannot move itself). From {50, 100}
+    // the only improving moves raise unit 0, which window 1 must try.
+    constexpr double kPi = 3.14159265358979323846;
+    UCInstance in = subset_units(ucp13(), {3, 4});
+    in.a = {0.0, 0.0};
+    in.b = {10.0, 50.0};
+    in.c = {0.0, 0.0};
+    in.d = {1e-9, 0.0};
+    in.e = {kPi / 25.0, kPi / 25.0};
+    in.P_min = {0.0, 0.0};
+    in.P_max = {100.0, 100.0};
+    Dispatcher ed(in);
+    std::vector<double> p = {50.0, 100.0};
+    ed.polish({0, 1}, p, 10, /*window=*/1);
+    require_dispatch_valid(in, {0, 1}, 150.0, p);
+    CHECK(std::abs(p[0] - 100.0) < 1e-6);
 }
 
 TEST_CASE("uc repair_row output is row-feasible per the verifier and idempotent",
@@ -330,36 +372,76 @@ TEST_CASE("uc row_feasible agrees with the verifier on random rows", "[uc-commit
     in.n_init[0] = 2;
     in.n_init[2] = 1;
     RNG rng(13);
-    int feasible = 0;
-    int infeasible = 0;
+    // Outcomes seen on the units with a live initial-condition span.
+    std::vector<int> feasible(in.n_units, 0);
+    std::vector<int> infeasible(in.n_units, 0);
     for (int trial = 0; trial < 300; ++trial) {
-        // Rows with long runs, so both outcomes occur.
-        Commitment y(in.n_units, CommitRow(in.n_periods, 0));
-        for (auto& row : y) {
-            uint8_t v = rng.random() < 0.5 ? 1 : 0;
-            for (auto& x : row) {
-                if (rng.random() < 0.15) {
-                    v = static_cast<uint8_t>(1 - v);
-                }
-                x = v;
-            }
-        }
-        bool all = true;
+        // Rows with long runs; every other trial repaired first, so both
+        // outcomes occur whatever the RNG draws.
+        Commitment y(in.n_units);
         for (int u = 0; u < in.n_units; ++u) {
-            Commitment one = y;
-            for (int w = 0; w < in.n_units; ++w) {
-                if (w != u) {
-                    // A row that passes alone: held at y_prev throughout.
-                    std::fill(one[w].begin(), one[w].end(), static_cast<uint8_t>(in.y_prev[w]));
-                }
+            y[u] = random_run_row(rng, in.n_periods);
+            if (trial % 2 == 0) {
+                repair_row(in, u, y[u]);
             }
-            const bool mine = row_feasible(in, u, y[u]);
-            CHECK(mine == rows_pass_verifier(in, one));
-            all = all && mine;
         }
-        (all ? feasible : infeasible) += 1;
+        for (int u = 0; u < in.n_units; ++u) {
+            const bool mine = row_feasible(in, u, y[u]);
+            CHECK(mine == rows_pass_verifier(in, only_row(in, y, u)));
+            (mine ? feasible : infeasible)[u] += 1;
+        }
     }
-    CHECK(infeasible > 0);
+    for (int u : {0, 2}) {
+        CHECK(feasible[u] > 0);
+        CHECK(infeasible[u] > 0);
+    }
+}
+
+TEST_CASE("uc repair_row holds an initial-condition span covering the horizon", "[uc-commitment]") {
+    auto in = make_subinstance(ucp13(), 4);
+    in.n_init[0] = -10;  // unit 0 (on before, min_on 8): 18 periods left, T = 4
+    in.n_init[2] = -10;  // unit 2 (off before): held off throughout
+    CommitRow r0(4, 0);
+    CommitRow r2(4, 1);
+    CHECK_FALSE(row_feasible(in, 0, r0));
+    CHECK_FALSE(row_feasible(in, 2, r2));
+    repair_row(in, 0, r0);
+    repair_row(in, 2, r2);
+    CHECK(r0 == CommitRow(4, 1));
+    CHECK(r2 == CommitRow(4, 0));
+    Commitment y(in.n_units, CommitRow(4, 0));
+    for (int u = 0; u < in.n_units; ++u) {
+        y[u].assign(4, static_cast<uint8_t>(in.y_prev[u]));
+    }
+    y[0] = r0;
+    y[2] = r2;
+    CHECK(rows_pass_verifier(in, y));
+}
+
+TEST_CASE("uc repair_row cancels a shutdown at the span's end cut short by a restart",
+          "[uc-commitment]") {
+    auto in = ucp13();
+    in.n_init[0] = 2;  // unit 0: on before, forced on for periods 0-5; min_off 8
+    CommitRow r(in.n_periods, 1);
+    r[6] = 0;
+    r[7] = 0;  // off at 6-7, restart at 8: inside min_off
+    CHECK_FALSE(row_feasible(in, 0, r));
+    repair_row(in, 0, r);
+    CHECK(r == CommitRow(in.n_periods, 1));
+}
+
+TEST_CASE("uc repair_state skips a unit whose Pmin would exceed demand", "[uc-commitment]") {
+    // Demand 100 + reserve 50 in one period. The largest unit (Pmax 300) has
+    // Pmin 120 > 100; the next (Pmax 200, Pmin 0) covers it alone.
+    auto in = subset_units(make_subinstance(ucp13(), 1), {3, 9});
+    in.P_min = {120.0, 0.0};
+    in.P_max = {300.0, 200.0};
+    in.demand = {100.0};
+    in.reserve = {50.0};
+    Commitment y(2, CommitRow(1, 0));
+    REQUIRE(repair_state(in, y));
+    CHECK(y[0][0] == 0);
+    CHECK(y[1][0] == 1);
 }
 
 TEST_CASE("uc repair_state yields a commitment the verifier and dispatch accept",

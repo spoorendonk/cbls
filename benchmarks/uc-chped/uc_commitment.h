@@ -82,10 +82,11 @@ inline void repair_row(const UCInstance& in, int u, CommitRow& r) {
 }
 
 /// Period t can be dispatched: committed sum Pmax covers demand plus any
-/// positive reserve, and committed sum Pmin does not exceed demand. Exactly
-/// when Dispatcher::fast is finite, so a commitment passing it for every t has
-/// no +inf period cost (a reserve <= 0 no longer waives demand: #455, review
-/// Low 9). Stricter than the `>=` model, which allows sum Pmin > demand.
+/// positive reserve, and committed sum Pmin does not exceed demand. Implies
+/// Dispatcher::fast is finite (for demand > 0), so a commitment passing it for
+/// every t has no +inf period cost; a reserve <= 0 does not waive demand
+/// (#455, review Low 9). Stricter than the `>=` model, which allows
+/// sum Pmin > demand.
 [[nodiscard]] inline bool capacity_ok(const UCInstance& in, const Commitment& y, int t) {
     double cap = 0.0;
     double floor = 0.0;
@@ -126,17 +127,29 @@ inline double committed_capacity(const UCInstance& in, const Commitment& y, int 
 }
 
 /// The idle unit with the largest Pmax that can be on at t with a feasible
-/// row, or -1.
+/// row whose added periods keep committed sum Pmin <= demand, or -1. The
+/// floor is precomputed once: O(n*T) per call, not O(n^2*T).
 inline int largest_startable(const UCInstance& in, const Commitment& y, int t) {
+    std::vector<double> floor(in.n_periods, 0.0);
+    for (int u = 0; u < in.n_units; ++u) {
+        for (int tau = 0; tau < in.n_periods; ++tau) {
+            floor[tau] += in.P_min[u] * y[u][tau];
+        }
+    }
     int best = -1;
     for (int u = 0; u < in.n_units; ++u) {
-        if (y[u][t] == 0 && (best < 0 || in.P_max[u] > in.P_max[best])) {
-            CommitRow r = y[u];
-            r[t] = 1;
-            repair_row(in, u, r);
-            if (r[t] == 1 && row_feasible(in, u, r)) {
-                best = u;
-            }
+        if (y[u][t] != 0 || (best >= 0 && in.P_max[u] <= in.P_max[best])) {
+            continue;
+        }
+        CommitRow r = y[u];
+        r[t] = 1;
+        repair_row(in, u, r);
+        bool fits = r[t] == 1 && row_feasible(in, u, r);
+        for (int tau = 0; fits && tau < in.n_periods; ++tau) {
+            fits = r[tau] == y[u][tau] || floor[tau] + in.P_min[u] <= in.demand[tau] + 1e-9;
+        }
+        if (fits) {
+            best = u;
         }
     }
     return best;

@@ -86,8 +86,8 @@ ln -sfn /path/to/this/checkout/.venv .venv && .venv/bin/pytest --tb=short -q; rm
 
 ### Fast vs. slow tests
 
-The C++ suite is **875 ctest tests**: 873 Catch2 ones over **869 `TEST_CASE`s**
-— 864 registered by `catch_discover_tests` plus **9 registered by hand**, the 5
+The C++ suite is **879 ctest tests**: 877 Catch2 ones over **873 `TEST_CASE`s**
+— 868 registered by `catch_discover_tests` plus **9 registered by hand**, the 5
 `[timing]` cases and the four hang guards `hang_guard_iteration_only_portfolio`,
 `hang_guard_novelty_zero_move_batch`, `hang_guard_nonpositive_batch_iterations`
 and `hang_guard_nl_placement_counts`, each hand-registered *as well as*
@@ -95,12 +95,12 @@ discovered (a hang only reports through a `TIMEOUT`, but all four are cheap enou
 to belong in the fast set), so each of those `TEST_CASE`s accounts for two
 ctest tests — plus **2 shell tests that are not Catch2 at all**,
 `clang_tidy_gate_probe` and `gate_lib_shell_test`, registered in the root
-`CMakeLists.txt` (they pin the clang-tidy gate and the hook filters, #171). Of the 864,
+`CMakeLists.txt` (they pin the clang-tidy gate and the hook filters, #171). Of the 868,
 **4 carry the
 Catch2 `[slow]` tag** — the UC-CHPED benchmark solves. `tests/CMakeLists.txt` discovers them in a second
 `catch_discover_tests` call with `LABELS "slow"`, so:
 
-- `ctest -LE slow` — the other 867 tests, ~12s with `-j`. The fast inner loop; run it yourself before committing (the hook no longer does).
+- `ctest -LE slow` — the other 871 tests, ~12s with `-j`. The fast inner loop; run it yourself before committing (the hook no longer does).
 - `ctest` — everything. This is what **pre-push**'s local CI runs.
 - `ctest -L timing` — 5 tests: `timing_structural_batch_deadline`, the three
   `timing_throughput_*` floors added for #125, and
