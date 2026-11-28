@@ -142,6 +142,8 @@ max-complexity = 10
 [tool.mypy]
 strict = true
 python_version = "3.12"
+# The `cbls` package, for a mypy run not given python/cbls itself (one file, an editor).
+mypy_path = "python"
 warn_return_any = true
 warn_unused_configs = true
 # The wcp pre-commit runs `mypy .`, which walks the tree rather than the tracked

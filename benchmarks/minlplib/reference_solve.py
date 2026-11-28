@@ -24,7 +24,7 @@ MINLPLib in *Global Optimization of Mixed-Integer Nonlinear Programs with SCIP
 The budget is wall-clock, as in the CBLS run, so these are single-sample
 numbers: a fixed seed does not pin the node count and consecutive runs differ.
 
-Requires the `benchmarks` extra (`pip install -e '.[benchmarks]'`). Run with the
+Requires the `benchmarks` extra (`uv sync --extra dev --extra benchmarks`). Run with the
 project venv:
 
     .venv/bin/python3 benchmarks/minlplib/reference_solve.py

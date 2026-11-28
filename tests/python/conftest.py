@@ -91,6 +91,27 @@ def binding_test_files(directory: Path) -> list[str]:
     ]
 
 
+def check_cbls_is_the_build_trees(build_package: Path) -> None:
+    """Refuse a `cbls` that resolves anywhere but the build tree, once it has one.
+
+    A venv synced before #463 holds an editable cbls whose import hook runs
+    ahead of sys.path and maps the package to the source tree, where there is
+    no _cbls_core; the tests would then skip, or test a stale install.
+    """
+    if not (build_package / "__init__.py").exists():
+        return
+    spec = importlib.util.find_spec("cbls")
+    origin = Path(spec.origin).resolve() if spec and spec.origin else None
+    if origin is None or build_package.resolve() not in origin.parents:
+        raise pytest.UsageError(
+            f"`import cbls` resolves to {origin}, not to the build tree's {build_package}: "
+            "a cbls installed in this venv shadows it. "
+            "`uv sync --extra dev --extra benchmarks` removes it."
+        )
+
+
+check_cbls_is_the_build_trees(Path(build_dir) / "cbls")
+
 try:
     import cbls._cbls_core  # noqa: F401
 except ImportError:

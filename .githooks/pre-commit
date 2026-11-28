@@ -44,7 +44,8 @@ run() {
 }
 
 # **The venv's own tools, never `uv run` (#371).** A `uv run` syncs the project
-# first, and here a sync after any change to `pyproject.toml` rebuilds the
+# first, and until #463 made the venv a virtual project a sync after any change
+# to `pyproject.toml` rebuilt the
 # editable C++ extension: a full scikit-build-core build of the library and its
 # tests (about 1.5 min at -j2), run inside the hook, outside the machine's build
 # lock and at ninja's default parallelism. On the Mac mini that build failed in
@@ -64,10 +65,10 @@ if common=$(git rev-parse --git-common-dir 2>/dev/null) &&
 	main_bin="${common%/.git}/.venv/bin"
 fi
 
-# What to run when a tool is missing or off its pin. The second command is for
-# when the first fails to build the C++ extension (as in #371): it installs the
-# pinned tools without building the project, and keeps the installed one.
-setup_hint='Run `uv sync --extra dev --extra benchmarks` in the main checkout (a linked worktree uses its .venv); if that fails building cbls, `uv sync --inexact --no-install-project --extra dev --extra benchmarks` installs the tools alone. Then commit again.'
+# What to run when a tool is missing or off its pin. The sync builds no C++:
+# the venv does not install cbls itself (`[tool.uv] package = false`, #463),
+# and a plain sync also removes an editable cbls an older sync left behind.
+setup_hint='Run `uv sync --extra dev --extra benchmarks` in the main checkout (a linked worktree uses its .venv). Then commit again.'
 
 # The pinned version of NAME: X in a `"NAME==X"` line of pyproject.toml, as the
 # dev extra spells it. Empty when pyproject.toml does not name NAME at all; a
