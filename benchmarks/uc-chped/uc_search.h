@@ -96,7 +96,7 @@ public:
     }
 
     /// repair_state on y_; costs then need init_costs.
-    bool repair() { return repair_state(inst_, y_); }
+    bool repair(StopRef stop = {}) { return repair_state(inst_, y_, stop); }
     [[nodiscard]] bool feasible() const { return commitment_feasible(inst_, y_); }
 
     /// Replace y_ (an elite restart); costs then need init_costs.

@@ -86,8 +86,8 @@ ln -sfn /path/to/this/checkout/.venv .venv && .venv/bin/pytest --tb=short -q; rm
 
 ### Fast vs. slow tests
 
-The C++ suite is **887 ctest tests**: 885 Catch2 ones over **881 `TEST_CASE`s**
-— 876 registered by `catch_discover_tests` plus **9 registered by hand**, the 5
+The C++ suite is **895 ctest tests**: 893 Catch2 ones over **889 `TEST_CASE`s**
+— 883 registered by `catch_discover_tests` plus **10 registered by hand**, the 6
 `[timing]` cases and the four hang guards `hang_guard_iteration_only_portfolio`,
 `hang_guard_novelty_zero_move_batch`, `hang_guard_nonpositive_batch_iterations`
 and `hang_guard_nl_placement_counts`, each hand-registered *as well as*
@@ -95,24 +95,25 @@ discovered (a hang only reports through a `TIMEOUT`, but all four are cheap enou
 to belong in the fast set), so each of those `TEST_CASE`s accounts for two
 ctest tests — plus **2 shell tests that are not Catch2 at all**,
 `clang_tidy_gate_probe` and `gate_lib_shell_test`, registered in the root
-`CMakeLists.txt` (they pin the clang-tidy gate and the hook filters, #171). Of the 876,
+`CMakeLists.txt` (they pin the clang-tidy gate and the hook filters, #171). Of the 883,
 **4 carry the
 Catch2 `[slow]` tag** — the UC-CHPED benchmark solves. `tests/CMakeLists.txt` discovers them in a second
 `catch_discover_tests` call with `LABELS "slow"`, so:
 
-- `ctest -LE slow` — the other 879 tests, ~12s with `-j`. The fast inner loop; run it yourself before committing (the hook no longer does).
+- `ctest -LE slow` — the other 886 tests, ~12s with `-j`. The fast inner loop; run it yourself before committing (the hook no longer does).
 - `ctest` — everything. This is what **pre-push**'s local CI runs.
-- `ctest -L timing` — 5 tests: `timing_structural_batch_deadline`, the three
-  `timing_throughput_*` floors added for #125, and
-  `timing_inner_solver_hook_deadline` (#191's budget contract). Each is
+- `ctest -L timing` — 6 tests: `timing_structural_batch_deadline`, the three
+  `timing_throughput_*` floors added for #125,
+  `timing_inner_solver_hook_deadline` (#191's budget contract) and
+  `timing_uc_hook_ils_deadline` (the UC hook's ILS deadline, #461). Each is
   registered by an explicit `add_test` (naming its Catch2 test case) so it can carry a `TIMEOUT` and be
   quarantined individually. Don't add tests to this class without a concrete
   reason.
 
 **The Catch2 `[slow]` tag and the ctest `slow` label are not the same set here**,
-and both numbers appear above: 4 tests carry the *tag*, 8 carry the *label*
-(`ctest -N -L slow` says 8). The three throughput floors and #191's hook
-deadline test are tagged `[timing]`
+and both numbers appear above: 4 tests carry the *tag*, 9 carry the *label*
+(`ctest -N -L slow` says 9). The three throughput floors and #191's and
+#461's deadline tests are tagged `[timing]`
 — which is what keeps them out of both `catch_discover_tests` calls, since the
 second spec is `[slow]~[timing]`; retagging one `[slow]` *instead of* `[timing]`
 would get it discovered *and* hand-registered, i.e. run twice (adding `[slow]`

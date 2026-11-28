@@ -30,6 +30,7 @@ add_executable(cbls_tests
     test_uc_chped_trace.cpp
     test_uc_dispatch.cpp
     test_uc_search.cpp
+    test_uc_hook.cpp
     test_inner_solver.cpp
     test_callback.cpp
     test_io.cpp
@@ -74,7 +75,7 @@ include(Catch)
 # slow solves into one serial invocation would make the full suite far slower
 # than it is.
 #
-# The 4 [slow]-tagged tests are the UC-CHPED benchmark solves. The remaining 879 (872 discovered, plus the
+# The 4 [slow]-tagged tests are the UC-CHPED benchmark solves. The remaining 886 (879 discovered, plus the
 # seven hand-registered tests that carry no slow label --
 # timing_structural_batch_deadline, hang_guard_iteration_only_portfolio,
 # hang_guard_novelty_zero_move_batch, hang_guard_nonpositive_batch_iterations
@@ -88,12 +89,12 @@ include(Catch)
 # the tag -- "measure both ways before tagging" applies to KEEPING a tag as
 # much as to adding one.
 #
-# The roster is therefore 887 ctest tests: 876 discovered here, the 9
+# The roster is therefore 895 ctest tests: 883 discovered here, the 10
 # hand-registered ones below, and the 2 non-Catch2 shell gate tests the root
-# CMakeLists.txt registers. The 885 Catch2 ones are four more than the 881
+# CMakeLists.txt registers. The 893 Catch2 ones are four more than the 889
 # TEST_CASEs in tests/*.cpp, because the four hang_guard_* tests are both
-# discovered and hand-registered -- see their notes below. `ctest -N -L slow` reports 8, not 4 --
-# the three #125 throughput floors and #191's hook deadline carry the slow
+# discovered and hand-registered -- see their notes below. `ctest -N -L slow` reports 9, not 4 --
+# the three #125 throughput floors and #191's and #461's deadlines carry the slow
 # LABEL without the Catch2 [slow] TAG. Re-derive with `ctest -N`, never by incrementing.
 #
 # SKIP_RETURN_CODE 4 maps Catch2's SKIP() onto ctest's "Skipped" rather than a
@@ -119,9 +120,9 @@ catch_discover_tests(cbls_tests
 # catch_discover_tests calls above — tag them [slow] instead and they would be
 # discovered *and* hand-registered, i.e. run twice.
 #
-# Issue #104: timing_structural_batch_deadline and (#191)
-# timing_inner_solver_hook_deadline are the suite's only HAND-REGISTERED
-# wall-clock-duration assertions. Discovered tests bound durations too -- two
+# Issue #104: timing_structural_batch_deadline, (#191)
+# timing_inner_solver_hook_deadline and (#461) timing_uc_hook_ils_deadline are
+# the suite's only HAND-REGISTERED wall-clock-duration assertions. Discovered tests bound durations too -- two
 # stop-flag tests in test_parallel.cpp assert elapsed seconds as a "did the stop
 # arrive at all" detector, with generous slack. Don't
 # add another without a reason as concrete as #105's or #191's (each pins a
@@ -142,6 +143,15 @@ add_test(NAME timing_inner_solver_hook_deadline
     COMMAND cbls_tests "solve returns within its budget when an intensification pass would outlast it"
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 set_tests_properties(timing_inner_solver_hook_deadline
+    PROPERTIES LABELS "timing;slow" TIMEOUT 60 SKIP_RETURN_CODE 4)
+
+# #461: the UC hook's ILS deadline bounds its re-descent too (#460 review found
+# one full re-descent past it). Sits beside the hook's deterministic stop-poll
+# test; LABELS and TIMEOUT as for #191's.
+add_test(NAME timing_uc_hook_ils_deadline
+    COMMAND cbls_tests "uc hook ILS stops at its deadline mid re-descent"
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(timing_uc_hook_ils_deadline
     PROPERTIES LABELS "timing;slow" TIMEOUT 60 SKIP_RETURN_CODE 4)
 
 # A hang regression needs a TIMEOUT to report itself, so this one is

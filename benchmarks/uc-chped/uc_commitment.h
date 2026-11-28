@@ -3,6 +3,7 @@
 #include "data.h"
 
 #include <algorithm>
+#include <cbls/stop.h>
 #include <cstdint>
 #include <vector>
 
@@ -161,14 +162,18 @@ inline int largest_startable(const UCInstance& in, const Commitment& y, int t) {
 /// gets the largest idle unit that may start there, run for min_on, until
 /// covered. Only ever switches units on, so it cannot fix sum Pmin > demand.
 /// The capacity loop terminates: each pass turns one more unit on at t, and a
-/// repaired row never turns one off. Returns commitment_feasible(in, y).
-inline bool repair_state(const UCInstance& in, Commitment& y) {
+/// repaired row never turns one off. Returns commitment_feasible(in, y), or
+/// false once `stop` is raised (polled per period; y then part-repaired).
+inline bool repair_state(const UCInstance& in, Commitment& y, StopRef stop = {}) {
     for (int u = 0; u < in.n_units; ++u) {
         if (!row_feasible(in, u, y[u])) {
             repair_row(in, u, y[u]);
         }
     }
     for (int t = 0; t < in.n_periods; ++t) {
+        if (stop.requested()) {
+            return false;
+        }
         const double need = in.demand[t] + std::max(0.0, in.reserve[t]) - 1e-9;
         while (commitment_detail::committed_capacity(in, y, t) < need) {
             const int best = commitment_detail::largest_startable(in, y, t);
