@@ -32,6 +32,10 @@ endif()
 
 add_executable(cbls_consumer main.cpp)
 target_link_libraries(cbls_consumer PRIVATE cbls::cbls)
+# One path under any generator: the genex stops a multi-config one appending
+# the configuration, so run.cmake finds the binary.
+set_target_properties(cbls_consumer PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "$<1:${CMAKE_BINARY_DIR}/bin>")
 # cbls_enable_warnings() is cbls's own and absent here, so its flags by hand.
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(cbls_consumer PRIVATE -Wall -Wextra)

@@ -275,31 +275,36 @@ target_link_libraries(cbls_cli PRIVATE cbls_lib)
 cbls_enable_warnings(cbls_cli)
 set_target_properties(cbls_cli PROPERTIES OUTPUT_NAME cbls)
 
-# Install
-include(GNUInstallDirs)
-install(TARGETS cbls_lib EXPORT cblsTargets
-    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-)
-install(TARGETS cbls_cli RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
-install(DIRECTORY include/cbls DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
-install(EXPORT cblsTargets
-    FILE cblsTargets.cmake
-    NAMESPACE cbls::
-    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/cbls
-)
+# Install. Off by default under add_subdirectory/FetchContent, so a parent's
+# install does not ship cbls; a parent that installs and exports its own target
+# linking cbls::cbls turns it on (#447).
+option(CBLS_INSTALL "Generate cbls's install rules" ${CBLS_IS_TOP_LEVEL})
+if(CBLS_INSTALL)
+    include(GNUInstallDirs)
+    install(TARGETS cbls_lib EXPORT cblsTargets
+        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    )
+    install(TARGETS cbls_cli RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+    install(DIRECTORY include/cbls DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+    install(EXPORT cblsTargets
+        FILE cblsTargets.cmake
+        NAMESPACE cbls::
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/cbls
+    )
 
-include(CMakePackageConfigHelpers)
-configure_package_config_file(cmake/cblsConfig.cmake.in
-    ${CMAKE_CURRENT_BINARY_DIR}/cblsConfig.cmake
-    INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/cbls)
-write_basic_package_version_file(
-    ${CMAKE_CURRENT_BINARY_DIR}/cblsConfigVersion.cmake
-    COMPATIBILITY SameMinorVersion)
-install(FILES ${CMAKE_CURRENT_BINARY_DIR}/cblsConfig.cmake
-    ${CMAKE_CURRENT_BINARY_DIR}/cblsConfigVersion.cmake
-    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/cbls)
+    include(CMakePackageConfigHelpers)
+    configure_package_config_file(cmake/cblsConfig.cmake.in
+        ${CMAKE_CURRENT_BINARY_DIR}/cblsConfig.cmake
+        INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/cbls)
+    write_basic_package_version_file(
+        ${CMAKE_CURRENT_BINARY_DIR}/cblsConfigVersion.cmake
+        COMPATIBILITY SameMinorVersion)
+    install(FILES ${CMAKE_CURRENT_BINARY_DIR}/cblsConfig.cmake
+        ${CMAKE_CURRENT_BINARY_DIR}/cblsConfigVersion.cmake
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/cbls)
+endif()
 
 # C++ tests
 option(CBLS_BUILD_TESTS "Build C++ tests" ${CBLS_IS_TOP_LEVEL})
@@ -376,15 +381,23 @@ if(CBLS_BUILD_TESTS)
     # and from add_subdirectory (#447, tests/consumer/). Each configures and
     # builds a project of its own, hence slow, and two of ctest's -j slots for
     # the inner build's two jobs.
+    set(_cbls_consumer_link "")
+    if(CBLS_SANITIZE)
+        set(_cbls_consumer_link "-fsanitize=${CBLS_SANITIZE_FLAGS}")
+    endif()
     foreach(_mode find_package add_subdirectory)
+        if(_mode STREQUAL "find_package" AND NOT CBLS_INSTALL)
+            continue()  # nothing to install
+        endif()
         add_test(NAME consumer_${_mode}
             COMMAND "${CMAKE_COMMAND}" -DMODE=${_mode}
-                    "-DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
-                    "-DBUILD_DIR=${CMAKE_BINARY_DIR}"
-                    "-DWORK_DIR=${CMAKE_BINARY_DIR}/consumer/${_mode}"
+                    "-DSOURCE_DIR=${PROJECT_SOURCE_DIR}"
+                    "-DBUILD_DIR=${PROJECT_BINARY_DIR}"
+                    "-DWORK_DIR=${PROJECT_BINARY_DIR}/consumer/${_mode}"
                     "-DCXX=${CMAKE_CXX_COMPILER}"
                     "-DJSON_SOURCE_DIR=${json_SOURCE_DIR}" -DJOBS=2
-                    -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/consumer/run.cmake")
+                    "-DCONFIG=$<CONFIG>" "-DLINK_FLAGS=${_cbls_consumer_link}"
+                    -P "${PROJECT_SOURCE_DIR}/tests/consumer/run.cmake")
         set_tests_properties(consumer_${_mode}
             PROPERTIES LABELS "slow" PROCESSORS 2 TIMEOUT 900)
     endforeach()

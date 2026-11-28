@@ -123,8 +123,9 @@ target_link_libraries(my_app PRIVATE cbls::cbls)
 ```
 
 As a subproject cbls builds the library and the `cbls` CLI only: tests,
-examples and benchmarks default to OFF, and it neither sets the build type nor
-touches the parent's git config. It compiles at the parent's build type, so set
+examples, benchmarks and install rules default to OFF (`-DCBLS_INSTALL=ON` if
+the parent exports an installed target that links cbls), and it neither sets the build
+type nor touches the parent's git config. It compiles at the parent's build type, so set
 one (`-DCMAKE_BUILD_TYPE=Release`): an unset one compiles cbls unoptimized.
 
 The library is static only (`BUILD_SHARED_LIBS` does not apply) and 0.x: the

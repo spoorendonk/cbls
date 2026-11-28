@@ -114,8 +114,9 @@ Examples, tests, benchmarks and bindings are each behind an option:
 `CBLS_BUILD_EXAMPLES`/`CBLS_BUILD_TESTS`/`CBLS_BUILD_BENCHMARKS` default ON
 when cbls is the top-level project and OFF under `add_subdirectory`/FetchContent,
 `CBLS_BUILD_PYTHON` defaults OFF (but the gated build turns it on).
-`tests/consumer/` is the downstream project that pins both ways in
-(`ctest -R consumer_`).
+`CBLS_INSTALL` (install rules) follows the same top-level default.
+`tests/consumer/` is a downstream project that builds against cbls both
+ways, installed and as a subproject (`ctest -R consumer_`).
 
 ### Tools
 

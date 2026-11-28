@@ -115,7 +115,8 @@ Catch2 `[slow]` tag** — the UC-CHPED benchmark solves. `tests/CMakeLists.txt` 
 
 **The Catch2 `[slow]` tag and the ctest `slow` label are not the same set here**,
 and both numbers appear above: 4 tests carry the *tag*, 11 carry the *label*
-(`ctest -N -L slow` says 11): the 2 consumer tests, and the following. The three throughput floors and #191's and
+(`ctest -N -L slow` says 11): the 4 tagged ones, the 2 consumer tests and 5
+`[timing]` ones. The three throughput floors and #191's and
 #461's deadline tests are tagged `[timing]`
 — which is what keeps them out of both `catch_discover_tests` calls, since the
 second spec is `[slow]~[timing]`; retagging one `[slow]` *instead of* `[timing]`
