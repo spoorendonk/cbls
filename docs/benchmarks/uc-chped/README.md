@@ -302,8 +302,9 @@ candidate's (`cbls_uc_chped --help`), each recorded in `search_config`, and it
 refuses `--no-time-limit`, as its throttle and ILS read the clock (#462).
 `--solution-out FILE` writes each measured row's (y, p) as one JSON line, none
 for a row the verifier vetoed; `benchmarks/uc-chped/check_solutions.py
-INST_DIR FILE`, #445's checker of Pedroso's `=` model, rechecks them
-independently. `--instance`, `--periods`, `--threads`, `--demand-equality`,
+INST_DIR FILE`, #445's checker of Pedroso's `=` model at 1e-6, rechecks them
+independently, so the flag requires `--demand-equality` and `--feas-tol` at
+most 1e-6, and refuses a path inside the instance directory. `--instance`, `--periods`, `--threads`, `--demand-equality`,
 `--uc-hook` and `--time-limit` are refused outright when the resolved `--out` path *is*
 the published table above — a partial roster or a shortened budget cannot become
 the published result, whether the path was defaulted or spelled out. Writing

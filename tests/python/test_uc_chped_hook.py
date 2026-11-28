@@ -45,11 +45,13 @@ CANDIDATE = [
 ]
 
 
-def _run(tmp_path: Path, *args: str) -> subprocess.CompletedProcess[str]:
+def _run(
+    tmp_path: Path, *args: str, inst_dir: Path = INSTANCES
+) -> subprocess.CompletedProcess[str]:
     if not UC_CHPED_BINARY.exists():
         pytest.skip("cbls_uc_chped not built")
     return subprocess.run(
-        [str(UC_CHPED_BINARY), str(INSTANCES), "--instance", "ucp13", "--periods", "3"]
+        [str(UC_CHPED_BINARY), str(inst_dir), "--instance", "ucp13", "--periods", "3"]
         + ["--out", str(tmp_path / "o.csv"), *args],
         capture_output=True,
         text=True,
@@ -163,9 +165,55 @@ def test_uc_chped_refuses_a_solution_file_that_names_another_output(
     other: str, tmp_path: Path
 ) -> None:
     target = tmp_path / "o.csv" if other == "--out" else tmp_path / "t.csv"
-    args = ["--time-limit", "1", "--solution-out", str(target)]
+    args = ["--time-limit", "1", "--demand-equality", "--solution-out", str(target)]
     if other == "--trace":
         args += ["--trace", str(target)]
     result = _run(tmp_path, *args)
     assert result.returncode == 2, result.stdout
     assert "--solution-out" in result.stderr and "names another output" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("args", "message"),
+    [
+        # The checker holds `=` demand: a `>=` row it would fail is refused.
+        ([], "requires --demand-equality"),
+        (["--demand-equality", "--feas-tol", "1e-5"], "requires --feas-tol <= 1e-6"),
+        # Inside the instance directory: the published table, trace or an instance.
+        (["--demand-equality", "--inst-file", "comparison.csv"], "inside the instance directory"),
+        (["--demand-equality", "--inst-file", "ucp13.jsonl"], "inside the instance directory"),
+    ],
+)
+def test_uc_chped_refuses_a_solution_file_its_checker_cannot_stand_behind(
+    args: list[str], message: str, tmp_path: Path
+) -> None:
+    target = str(tmp_path / "s.jsonl")
+    inst_dir = INSTANCES
+    if "--inst-file" in args:
+        # A scratch copy: a regression here would truncate the file it names.
+        inst_dir = tmp_path / "uc-chped"
+        inst_dir.mkdir()
+        for f in INSTANCES.iterdir():
+            if f.is_file():
+                (inst_dir / f.name).write_bytes(f.read_bytes())
+        i = args.index("--inst-file")
+        target = str(inst_dir / args[i + 1])
+        args = args[:i]
+    before = Path(target).read_bytes() if Path(target).exists() else None
+    result = _run(tmp_path, "--time-limit", "1", "--solution-out", target, *args, inst_dir=inst_dir)
+    assert result.returncode == 2, result.stdout
+    assert message in result.stderr, result.stderr
+    if before is not None:
+        assert Path(target).read_bytes() == before
+
+
+def test_a_failed_solution_open_leaves_the_trace_as_found(tmp_path: Path) -> None:
+    trace = tmp_path / "t.csv"
+    trace.write_text("previous run\n")
+    result = _run(
+        tmp_path,
+        *["--time-limit", "1", "--demand-equality", "--trace", str(trace)],
+        *["--solution-out", str(tmp_path / "missing" / "s.jsonl")],
+    )
+    assert result.returncode == 2, result.stdout
+    assert trace.read_text() == "previous run\n"

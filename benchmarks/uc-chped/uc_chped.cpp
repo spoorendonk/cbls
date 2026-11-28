@@ -380,8 +380,23 @@ void resolve_out_csv(Args& a) {
         a.out_csv = a.inst_dir + "/comparison.csv";
     }
     // --solution-out truncates in place: it must not name the table, its temp
-    // file or the trace.
+    // file, the trace, or anything in the instance directory (the published
+    // artifacts and the instances). Its checker holds Pedroso's `=` demand at
+    // 1e-6, so a looser model or tolerance would fail rows the run verified.
     if (!a.solution_out.empty()) {
+        if (!a.demand_equality) {
+            refuse("--solution-out requires --demand-equality (check_solutions.py checks `=`)");
+        }
+        if (a.feas_tol > 1e-6) {
+            refuse("--solution-out requires --feas-tol <= 1e-6 (check_solutions.py's tolerance)");
+        }
+        const std::filesystem::path parent =
+            std::filesystem::path(a.solution_out).parent_path().empty()
+                ? std::filesystem::path(".")
+                : std::filesystem::path(a.solution_out).parent_path();
+        if (cbls::bench::same_file(parent.string(), a.inst_dir)) {
+            refuse("--solution-out " + a.solution_out + " is inside the instance directory");
+        }
         for (const std::string& other : {a.out_csv, a.out_csv + ".tmp", a.trace_csv}) {
             if (!other.empty() && cbls::bench::same_file(a.solution_out, other)) {
                 refuse("--solution-out " + a.solution_out + " names another output (" + other +
@@ -747,8 +762,9 @@ cbls::SearchResult solve_instance(const Args& args, const cbls::uc_chped::UCInst
     cbls::bench::apply_search_flags(args.search, cfg);
     const double time_limit = cbls::bench::time_limit_argument(args.search, tlim);
     // The UC hook replaces the float hook (#462). Its ILS slice is a share of
-    // this row's budget; worker k's hook is seeded seed + 1 + k, k counting
-    // factory calls, which the pool makes on worker threads in start order.
+    // this row's budget. The hooks get seeds seed + 1, seed + 2, ... in factory
+    // call order; the pool calls it concurrently on worker threads with no index,
+    // so which worker gets which seed varies between runs at --threads > 1.
     cbls::uc_chped::UCHookConfig uc_cfg = args.uc;
     uc_cfg.ils_seconds = args.uc_ils * tlim;
     // Both outlive every factory call: the pool calls it within ps.solve.
@@ -1239,14 +1255,23 @@ int run_benchmark(int argc, char** argv) {
 
     // Opened after the table's temp file: `--trace` truncates in place, so a
     // run that fails the table's open must not have emptied it.
+    // --solution-out is probed in append mode before the trace truncates, so a
+    // failed open leaves both files as found, then truncated; written in place.
+    std::ofstream solutions;
+    if (!args.solution_out.empty()) {
+        solutions.open(args.solution_out, std::ios::app);
+        if (!solutions.is_open()) {
+            std::fprintf(stderr, "Failed to open %s for writing\n", args.solution_out.c_str());
+            return 2;
+        }
+        solutions.close();
+    }
     std::ofstream trace;
     if (!open_trace(args, trace)) {
         return 2;
     }
-    // Truncated here, after both, for the same reason; written in place.
-    std::ofstream solutions;
     if (!args.solution_out.empty()) {
-        solutions.open(args.solution_out);
+        solutions.open(args.solution_out, std::ios::trunc);
         if (!solutions.is_open()) {
             std::fprintf(stderr, "Failed to open %s for writing\n", args.solution_out.c_str());
             return 2;
