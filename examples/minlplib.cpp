@@ -4,7 +4,6 @@
 // Usage: build/cbls_example_minlplib benchmarks/instances/minlplib/st_e38.nl
 #include <cbls/cbls.h>
 #include <cbls/io_nl.h>
-#include <cmath>
 #include <cstdio>
 #include <exception>
 #include <string>
@@ -26,8 +25,8 @@ int run(const char* path) {
 
     std::printf("feasible  = %s\n", result.feasible ? "true" : "false");
     // The engine minimises: a maximisation model's objective comes back negated
-    // (+inf, no point recorded, stays as it is).
-    const bool flip = model.is_maximizing() && std::isfinite(result.objective);
+    // (an infeasible run's +inf means nothing to report, and stays).
+    const bool flip = model.is_maximizing() && result.feasible;
     const double objective = flip ? -result.objective : result.objective;
     std::printf("objective = %.6f\n", objective);
     const std::vector<double> values = converted.original_values(model);

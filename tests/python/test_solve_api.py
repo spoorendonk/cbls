@@ -145,13 +145,15 @@ def test_solve_reports_a_maximised_nl_objective_in_the_files_sense(tmp_path: Pat
     assert result.search.objective == -result.objective
 
 
-def test_a_maximised_objective_keeps_the_no_point_sentinel() -> None:
-    """+inf is SearchResult's "no point recorded", in either sense, as the CLI reads it."""
+def test_a_maximised_objective_flips_only_a_feasible_points() -> None:
+    """An infeasible run's +inf is "nothing to report"; a feasible point's
+    overflowed objective is a value and flips (SearchResult, #100)."""
     m = cbls.Model()
     m.maximize(m.Int(0, 5, "x") + 1.0)
     m.close()
-    assert cbls._solve._user_objective(m, math.inf) == math.inf
-    assert cbls._solve._user_objective(m, 2.0) == -2.0
+    assert cbls._solve._user_objective(m, math.inf, feasible=False) == math.inf
+    assert cbls._solve._user_objective(m, -math.inf, feasible=True) == math.inf
+    assert cbls._solve._user_objective(m, 2.0, feasible=True) == -2.0
 
 
 def test_minimize_after_maximize_resets_the_sense(tmp_path: Path) -> None:
@@ -161,7 +163,7 @@ def test_minimize_after_maximize_resets_the_sense(tmp_path: Path) -> None:
     m.minimize(x + 1.0)
     m.close()
     assert not m.is_maximizing()
-    # save_model read the stale flag: it wrote `maximize` of the Sum's child.
+    # save_model writes the objective in its current sense (#472).
     path = tmp_path / "model.cbls"
     cbls.save_model(m, str(path))
     loaded = cbls.load_model(str(path))

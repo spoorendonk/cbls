@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import copy
-import math
 import os
 from dataclasses import dataclass
 
@@ -16,9 +15,10 @@ class SolveResult:
 
     `objective` is in the model's own sense, as the CLI prints it. The engine
     minimises, so a maximisation model's `search.objective`, its objective
-    node's value and `SolveProgress.objective` are the negation (#472). A
-    non-finite value is not flipped: +inf means no point was recorded, as in
-    `SearchResult`, for either sense.
+    node's value and `SolveProgress.objective` are the negation (#472). An
+    infeasible run reports +inf in either sense: nothing to report. A feasible
+    point can carry ±inf too, an overflowed objective (#100): test `feasible`,
+    then `math.isfinite`.
     `values[i]` and `elements[i]` belong to the variable with id `i`; the model
     itself is also left at that point. `search` is the full `SearchResult`
     (counters, portfolio worker accounting, `best_state`).
@@ -91,7 +91,8 @@ def solve(
     the result also carries by variable id; a portfolio with no worker result
     (cancelled before one finished) leaves it at its start, as the CLI does.
     An unclosed model raises ValueError: `nl_to_model` leaves an unsupported
-    one so.
+    one so. The result's objective is in the model's sense, but `callback`
+    receives the engine's: negated for a maximisation model.
 
     The GIL is released while the search runs; see `cbls._cbls_core.solve` and
     `ParallelSearch.solve_master` for what that permits.
@@ -164,15 +165,16 @@ def _solve_parallel(
     return result
 
 
-def _user_objective(model: _core.Model, internal: float) -> float:
-    """`internal` in the model's sense; +inf (no point recorded) stays +inf."""
-    return -internal if model.is_maximizing() and math.isfinite(internal) else internal
+def _user_objective(model: _core.Model, internal: float, feasible: bool) -> float:
+    """`internal` in the model's sense. An infeasible run's +inf is "nothing to
+    report" and stays; a feasible point's, finite or overflowed (#100), flips."""
+    return -internal if model.is_maximizing() and feasible else internal
 
 
 def _result(model: _core.Model, result: _core.SearchResult) -> SolveResult:
     variables = [model.var(i) for i in range(model.num_vars())]
     return SolveResult(
-        objective=_user_objective(model, result.objective),
+        objective=_user_objective(model, result.objective, result.feasible),
         feasible=result.feasible,
         iterations=result.iterations,
         time_seconds=result.time_seconds,
